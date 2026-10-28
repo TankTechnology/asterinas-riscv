@@ -796,23 +796,23 @@ the explicit M5 gate below is the only slirp-enabled exception.
 
 ### QEMU M5 HTTPS desktop gate
 
-Build the `desktop-m5-network` root when the external-network desktop is the
+Build the `desktop-network` root when the external-network desktop is the
 intended input. This profile adds the `curl` command as a frozen package
 identity. The QEMU gate uses slirp only for the guest data path; it does not
 inherit host proxy variables, TAP configuration, or a Linux guest kernel.
 
 ```bash
-tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m5-network
-make test_riscv_debian_desktop_m5_qemu_gate \
+tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-network
+make test_riscv_debian_desktop_network_qemu_gate \
   DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
   DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
   DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m5-network/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m5-network/rootfs/source-metadata/package-checksums" \
-  DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m5-network/qemu-gate"
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-network/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-network/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-network/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-network/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_NETWORK_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-network/qemu-gate"
 ```
 
 The gate requires ordered DNS and HTTPS evidence for `www.baidu.com`, the
@@ -835,7 +835,7 @@ foreground window has finished rendering Baidu.
 > or as modern-browser compatibility. Use the schema-seven Firefox Web gate for
 > current Firefox acceptance.
 
-After rebuilding the `desktop-m5-network` root, use the M6 gate to foreground
+After rebuilding the `desktop-network` root, use the M6 gate to foreground
 and capture a Baidu-hosted PNG in NetSurf before navigating the same window to
 a fixed local JavaScript fixture. The direct image isolates HTTPS transfer and
 image decoding from the modern Baidu homepage's script workload:
@@ -845,12 +845,12 @@ make test_riscv_debian_desktop_m6_browser_gate \
   DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
   DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
   DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m5-network/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m5-network/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m5-network/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m5-network/rootfs/source-metadata/package-checksums" \
-  DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m5-network/m6-qemu-gate"
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-network/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-network/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-network/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-network/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-network/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-network/m6-qemu-gate"
 ```
 
 `desktop-m6-browser.ppm` records the foreground Baidu logo image and
@@ -877,7 +877,7 @@ make test_riscv_debian_desktop_m7_baidu_gate \
   DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
   DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
   DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-m5-network/stage1/initramfs.cpio" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-network/stage1/initramfs.cpio" \
   DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/debian-root.ext2" \
   DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/rootfs-manifest.json" \
   DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/packages.lock" \
@@ -959,7 +959,7 @@ run an unbounded `apt` command on Megrez. The verified `.deb` closure and its
 
 ### Megrez static-RJ45 browser gate
 
-The physical browser milestone reuses the signed `desktop-m5-network` root
+The physical browser milestone reuses the signed `desktop-network` root
 and the kernel's reviewed static profile. The exact guest identity is:
 
 ```text

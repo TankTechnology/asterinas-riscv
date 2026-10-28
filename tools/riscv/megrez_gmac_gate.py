@@ -26,8 +26,8 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_CORE_MILESTONES,
     DESKTOP_M4_MILESTONES,
 )
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_MEGREZ_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_MEGREZ_MILESTONES,
     NetworkMode,
     classify_web_network,
 )
@@ -87,7 +87,7 @@ NEIGHBOR_BOOTARGS = f"{GATEWAY_NEIGHBOR_BOOTARG} {HOST_NEIGHBOR_BOOTARG}"
 DESKTOP_MASK_BOOTARGS = " ".join(
     f"systemd.mask={service}"
     for service in (
-        "asterinas-desktop-m5-network.service",
+        "asterinas-desktop-network.service",
         "asterinas-desktop-m4-evidence.service",
     )
 )
@@ -113,7 +113,7 @@ DESKTOP_FIXTURE_BOOTARGS = " ".join(
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
-    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+    *(marker.encode() for marker in DESKTOP_NETWORK_MEGREZ_MILESTONES),
 )
 PHYSICAL_DESKTOP_MILESTONES = tuple(
     marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES
@@ -124,7 +124,7 @@ _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
     (b"debian_rootfs_fail reason=", "Stage1 rootfs failure"),
-    (b"debian_network_m5_fail reason=", "guest network failure"),
+    (b"debian_network_fail reason=", "guest network failure"),
     (b"fatal bus error", "GMAC fatal bus error"),
 )
 
@@ -278,7 +278,7 @@ def physical_bootargs(
         consoles = "console=ttyS0 console=tty0"
         if target is GateTarget.NETWORK:
             consoles = "console=ttyS0"
-        evidence_variables = ["ASTERINAS_DESKTOP_M5_CONSOLE"]
+        evidence_variables = ["ASTERINAS_DESKTOP_NETWORK_CONSOLE"]
         if target is GateTarget.FIREFOX:
             evidence_variables.append("ASTERINAS_BROWSER_WEB_CONSOLE")
         evidence = " ".join(
@@ -327,7 +327,7 @@ def bounded_reboot_seconds(value: str) -> int:
 
 
 def classify_physical_network_transcript(transcript: bytes) -> GateResult:
-    """Classify selected-GMAC and Megrez M5 evidence without desktop coupling."""
+    """Classify selected-GMAC and Megrez network evidence without desktop coupling."""
 
     if not isinstance(transcript, bytes):
         return GateResult(False, "physical transcript must be bytes", None)

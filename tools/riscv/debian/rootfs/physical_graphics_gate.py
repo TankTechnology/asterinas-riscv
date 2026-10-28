@@ -32,7 +32,7 @@ try:
         PerformanceContractError,
         summarize_input_latencies,
     )
-    from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
+    from tools.riscv.debian.rootfs.browser_marionette_transport import (
         _connect,
         GateError as MarionetteGateError,
     )
@@ -45,7 +45,7 @@ except ModuleNotFoundError as error:
         PerformanceContractError,
         summarize_input_latencies,
     )
-    from browser_m5_marionette_gate import (  # type: ignore[import-not-found]
+    from browser_marionette_transport import (  # type: ignore[import-not-found]
         _connect,
         GateError as MarionetteGateError,
     )

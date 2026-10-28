@@ -6,7 +6,7 @@ set -euo pipefail
 export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
-readonly SESSION_LOG="$HOME/desktop-m5-session.log"
+readonly SESSION_LOG="$HOME/desktop-session.log"
 readonly DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
 
 guest_monotonic_ns() {
@@ -102,7 +102,7 @@ if [[ "${1-}" == --xsession ]]; then
     /usr/bin/matchbox-window-manager -use_titlebar yes &
     readonly window_manager_pid=$!
     /usr/bin/sleep 1
-    /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Browser M5" &
+    /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Browser" &
     wait "$window_manager_pid"
     exit $?
 fi

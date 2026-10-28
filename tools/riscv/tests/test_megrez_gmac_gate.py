@@ -18,8 +18,8 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_CORE_MILESTONES
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_MEGREZ_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_MEGREZ_MILESTONES,
     NETWORK_LAYERS,
     NetworkMode,
 )
@@ -52,7 +52,7 @@ from tools.riscv import megrez_gmac_gate as gmac_gate
 
 EXPECTED_PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
-    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+    *(marker.encode() for marker in DESKTOP_NETWORK_MEGREZ_MILESTONES),
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DWMAC_DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
@@ -361,7 +361,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertNotIn("cpu_no_boost_1_6ghz", bootargs.split())
         self.assertIn("asterinas.mmc_write_partition2", bootargs.split())
         for variable in (
-            "ASTERINAS_DESKTOP_M5_CONSOLE",
+            "ASTERINAS_DESKTOP_NETWORK_CONSOLE",
             "ASTERINAS_BROWSER_WEB_CONSOLE",
         ):
             self.assertIn(
@@ -408,7 +408,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             network_mode=NetworkMode.PROXY,
         )
         self.assertIn(
-            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_CONSOLE=/dev/ttyS0",
             network_bootargs.split(),
         )
         self.assertIn(
@@ -447,7 +447,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             desktop_bootargs.split(),
         )
         for service in (
-            "asterinas-desktop-m5-network.service",
+            "asterinas-desktop-network.service",
             "asterinas-desktop-m4-evidence.service",
         ):
             self.assertIn(f"systemd.mask={service}", desktop_bootargs.split())
@@ -456,7 +456,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         for excluded in (
             "asterinas.net=",
             "asterinas.neighbor=",
-            "ASTERINAS_DESKTOP_M5_CONSOLE",
+            "ASTERINAS_DESKTOP_NETWORK_CONSOLE",
             "ASTERINAS_BROWSER_WEB_CONSOLE",
             "ASTERINAS_BROWSER_M6_CONSOLE",
             "ASTERINAS_DESKTOP_PROXY_",
@@ -752,7 +752,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         evidence = complete_desktop_evidence()
         operations = FakeOperations(
             chunks=(
-                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n" + evidence,
+                b"DEBIAN_NETWORK_FAIL reason=megrez-bootarg\n" + evidence,
                 b"late harmless log\n",
             ),
         )
@@ -775,7 +775,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertTrue(classify_physical_desktop_transcript(evidence).passed)
         self.assertTrue(
             classify_physical_desktop_transcript(
-                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n" + evidence
+                b"DEBIAN_NETWORK_FAIL reason=megrez-bootarg\n" + evidence
             ).passed
         )
 

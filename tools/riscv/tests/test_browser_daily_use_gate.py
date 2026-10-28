@@ -1602,8 +1602,8 @@ class DailyUseAdapterTests(unittest.TestCase):
         self.assertEqual(self.client.selected, "original")
 
     def test_existing_session_skips_drain_for_a_command_that_never_sent(self):
-        from tools.riscv.debian.rootfs import browser_m5_marionette_gate as wire
-        from tools.riscv.tests.test_debian_browser_m5_runtime_gate import (
+        from tools.riscv.debian.rootfs import browser_marionette_transport as wire
+        from tools.riscv.tests.test_browser_marionette_transport import (
             _Socket,
             _frame,
         )
@@ -1635,7 +1635,7 @@ class DailyUseAdapterTests(unittest.TestCase):
             )
 
     def test_context_recovers_late_socket_response_before_closing_second_tab(self):
-        from tools.riscv.debian.rootfs import browser_m5_marionette_gate as transport
+        from tools.riscv.debian.rootfs import browser_marionette_transport as transport
 
         for delayed_command in ("WebDriver:NewWindow", "WebDriver:Navigate"):
             for partial_header in (False, True):

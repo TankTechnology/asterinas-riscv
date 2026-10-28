@@ -20,7 +20,7 @@ python3 -m unittest \
   tools.riscv.tests.test_browser_daily_use_gate \
   tools.riscv.tests.test_browser_daily_use_upload \
   tools.riscv.tests.test_debian_browser_web \
-  tools.riscv.tests.test_debian_browser_m5_runtime_gate \
+  tools.riscv.tests.test_browser_marionette_transport \
   tools.riscv.tests.test_debian_dev_overlay \
   tools.riscv.tests.test_megrez_network_fixture \
   tools.riscv.tests.test_megrez_physical_graphics \
@@ -44,7 +44,7 @@ python3 -m py_compile \
   tools/riscv/debian/rootfs/browser_performance_provenance.py \
   tools/riscv/debian/rootfs/browser_web_contract.py \
   tools/riscv/debian/rootfs/browser_web_marionette_gate.py \
-  tools/riscv/debian/rootfs/browser_m5_marionette_gate.py \
+  tools/riscv/debian/rootfs/browser_marionette_transport.py \
   tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
   tools/riscv/debian/rootfs/browser_web_trust_check.py \
   tools/riscv/debian/rootfs/firefox_jit_overlay.py \
@@ -63,7 +63,7 @@ bash -n \
   tools/riscv/debian/rootfs/browser_web_firefox.sh \
   tools/riscv/debian/rootfs/desktop_display_provider.sh \
   tools/riscv/debian/rootfs/desktop_m3_device_access.sh \
-  tools/riscv/debian/rootfs/desktop_m5_session.sh \
+  tools/riscv/debian/rootfs/desktop_session.sh \
   tools/riscv/debian/rootfs/physical_external_services_quiesce.sh \
   tools/riscv/debian/rootfs/physical_graphics_control.sh \
   tools/riscv/debian/rootfs/firefox_gdb_probe.sh \

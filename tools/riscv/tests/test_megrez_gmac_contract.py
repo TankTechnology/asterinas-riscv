@@ -88,7 +88,7 @@ def _port(alias_index: int) -> dict[str, object]:
 def _contract() -> dict[str, object]:
     return {
         "schema_version": 1,
-        "contract_id": "megrez-gmac-m5",
+        "contract_id": "megrez-gmac-network",
         "dtb_identity": {
             "sha256": "ab" * 32,
             "size": 154800,
@@ -264,7 +264,7 @@ class MegrezGmacContractTests(unittest.TestCase):
         contract = gmac.validate_contract(_contract())
 
         self.assertEqual(contract.schema_version, 1)
-        self.assertEqual(contract.contract_id, "megrez-gmac-m5")
+        self.assertEqual(contract.contract_id, "megrez-gmac-network")
         self.assertEqual(
             tuple(port.mmio_start for port in contract.ports),
             (0x5040_0000, 0x5041_0000),

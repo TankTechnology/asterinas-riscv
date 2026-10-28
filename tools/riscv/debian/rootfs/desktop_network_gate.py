@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Classify the Debian M5 wired-network evidence from a drained console log."""
+"""Classify the Debian wired-network evidence from a drained console log."""
 
 from __future__ import annotations
 
@@ -95,42 +95,42 @@ def classify_web_network(transcript: bytes, *, mode: NetworkMode) -> GateResult:
     return GateResult(True, "pass", None)
 
 
-DESKTOP_M5_MEGREZ_MILESTONES = (
-    "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.100.19.216:17894",
-    "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
+DESKTOP_NETWORK_MEGREZ_MILESTONES = (
+    "DEBIAN_NETWORK_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
+    "DEBIAN_NETWORK_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.100.19.216:17894",
+    "DEBIAN_NETWORK_CLOCK source=http-date proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_MEGREZ_READY mode=static-rj45-host-proxy",
 )
-DESKTOP_M5_NETWORK_MILESTONES = DESKTOP_M5_MEGREZ_MILESTONES
-DESKTOP_M5_QEMU_MILESTONES = (
-    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.0.2.2:17894",
-    "DEBIAN_NETWORK_M5_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com",
-    "DEBIAN_NETWORK_M5_QEMU_HTTPS host=www.baidu.com status=200 address=10.0.2.15",
-    "DEBIAN_NETWORK_M5_QEMU_READY mode=qemu-slirp",
+DESKTOP_NETWORK_MILESTONES = DESKTOP_NETWORK_MEGREZ_MILESTONES
+DESKTOP_NETWORK_QEMU_MILESTONES = (
+    "DEBIAN_NETWORK_STRESS requests=20 bytes=1310720 sha256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 endpoint=10.0.2.2:17894",
+    "DEBIAN_NETWORK_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com",
+    "DEBIAN_NETWORK_QEMU_HTTPS host=www.baidu.com status=200 address=10.0.2.15",
+    "DEBIAN_NETWORK_QEMU_READY mode=qemu-slirp",
 )
 
 
-def classify_desktop_m5_network(
+def classify_desktop_network(
     transcript: bytes, *, expected_debian_release: str
 ) -> GateResult:
     """Require ordered link, DNS, HTTPS, and asset evidence."""
 
     if any(
-        transcript.count(marker.encode()) > 1 for marker in DESKTOP_M5_MEGREZ_MILESTONES
+        transcript.count(marker.encode()) > 1 for marker in DESKTOP_NETWORK_MEGREZ_MILESTONES
     ):
         return GateResult(False, "duplicate desktop milestone", None)
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=DESKTOP_M5_NETWORK_MILESTONES,
-        failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
+        milestones=DESKTOP_NETWORK_MILESTONES,
+        failure_marker=b"DEBIAN_NETWORK_FAIL reason=",
     )
 
 
-def classify_desktop_m5_qemu(
+def classify_desktop_network_qemu(
     transcript: bytes, *, expected_debian_release: str
 ) -> GateResult:
     """Require QEMU DNS/HTTPS evidence before the complete M4 desktop."""
@@ -140,12 +140,12 @@ def classify_desktop_m5_qemu(
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=(*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES),
-        failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
+        milestones=(*DESKTOP_NETWORK_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES),
+        failure_marker=b"DEBIAN_NETWORK_FAIL reason=",
     )
 
 
-def classify_network_m5_qemu(
+def classify_network_qemu(
     transcript: bytes, *, expected_debian_release: str
 ) -> GateResult:
     """Require only ordered QEMU transfer, DNS, and HTTPS evidence."""
@@ -153,6 +153,6 @@ def classify_network_m5_qemu(
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=DESKTOP_M5_QEMU_MILESTONES,
-        failure_marker=b"DEBIAN_NETWORK_M5_FAIL reason=",
+        milestones=DESKTOP_NETWORK_QEMU_MILESTONES,
+        failure_marker=b"DEBIAN_NETWORK_FAIL reason=",
     )

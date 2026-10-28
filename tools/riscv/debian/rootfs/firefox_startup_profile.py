@@ -28,7 +28,7 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_repo_root))
 
 from tools.riscv.debian.rootfs.browser_web_qemu_gate import BrowserWebQemuOperations
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
     _BOCHS_BAR_RE,
     _UBOOT_COMMAND_SAFE_LIMIT,

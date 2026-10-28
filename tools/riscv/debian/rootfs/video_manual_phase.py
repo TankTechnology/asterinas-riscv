@@ -17,7 +17,7 @@ import time
 from urllib.parse import urlencode
 
 sys.path.insert(0, "/usr/lib/asterinas")
-from browser_m5_marionette_gate import Marionette
+from browser_marionette_transport import Marionette
 
 
 RUN_ID = re.compile(r"[a-z0-9]{1,20}")

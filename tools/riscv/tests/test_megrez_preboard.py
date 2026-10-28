@@ -14,7 +14,7 @@ from unittest import mock
 
 from tools.riscv import megrez_preboard as preboard_module
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.megrez_debug_contract import (
     BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,

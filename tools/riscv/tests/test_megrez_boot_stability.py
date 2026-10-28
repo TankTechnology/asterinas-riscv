@@ -406,7 +406,7 @@ class BootStabilityProtocolTests(unittest.TestCase):
                 for token in bootargs
             )
         )
-        self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", bootargs)
+        self.assertIn("systemd.mask=asterinas-desktop-network.service", bootargs)
         self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", bootargs)
 
     def test_boot_readiness_commands_are_short_and_input_independent(self) -> None:
@@ -475,7 +475,7 @@ class BootStabilityProtocolTests(unittest.TestCase):
         self.assertIn("systemctl status --no-pager --full", command)
         self.assertIn("journalctl -b --no-pager", command)
         self.assertIn("/home/asterinas/Xorg.0.log", command)
-        self.assertIn("/home/asterinas/desktop-m5-session.log", command)
+        self.assertIn("/home/asterinas/desktop-session.log", command)
         self.assertIn("/home/asterinas/firefox-web-stderr.log", command)
         self.assertNotIn("tail -c", command)
         self.assertNotIn(

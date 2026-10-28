@@ -346,13 +346,13 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             source = root / "source"
             output = root / "output"
             for base, prefix in ((source, b"new:"), (output, b"old:")):
-                for relative in fsops_module._M5_PUBLISHED_PATHS:
+                for relative in fsops_module._BROWSER_PUBLISHED_PATHS:
                     path = base / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(prefix + relative.encode())
             before = {
                 relative: (output / relative).read_bytes()
-                for relative in fsops_module._M5_PUBLISHED_PATHS
+                for relative in fsops_module._BROWSER_PUBLISHED_PATHS
             }
             real_replace = os.replace
             replacements = 0
@@ -361,12 +361,12 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
                 nonlocal replacements
                 replacements += 1
                 if replacements == 3:
-                    raise OSError("injected M5 publication failure")
+                    raise OSError("injected browser publication failure")
                 return real_replace(*args, **kwargs)
 
             with (
                 mock.patch.object(fsops_module.os, "replace", new=fail_after_security_is_prepared),
-                self.assertRaisesRegex(OSError, "injected M5 publication failure"),
+                self.assertRaisesRegex(OSError, "injected browser publication failure"),
             ):
                 fsops_module.publish_set(
                     output, source, include_security_inrelease=True
@@ -374,7 +374,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             self.assertEqual(
                 {
                     relative: (output / relative).read_bytes()
-                    for relative in fsops_module._M5_PUBLISHED_PATHS
+                    for relative in fsops_module._BROWSER_PUBLISHED_PATHS
                 },
                 before,
             )

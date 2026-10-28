@@ -20,7 +20,7 @@ Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/
 SupplementaryGroups=video input
 StandardOutput=journal+console
 StandardError=journal+console
-ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access
+ExecStartPre=+/usr/lib/asterinas/desktop-network-device-access
 ExecStart=/usr/lib/asterinas/browser-web-firefox
 Restart=on-failure
 RestartPreventExitStatus=64

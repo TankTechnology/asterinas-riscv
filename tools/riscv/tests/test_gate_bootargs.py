@@ -10,8 +10,8 @@ import unittest
 
 from tools.riscv.debian.rootfs import desktop_m3_gate
 from tools.riscv.debian.rootfs import desktop_m4_gate
-from tools.riscv.debian.rootfs import desktop_m5_network_gate
-from tools.riscv.debian.rootfs import desktop_m5_qemu_gate
+from tools.riscv.debian.rootfs import desktop_network_gate
+from tools.riscv.debian.rootfs import desktop_network_qemu_gate
 from tools.riscv.debian.rootfs import systemd_m2_gate
 from tools.riscv.debian.rootfs.gate_protocol import systemd_bootargs
 
@@ -23,7 +23,7 @@ M4 = (
     "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
     "init=/init -- --root-init=systemd"
 )
-M5 = (
+NETWORK_BOOTARGS = (
     "console=ttyS0 loglevel=4 init=/init "
     "asterinas.debian_network=qemu-slirp "
     "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL="
@@ -32,7 +32,7 @@ M5 = (
     "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256="
     "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 "
     "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20 "
-    "systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=120 "
+    "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS=120 "
     "-- --root-init=systemd"
 )
 
@@ -70,18 +70,18 @@ class BootargsComposerTests(unittest.TestCase):
         )
         self.assertEqual(desktop_m3_gate.DESKTOP_M3_BOOTARGS, BASE)
         self.assertEqual(desktop_m4_gate.DesktopM4Operations.BOOTARGS, M4)
-        self.assertEqual(desktop_m5_qemu_gate.DESKTOP_M5_QEMU_BOOTARGS, M5)
+        self.assertEqual(desktop_network_qemu_gate.DESKTOP_NETWORK_QEMU_BOOTARGS, NETWORK_BOOTARGS)
 
     def test_network_variants_match_frozen_goldens(self) -> None:
-        proxy = desktop_m5_qemu_gate.qemu_web_network_bootargs(
-            desktop_m5_network_gate.NetworkMode.PROXY
+        proxy = desktop_network_qemu_gate.qemu_web_network_bootargs(
+            desktop_network_gate.NetworkMode.PROXY
         )
-        direct = desktop_m5_qemu_gate.qemu_web_network_bootargs(
-            desktop_m5_network_gate.NetworkMode.DIRECT
+        direct = desktop_network_qemu_gate.qemu_web_network_bootargs(
+            desktop_network_gate.NetworkMode.DIRECT
         )
-        tls = desktop_m5_qemu_gate.qemu_web_network_bootargs(
-            desktop_m5_network_gate.NetworkMode.DIRECT,
-            expected_failure=desktop_m5_qemu_gate.QemuExpectedFailure.TLS,
+        tls = desktop_network_qemu_gate.qemu_web_network_bootargs(
+            desktop_network_gate.NetworkMode.DIRECT,
+            expected_failure=desktop_network_qemu_gate.QemuExpectedFailure.TLS,
         )
 
         self.assertEqual(proxy.split().count("--"), 1)
@@ -101,7 +101,7 @@ class BootargsComposerTests(unittest.TestCase):
             "systemd_m2_gate.py",
             "desktop_m3_gate.py",
             "desktop_m4_gate.py",
-            "desktop_m5_qemu_gate.py",
+            "desktop_network_qemu_gate.py",
         )
         for name in modules:
             with self.subTest(module=name):

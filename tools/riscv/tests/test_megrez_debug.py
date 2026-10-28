@@ -23,8 +23,8 @@ from unittest import mock
 
 from tools.riscv import megrez_debug as debug_module
 from tools.riscv import megrez_debug_board as board_module
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_MEGREZ_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_MEGREZ_MILESTONES,
 )
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
@@ -42,7 +42,7 @@ from tools.riscv.megrez_contract import (
     ROOTFS_METADATA_ARTIFACT_NAMES,
 )
 from tools.riscv.megrez_debian_shell_contract import SHELL_ARTIFACT_ORDER
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.megrez_gmac_gate import GateTarget, physical_bootargs
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import (
@@ -570,7 +570,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             DEBIAN_BROWSER_MARKERS,
             (
                 "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
-                *DESKTOP_M5_MEGREZ_MILESTONES,
+                *DESKTOP_NETWORK_MEGREZ_MILESTONES,
                 "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10",
                 "BROWSER_WEB_DESKTOP_STAGE=x-socket-ready",
                 "DEBIAN_FIREFOX_BAIDU_READY mode=proxy home=pass logo=pass "
@@ -655,7 +655,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         plan = self._plan()
         required_tokens = (
             "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
-            "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_CONSOLE=/dev/ttyS0",
             "systemd.setenv=ASTERINAS_BROWSER_WEB_CONSOLE=/dev/ttyS0",
             "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",

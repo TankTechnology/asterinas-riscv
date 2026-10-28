@@ -17,23 +17,23 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_MILESTONES,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import _UBOOT_COMMAND_SAFE_LIMIT
-from tools.riscv.debian.rootfs import desktop_m5_network_gate as network_gate
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_NETWORK_MILESTONES,
-    DESKTOP_M5_QEMU_MILESTONES,
-    classify_desktop_m5_network,
-    classify_desktop_m5_qemu,
-    classify_network_m5_qemu,
+from tools.riscv.debian.rootfs import desktop_network_gate as network_gate
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_MILESTONES,
+    DESKTOP_NETWORK_QEMU_MILESTONES,
+    classify_desktop_network,
+    classify_desktop_network_qemu,
+    classify_network_qemu,
 )
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
-    DESKTOP_M5_QEMU_BOOTARGS,
-    DesktopM5QemuOperations,
-    NetworkM5QemuOperations,
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import (
+    DESKTOP_NETWORK_QEMU_BOOTARGS,
+    DesktopNetworkQemuOperations,
+    NetworkQemuOperations,
     QemuExpectedFailure,
     QemuGateTarget,
     _parse_target,
     classify_qemu_web_network,
-    desktop_m5_qemu_argv,
+    desktop_network_qemu_argv,
     qemu_web_network_bootargs,
 )
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
@@ -56,7 +56,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
 EVIDENCE_SCRIPT = (
-    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh"
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_network_evidence.sh"
 )
 DESKTOP_M4_SESSION_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_session.sh"
@@ -70,31 +70,31 @@ MEGREZ_TCP_PROBE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_tcp_probe_init.c"
 )
 EXPECTED_MEGREZ_MILESTONES = (
-    "DEBIAN_NETWORK_M5_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
-    "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
+    "DEBIAN_NETWORK_LINK interface=eth0 address=10.100.19.200/21 state=lower-up",
+    "DEBIAN_NETWORK_MEGREZ_PROXY endpoint=10.100.19.216:17893",
+    "DEBIAN_NETWORK_STRESS requests=20 bytes=1310720 "
     f"sha256={PAYLOAD_SHA256} endpoint=10.100.19.216:17894",
-    "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
-    "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy",
+    "DEBIAN_NETWORK_CLOCK source=http-date proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_MEGREZ_HTTPS host=www.baidu.com status=200 address=10.100.19.200 proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=10.100.19.216:17893",
+    "DEBIAN_NETWORK_MEGREZ_READY mode=static-rj45-host-proxy",
 )
 EXPECTED_MEGREZ_CONSOLE = (
     EXPECTED_MEGREZ_MILESTONES[:2]
-    + ("DEBIAN_NETWORK_M5_STRESS_START requests=20 endpoint=10.100.19.216:17894",)
+    + ("DEBIAN_NETWORK_STRESS_START requests=20 endpoint=10.100.19.216:17894",)
     + EXPECTED_MEGREZ_MILESTONES[2:4]
-    + ("DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=1 stage=begin",)
+    + ("DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=1 stage=begin",)
     + EXPECTED_MEGREZ_MILESTONES[4:5]
-    + ("DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-asset stage=begin",)
+    + ("DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-asset stage=begin",)
     + EXPECTED_MEGREZ_MILESTONES[5:]
 )
 EXPECTED_QEMU_STRESS_MILESTONE = (
-    "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
+    "DEBIAN_NETWORK_STRESS requests=20 bytes=1310720 "
     f"sha256={PAYLOAD_SHA256} endpoint=10.0.2.2:17894"
 )
 
 
-class DebianDesktopM5NetworkTests(unittest.TestCase):
+class DebianDesktopNetworkTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
@@ -268,7 +268,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
     def test_guest_network_deadline_matches_the_qemu_contract(self) -> None:
         self.assertIn(
-            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-30}"',
+            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS:-30}"',
             EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
         )
 
@@ -465,8 +465,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         for name in (
             "asterinas-browser-web-evidence.service",
             "asterinas-browser-web.service",
-            "asterinas-desktop-m5-network.service",
-            "asterinas-desktop-m5.service",
+            "asterinas-desktop-network.service",
+            "asterinas-desktop.service",
         ):
             (unit_dir / name).touch()
         actions = self.directory / "safe-reboot-actions"
@@ -532,7 +532,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             [
                 "sleep:5",
                 "sleep:5",
-                "systemctl:stop asterinas-browser-web-evidence.service asterinas-browser-web.service asterinas-desktop-m5-network.service asterinas-desktop-m5.service",
+                "systemctl:stop asterinas-browser-web-evidence.service asterinas-browser-web.service asterinas-desktop-network.service asterinas-desktop.service",
                 "pgrep:-u 1000",
                 "sync:",
                 "reboot:-f",
@@ -560,8 +560,8 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         for name in (
             "asterinas-browser-web-evidence.service",
             "asterinas-browser-web.service",
-            "asterinas-desktop-m5-network.service",
-            "asterinas-desktop-m5.service",
+            "asterinas-desktop-network.service",
+            "asterinas-desktop.service",
         ):
             (unit_dir / name).touch()
         actions = self.directory / "safe-reboot-cmdline-actions"
@@ -617,7 +617,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         self.assertEqual(
             actions.read_text(encoding="utf-8").splitlines(),
             [
-                "systemctl:stop asterinas-browser-web-evidence.service asterinas-browser-web.service asterinas-desktop-m5-network.service asterinas-desktop-m5.service",
+                "systemctl:stop asterinas-browser-web-evidence.service asterinas-browser-web.service asterinas-desktop-network.service asterinas-desktop.service",
                 "pgrep:-u 1000",
                 "sync:",
                 "reboot:-f",
@@ -719,7 +719,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         fake_bin.mkdir()
         unit_dir = self.directory / "safe-reboot-deadline-units"
         unit_dir.mkdir()
-        (unit_dir / "asterinas-desktop-m5.service").touch()
+        (unit_dir / "asterinas-desktop.service").touch()
         actions = self.directory / "safe-reboot-deadline-actions"
         console = self.directory / "safe-reboot-deadline-console"
         uptime = self.directory / "safe-reboot-deadline-uptime"
@@ -777,7 +777,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         fake_bin.mkdir()
         units = self.directory / "manual-reboot-units"
         units.mkdir()
-        (units / "asterinas-desktop-m5.service").touch()
+        (units / "asterinas-desktop.service").touch()
         actions = self.directory / "manual-reboot-actions"
         console = self.directory / "manual-reboot-console"
         uptime = self.directory / "manual-reboot-uptime"
@@ -847,9 +847,9 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         fake_bin.mkdir()
         unit_dir = self.directory / "safe-reboot-network-units"
         unit_dir.mkdir()
-        (unit_dir / "asterinas-desktop-m5-evidence.service").touch()
-        (unit_dir / "asterinas-desktop-m5-network.service").touch()
-        (unit_dir / "asterinas-desktop-m5.service").touch()
+        (unit_dir / "asterinas-desktop-evidence.service").touch()
+        (unit_dir / "asterinas-desktop-network.service").touch()
+        (unit_dir / "asterinas-desktop.service").touch()
         actions = self.directory / "safe-reboot-network-actions"
         console = self.directory / "safe-reboot-network-console"
         uptime = self.directory / "safe-reboot-network-uptime"
@@ -893,7 +893,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         action_lines = actions.read_text(encoding="utf-8").splitlines()
         self.assertIn(
-            "systemctl:stop asterinas-desktop-m5-evidence.service asterinas-desktop-m5-network.service asterinas-desktop-m5.service",
+            "systemctl:stop asterinas-desktop-evidence.service asterinas-desktop-network.service asterinas-desktop.service",
             action_lines,
         )
         self.assertNotIn("browser-web", "\n".join(action_lines))
@@ -904,7 +904,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         fake_bin.mkdir()
         unit_dir = self.directory / "safe-reboot-unit-stuck-units"
         unit_dir.mkdir()
-        (unit_dir / "asterinas-desktop-m5-evidence.service").touch()
+        (unit_dir / "asterinas-desktop-evidence.service").touch()
         actions = self.directory / "safe-reboot-unit-stuck-actions"
         console = self.directory / "safe-reboot-unit-stuck-console"
         uptime = self.directory / "safe-reboot-unit-stuck-uptime"
@@ -944,9 +944,9 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         action_lines = actions.read_text(encoding="utf-8").splitlines()
-        self.assertIn("systemctl:kill --kill-who=all --signal=KILL asterinas-desktop-m5-evidence.service", action_lines)
+        self.assertIn("systemctl:kill --kill-who=all --signal=KILL asterinas-desktop-evidence.service", action_lines)
         self.assertEqual(
-            action_lines.count("systemctl:stop asterinas-desktop-m5-evidence.service"),
+            action_lines.count("systemctl:stop asterinas-desktop-evidence.service"),
             2,
         )
         self.assertFalse(any(line.startswith("sync:") for line in action_lines))
@@ -960,7 +960,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         fake_bin.mkdir()
         unit_dir = self.directory / "safe-reboot-pgrep-error-units"
         unit_dir.mkdir()
-        (unit_dir / "asterinas-desktop-m5.service").touch()
+        (unit_dir / "asterinas-desktop.service").touch()
         actions = self.directory / "safe-reboot-pgrep-error-actions"
         console = self.directory / "safe-reboot-pgrep-error-console"
         uptime = self.directory / "safe-reboot-pgrep-error-uptime"
@@ -1009,7 +1009,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
         fake_bin.mkdir()
         unit_dir = self.directory / "safe-reboot-stuck-units"
         unit_dir.mkdir()
-        (unit_dir / "asterinas-desktop-m5.service").touch()
+        (unit_dir / "asterinas-desktop.service").touch()
         actions = self.directory / "safe-reboot-stuck-actions"
         actions.write_text("", encoding="utf-8")
         console = self.directory / "safe-reboot-stuck-console"
@@ -1127,7 +1127,7 @@ exit 2
         ping = bin_directory / "ping"
         ping.write_text(
             """#!/bin/sh
-printf '%s\n' "$*" >"$ASTERINAS_M5_PING_LOG"
+printf '%s\n' "$*" >"$ASTERINAS_NETWORK_PING_LOG"
 exit 0
 """,
             encoding="utf-8",
@@ -1159,15 +1159,15 @@ exit 0
         getent = fake_bin / "getent"
         getent.write_text(
             """#!/bin/sh
-printf '%s\n' "$*" >>"$ASTERINAS_M5_GETENT_LOG"
-exit "${ASTERINAS_M5_GETENT_STATUS:-0}"
+printf '%s\n' "$*" >>"$ASTERINAS_NETWORK_GETENT_LOG"
+exit "${ASTERINAS_NETWORK_GETENT_STATUS:-0}"
 """,
             encoding="utf-8",
         )
         curl = fake_bin / "curl"
         curl.write_text(
             """#!/bin/sh
-printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
+printf '%s\n' "$*" >>"$ASTERINAS_NETWORK_CURL_LOG"
 case "$*" in
     *asterinas-network-probe.bin*)
         previous=
@@ -1175,25 +1175,25 @@ case "$*" in
         for argument in "$@"; do
             if [ "$previous" = --output ]; then
                 output_count=$((output_count + 1))
-                if [ "${ASTERINAS_M5_FIXTURE_SHORT:-0}" = 1 ]; then
-                    head -c 65535 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >"$argument"
-                elif [ "${ASTERINAS_M5_FIXTURE_CORRUPT:-0}" = 1 ]; then
+                if [ "${ASTERINAS_NETWORK_FIXTURE_SHORT:-0}" = 1 ]; then
+                    head -c 65535 "$ASTERINAS_NETWORK_FIXTURE_PAYLOAD" >"$argument"
+                elif [ "${ASTERINAS_NETWORK_FIXTURE_CORRUPT:-0}" = 1 ]; then
                     printf X >"$argument"
-                    tail -c +2 "$ASTERINAS_M5_FIXTURE_PAYLOAD" >>"$argument"
+                    tail -c +2 "$ASTERINAS_NETWORK_FIXTURE_PAYLOAD" >>"$argument"
                 else
-                    cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                    cp "$ASTERINAS_NETWORK_FIXTURE_PAYLOAD" "$argument"
                 fi
             fi
             previous="$argument"
         done
         [ "$output_count" -gt 0 ] || exit 95
-        [ "${ASTERINAS_M5_FIXTURE_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_FIXTURE_STATUS"
+        [ "${ASTERINAS_NETWORK_FIXTURE_STATUS:-0}" = 0 ] || exit "$ASTERINAS_NETWORK_FIXTURE_STATUS"
         ;;
     *http://www.baidu.com/*)
-        [ "${ASTERINAS_M5_CLOCK_STATUS:-0}" = 0 ] || exit "$ASTERINAS_M5_CLOCK_STATUS"
+        [ "${ASTERINAS_NETWORK_CLOCK_STATUS:-0}" = 0 ] || exit "$ASTERINAS_NETWORK_CLOCK_STATUS"
         printf 'HTTP/1.1 200 OK\r\n'
-        if [ "${ASTERINAS_M5_CLOCK_DATE:-set}" != missing ]; then
-            printf 'Date: %s\r\n' "${ASTERINAS_M5_CLOCK_DATE:-Sat, 29 Aug 2026 02:02:25 GMT}"
+        if [ "${ASTERINAS_NETWORK_CLOCK_DATE:-set}" != missing ]; then
+            printf 'Date: %s\r\n' "${ASTERINAS_NETWORK_CLOCK_DATE:-Sat, 29 Aug 2026 02:02:25 GMT}"
         fi
         printf '\r\n'
         ;;
@@ -1205,18 +1205,18 @@ case "$*" in
             previous="$argument"
         done
         [ -n "$output" ] || exit 96
-        if [ "${ASTERINAS_M5_EMPTY_ASSET:-0}" = 1 ]; then : >"$output"; else printf PNG >"$output"; fi
-        exit "${ASTERINAS_M5_ASSET_STATUS:-0}"
+        if [ "${ASTERINAS_NETWORK_EMPTY_ASSET:-0}" = 1 ]; then : >"$output"; else printf PNG >"$output"; fi
+        exit "${ASTERINAS_NETWORK_ASSET_STATUS:-0}"
         ;;
     *)
-        if [ -n "${ASTERINAS_M5_HTTPS_SLEEP:-}" ]; then
-            sleep "$ASTERINAS_M5_HTTPS_SLEEP"
+        if [ -n "${ASTERINAS_NETWORK_HTTPS_SLEEP:-}" ]; then
+            sleep "$ASTERINAS_NETWORK_HTTPS_SLEEP"
         fi
-        if [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" != 0 ]; then
-            printf '%s\n' "${ASTERINAS_M5_HTTPS_ERROR:-curl failed}" >&2
-            exit "$ASTERINAS_M5_HTTPS_STATUS"
+        if [ "${ASTERINAS_NETWORK_HTTPS_STATUS:-0}" != 0 ]; then
+            printf '%s\n' "${ASTERINAS_NETWORK_HTTPS_ERROR:-curl failed}" >&2
+            exit "$ASTERINAS_NETWORK_HTTPS_STATUS"
         fi
-        printf '%s\t%s' "${ASTERINAS_M5_HTTP_CODE:-200}" "${ASTERINAS_M5_LOCAL_IP:-10.100.19.200}"
+        printf '%s\t%s' "${ASTERINAS_NETWORK_HTTP_CODE:-200}" "${ASTERINAS_NETWORK_LOCAL_IP:-10.100.19.200}"
         ;;
 esac
 """,
@@ -1225,8 +1225,8 @@ esac
         date = fake_bin / "date"
         date.write_text(
             """#!/bin/sh
-printf '%s\n' "$*" >>"$ASTERINAS_M5_DATE_LOG"
-exit "${ASTERINAS_M5_DATE_STATUS:-0}"
+printf '%s\n' "$*" >>"$ASTERINAS_NETWORK_DATE_LOG"
+exit "${ASTERINAS_NETWORK_DATE_STATUS:-0}"
 """,
             encoding="utf-8",
         )
@@ -1236,16 +1236,16 @@ exit "${ASTERINAS_M5_DATE_STATUS:-0}"
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
-            ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="5",
-            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline_path),
-            ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
-            ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
-            ASTERINAS_M5_PING_LOG=str(ping_log),
-            ASTERINAS_M5_GETENT_LOG=str(getent_log),
-            ASTERINAS_M5_CURL_LOG=str(curl_log),
-            ASTERINAS_M5_DATE_LOG=str(date_log),
-            ASTERINAS_M5_FIXTURE_PAYLOAD=str(fixture_payload),
+            ASTERINAS_DESKTOP_NETWORK_CONSOLE=str(console),
+            ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS="5",
+            ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH=str(cmdline_path),
+            ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF=str(resolv_conf),
+            ASTERINAS_DESKTOP_NETWORK_URL_FILE=str(url_file),
+            ASTERINAS_NETWORK_PING_LOG=str(ping_log),
+            ASTERINAS_NETWORK_GETENT_LOG=str(getent_log),
+            ASTERINAS_NETWORK_CURL_LOG=str(curl_log),
+            ASTERINAS_NETWORK_DATE_LOG=str(date_log),
+            ASTERINAS_NETWORK_FIXTURE_PAYLOAD=str(fixture_payload),
             ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
             ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
             ASTERINAS_DESKTOP_PROXY_PORT="17893",
@@ -1406,12 +1406,12 @@ esac
         environment = {
             **os.environ,
             "PATH": f"{fake_bin}:/usr/bin:/bin",
-            "ASTERINAS_DESKTOP_M5_CONSOLE": str(console),
-            "ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS": "5",
-            "ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS": "2",
-            "ASTERINAS_DESKTOP_M5_RESOLV_CONF": str(resolv_conf),
-            "ASTERINAS_DESKTOP_M5_URL_FILE": str(directory / "desktop-url"),
-            "ASTERINAS_DESKTOP_M5_UPTIME_PATH": str(uptime),
+            "ASTERINAS_DESKTOP_NETWORK_CONSOLE": str(console),
+            "ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS": "5",
+            "ASTERINAS_DESKTOP_NETWORK_COMMAND_TIMEOUT_SECONDS": "2",
+            "ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF": str(resolv_conf),
+            "ASTERINAS_DESKTOP_NETWORK_URL_FILE": str(directory / "desktop-url"),
+            "ASTERINAS_DESKTOP_NETWORK_UPTIME_PATH": str(uptime),
             "ASTERINAS_WEB_NETWORK_MODE": mode,
             "ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY": "1",
             "ASTERINAS_WEB_NETWORK_ADDRESS": "10.100.19.200/21",
@@ -1451,7 +1451,7 @@ esac
             self.directory / "web-invalid-uptime",
             mode="proxy",
         )
-        Path(environment["ASTERINAS_DESKTOP_M5_UPTIME_PATH"]).write_text(
+        Path(environment["ASTERINAS_DESKTOP_NETWORK_UPTIME_PATH"]).write_text(
             "not-an-uptime\n",
             encoding="utf-8",
         )
@@ -1714,7 +1714,7 @@ esac
         payload = directory / "qemu-fixture.bin"
         payload.write_bytes(PAYLOAD)
         return {
-            "ASTERINAS_M5_FIXTURE_PAYLOAD": str(payload),
+            "ASTERINAS_NETWORK_FIXTURE_PAYLOAD": str(payload),
             "ASTERINAS_DESKTOP_FIXTURE_URL": (f"http://10.0.2.2:17894{FIXTURE_PATH}"),
             "ASTERINAS_DESKTOP_FIXTURE_SIZE": str(PAYLOAD_SIZE),
             "ASTERINAS_DESKTOP_FIXTURE_SHA256": PAYLOAD_SHA256,
@@ -1792,7 +1792,7 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(
             console.read_text().splitlines(),
-            ["DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg"],
+            ["DEBIAN_NETWORK_FAIL reason=megrez-bootarg"],
         )
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
         self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
@@ -1808,12 +1808,12 @@ esac
             ),
             (
                 "clock-date",
-                {"ASTERINAS_M5_CLOCK_DATE": "missing"},
+                {"ASTERINAS_NETWORK_CLOCK_DATE": "missing"},
                 "megrez-clock-date",
             ),
             (
                 "clock-set",
-                {"ASTERINAS_M5_DATE_STATUS": "1"},
+                {"ASTERINAS_NETWORK_DATE_STATUS": "1"},
                 "megrez-clock-set",
             ),
             (
@@ -1823,38 +1823,38 @@ esac
             ),
             (
                 "fixture-download",
-                {"ASTERINAS_M5_FIXTURE_STATUS": "28"},
+                {"ASTERINAS_NETWORK_FIXTURE_STATUS": "28"},
                 "megrez-fixture-download",
             ),
             (
                 "fixture-short",
-                {"ASTERINAS_M5_FIXTURE_SHORT": "1"},
+                {"ASTERINAS_NETWORK_FIXTURE_SHORT": "1"},
                 "megrez-fixture-size",
             ),
             (
                 "fixture-corrupt",
-                {"ASTERINAS_M5_FIXTURE_CORRUPT": "1"},
+                {"ASTERINAS_NETWORK_FIXTURE_CORRUPT": "1"},
                 "megrez-fixture-sha256",
             ),
             (
                 "https",
                 {
-                    "ASTERINAS_M5_HTTPS_STATUS": "42",
-                    "ASTERINAS_M5_HTTPS_ERROR": "curl: recv failure",
+                    "ASTERINAS_NETWORK_HTTPS_STATUS": "42",
+                    "ASTERINAS_NETWORK_HTTPS_ERROR": "curl: recv failure",
                 },
                 "megrez-https",
             ),
             (
                 "http-status",
-                {"ASTERINAS_M5_HTTP_CODE": "503"},
+                {"ASTERINAS_NETWORK_HTTP_CODE": "503"},
                 "megrez-http-status",
             ),
             (
                 "local-address",
-                {"ASTERINAS_M5_LOCAL_IP": "10.100.19.201"},
+                {"ASTERINAS_NETWORK_LOCAL_IP": "10.100.19.201"},
                 "megrez-local-address",
             ),
-            ("empty-asset", {"ASTERINAS_M5_EMPTY_ASSET": "1"}, "megrez-asset"),
+            ("empty-asset", {"ASTERINAS_NETWORK_EMPTY_ASSET": "1"}, "megrez-asset"),
         )
         for name, overrides, expected_reason in cases:
             with self.subTest(name=name):
@@ -1879,13 +1879,13 @@ esac
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(
                     console.read_text().splitlines()[-1],
-                    f"DEBIAN_NETWORK_M5_FAIL reason={expected_reason}",
+                    f"DEBIAN_NETWORK_FAIL reason={expected_reason}",
                 )
                 if name == "https":
                     console_lines = console.read_text().splitlines()
                     self.assertRegex(
                         console_lines[-2],
-                        r"^DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                        r"^DEBIAN_NETWORK_DIAGNOSTIC "
                         r"phase=megrez-https attempt=3 status=42 elapsed=[0-9]+ "
                         r"stderr_hex=6375726c3a2072656376206661696c7572650a "
                         r"trace_hex=none$",
@@ -1897,7 +1897,7 @@ esac
                             if line.endswith("stage=begin")
                         ],
                         [
-                            "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                            "DEBIAN_NETWORK_DIAGNOSTIC "
                             f"phase=megrez-https attempt={attempt} stage=begin"
                             for attempt in (1, 2, 3)
                         ],
@@ -1925,8 +1925,8 @@ esac
                 cmdline=("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"),
             )
         )
-        environment["ASTERINAS_M5_HTTPS_SLEEP"] = "5"
-        environment["ASTERINAS_M5_HTTPS_STATUS"] = "7"
+        environment["ASTERINAS_NETWORK_HTTPS_SLEEP"] = "5"
+        environment["ASTERINAS_NETWORK_HTTPS_STATUS"] = "7"
 
         result = subprocess.run(
             ["/bin/bash", str(EVIDENCE_SCRIPT)],
@@ -1939,10 +1939,10 @@ esac
         self.assertNotEqual(result.returncode, 0)
         console_lines = console.read_text().splitlines()
         self.assertEqual(
-            console_lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=megrez-https"
+            console_lines[-1], "DEBIAN_NETWORK_FAIL reason=megrez-https"
         )
         self.assertIn(
-            "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+            "DEBIAN_NETWORK_DIAGNOSTIC "
             "phase=megrez-https attempt=2 stage=deadline",
             console_lines,
         )
@@ -1953,7 +1953,7 @@ esac
                 if "phase=megrez-https" in line and line.endswith("stage=begin")
             ],
             [
-                "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                "DEBIAN_NETWORK_DIAGNOSTIC "
                 "phase=megrez-https attempt=1 stage=begin"
             ],
         )
@@ -1978,7 +1978,7 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(
             console.read_text().splitlines()[-1],
-            "DEBIAN_NETWORK_M5_FAIL reason=megrez-proxy-config",
+            "DEBIAN_NETWORK_FAIL reason=megrez-proxy-config",
         )
         self.assertEqual(resolv_conf.read_text(), "nameserver 192.0.2.53\n")
         self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
@@ -1995,10 +1995,10 @@ esac
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
-            ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-            ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="0",
-            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
-            ASTERINAS_M5_PING_LOG=str(ping_log),
+            ASTERINAS_DESKTOP_NETWORK_CONSOLE=str(console),
+            ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS="0",
+            ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_NETWORK_PING_LOG=str(ping_log),
             ASTERINAS_DESKTOP_PROXY_URL="http://10.100.19.216:17893",
             ASTERINAS_DESKTOP_PROXY_HOST="10.100.19.216",
             ASTERINAS_DESKTOP_PROXY_PORT="17893",
@@ -2019,7 +2019,7 @@ esac
         self.assertNotEqual(result.returncode, 0)
         lines = console.read_text().splitlines()
         self.assertEqual(
-            lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=link-or-address-timeout"
+            lines[-1], "DEBIAN_NETWORK_FAIL reason=link-or-address-timeout"
         )
         self.assertEqual(len(lines), 3)
         self.assertIn("field=link status=0 value_hex=", lines[0])
@@ -2144,14 +2144,14 @@ drop_unsupported_sysctl_files "$2"
         for name, body in {
             "getent": "#!/bin/sh\nprintf '%s\\n' '110.242.68.66 STREAM www.baidu.com'\n",
             "curl": """#!/bin/sh
-printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
+printf '%s\n' "$*" >>"$ASTERINAS_NETWORK_CURL_LOG"
 case "$*" in
     *asterinas-network-probe.bin*)
         previous=
         output_count=0
         for argument in "$@"; do
             if [ "$previous" = --output ]; then
-                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                cp "$ASTERINAS_NETWORK_FIXTURE_PAYLOAD" "$argument"
                 output_count=$((output_count + 1))
             fi
             previous="$argument"
@@ -2170,11 +2170,11 @@ esac
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
-            ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
-            ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
-            ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
-            ASTERINAS_M5_CURL_LOG=str(curl_log),
+            ASTERINAS_DESKTOP_NETWORK_CONSOLE=str(console),
+            ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF=str(resolv_conf),
+            ASTERINAS_DESKTOP_NETWORK_URL_FILE=str(url_file),
+            ASTERINAS_NETWORK_CURL_LOG=str(curl_log),
         )
         environment.update(self._qemu_fixture_environment(self.directory))
 
@@ -2188,7 +2188,7 @@ esac
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            console.read_text().splitlines(), list(DESKTOP_M5_QEMU_MILESTONES)
+            console.read_text().splitlines(), list(DESKTOP_NETWORK_QEMU_MILESTONES)
         )
         self.assertEqual(resolv_conf.read_text(), "nameserver 10.0.2.3\n")
         self.assertEqual(
@@ -2218,20 +2218,20 @@ esac
         for name, body in {
             "getent": """#!/bin/sh
 attempt=0
-[ ! -f "$ASTERINAS_M5_GETENT_LOG" ] || attempt=$(cat "$ASTERINAS_M5_GETENT_LOG")
+[ ! -f "$ASTERINAS_NETWORK_GETENT_LOG" ] || attempt=$(cat "$ASTERINAS_NETWORK_GETENT_LOG")
 attempt=$((attempt + 1))
-printf '%s\n' "$attempt" >"$ASTERINAS_M5_GETENT_LOG"
+printf '%s\n' "$attempt" >"$ASTERINAS_NETWORK_GETENT_LOG"
 [ "$attempt" -ne 1 ] || exit 75
 printf '%s\n' '110.242.68.66 STREAM www.baidu.com'
 """,
             "curl": """#!/bin/sh
-printf '%s\n' "$*" >>"$ASTERINAS_M5_CURL_LOG"
+printf '%s\n' "$*" >>"$ASTERINAS_NETWORK_CURL_LOG"
 case "$*" in
     *asterinas-network-probe.bin*)
         previous=
         for argument in "$@"; do
             if [ "$previous" = --output ]; then
-                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                cp "$ASTERINAS_NETWORK_FIXTURE_PAYLOAD" "$argument"
             fi
             previous="$argument"
         done
@@ -2249,12 +2249,12 @@ esac
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
-            ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-            ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
-            ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(resolv_conf),
-            ASTERINAS_DESKTOP_M5_URL_FILE=str(url_file),
-            ASTERINAS_M5_GETENT_LOG=str(getent_log),
-            ASTERINAS_M5_CURL_LOG=str(curl_log),
+            ASTERINAS_DESKTOP_NETWORK_CONSOLE=str(console),
+            ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF=str(resolv_conf),
+            ASTERINAS_DESKTOP_NETWORK_URL_FILE=str(url_file),
+            ASTERINAS_NETWORK_GETENT_LOG=str(getent_log),
+            ASTERINAS_NETWORK_CURL_LOG=str(curl_log),
         )
         environment.update(self._qemu_fixture_environment(self.directory))
 
@@ -2270,7 +2270,7 @@ esac
         self.assertEqual(getent_log.read_text(encoding="utf-8"), "2\n")
         self.assertEqual(
             console.read_text(encoding="utf-8").splitlines(),
-            list(DESKTOP_M5_QEMU_MILESTONES),
+            list(DESKTOP_NETWORK_QEMU_MILESTONES),
         )
 
     def test_qemu_evidence_retries_https_and_bounds_final_diagnostic(self) -> None:
@@ -2297,7 +2297,7 @@ case "$*" in
         previous=
         for argument in "$@"; do
             if [ "$previous" = --output ]; then
-                cp "$ASTERINAS_M5_FIXTURE_PAYLOAD" "$argument"
+                cp "$ASTERINAS_NETWORK_FIXTURE_PAYLOAD" "$argument"
             fi
             previous="$argument"
         done
@@ -2305,10 +2305,10 @@ case "$*" in
         ;;
 esac
 count=0
-[ ! -f "$ASTERINAS_M5_CURL_COUNT" ] || count=$(cat "$ASTERINAS_M5_CURL_COUNT")
+[ ! -f "$ASTERINAS_NETWORK_CURL_COUNT" ] || count=$(cat "$ASTERINAS_NETWORK_CURL_COUNT")
 count=$((count + 1))
-printf '%s\n' "$count" >"$ASTERINAS_M5_CURL_COUNT"
-if [ "$count" -le "$ASTERINAS_M5_CURL_FAILURES" ]; then
+printf '%s\n' "$count" >"$ASTERINAS_NETWORK_CURL_COUNT"
+if [ "$count" -le "$ASTERINAS_NETWORK_CURL_FAILURES" ]; then
     head -c 3000 /dev/zero | tr '\\000' E >&2
     exit 28
 fi
@@ -2322,12 +2322,12 @@ printf '200\t10.0.2.15'
             environment = os.environ.copy()
             environment.update(
                 PATH=f"{fake_bin}:/usr/bin:/bin",
-                ASTERINAS_DESKTOP_M5_CONSOLE=str(console),
-                ASTERINAS_DESKTOP_M5_CMDLINE_PATH=str(cmdline),
-                ASTERINAS_DESKTOP_M5_RESOLV_CONF=str(directory / "resolv.conf"),
-                ASTERINAS_DESKTOP_M5_URL_FILE=str(directory / "desktop-url"),
-                ASTERINAS_M5_CURL_COUNT=str(curl_count),
-                ASTERINAS_M5_CURL_FAILURES=str(failures),
+                ASTERINAS_DESKTOP_NETWORK_CONSOLE=str(console),
+                ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH=str(cmdline),
+                ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF=str(directory / "resolv.conf"),
+                ASTERINAS_DESKTOP_NETWORK_URL_FILE=str(directory / "desktop-url"),
+                ASTERINAS_NETWORK_CURL_COUNT=str(curl_count),
+                ASTERINAS_NETWORK_CURL_FAILURES=str(failures),
             )
             environment.update(self._qemu_fixture_environment(directory))
             result = subprocess.run(
@@ -2344,38 +2344,38 @@ printf '200\t10.0.2.15'
         self.assertEqual(recovered_count.read_text(encoding="utf-8"), "2\n")
         self.assertEqual(
             recovered_console.read_text(encoding="utf-8").splitlines(),
-            list(DESKTOP_M5_QEMU_MILESTONES),
+            list(DESKTOP_NETWORK_QEMU_MILESTONES),
         )
 
         failed, failed_console, failed_count = run_case("failed", 3)
         self.assertNotEqual(failed.returncode, 0)
         self.assertEqual(failed_count.read_text(encoding="utf-8"), "3\n")
         failed_lines = failed_console.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(failed_lines[:2], list(DESKTOP_M5_QEMU_MILESTONES[:2]))
+        self.assertEqual(failed_lines[:2], list(DESKTOP_NETWORK_QEMU_MILESTONES[:2]))
         self.assertEqual(
             failed_lines[2],
-            "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=qemu-https attempt=3 "
+            "DEBIAN_NETWORK_DIAGNOSTIC phase=qemu-https attempt=3 "
             f"stderr_hex={'45' * 2048}",
         )
-        self.assertEqual(failed_lines[3], "DEBIAN_NETWORK_M5_FAIL reason=qemu-https")
+        self.assertEqual(failed_lines[3], "DEBIAN_NETWORK_FAIL reason=qemu-https")
 
     def test_qemu_classifier_and_adapter_bind_network_before_desktop(self) -> None:
         transcript = (
-            "\n".join((*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)) + "\n"
+            "\n".join((*DESKTOP_NETWORK_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)) + "\n"
         ).encode()
 
-        result = classify_desktop_m5_qemu(transcript, expected_debian_release="13.6")
+        result = classify_desktop_network_qemu(transcript, expected_debian_release="13.6")
 
         self.assertTrue(result.passed, result.reason)
-        reversed_result = classify_desktop_m5_qemu(
+        reversed_result = classify_desktop_network_qemu(
             "\n".join(
-                reversed((*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES))
+                reversed((*DESKTOP_NETWORK_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES))
             ).encode(),
             expected_debian_release="13.6",
         )
         self.assertEqual(reversed_result.reason, "desktop milestones out of order")
-        self.assertIn("asterinas.debian_network=qemu-slirp", DESKTOP_M5_QEMU_BOOTARGS)
-        self.assertIn(EXPECTED_QEMU_STRESS_MILESTONE, DESKTOP_M5_QEMU_MILESTONES)
+        self.assertIn("asterinas.debian_network=qemu-slirp", DESKTOP_NETWORK_QEMU_BOOTARGS)
+        self.assertIn(EXPECTED_QEMU_STRESS_MILESTONE, DESKTOP_NETWORK_QEMU_MILESTONES)
         for variable, value in (
             (
                 "ASTERINAS_DESKTOP_FIXTURE_URL",
@@ -2384,34 +2384,34 @@ printf '200\t10.0.2.15'
             ("ASTERINAS_DESKTOP_FIXTURE_SIZE", str(PAYLOAD_SIZE)),
             ("ASTERINAS_DESKTOP_FIXTURE_SHA256", PAYLOAD_SHA256),
             ("ASTERINAS_DESKTOP_FIXTURE_REQUESTS", "20"),
-            ("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", "120"),
+            ("ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS", "120"),
         ):
             self.assertIn(
                 f"systemd.setenv={variable}={value}",
-                DESKTOP_M5_QEMU_BOOTARGS.split(),
+                DESKTOP_NETWORK_QEMU_BOOTARGS.split(),
             )
-        self.assertEqual(DesktopM5QemuOperations.SCHEMA_VERSION, 5)
-        self.assertEqual(DesktopM5QemuOperations.PROFILE_NAME, "desktop-m5-network")
+        self.assertEqual(DesktopNetworkQemuOperations.SCHEMA_VERSION, 5)
+        self.assertEqual(DesktopNetworkQemuOperations.PROFILE_NAME, "desktop-network")
         for mode in (network_gate.NetworkMode.PROXY, network_gate.NetworkMode.DIRECT):
             self.assertIn(
-                "systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=300",
+                "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS=300",
                 qemu_web_network_bootargs(mode).split(),
             )
 
     def test_qemu_network_target_ignores_desktop_readiness(self) -> None:
         transcript = (
-            "\n".join(DESKTOP_M5_QEMU_MILESTONES)
+            "\n".join(DESKTOP_NETWORK_QEMU_MILESTONES)
             + "\nDEBIAN_DESKTOP_M4_FAIL reason=netsurf-window-probe-timeout\n"
         ).encode()
 
-        result = classify_network_m5_qemu(
+        result = classify_network_qemu(
             transcript,
             expected_debian_release="13.6",
         )
 
         self.assertTrue(result.passed, result.reason)
         self.assertEqual(
-            classify_network_m5_qemu(
+            classify_network_qemu(
                 transcript + b"Kernel panic - not syncing\n",
                 expected_debian_release="13.6",
             ).reason,
@@ -2444,18 +2444,18 @@ printf '200\t10.0.2.15'
             _parse_target(["--target", "invalid"])
         with self.assertRaises(SystemExit):
             _parse_target(["--target", "network"])
-        self.assertFalse(NetworkM5QemuOperations.CAPTURE_SCREENSHOT)
+        self.assertFalse(NetworkQemuOperations.CAPTURE_SCREENSHOT)
         self.assertEqual(
-            NetworkM5QemuOperations.MILESTONES,
-            DESKTOP_M5_QEMU_MILESTONES,
+            NetworkQemuOperations.MILESTONES,
+            DESKTOP_NETWORK_QEMU_MILESTONES,
         )
         self.assertEqual(
-            DesktopM5QemuOperations._accepted_profile_identities(),
-            ((5, "desktop-m5-network"),),
+            DesktopNetworkQemuOperations._accepted_profile_identities(),
+            ((5, "desktop-network"),),
         )
         self.assertEqual(
-            NetworkM5QemuOperations._accepted_profile_identities(),
-            ((5, "desktop-m5-network"), (7, "browser-web")),
+            NetworkQemuOperations._accepted_profile_identities(),
+            ((5, "desktop-network"), (7, "browser-web")),
         )
 
     def test_qemu_web_network_mode_argv(self) -> None:
@@ -2478,7 +2478,7 @@ printf '200\t10.0.2.15'
         )
         makefile = MAKEFILE.read_text(encoding="utf-8")
         underlying = makefile.split(
-            ".PHONY: test_riscv_debian_desktop_m5_qemu_gate", 1
+            ".PHONY: test_riscv_debian_desktop_network_qemu_gate", 1
         )[1].split(".PHONY:", 1)[0]
         self.assertIn("--smp 4", underlying)
         self.assertIn('--network-mode "$(DEBIAN_WEB_NETWORK_MODE)"', underlying)
@@ -2487,11 +2487,11 @@ printf '200\t10.0.2.15'
             "test_riscv_debian_web_network_direct_qemu",
         ):
             block = makefile.split(f".PHONY: {target}", 1)[1].split(".PHONY:", 1)[0]
-            self.assertIn("test_riscv_debian_desktop_m5_qemu_gate", block)
-            self.assertIn("DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network", block)
+            self.assertIn("test_riscv_debian_desktop_network_qemu_gate", block)
+            self.assertIn("DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET=network", block)
 
     def test_qemu_web_bootargs_are_split_below_uboot_console_limit(self) -> None:
-        operations = object.__new__(NetworkM5QemuOperations)
+        operations = object.__new__(NetworkQemuOperations)
         operations.BOOTARGS = qemu_web_network_bootargs(network_gate.NetworkMode.PROXY)
         operations.config = SimpleNamespace(root_fs="ext2")
         commands = operations._boot_commands(0x40000000)
@@ -2587,7 +2587,7 @@ printf '200\t10.0.2.15'
         config = RootfsGateConfig(*inputs, output)
         fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
         tls_fixture = FakeTlsFixture()
-        operations = NetworkM5QemuOperations(
+        operations = NetworkQemuOperations(
             config,
             network_mode=network_gate.NetworkMode.DIRECT,
             expected_failure=QemuExpectedFailure.TLS,
@@ -2646,7 +2646,7 @@ printf '200\t10.0.2.15'
             with self.subTest(expected_failure=expected_failure):
                 fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
                 proxy = FakeProxy()
-                operations = NetworkM5QemuOperations(
+                operations = NetworkQemuOperations(
                     config,
                     network_mode=network_gate.NetworkMode.PROXY,
                     expected_failure=expected_failure,
@@ -2667,7 +2667,7 @@ printf '200\t10.0.2.15'
         output.mkdir()
         config = RootfsGateConfig(*inputs, output)
         fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
-        operations = NetworkM5QemuOperations(
+        operations = NetworkQemuOperations(
             config,
             network_mode=network_gate.NetworkMode.DIRECT,
             expected_failure=QemuExpectedFailure.DNS,
@@ -2691,7 +2691,7 @@ printf '200\t10.0.2.15'
         for name in ("u-boot", "boot.ext4", "root.ext2"):
             (self.directory / name).write_bytes(name.encode())
 
-        arguments = desktop_m5_qemu_argv(
+        arguments = desktop_network_qemu_argv(
             uboot=self.directory / "u-boot",
             boot_disk=self.directory / "boot.ext4",
             root_disk=self.directory / "root.ext2",
@@ -2717,7 +2717,7 @@ printf '200\t10.0.2.15'
         output.mkdir()
         config = RootfsGateConfig(*inputs, output)
         fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
-        operations = DesktopM5QemuOperations(config, fixture=fixture)
+        operations = DesktopNetworkQemuOperations(config, fixture=fixture)
 
         with operations:
             self.assertTrue(fixture.running)
@@ -2738,30 +2738,30 @@ printf '200\t10.0.2.15'
     def test_qemu_make_gate_allows_the_cold_desktop_to_finish(self) -> None:
         target = (
             MAKEFILE.read_text(encoding="utf-8")
-            .split(".PHONY: test_riscv_debian_desktop_m5_qemu_gate", 1)[1]
+            .split(".PHONY: test_riscv_debian_desktop_network_qemu_gate", 1)[1]
             .split(".PHONY:", 1)[0]
         )
 
         self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
-        self.assertIn('--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)"', target)
+        self.assertIn('--target "$(DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET)"', target)
         self.assertIn("DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420", MAKEFILE.read_text())
         self.assertIn(
-            "DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser",
+            "DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET ?= browser",
             MAKEFILE.read_text(),
         )
 
     def test_classifier_requires_order_and_scans_complete_transcript(self) -> None:
-        self.assertEqual(DESKTOP_M5_NETWORK_MILESTONES, EXPECTED_MEGREZ_MILESTONES)
+        self.assertEqual(DESKTOP_NETWORK_MILESTONES, EXPECTED_MEGREZ_MILESTONES)
         transcript = "\n".join(EXPECTED_MEGREZ_MILESTONES).encode()
         self.assertTrue(
-            classify_desktop_m5_network(
+            classify_desktop_network(
                 transcript,
                 expected_debian_release="13.6",
             ).passed
         )
         reordered = "\n".join(reversed(EXPECTED_MEGREZ_MILESTONES)).encode()
         self.assertEqual(
-            classify_desktop_m5_network(
+            classify_desktop_network(
                 reordered,
                 expected_debian_release="13.6",
             ).reason,
@@ -2769,7 +2769,7 @@ printf '200\t10.0.2.15'
         )
         fatal_after_ready = transcript + b"\nKernel panic - not syncing"
         self.assertEqual(
-            classify_desktop_m5_network(
+            classify_desktop_network(
                 fatal_after_ready,
                 expected_debian_release="13.6",
             ).reason,
@@ -2779,7 +2779,7 @@ printf '200\t10.0.2.15'
             with self.subTest(missing=marker):
                 missing = transcript.replace(marker.encode(), b"")
                 self.assertEqual(
-                    classify_desktop_m5_network(
+                    classify_desktop_network(
                         missing,
                         expected_debian_release="13.6",
                     ).reason,
@@ -2788,7 +2788,7 @@ printf '200\t10.0.2.15'
             with self.subTest(duplicate=marker):
                 duplicate = transcript + b"\n" + marker.encode()
                 self.assertEqual(
-                    classify_desktop_m5_network(
+                    classify_desktop_network(
                         duplicate,
                         expected_debian_release="13.6",
                     ).reason,

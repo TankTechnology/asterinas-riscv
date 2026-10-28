@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Strict multi-source provenance primitives for Debian browser M5."""
+"""Strict multi-source provenance primitives for Debian browser."""
 
 from __future__ import annotations
 

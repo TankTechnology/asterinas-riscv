@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Prove Debian M5 HTTPS and application desktop behavior through QEMU slirp."""
+"""Prove Debian network HTTPS and application desktop behavior through QEMU slirp."""
 
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DesktopM4Operations,
     desktop_m4_qemu_argv,
 )
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_QEMU_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_QEMU_MILESTONES,
     NetworkMode,
-    classify_desktop_m5_qemu,
+    classify_desktop_network_qemu,
     classify_web_network,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GateResult, systemd_bootargs
@@ -62,14 +62,14 @@ QEMU_NETWORK_TIMEOUT_SECONDS = 120
 QEMU_WEB_NETWORK_TIMEOUT_SECONDS = 300
 QEMU_FIXTURE_URL = f"http://10.0.2.2:{QEMU_FIXTURE_PORT}{FIXTURE_PATH}"
 QEMU_PROXY_URL = "http://10.0.2.2:17893"
-DESKTOP_M5_QEMU_BOOTARGS = systemd_bootargs(
+DESKTOP_NETWORK_QEMU_BOOTARGS = systemd_bootargs(
     post_init=(
         "asterinas.debian_network=qemu-slirp",
         f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL={QEMU_FIXTURE_URL}",
         f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE={PAYLOAD_SIZE}",
         f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256}",
         f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS={QEMU_FIXTURE_REQUESTS}",
-        "systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="
+        "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS="
         f"{QEMU_NETWORK_TIMEOUT_SECONDS}",
     )
 )
@@ -246,7 +246,7 @@ def qemu_web_network_bootargs(
             f"systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256={PAYLOAD_SHA256}",
             "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS="
             f"{QEMU_FIXTURE_REQUESTS}",
-            "systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS="
+            "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS="
             f"{QEMU_WEB_NETWORK_TIMEOUT_SECONDS}",
         )
     )
@@ -326,7 +326,7 @@ def _parse_target(
     )
 
 
-def desktop_m5_qemu_argv(**arguments: Any) -> tuple[str, ...]:
+def desktop_network_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Add exactly one slirp-backed VirtIO NIC to the M4 device contract."""
 
     base = desktop_m4_qemu_argv(**arguments)
@@ -343,15 +343,15 @@ def desktop_m5_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     )
 
 
-class DesktopM5QemuOperations(DesktopM4Operations):
-    """M5 identity and slirp networking over the bounded M4 lifecycle."""
+class DesktopNetworkQemuOperations(DesktopM4Operations):
+    """network identity and slirp networking over the bounded M4 lifecycle."""
 
     SCHEMA_VERSION = 5
-    PROFILE_NAME = "desktop-m5-network"
-    ARTIFACT_PREFIX = "desktop-m5-qemu"
-    MILESTONES = (*DESKTOP_M5_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)
+    PROFILE_NAME = "desktop-network"
+    ARTIFACT_PREFIX = "desktop-network-qemu"
+    MILESTONES = (*DESKTOP_NETWORK_QEMU_MILESTONES, *DESKTOP_M4_MILESTONES)
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M4_FAIL reason="
-    BOOTARGS = DESKTOP_M5_QEMU_BOOTARGS
+    BOOTARGS = DESKTOP_NETWORK_QEMU_BOOTARGS
     TARGET = QemuGateTarget.BROWSER
     REQUIRE_FIXTURE_EVIDENCE = True
 
@@ -366,7 +366,7 @@ class DesktopM5QemuOperations(DesktopM4Operations):
         )
         super().__init__(config)
 
-    def __enter__(self) -> DesktopM5QemuOperations:
+    def __enter__(self) -> DesktopNetworkQemuOperations:
         try:
             self.fixture.start()
             return self
@@ -410,15 +410,15 @@ class DesktopM5QemuOperations(DesktopM4Operations):
 
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
-        return desktop_m5_qemu_argv(**arguments)
+        return desktop_network_qemu_argv(**arguments)
 
 
-class NetworkM5QemuOperations(DesktopM5QemuOperations):
+class NetworkQemuOperations(DesktopNetworkQemuOperations):
     """Stop after network evidence without waiting for desktop readiness."""
 
-    ARTIFACT_PREFIX = "desktop-m5-network-qemu"
-    MILESTONES = DESKTOP_M5_QEMU_MILESTONES
-    FAILURE_MARKER = b"DEBIAN_NETWORK_M5_FAIL reason="
+    ARTIFACT_PREFIX = "desktop-network-qemu"
+    MILESTONES = DESKTOP_NETWORK_QEMU_MILESTONES
+    FAILURE_MARKER = b"DEBIAN_NETWORK_FAIL reason="
     ADDITIONAL_FAILURE_MARKERS = ()
     CAPTURE_SCREENSHOT = False
     TARGET = QemuGateTarget.NETWORK
@@ -514,7 +514,7 @@ class NetworkM5QemuOperations(DesktopM5QemuOperations):
             and summary.get("records_truncated") is False
         )
 
-    def __enter__(self) -> NetworkM5QemuOperations:
+    def __enter__(self) -> NetworkQemuOperations:
         try:
             super().__enter__()
             if self.tls_fixture is not None:
@@ -583,18 +583,18 @@ class NetworkM5QemuOperations(DesktopM5QemuOperations):
         super().publish(config, prepared, transcript, result)
 
 
-def orchestrate_desktop_m5_qemu_gate(
-    config: GateConfig, operations: DesktopM5QemuOperations
+def orchestrate_desktop_network_qemu_gate(
+    config: GateConfig, operations: DesktopNetworkQemuOperations
 ) -> dict[str, object]:
     return orchestrate_systemd_m2_gate(
         config,
         operations,
-        classifier=classify_desktop_m5_qemu,
+        classifier=classify_desktop_network_qemu,
     )
 
 
-def orchestrate_network_m5_qemu_gate(
-    config: GateConfig, operations: NetworkM5QemuOperations
+def orchestrate_network_qemu_gate(
+    config: GateConfig, operations: NetworkQemuOperations
 ) -> dict[str, object]:
     return orchestrate_systemd_m2_gate(
         config,
@@ -615,9 +615,9 @@ def main(arguments: list[str] | None = None) -> int:
         config = parse_gate_args(gate_arguments)
         _safe_output(config.output_directory)
         operations_type = (
-            NetworkM5QemuOperations
+            NetworkQemuOperations
             if selection.target is QemuGateTarget.NETWORK
-            else DesktopM5QemuOperations
+            else DesktopNetworkQemuOperations
         )
         operation_arguments: dict[str, object] = {}
         if selection.target is QemuGateTarget.NETWORK:
@@ -631,21 +631,21 @@ def main(arguments: list[str] | None = None) -> int:
             operations_type(config, **operation_arguments) as operations,
         ):
             if selection.target is QemuGateTarget.NETWORK:
-                result = orchestrate_network_m5_qemu_gate(config, operations)
+                result = orchestrate_network_qemu_gate(config, operations)
             else:
-                result = orchestrate_desktop_m5_qemu_gate(config, operations)
+                result = orchestrate_desktop_network_qemu_gate(config, operations)
         return 0 if result["passed"] else 1
     except SystemExit as error:
         return int(error.code or 0)
     except GateTermination as error:
         print(
-            f"debian-desktop-m5-qemu-gate: terminated by signal {error.signum}",
+            f"debian-desktop-network-qemu-gate: terminated by signal {error.signum}",
             file=sys.stderr,
         )
         return 128 + error.signum
     except BaseException as error:
         reason = error.reason if isinstance(error, GateFailure) else str(error)
-        print(f"debian-desktop-m5-qemu-gate: {reason}", file=sys.stderr)
+        print(f"debian-desktop-network-qemu-gate: {reason}", file=sys.stderr)
         return 2
 
 

@@ -100,8 +100,8 @@ from tools.riscv.debian.rootfs.contract import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 from tools.riscv.debian.rootfs.signed_sources import SIGNED_SOURCES
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DESKTOP_M5_QEMU_BOOTARGS
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import DESKTOP_NETWORK_QEMU_BOOTARGS
 from tools.riscv.debian.rootfs.profiles import get_profile
 
 
@@ -1115,7 +1115,7 @@ class BrowserWebContractTests(unittest.TestCase):
 
     def test_browser_web_runtime_digest_changes_with_every_gate_input(self) -> None:
         inputs = (
-            "desktop_m5_session.sh",
+            "desktop_session.sh",
             "desktop_wallpaper.svg",
             "desktop_anime_wallpaper.png",
             "desktop_files_icon.svg",
@@ -1126,12 +1126,12 @@ class BrowserWebContractTests(unittest.TestCase):
             "asterinas-files.desktop",
             "asterinas-terminal.desktop",
             "browser_web_open_firefox.sh",
-            "desktop_m5_network_evidence.sh",
-            "desktop_m5_network_gate.py",
+            "desktop_network_evidence.sh",
+            "desktop_network_gate.py",
             "browser_web_firefox.sh",
             "browser_web_marionette_gate.py",
             "megrez_clock_sync.py",
-            "browser_m5_marionette_gate.py",
+            "browser_marionette_transport.py",
             "browser_web_evidence.sh",
             "browser_web.service",
             "browser_web_evidence.service",
@@ -1438,13 +1438,13 @@ class BrowserWebContractTests(unittest.TestCase):
     def test_daily_browser_skips_full_network_evidence(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
         self.assertIn(
-            "Wants=network-online.target asterinas-desktop-m5.service", service
+            "Wants=network-online.target asterinas-desktop.service", service
         )
         self.assertIn(
-            "After=network-online.target asterinas-desktop-m5.service", service
+            "After=network-online.target asterinas-desktop.service", service
         )
         self.assertNotIn("Requires=network-online.target", service)
-        self.assertNotIn("Requires=asterinas-desktop-m5.service", service)
+        self.assertNotIn("Requires=asterinas-desktop.service", service)
         self.assertNotIn("Environment=ASTERINAS_WEB_NETWORK_MODE=", service)
         self.assertNotIn("Environment=ASTERINAS_DESKTOP_PROXY", service)
         self.assertIn(
@@ -1453,11 +1453,11 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertIn("Environment=PYTHONDONTWRITEBYTECODE=1", service)
         browser_service = (ROOTFS / "browser_web.service").read_text()
-        self.assertNotIn("asterinas-desktop-m5-network.service", browser_service)
+        self.assertNotIn("asterinas-desktop-network.service", browser_service)
         self.assertIn(
             "After=asterinas-browser-web-timeline-basic.service", browser_service
         )
-        self.assertIn("Requires=asterinas-desktop-m5-network.service", service)
+        self.assertIn("Requires=asterinas-desktop-network.service", service)
         self.assertIn(
             "ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
             service,
@@ -1471,7 +1471,7 @@ class BrowserWebContractTests(unittest.TestCase):
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         self.assertIn(
             '"$stage/etc/systemd/system/'
-            'asterinas-desktop-m5-network.service.d/browser-web.conf"',
+            'asterinas-desktop-network.service.d/browser-web.conf"',
             builder,
         )
         self.assertIn('"$script_directory/browser_web_network.conf"', builder)
@@ -1503,7 +1503,7 @@ class BrowserWebContractTests(unittest.TestCase):
             self.assertEqual(manifest.downloaded_packages[0][4], "security")
             for mutation in (
                 "schema6-browser-web",
-                "schema7-desktop-m5-network",
+                "schema7-desktop-network",
                 "missing-source-role",
                 "missing-runtime-digest",
                 "malformed-runtime-digest",
@@ -1511,8 +1511,8 @@ class BrowserWebContractTests(unittest.TestCase):
                 forged = copy.deepcopy(payload)
                 if mutation == "schema6-browser-web":
                     forged["schema_version"] = 6
-                elif mutation == "schema7-desktop-m5-network":
-                    forged["profile"] = "desktop-m5-network"
+                elif mutation == "schema7-desktop-network":
+                    forged["profile"] = "desktop-network"
                 elif mutation == "missing-runtime-digest":
                     forged["tool_versions"].pop("browser-web-runtime")
                 elif mutation == "malformed-runtime-digest":
@@ -1735,7 +1735,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("desktop_standard_error=journal", builder)
         self.assertIn("StandardOutput=$desktop_standard_output", builder)
         self.assertIn("StandardError=$desktop_standard_error", builder)
-        self.assertNotIn("systemd.log_level=debug", DESKTOP_M5_QEMU_BOOTARGS)
+        self.assertNotIn("systemd.log_level=debug", DESKTOP_NETWORK_QEMU_BOOTARGS)
         self.assertIn("DEBIAN_FIREFOX_BAIDU_READY", online_evidence)
         self.assertIn(
             'readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"',
@@ -1788,7 +1788,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn(
             "ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x", unit
         )
-        self.assertIn("ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access", unit)
+        self.assertIn("ExecStartPre=+/usr/lib/asterinas/desktop-network-device-access", unit)
         self.assertIn(
             "/usr/lib/asterinas/browser-web-timeline wait-x",
             (ROOTFS / "browser_web_firefox.sh").read_text(),
@@ -1812,7 +1812,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("Environment=ASTERINAS_BROWSER_WEB_SESSION=1", builder)
         self.assertIn("SupplementaryGroups=video input tty", builder)
         self.assertIn("desktop_user=root", builder)
-        desktop_session = (ROOTFS / "desktop_m5_session.sh").read_text()
+        desktop_session = (ROOTFS / "desktop_session.sh").read_text()
         self.assertIn("desktop-display-provider", desktop_session)
         self.assertIn('-configdir "$provider_config_directory"', desktop_session)
         self.assertIn("display-provider-ready", desktop_session)
@@ -1897,7 +1897,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
         self.assertIn(
-            'configure_desktop_m5_network "$stage" m5 lightweight', builder
+            'configure_desktop_network "$stage" browser lightweight', builder
         )
         self.assertNotIn("2> >(tee", (ROOTFS / "browser_web_evidence.sh").read_text())
         begin_unit = (ROOTFS / "browser_web_timeline_begin.service").read_text()
@@ -1971,7 +1971,7 @@ class BrowserWebContractTests(unittest.TestCase):
         ):
             self.assertIn(command, builder)
         cache_function = builder.split("finalize_browser_startup_caches()", 1)[1].split(
-            "configure_desktop_m5_network()", 1
+            "configure_desktop_network()", 1
         )[0]
         self.assertNotIn("systemd-sysusers --root", cache_function)
         self.assertNotIn("journalctl --root", cache_function)
@@ -2409,7 +2409,7 @@ generate_fontconfig_cache "$stage" "$3"
         )
         for marker in (
             b"DEBIAN_BROWSER_WEB_FAIL reason=challenge",
-            b"DEBIAN_NETWORK_M5_FAIL reason=qemu-https",
+            b"DEBIAN_NETWORK_FAIL reason=qemu-https",
             *KERNEL_FATAL_MARKERS,
         ):
             with self.subTest(marker=marker):

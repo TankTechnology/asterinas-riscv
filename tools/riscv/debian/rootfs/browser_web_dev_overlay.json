@@ -56,8 +56,8 @@
       "mode": "0755"
     },
     {
-      "source": "desktop_m5_network_evidence.sh",
-      "destination": "/usr/lib/asterinas/desktop-m5-network-evidence",
+      "source": "desktop_network_evidence.sh",
+      "destination": "/usr/lib/asterinas/desktop-network-evidence",
       "mode": "0755"
     },
     {
@@ -71,8 +71,8 @@
       "mode": "0755"
     },
     {
-      "source": "browser_m5_marionette_gate.py",
-      "destination": "/usr/lib/asterinas/browser_m5_marionette_gate.py",
+      "source": "browser_marionette_transport.py",
+      "destination": "/usr/lib/asterinas/browser_marionette_transport.py",
       "mode": "0644"
     },
     {
@@ -147,8 +147,8 @@
       "mode": "0755"
     },
     {
-      "source": "desktop_m5_session.sh",
-      "destination": "/usr/lib/asterinas/desktop-m5-session",
+      "source": "desktop_session.sh",
+      "destination": "/usr/lib/asterinas/desktop-browser-session",
       "mode": "0755"
     },
     {
@@ -159,7 +159,7 @@
     },
     {
       "source": "desktop_m3_device_access.sh",
-      "destination": "/usr/lib/asterinas/desktop-m5-device-access",
+      "destination": "/usr/lib/asterinas/desktop-browser-device-access",
       "mode": "0755"
     },
     {
@@ -170,7 +170,7 @@
     },
     {
       "source": "browser_web_evidence.sh",
-      "destination": "/usr/lib/asterinas/desktop-m5-evidence",
+      "destination": "/usr/lib/asterinas/desktop-browser-evidence",
       "mode": "0755"
     },
     {
@@ -180,7 +180,7 @@
     },
     {
       "source": "browser_web_network.conf",
-      "destination": "/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf",
+      "destination": "/etc/systemd/system/asterinas-desktop-network.service.d/browser-web.conf",
       "mode": "0644"
     },
     {

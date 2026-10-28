@@ -18,9 +18,9 @@ from tools.riscv.debian.rootfs.debug_console_qemu_gate import (
     classify_debug_console_qemu,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import inspect_ppm
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
-    DesktopM5QemuOperations,
-    desktop_m5_qemu_argv,
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import (
+    DesktopNetworkQemuOperations,
+    desktop_network_qemu_argv,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import (
@@ -131,7 +131,7 @@ def _physical_graphics_qemu_bootargs() -> str:
     return (
         f"{prefix} "
         "systemd.mask=asterinas-browser-web-evidence.service "
-        "systemd.mask=asterinas-desktop-m5-network.service "
+        "systemd.mask=asterinas-desktop-network.service "
         "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 "
         "-- --root-init=systemd --debug-console=isolated-root"
     )
@@ -140,7 +140,7 @@ def _physical_graphics_qemu_bootargs() -> str:
 def physical_graphics_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Keep the graphical devices and add a private absolute-input QMP socket."""
 
-    argv = desktop_m5_qemu_argv(**arguments)
+    argv = desktop_network_qemu_argv(**arguments)
     socket_path = arguments["monitor_socket"].with_name("physical-input.qmp")
     return (*argv, "-qmp", f"unix:{socket_path},server=on,wait=off")
 
@@ -569,7 +569,7 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
                 return
 
     def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
-        DesktopM5QemuOperations.run_protocol(self, session, config)
+        DesktopNetworkQemuOperations.run_protocol(self, session, config)
         self._screenshot = b""
         self._screenshot_metadata = {}
         serial = session["serial"]

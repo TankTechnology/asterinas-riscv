@@ -8,7 +8,7 @@
     "tools/riscv/megrez_physical_graphics.py": 2367,
     "tools/riscv/megrez_probe.py": 2023,
     "tools/riscv/tests/test_debian_browser_web.py": 3977,
-    "tools/riscv/tests/test_debian_m5_network.py": 3234,
+    "tools/riscv/tests/test_debian_network.py": 3234,
     "tools/riscv/tests/test_debian_rootfs.py": 7346,
     "tools/riscv/tests/test_megrez_board_session.py": 2069,
     "tools/riscv/tests/test_megrez_debug.py": 2461,

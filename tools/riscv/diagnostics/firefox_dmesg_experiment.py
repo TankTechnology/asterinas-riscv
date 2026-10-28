@@ -23,7 +23,7 @@ from tools.riscv.diagnostics.firefox_transport_records import FirefoxTransportRe
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 DEFAULT_BASELINE = Path(__file__).with_name("firefox_checkpoint_baseline.py")
-BASELINE_SHA256 = "a6d851042cbfb944addcb9cdec9d6d5054a48e5ca15fce55ff63498008c27ab3"
+BASELINE_SHA256 = "6475446129e0e53a5f39b3d684c03d4aa75f37779f60f0943a39c243f22db84e"
 GUEST_HELPER = Path(__file__).with_name("firefox_dmesg_guest.py")
 DIAGNOSTIC_GATE_PATH = "/usr/lib/asterinas/firefox-dmesg-gate"
 DIAGNOSTIC_GATE_SOURCE = (
@@ -136,8 +136,8 @@ def transform_guest_source(source, *, original_worker, transformed_worker):
     )
     source = replace_exact(
         source,
-        "import browser_m5_marionette_gate as transport\n",
-        "import browser_m5_marionette_gate as transport\n"
+        "import browser_marionette_transport as transport\n",
+        "import browser_marionette_transport as transport\n"
         "from firefox_dmesg_guest import BoundedDmesg\n",
     )
     source = replace_exact(

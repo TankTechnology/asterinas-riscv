@@ -133,7 +133,7 @@ def guest_source():
         """import os, runpy, signal, subprocess, sys, time, json
 sys.path.insert(0, '/usr/lib/asterinas')
 module = runpy.run_path('/usr/lib/asterinas/physical-graphics-gate')
-import browser_m5_marionette_gate as transport
+import browser_marionette_transport as transport
 os.environ['ASTERINAS_MARIONETTE_DIAGNOSTICS'] = '1'
 os.environ.pop('ASTERINAS_MARIONETTE_DEBUG_ERRORS', None)
 """

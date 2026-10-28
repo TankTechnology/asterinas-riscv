@@ -39,12 +39,12 @@ from tools.riscv.debian.rootfs.browser_performance_provenance import (
     validate_runtime_provenance,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import classify_desktop
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
-    DesktopM5QemuOperations,
-    desktop_m5_qemu_argv,
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import (
+    DesktopNetworkQemuOperations,
+    desktop_network_qemu_argv,
     qemu_web_network_bootargs,
 )
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import (
     GateTermination,
@@ -86,7 +86,7 @@ def browser_web_milestones(mode: NetworkMode) -> tuple[str, ...]:
 
 
 BROWSER_WEB_MILESTONES = browser_web_milestones(NetworkMode.DIRECT)
-_NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
+_NETWORK_FAILURE = b"DEBIAN_NETWORK_FAIL reason="
 _ROOTFS_FAILURE = b"DEBIAN_ROOTFS_FAIL reason="
 _WEB_FAILURE = b"DEBIAN_BROWSER_WEB_FAIL reason="
 _ROOTFS_FAILURE_LINE = re.compile(
@@ -704,7 +704,7 @@ def browser_web_qemu_argv(
     ):
         raise ValueError("diagnostic QEMU GDB port must be between 1024 and 65535")
 
-    argv = desktop_m5_qemu_argv(**arguments)
+    argv = desktop_network_qemu_argv(**arguments)
     root_drives = [
         (index, value)
         for index, value in enumerate(argv)
@@ -805,7 +805,7 @@ def _stage1_failure_reason(transcript: bytes) -> str | None:
     return matches[-1].group(1).decode("ascii")
 
 
-class BrowserWebQemuOperations(DesktopM5QemuOperations):
+class BrowserWebQemuOperations(DesktopNetworkQemuOperations):
     SCHEMA_VERSION = 7
     PROFILE_NAME = "browser-web"
     ARTIFACT_PREFIX = "browser-web-qemu"

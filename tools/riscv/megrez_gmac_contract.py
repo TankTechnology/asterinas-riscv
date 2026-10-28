@@ -150,7 +150,7 @@ class GmacPort:
 
 @dataclass(frozen=True)
 class GmacContract:
-    """The exact two-port physical contract used by M5."""
+    """The exact two-port physical contract used by the network gate."""
 
     schema_version: int
     contract_id: str
@@ -352,8 +352,8 @@ def validate_contract(value: object) -> GmacContract:
     if schema_version != 1:
         raise ContractError("schema_version must be 1")
     contract_id = _string(raw["contract_id"], "contract_id")
-    if contract_id != "megrez-gmac-m5":
-        raise ContractError("contract_id must be megrez-gmac-m5")
+    if contract_id != "megrez-gmac-network":
+        raise ContractError("contract_id must be megrez-gmac-network")
 
     port_values = _sequence(raw["ports"], "ports")
     if len(port_values) != 2:
@@ -997,7 +997,7 @@ def inspect_dtb(
         macs = firmware_macs if firmware_macs is not None else (None, None)
         raw = {
             "schema_version": 1,
-            "contract_id": "megrez-gmac-m5",
+            "contract_id": "megrez-gmac-network",
             "dtb_identity": asdict(identity),
             "ports": [
                 _inspect_port(

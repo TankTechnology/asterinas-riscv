@@ -168,8 +168,8 @@ STAGE1_BROWSER_WORKLOAD_CONTRACT = (
 STAGE1_BROWSER_COMPOSITE_CAPTURE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_composite_capture.py"
 )
-STAGE1_BROWSER_M5_MARIONETTE_GATE = (
-    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py"
+STAGE1_BROWSER_MARIONETTE_TRANSPORT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_marionette_transport.py"
 )
 STAGE1_BROWSER_DAILY_USE_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_daily_use_gate.py"
@@ -1512,7 +1512,7 @@ int main(void)
                 "usr/lib/asterinas/browser_composite_capture.py",
                 "usr/lib/asterinas/browser-web-marionette-gate",
                 "usr/lib/asterinas/browser_web_marionette_gate.py",
-                "usr/lib/asterinas/browser_m5_marionette_gate.py",
+                "usr/lib/asterinas/browser_marionette_transport.py",
                 "usr/lib/asterinas/browser-daily-use-gate",
                 "usr/lib/asterinas/browser-daily-use-upload",
                 "usr/lib/asterinas/megrez-clock-sync",
@@ -1801,7 +1801,7 @@ int main(void)
         for source in (
             STAGE1_PHYSICAL_GRAPHICS_GATE,
             STAGE1_BROWSER_INTERACTION_PERF,
-            STAGE1_BROWSER_M5_MARIONETTE_GATE,
+            STAGE1_BROWSER_MARIONETTE_TRANSPORT,
         ):
             (stage_tools / source.name).write_bytes(source.read_bytes())
         environment = os.environ.copy()
@@ -2194,7 +2194,7 @@ int main(void)
                     1700000000,
                 ),
                 (
-                    "usr/lib/asterinas/browser_m5_marionette_gate.py",
+                    "usr/lib/asterinas/browser_marionette_transport.py",
                     stat.S_IFREG | 0o755,
                     0,
                     0,
@@ -2304,7 +2304,7 @@ int main(void)
         self.assertEqual(entries[11][5], STAGE1_BROWSER_COMPOSITE_CAPTURE.read_bytes())
         self.assertEqual(entries[12][5], STAGE1_BROWSER_GATE.read_bytes())
         self.assertEqual(entries[13][5], STAGE1_BROWSER_GATE.read_bytes())
-        self.assertEqual(entries[14][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[14][5], STAGE1_BROWSER_MARIONETTE_TRANSPORT.read_bytes())
         self.assertEqual(entries[15][5], STAGE1_BROWSER_DAILY_USE_GATE.read_bytes())
         self.assertEqual(entries[16][5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
         self.assertEqual(entries[17][5], STAGE1_CLOCK_SYNC.read_bytes())
@@ -2739,7 +2739,7 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.assertIn("windowactivate", launcher.read_text())
 
         session = (
-            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_session.sh"
+            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_session.sh"
         ).read_text()
         self.assertIn("/usr/bin/pcmanfm --desktop --profile Asterinas", session)
         self.assertIn("/usr/bin/lxpanel --profile Asterinas", session)

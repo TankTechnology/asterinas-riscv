@@ -1020,10 +1020,10 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/home/asterinas/Desktop/asterinas-files.desktop",
                 "/usr/share/applications/asterinas-terminal.desktop",
                 "/home/asterinas/Desktop/asterinas-terminal.desktop",
-                "/usr/lib/asterinas/desktop-m5-network-evidence",
+                "/usr/lib/asterinas/desktop-network-evidence",
                 "/usr/lib/asterinas/megrez-safe-reboot",
                 "/usr/lib/asterinas/browser-web-marionette-gate",
-                "/usr/lib/asterinas/browser_m5_marionette_gate.py",
+                "/usr/lib/asterinas/browser_marionette_transport.py",
                 "/usr/lib/asterinas/browser_interaction_perf.py",
                 "/usr/lib/asterinas/browser_workload_contract.py",
                 "/usr/lib/asterinas/browser_composite_capture.py",
@@ -1038,19 +1038,20 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/lib/asterinas/browser-web-timeline",
                 "/usr/share/asterinas/browser-web-trust-check.py",
                 "/usr/share/asterinas/browser-web-online-rootfs-check.py",
-                "/usr/lib/asterinas/desktop-m5-session",
+                "/usr/lib/asterinas/desktop-browser-session",
                 "/usr/lib/asterinas/desktop-display-provider",
-                "/usr/lib/asterinas/desktop-m5-device-access",
-                "/usr/lib/asterinas/desktop-m5-evidence",
+                "/usr/lib/asterinas/desktop-browser-device-access",
+                "/usr/lib/asterinas/desktop-browser-evidence",
+                "/usr/lib/asterinas/desktop-network-evidence",
                 "/etc/systemd/system/asterinas-browser-web.service",
-                "/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf",
+                "/etc/systemd/system/asterinas-desktop-network.service.d/browser-web.conf",
                 "/etc/systemd/system/asterinas-browser-web-evidence.service",
                 "/etc/systemd/system/asterinas-browser-web-timeline-begin.service",
                 "/etc/systemd/system/asterinas-browser-web-timeline-basic.service",
             },
         )
         self.assertNotIn(
-            "desktop_m5_network_gate.py", {entry.source.name for entry in spec.files}
+            "desktop_network_gate.py", {entry.source.name for entry in spec.files}
         )
         self.assertEqual(
             {entry.destination for entry in spec.files if entry.create},

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.megrez_debug_contract import (
     BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,

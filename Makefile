@@ -534,7 +534,7 @@ MEGREZ_DESKTOP_BOOT_RUN_ID ?= $(shell date -u +%Y%m%dT%H%M%SZ)
 MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/prepare-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
 MEGREZ_DESKTOP_BOOT_START_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/start-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
-DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
+DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET ?= browser
 DEBIAN_WEB_NETWORK_MODE ?=
 DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
 RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702
@@ -582,7 +582,7 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
-		tools.riscv.tests.test_debian_m5_network -v
+		tools.riscv.tests.test_debian_network -v
 
 .PHONY: test_riscv_debian_debug_console
 test_riscv_debian_debug_console:
@@ -933,8 +933,8 @@ test_riscv_debian_rootfs_gate:
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_GATE_OUTPUT)" --smp 4
 
-.PHONY: test_riscv_debian_desktop_m5_qemu_gate
-test_riscv_debian_desktop_m5_qemu_gate:
+.PHONY: test_riscv_debian_desktop_network_qemu_gate
+test_riscv_debian_desktop_network_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
 		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_UBOOT)" || \
@@ -951,11 +951,11 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
-		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
-		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
+	@test -n "$(DEBIAN_DESKTOP_NETWORK_QEMU_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DESKTOP_NETWORK_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_network_qemu_gate \
+		--target "$(DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET)" \
+		$(if $(filter network,$(DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -964,7 +964,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
+		--output-directory "$(DEBIAN_DESKTOP_NETWORK_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
 # The DRM desktop gate uses the artifacts built for the virtio-gpu work, which
@@ -1036,14 +1036,14 @@ test_riscv_debian_debug_console_qemu_gate:
 
 .PHONY: test_riscv_debian_web_network_proxy_qemu
 test_riscv_debian_web_network_proxy_qemu:
-	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
-		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_network_qemu_gate \
+		DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET=network \
 		DEBIAN_WEB_NETWORK_MODE=proxy
 
 .PHONY: test_riscv_debian_web_network_direct_qemu
 test_riscv_debian_web_network_direct_qemu:
-	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
-		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_network_qemu_gate \
+		DEBIAN_DESKTOP_NETWORK_QEMU_GATE_TARGET=network \
 		DEBIAN_WEB_NETWORK_MODE=direct
 
 .PHONY: test_riscv_debian_browser_web_qemu_gate

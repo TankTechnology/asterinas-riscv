@@ -123,12 +123,12 @@ start_browser() {
     if [ "$reset_existing" -eq 1 ]; then
         systemctl_bounded stop --no-block asterinas-browser-web.service \
             >/dev/null 2>&1 || status=$?
-        systemctl_bounded stop --no-block asterinas-desktop-m5.service \
+        systemctl_bounded stop --no-block asterinas-desktop.service \
             >/dev/null 2>&1 || status=$?
         stop_attempt=0
         while [ "$status" -eq 0 ]; do
             service_states=$(systemctl_bounded is-active \
-                asterinas-browser-web.service asterinas-desktop-m5.service \
+                asterinas-browser-web.service asterinas-desktop.service \
                 2>/dev/null || true)
             set -- $service_states
             if [ "$#" -ne 2 ]; then
@@ -229,17 +229,17 @@ start_browser() {
             >/dev/null 2>&1 || status=126
     fi
     if [ "$status" -eq 0 ]; then
-        systemctl_bounded reset-failed asterinas-desktop-m5.service \
+        systemctl_bounded reset-failed asterinas-desktop.service \
             asterinas-browser-web.service >/dev/null 2>&1 || status=$?
     fi
     if [ "$status" -eq 0 ]; then
         browser_stage desktop-start
         systemctl_bounded start --no-block --job-mode=ignore-dependencies \
-            asterinas-desktop-m5.service >/dev/null 2>&1 || status=$?
+            asterinas-desktop.service >/dev/null 2>&1 || status=$?
     fi
     attempt=0
     while [ "$status" -eq 0 ] && ! systemctl_bounded is-active --quiet \
-        asterinas-desktop-m5.service 2>/dev/null; do
+        asterinas-desktop.service 2>/dev/null; do
         attempt=$((attempt + 1))
         if [ "$attempt" -ge 30 ]; then
             status=127

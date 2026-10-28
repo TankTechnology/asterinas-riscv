@@ -3,21 +3,21 @@
 
 set -euo pipefail
 
-readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
-readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-30}"
-readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-10}"
+readonly CONSOLE="${ASTERINAS_DESKTOP_NETWORK_CONSOLE:-/dev/console}"
+readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS:-30}"
+readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_COMMAND_TIMEOUT_SECONDS:-10}"
 # The owned fixture lives on the build host across one wired hop. If it is not
 # accepting connections in a second, it is absent; do not spend the transfer
 # budget finding that out.
-readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_FIXTURE_CONNECT_TIMEOUT_SECONDS:-1}"
+readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_CONNECT_TIMEOUT_SECONDS:-1}"
 # Two seconds is enough for the 64 KiB fixture on that hop.  A transfer that
 # cannot finish in that window is treated as an absent fixture (web_fail's
 # exit 75) instead of stretching the boot wait.
-readonly FIXTURE_MAX_TIME_SECONDS="${ASTERINAS_DESKTOP_M5_FIXTURE_MAX_TIME_SECONDS:-2}"
-readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
-readonly UPTIME_PATH="${ASTERINAS_DESKTOP_M5_UPTIME_PATH:-/proc/uptime}"
-readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
-readonly URL_FILE="${ASTERINAS_DESKTOP_M5_URL_FILE:-/run/asterinas-desktop-url}"
+readonly FIXTURE_MAX_TIME_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_MAX_TIME_SECONDS:-2}"
+readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH:-/proc/cmdline}"
+readonly UPTIME_PATH="${ASTERINAS_DESKTOP_NETWORK_UPTIME_PATH:-/proc/uptime}"
+readonly RESOLV_CONF="${ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF:-/etc/resolv.conf}"
+readonly URL_FILE="${ASTERINAS_DESKTOP_NETWORK_URL_FILE:-/run/asterinas-desktop-url}"
 readonly INTERFACE="eth0"
 readonly ADDRESS="10.100.19.200/21"
 readonly MEGREZ_BOOTARG='asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1'
@@ -56,7 +56,7 @@ emit() {
 }
 
 fail() {
-    emit "DEBIAN_NETWORK_M5_FAIL reason=$1"
+    emit "DEBIAN_NETWORK_FAIL reason=$1"
     exit 1
 }
 
@@ -462,7 +462,7 @@ emit_link_diagnostic() {
         *) output='' ;;
     esac
     value_hex="$(printf '%s' "$output" | od -An -v -tx1 | tr -d '[:space:]')"
-    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=link-check field=$field status=0 value_hex=${value_hex:-none}"
+    emit "DEBIAN_NETWORK_DIAGNOSTIC phase=link-check field=$field status=0 value_hex=${value_hex:-none}"
 }
 
 publish_remote_url() {
@@ -533,7 +533,7 @@ request_qemu_https() {
             od -An -v -tx1 |
             tr -d '[:space:]'
     )"
-    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=qemu-https attempt=3 stderr_hex=${stderr_hex:-none}"
+    emit "DEBIAN_NETWORK_DIAGNOSTIC phase=qemu-https attempt=3 stderr_hex=${stderr_hex:-none}"
     rm -f -- "$curl_error"
     return 1
 }
@@ -557,11 +557,11 @@ request_megrez_https() {
     }
     for attempt in 1 2 3; do
         if ((SECONDS >= deadline)); then
-            emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=deadline"
+            emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=deadline"
             rm -f -- "$curl_error" "$curl_trace"
             return 1
         fi
-        emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=begin"
+        emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=begin"
         : >"$curl_error" || fail megrez-curl-error-reset
         : >"$curl_trace" || fail megrez-curl-trace-reset
         attempt_start=$SECONDS
@@ -596,7 +596,7 @@ request_megrez_https() {
                 od -An -v -tx1 |
                 tr -d '[:space:]'
         )"
-        emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=$attempt status=$curl_status elapsed=$((SECONDS - attempt_start)) stderr_hex=${stderr_hex:-none} trace_hex=${trace_hex:-none}"
+        emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=$attempt status=$curl_status elapsed=$((SECONDS - attempt_start)) stderr_hex=${stderr_hex:-none} trace_hex=${trace_hex:-none}"
         if ((attempt != 3)); then
             sleep 1
         fi
@@ -636,7 +636,7 @@ synchronize_megrez_clock() {
     [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
         fail megrez-clock-date
     date --utc --set "$clock_date" >/dev/null || fail megrez-clock-set
-    emit "DEBIAN_NETWORK_M5_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
+    emit "DEBIAN_NETWORK_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
 }
 
 validate_fixture_config() {
@@ -724,7 +724,7 @@ stress_fixture() {
 
     cleanup_fixture_batch "$temporary_directory" "${temporary_fixtures[@]}" ||
         fail "${reason_prefix}-fixture-cleanup"
-    emit "DEBIAN_NETWORK_M5_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=$endpoint"
+    emit "DEBIAN_NETWORK_STRESS requests=$FIXTURE_REQUESTS bytes=$((FIXTURE_SIZE * FIXTURE_REQUESTS)) sha256=$FIXTURE_SHA256 endpoint=$endpoint"
 }
 
 qemu_network_evidence() {
@@ -741,19 +741,19 @@ qemu_network_evidence() {
     deadline=$((SECONDS + TIMEOUT_SECONDS))
     stress_fixture "$deadline" '10.0.2.2:17894' qemu
     printf '%s\n' 'nameserver 10.0.2.3' >"$RESOLV_CONF" || fail resolver-write
-    if [[ "${ASTERINAS_DESKTOP_M5_NETWORK_MODE:-full}" == lightweight ]]; then
+    if [[ "${ASTERINAS_DESKTOP_NETWORK_MODE:-full}" == lightweight ]]; then
         # Browser startup must not wait for a remote TLS probe.  The browser
         # evidence service performs the authoritative DNS/TLS checks after the
         # desktop and Firefox can start.  Do not make this dependency rely on
         # `ip` route formatting: that interface is still incomplete in some
         # Asterinas profiles, while getent/curl below are the authoritative
         # connectivity checks.
-        emit "DEBIAN_NETWORK_M5_QEMU_READY mode=qemu-slirp-lightweight"
+        emit "DEBIAN_NETWORK_QEMU_READY mode=qemu-slirp-lightweight"
         return 0
     fi
     resolve_qemu_host www.baidu.com \
         >/dev/null 2>>"$CONSOLE" || fail qemu-dns
-    emit "DEBIAN_NETWORK_M5_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com"
+    emit "DEBIAN_NETWORK_QEMU_DNS resolver=10.0.2.3 host=www.baidu.com"
     curl_result="$(request_qemu_https)" || fail qemu-https
     [[ "$curl_result" == *$'\t'* ]] || fail qemu-curl-output
     http_status="${curl_result%%$'\t'*}"
@@ -767,14 +767,14 @@ qemu_network_evidence() {
         connect_time="${connect_time%%$'\t'*}"
         first_byte_time="${tls_time#*$'\t'}"
         tls_time="${tls_time%%$'\t'*}"
-        emit "DEBIAN_NETWORK_M5_QEMU_TIMING host=www.baidu.com namelookup=${lookup_time:-unknown} connect=${connect_time:-unknown} appconnect=${tls_time:-unknown} starttransfer=${first_byte_time:-unknown}"
+        emit "DEBIAN_NETWORK_QEMU_TIMING host=www.baidu.com namelookup=${lookup_time:-unknown} connect=${connect_time:-unknown} appconnect=${tls_time:-unknown} starttransfer=${first_byte_time:-unknown}"
     fi
     [[ "$http_status" =~ ^(2|3)[0-9][0-9]$ ]] || fail qemu-http-status
     [[ "$local_address" == "10.0.2.15" ]] || fail qemu-local-address
-    emit "DEBIAN_NETWORK_M5_QEMU_HTTPS host=www.baidu.com status=$http_status address=$local_address"
+    emit "DEBIAN_NETWORK_QEMU_HTTPS host=www.baidu.com status=$http_status address=$local_address"
 
     publish_remote_url
-    emit "DEBIAN_NETWORK_M5_QEMU_READY mode=qemu-slirp"
+    emit "DEBIAN_NETWORK_QEMU_READY mode=qemu-slirp"
 }
 
 megrez_network_evidence() {
@@ -801,9 +801,9 @@ megrez_network_evidence() {
         sleep 1
     done
 
-    emit "DEBIAN_NETWORK_M5_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
-    emit "DEBIAN_NETWORK_M5_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
-    emit "DEBIAN_NETWORK_M5_STRESS_START requests=$FIXTURE_REQUESTS endpoint=$PROXY_HOST:17894"
+    emit "DEBIAN_NETWORK_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
+    emit "DEBIAN_NETWORK_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
+    emit "DEBIAN_NETWORK_STRESS_START requests=$FIXTURE_REQUESTS endpoint=$PROXY_HOST:17894"
     stress_fixture "$deadline" '10.100.19.216:17894' megrez
     synchronize_megrez_clock
 
@@ -813,9 +813,9 @@ megrez_network_evidence() {
     local_address="${curl_result#*$'\t'}"
     [[ "$http_status" == 200 ]] || fail megrez-http-status
     [[ "$local_address" == "10.100.19.200" ]] || fail megrez-local-address
-    emit "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address proxy=$PROXY_HOST:$PROXY_PORT"
+    emit "DEBIAN_NETWORK_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address proxy=$PROXY_HOST:$PROXY_PORT"
 
-    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-asset stage=begin"
+    emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-asset stage=begin"
     temporary_asset="$(mktemp "${URL_FILE}.asset.XXXXXX")" || fail asset-temporary
     if ! timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
         --fail \
@@ -836,10 +836,10 @@ megrez_network_evidence() {
         fail megrez-asset
     fi
     rm -f -- "$temporary_asset" || fail asset-cleanup
-    emit "DEBIAN_NETWORK_M5_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=$PROXY_HOST:$PROXY_PORT"
+    emit "DEBIAN_NETWORK_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=$PROXY_HOST:$PROXY_PORT"
 
     publish_remote_url
-    emit "DEBIAN_NETWORK_M5_MEGREZ_READY mode=static-rj45-host-proxy"
+    emit "DEBIAN_NETWORK_MEGREZ_READY mode=static-rj45-host-proxy"
 }
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout

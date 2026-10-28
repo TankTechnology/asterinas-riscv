@@ -6,7 +6,7 @@ refactoring work is tracked separately.
 
 ## Baseline
 
-- Current baseline after retiring the `browser-m5` and `desktop-m5-network` image
+- Current baseline after retiring the `browser-m5` and `desktop-network` image
   profiles.
 - The executable host-test baseline is
   `tools/riscv/tests/expected_host_tests.json`; it records the exact test IDs
@@ -104,13 +104,13 @@ deletion batch is intentionally small.
 | `systemd-m2` profile | Consolidate | Retarget its systemd reboot/power coverage to `systemd-ext4` before removing the profile. |
 | `desktop-m3`, `desktop-m4` profiles and gate entrypoints | Archive | Keep the shared `desktop_m3_gate.py` helpers and `DESKTOP_M4_MILESTONES`; current physical/debug gates import them. |
 | `desktop-m4-firefox` and `test_riscv_debian_daily_use_gate` | Archive/delete | The Makefile target is broken: it passes empty `--boot-timeout ""` and `--command-timeout ""` to a positive-float parser (`rootfs_gate.py:463-464`). The profile was superseded by `browser-web` on the same day. |
-| `desktop-m5-network` profile, M5 `browser` target | Removed | The browser-web package set is inlined and the profile identity is gone. Keep the network service/evidence layer installed by browser-web. |
-| `browser-m5` profile and QEMU gate | Removed | The browser-web package set is inlined; the offline video/probe/service assets and browser-m5-only tests are gone. Keep `browser_m5_marionette_gate.py`, which is current shared Marionette code. |
+| `desktop-network` profile, M5 `browser` target | Removed | The browser-web package set is inlined and the profile identity is gone. Keep the network service/evidence layer installed by browser-web. |
+| `browser-m5` profile and QEMU gate | Removed | The browser-web package set is inlined; the offline video/probe/service assets and browser-m5-only tests are gone. Keep `browser_marionette_transport.py`, which is current shared Marionette code. |
 | `desktop-m9-software` profile and M9 gate | Archive/consolidate | `vim` is already in browser-web; only the ffmpeg smoke has no browser-web equivalent. |
 | M6, M7, M8 gates/services | Consolidate/archive | M6/M7 marker strings are imported by current `megrez_gmac_gate.py` and `megrez_debug_contract.py`; preserve/move those marker assertions before removing the milestone gate. M8 is a thin M9 duplicate. |
 | `tools/riscv/nixos/` except `ltp/` and `build_busybox.sh` | Archive | `ltp_gate.py:631,676,799` hardcodes `nixos/ltp/build_ltp.sh`; `nixos/ltp/build_ltp.sh` needs `nixos/build_busybox.sh`. The rest is the superseded NixOS track. |
 | `tools/riscv/systemd/` code, `demo-all.sh`, root `README-DEMO.md` | Delete candidate | A self-contained systemd+NixOS demo chain. Remove the `demo-all.sh` entry from `tooling_surface.json` atomically; archive the reports. |
-| `tools/riscv/xorg/` except `gen_tls_certs.py` and `tls_cert_server.py` | Archive | Those two helpers are used by the current M5 network QEMU gate (`desktop_m5_qemu_gate.py:121-122`). |
+| `tools/riscv/xorg/` except `gen_tls_certs.py` and `tls_cert_server.py` | Archive | Those two helpers are used by the current M5 network QEMU gate (`desktop_network_qemu_gate.py:121-122`). |
 | `tools/riscv/xfce/` | Archive | No current code reference, but `docs/porting/evidence/2026-09-20-merged-main-physical-validation.md:107` cites its screenshot; keep the evidence link valid or update it when moving. |
 | `tools/riscv/wayland/`, `tools/riscv/lvgl/`, `tools/riscv/game/`, `qemu_desktop_boot.py` | Delete candidate | Wayland has only `test_wayland_demo.py`; LVGL is documented only in old QEMU/LVGL sections; `game/snake.c` has zero references and its builder was already removed. |
 | `tools/riscv/nsmatrix/`, `tools/riscv/pidns/` and their KE reports | Archive | Historical kernel-namespace results; keep them together as archived evidence, not current tests. |
@@ -152,13 +152,13 @@ have been moved.
 its 206; split those tests rather than deleting the module. The rest is current
 gate/runtime/stage1 coverage. `test_debian_signed_sources.py` now uses
 browser-web as its fixture. The 27 remaining
-`test_debian_browser_m5_runtime_gate.py` tests cover the current shared
+`test_browser_marionette_transport.py` tests cover the current shared
 Marionette transport and stay until that module is renamed. The desktop-DRM
 tests and the wider DRM/PowerVR cluster (about 153 IDs) stay paused. The
 aggregate `test_riscv_debian_rootfs_unit` target still runs the M6/M7/M8/M9
 modules and must be trimmed together with those gates.
 
-The browser-m5 and desktop-m5-network retirements removed their profile-only
+The browser-m5 and desktop-network retirements removed their profile-only
 tests. Moving the M6/M7 marker subset removes a further 27 IDs. The optional
 NixOS-preflight and dual-host work would reduce another 60, leaving about
 2,269/108. `test_suite_baseline.py:16,28` has a historical lower bound of 2,229;

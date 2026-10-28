@@ -1019,7 +1019,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
         )
         self.assertEqual(
-            tokens.count("systemd.mask=asterinas-desktop-m5-network.service"), 1
+            tokens.count("systemd.mask=asterinas-desktop-network.service"), 1
         )
         self.assertEqual(
             tokens.count("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1"), 1
@@ -1800,12 +1800,12 @@ class PhysicalCommandTests(unittest.TestCase):
             "_asterinas_after_stop_state",
             "active | activating | deactivating | reloading",
             "inactive | failed",
-            "systemctl_bounded start --no-block asterinas-desktop-m5.service",
+            "systemctl_bounded start --no-block asterinas-desktop.service",
             "systemctl_bounded start --no-block \\\n    asterinas-browser-web-timeline-basic.service",
             "systemctl_bounded reset-failed",
             "asterinas-browser-web-timeline-basic.service",
             "asterinas-browser-web-evidence.service",
-            "asterinas-desktop-m5-network.service",
+            "asterinas-desktop-network.service",
             "serial-getty@ttyS0.service",
             "console-getty.service",
             "evidence_state=%s",
@@ -1826,12 +1826,12 @@ class PhysicalCommandTests(unittest.TestCase):
             "stop --no-block asterinas-browser-web.service"
         )
         stop_desktop = start_section.index(
-            "stop --no-block asterinas-desktop-m5.service"
+            "stop --no-block asterinas-desktop.service"
         )
         identify = start_section.index("set -- $(input_identity)")
         provider = start_section.index("ASTERINAS_DISPLAY_PROVIDER_ROOT=")
         start_desktop = start_section.index(
-            "asterinas-desktop-m5.service >/dev/null 2>&1", provider
+            "asterinas-desktop.service >/dev/null 2>&1", provider
         )
         start_browser = start_section.index(
             "asterinas-browser-web.service >/dev/null 2>&1", start_desktop
@@ -1870,12 +1870,12 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertLess(
             script.index("mount --bind"),
             script.index(
-                "systemctl_bounded start --no-block asterinas-desktop-m5.service"
+                "systemctl_bounded start --no-block asterinas-desktop.service"
             ),
         )
         self.assertLess(
             script.index(
-                "systemctl_bounded start --no-block asterinas-desktop-m5.service"
+                "systemctl_bounded start --no-block asterinas-desktop.service"
             ),
             script.index(
                 "systemctl_bounded start --no-block \\\n    asterinas-browser-web-timeline-basic.service"

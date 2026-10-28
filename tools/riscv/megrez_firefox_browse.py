@@ -133,7 +133,7 @@ def _firefox_web_bootargs(plan: Any) -> str:
             "asterinas.mmc_write_partition2",
             "asterinas.reboot_after=900",
             "systemd.mask=asterinas-browser-web-evidence.service",
-            "systemd.mask=asterinas-desktop-m5-network.service",
+            "systemd.mask=asterinas-desktop-network.service",
             "systemd.mask=serial-getty@ttyS0.service",
             "systemd.mask=console-getty.service",
             "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
@@ -568,7 +568,7 @@ def browse_diagnostics_commands(nonce: str) -> tuple[str, ...]:
         "{ printf '%s\\n' '== graphical services =='; /usr/bin/timeout 3 "
         "systemctl show --no-pager --property "
         "Id,ActiveState,SubState,MainPID,NRestarts,Result,ExecMainCode,ExecMainStatus "
-        "asterinas-desktop-m5.service asterinas-browser-web.service || true; "
+        "asterinas-desktop.service asterinas-browser-web.service || true; "
         "printf '%s\\n' '== browser service journal =='; /usr/bin/timeout 5 "
         "journalctl -u asterinas-browser-web.service -n 80 --no-pager || true; } "
         '2>&1 | tail -c 32768 >"$_d.02"',

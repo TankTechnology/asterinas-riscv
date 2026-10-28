@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from tools.riscv.debian.rootfs.browser_web_contract import firefox_ready_marker
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_MEGREZ_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_MEGREZ_MILESTONES,
     NetworkMode,
 )
 from tools.riscv.debian.rootfs.profiles import PROFILE_NAMES, get_profile
@@ -46,7 +46,7 @@ LOADED_ARTIFACT_NAMES = frozenset(ARTIFACT_ORDER)
 METADATA_ARTIFACT_NAMES = frozenset(ROOTFS_METADATA_ARTIFACT_NAMES)
 DEBIAN_BROWSER_MARKERS = (
     "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
-    *DESKTOP_M5_MEGREZ_MILESTONES,
+    *DESKTOP_NETWORK_MEGREZ_MILESTONES,
     "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10",
     "BROWSER_WEB_DESKTOP_STAGE=x-socket-ready",
     firefox_ready_marker(NetworkMode.PROXY),
@@ -77,7 +77,7 @@ DEBIAN_BROWSER_REQUIRED_BOOTARGS = (
     "asterinas.mmc_write_partition2",
     "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
     "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
-    "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+    "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_CONSOLE=/dev/ttyS0",
     "systemd.setenv=ASTERINAS_BROWSER_WEB_CONSOLE=/dev/ttyS0",
     "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
     "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",

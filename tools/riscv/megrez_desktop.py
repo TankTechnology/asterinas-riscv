@@ -1337,7 +1337,7 @@ def firefox_diagnostic_commands(
         '>"$_asterinas_firefox_base.during.status" ) & '
         "_asterinas_firefox_during_job=$!; :",
         f'/usr/bin/nsenter -t "$_asterinas_firefox_pid" -n {environment} '
-        "python3 -c 'import time;from browser_m5_marionette_gate import _connect;"
+        "python3 -c 'import time;from browser_marionette_transport import _connect;"
         f'c=_connect("127.0.0.1",2828,time.monotonic()+{timeout});'
         'r=c.command("WebDriver:NewSession",'
         '{"pageLoadStrategy":"none","strictFileInteractability":True});'

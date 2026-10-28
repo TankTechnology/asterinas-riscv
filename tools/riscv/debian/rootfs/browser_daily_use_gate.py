@@ -33,7 +33,7 @@ from urllib.parse import urlparse
 
 if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     sys.path.insert(0, "/run/asterinas-tools")
-    from browser_m5_marionette_gate import CommandNotSentTimeout  # type: ignore[import-not-found]
+    from browser_marionette_transport import CommandNotSentTimeout  # type: ignore[import-not-found]
     from browser_daily_use_contract import (  # type: ignore[import-not-found]
         DAILY_USE_CHECKPOINT_ARTIFACT,
         DAILY_USE_COMPONENT_ARTIFACTS,
@@ -55,7 +55,7 @@ if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     import browser_system_time as system_time  # type: ignore[import-not-found]
     import browser_web_marionette_gate as web_gate  # type: ignore[import-not-found]
 else:
-    from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
+    from tools.riscv.debian.rootfs.browser_marionette_transport import (
         CommandNotSentTimeout,
     )
     from tools.riscv.debian.rootfs.browser_daily_use_contract import (

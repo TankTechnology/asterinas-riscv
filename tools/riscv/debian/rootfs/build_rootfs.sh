@@ -1121,8 +1121,8 @@ EOF
             ../asterinas-debian-m2.service \
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == browser-web ]]; then
-        configure_desktop "$stage" "m5" online
-        configure_desktop_m5_network "$stage" m5 lightweight
+        configure_desktop "$stage" "browser" online
+        configure_desktop_network "$stage" browser lightweight
     elif [[ "$PROFILE" == desktop-drm ]]; then
         configure_desktop "$stage" drm "offline" drm
     fi
@@ -1310,12 +1310,12 @@ generate_fontconfig_cache() {
     die "staged fontconfig cache is absent after an audited rebuild"
 }
 
-configure_desktop_m5_network() {
+configure_desktop_network() {
     local stage="$1"
     local desktop_generation="${2:-m4}"
     local network_mode="${3:-full}"
     local script_directory safe_reboot_target
-    local service_name="asterinas-desktop-m5-network"
+    local service_name="asterinas-desktop-network"
     local desktop_ordering=""
     local safe_reboot_service_name="asterinas-safe-reboot"
 
@@ -1324,8 +1324,8 @@ configure_desktop_m5_network() {
         desktop_ordering="Before=asterinas-desktop-$desktop_generation.service"
     fi
     install -D -m 0755 -- \
-        "$script_directory/desktop_m5_network_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
+        "$script_directory/desktop_network_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-network-evidence"
     install -D -m 0755 -- \
         "$script_directory/megrez_safe_reboot.sh" \
         "$stage/usr/lib/asterinas/megrez-safe-reboot"
@@ -1356,13 +1356,13 @@ EOF
     done
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
-Description=Asterinas Debian M5 wired-network evidence
+Description=Asterinas Debian wired-network evidence
 After=local-fs.target
 $desktop_ordering
 
 [Service]
 Type=oneshot
-$(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
+$(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_NETWORK_MODE=lightweight'; fi)
 # Asterinas' iproute2 netlink path is known to complete on the board, but a
 # broken userspace probe must never hold graphical.target forever.  Bound the
 # unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
@@ -1376,7 +1376,7 @@ Restart=no
 # inactive instead of parked in `systemctl --failed`.  Evidence mismatches
 # still exit 1 and remain visible as failures.
 SuccessExitStatus=75
-ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
+ExecStart=/usr/lib/asterinas/desktop-network-evidence
 
 [Install]
 WantedBy=graphical.target
@@ -1483,18 +1483,21 @@ configure_desktop() {
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     session_source="$script_directory/desktop_${generation}_session.sh"
+    if [[ "$generation" == browser ]]; then
+        session_source="$script_directory/desktop_session.sh"
+    fi
     evidence_source="$script_directory/desktop_${generation}_evidence.sh"
-    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+    if [[ "$generation" == browser && "$browser_mode" == online ]]; then
         evidence_source="$script_directory/browser_web_evidence.sh"
     fi
-    if [[ "$generation" == m5 ]]; then
-        # M5 gates write their authoritative markers directly to /dev/console.
+    if [[ "$generation" == browser ]]; then
+        # network gates write their authoritative markers directly to /dev/console.
         # Keep the high-volume desktop/Xorg stream in the journal instead of
         # duplicating it on the emulated serial console.
         desktop_standard_output=journal+console
         desktop_standard_error=journal+console
     fi
-    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+    if [[ "$generation" == browser && "$browser_mode" == online ]]; then
         # The online browser image receives a fixed /dev from Asterinas stage1;
         # no udev-created device is needed.  Starting udevd on this kernel
         # costs nearly a minute while probing unsupported device events.
@@ -1659,7 +1662,7 @@ EOF
                 "$script_directory/asterinas-$launcher.desktop" \
                 "$stage/home/asterinas/Desktop/asterinas-$launcher.desktop"
         done
-    elif [[ "$generation" == m5 ]]; then
+    elif [[ "$generation" == browser ]]; then
         if [[ "$browser_mode" == online ]]; then
             install_online_desktop_shell "$stage"
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
@@ -1674,10 +1677,10 @@ EOF
             # graphical.target, and the leading '-' keeps a sync failure from
             # stopping the desktop.
             install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
-                "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
+                "$stage/etc/systemd/system/asterinas-desktop.service.d/clock-sync.conf"
             configure_dns_shim "$stage" "$script_directory"
-            install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
-                "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
+            install -D -m 0644 -- "$script_directory/browser_marionette_transport.py" \
+                "$stage/usr/lib/asterinas/browser_marionette_transport.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
@@ -1713,9 +1716,9 @@ EOF
             install -D -m 0644 -- "$script_directory/browser_web.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web.service"
             install -d -m 0755 -- \
-                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d"
+                "$stage/etc/systemd/system/asterinas-desktop-network.service.d"
             install -m 0644 -- "$script_directory/browser_web_network.conf" \
-                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf"
+                "$stage/etc/systemd/system/asterinas-desktop-network.service.d/browser-web.conf"
             install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_begin.service" \
@@ -1841,7 +1844,7 @@ StandardError=$desktop_standard_error
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
 Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider
-$(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
+$(if [[ "$generation" == browser && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
@@ -1886,7 +1889,7 @@ EOF
             ../$service_name-evidence.service \
             "$stage/etc/systemd/system/graphical.target.wants/$service_name-evidence.service"
     fi
-    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+    if [[ "$generation" == browser && "$browser_mode" == online ]]; then
         # Asterinas supplies its fixed /dev nodes from the initramfs.  Debian's
         # static-node tmpfiles unit attempts unsupported device-node updates on
         # this kernel and can block sysinit indefinitely; mask only that unit.
@@ -2153,7 +2156,7 @@ browser_web_runtime_digest() {
     local source_directory="$1"
     local input
     local -a inputs=(
-        desktop_m5_session.sh
+        desktop_session.sh
         desktop_wallpaper.svg
         desktop_anime_wallpaper.png
         desktop_files_icon.svg
@@ -2164,12 +2167,12 @@ browser_web_runtime_digest() {
         asterinas-files.desktop
         asterinas-terminal.desktop
         browser_web_open_firefox.sh
-        desktop_m5_network_evidence.sh
-        desktop_m5_network_gate.py
+        desktop_network_evidence.sh
+        desktop_network_gate.py
         browser_web_firefox.sh
         browser_web_marionette_gate.py
         megrez_clock_sync.py
-        browser_m5_marionette_gate.py
+        browser_marionette_transport.py
         browser_web_evidence.sh
         browser_web.service
         browser_web_evidence.service

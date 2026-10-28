@@ -371,7 +371,7 @@ class PersistentShellContractTests(unittest.TestCase):
         }
         broken_values = (
             {**valid, "schema_version": 2},
-            {**valid, "profile": "desktop-m5-network"},
+            {**valid, "profile": "desktop-network"},
             {**valid, "root_image_sha256": "f" * 64},
             {**valid, "signed_metadata_sha256": "e" * 64},
         )
