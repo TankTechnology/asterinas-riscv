@@ -14,15 +14,16 @@ from unittest import mock
 
 from tools.riscv import megrez_preboard as preboard_module
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.megrez_debug_contract import (
+    BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
-    ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez_gmac_gate import GateTarget, physical_bootargs
 from tools.riscv.megrez_preboard import (
     PreboardError,
     PreboardPermit,
@@ -50,7 +51,7 @@ class MegrezPreboardTests(unittest.TestCase):
                 name=name,
                 path=str((artifact_directory / name).absolute()),
                 load_address=addresses.get(name, 0),
-                size=ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                size=BROWSER_ROOT_IMAGE_BYTES if name == "root_image" else 4096,
                 sha256=hashlib.sha256(name.encode()).hexdigest(),
                 crc32=f"{zlib.crc32(name.encode()):08x}",
             )
@@ -64,7 +65,7 @@ class MegrezPreboardTests(unittest.TestCase):
             artifacts=tuple(
                 self.identities[name] for name in DEBIAN_BROWSER_ARTIFACT_ORDER
             ),
-            bootargs=physical_bootargs(600),
+            bootargs=physical_bootargs(600, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,

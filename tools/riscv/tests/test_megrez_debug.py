@@ -23,17 +23,8 @@ from unittest import mock
 
 from tools.riscv import megrez_debug as debug_module
 from tools.riscv import megrez_debug_board as board_module
-from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
-)
-from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
-    DESKTOP_M6_REMOTE_MARKER,
-)
-from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
-    DESKTOP_M7_HOME_MARKER,
-    DESKTOP_M7_READY_MARKER,
-    DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
@@ -51,7 +42,8 @@ from tools.riscv.megrez_contract import (
     ROOTFS_METADATA_ARTIFACT_NAMES,
 )
 from tools.riscv.megrez_debian_shell_contract import SHELL_ARTIFACT_ORDER
-from tools.riscv.megrez_gmac_gate import physical_bootargs
+from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.megrez_gmac_gate import GateTarget, physical_bootargs
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import (
     PROBE_STRESS_BYTES,
@@ -554,7 +546,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             schema_version=2,
             profile="debian-browser",
             artifacts=self.artifacts,
-            bootargs=physical_bootargs(600),
+            bootargs=physical_bootargs(600, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
@@ -579,13 +571,10 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
             (
                 "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
                 *DESKTOP_M5_MEGREZ_MILESTONES,
-                *DESKTOP_M4_MILESTONES,
-                DESKTOP_M6_REMOTE_MARKER,
-                "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
-                "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
-                DESKTOP_M7_HOME_MARKER,
-                DESKTOP_M7_SEARCH_MARKER,
-                DESKTOP_M7_READY_MARKER,
+                "DEBIAN_WEB_NETWORK_READY mode=proxy layers=10",
+                "BROWSER_WEB_DESKTOP_STAGE=x-socket-ready",
+                "DEBIAN_FIREFOX_BAIDU_READY mode=proxy home=pass logo=pass "
+                "search=pass input=pass stable=pass screenshot=baidu-search.png",
             ),
         )
 
@@ -640,7 +629,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(DebugContractError, "desktop recovery window"):
             replace(
                 plan,
-                bootargs=physical_bootargs(599),
+                bootargs=physical_bootargs(599, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
                 reboot_after=599,
             ).validate()
 
@@ -666,9 +655,9 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         plan = self._plan()
         required_tokens = (
             "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
-            "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0",
             "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
-            "systemd.setenv=ASTERINAS_BROWSER_M6_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_BROWSER_WEB_CONSOLE=/dev/ttyS0",
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
             "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.100.19.216:17894/asterinas-network-probe.bin",
         )
@@ -767,7 +756,7 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             packages_lock=self.paths["packages_lock"],
             package_checksums=self.paths["package_checksums"],
             in_release=self.paths["in_release"],
-            bootargs=physical_bootargs(600),
+            bootargs=physical_bootargs(600, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
             marker=None,
             reboot_after=600,
         )
@@ -1476,88 +1465,12 @@ class MegrezDebugBoardStateTests(unittest.TestCase):
             schema_version=2,
             profile="debian-browser",
             artifacts=artifacts,
-            bootargs=physical_bootargs(600),
+            bootargs=physical_bootargs(600, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
             reboot_after=600,
         )
-
-    @staticmethod
-    def _concrete_browser_marker(marker: str) -> str:
-        if marker.endswith("key=eic7700-rj45 "):
-            return marker + "base=0x50410000 interface=eth0"
-        if marker == "DEBIAN_BROWSER_M6_JAVASCRIPT status=":
-            return marker + "limited-pass"
-        if marker == "DEBIAN_BROWSER_M6_READY remote=baidu javascript=":
-            return marker + "limited-pass"
-        return marker
-
-    def _browser_marker_block(self, markers: tuple[str, ...]) -> str:
-        return "\n".join(self._concrete_browser_marker(marker) for marker in markers)
-
-    def test_pointer_missing_degradation_collects_browser_and_recovery(self) -> None:
-        plan = self._browser_plan()
-        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
-        m4_end = m4_start + len(DESKTOP_M4_MILESTONES)
-        chunks = [
-            self._browser_marker_block(plan.markers[:m4_start])
-            + "\nDEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-",
-            "device\nDEBIAN_DESKTOP_M4_FAIL reason=desktop-",
-            "timeout\n" + self._browser_marker_block(plan.markers[m4_end:]) + "\n",
-            "pll config ok\nHit any key to stop auto",
-            "boot: 29\n",
-            "U-Boot 2024.01\n=> ",
-        ]
-        operations = self.Operations(chunks)
-
-        result = run_board(
-            plan,
-            BoardRunConfig(timeout=660.0),
-            operations,
-            clock=self._clock(),
-        )
-
-        self.assertFalse(result.passed)
-        self.assertEqual(
-            result.reason,
-            "guest-failure-recovered:browser-pass-input-missing:pointer-device",
-        )
-        self.assertEqual(operations.chunks, [])
-        stop_calls = [call for call in operations.calls if call[0] == "stop-autoboot"]
-        self.assertEqual(len(stop_calls), 1)
-        self.assertEqual(operations.published, result)
-
-    def test_pointer_degradation_rejects_inexact_or_reordered_branch(self) -> None:
-        plan = self._browser_plan()
-        m4_start = plan.markers.index(DESKTOP_M4_MILESTONES[0])
-        prefix = self._browser_marker_block(plan.markers[:m4_start]) + "\n"
-        remote = self._concrete_browser_marker(DESKTOP_M6_REMOTE_MARKER) + "\n"
-        diagnostic = "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device\n"
-        failure = "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout\n"
-        cases = (
-            prefix + failure + remote,
-            prefix
-            + "DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=xorg-log\n"
-            + failure
-            + remote,
-            prefix + failure + diagnostic + remote,
-            prefix + remote + diagnostic + failure,
-        )
-
-        for transcript in cases:
-            with self.subTest(transcript=transcript[-128:]):
-                operations = self.Operations([transcript])
-                result = run_board(
-                    plan,
-                    BoardRunConfig(timeout=660.0),
-                    operations,
-                    clock=lambda: 10.0,
-                )
-
-                self.assertFalse(result.passed)
-                self.assertEqual(result.reason, "guest-marker-order")
-                self.assertEqual(operations.booti_count, 1)
 
     def test_success_resets_guest_budget_after_transport(self) -> None:
         operations = self.Operations(
@@ -2028,7 +1941,7 @@ class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
             board_module._uboot_bootargs_commands(bootargs)
 
     def test_long_bootargs_are_staged_below_the_uboot_line_limit(self) -> None:
-        bootargs = physical_bootargs(180).replace(
+        bootargs = physical_bootargs(180, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY).replace(
             " -- ",
             " systemd.setenv=ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS=60 -- ",
         )

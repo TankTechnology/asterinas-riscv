@@ -1122,7 +1122,7 @@ EOF
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
-        configure_desktop_m5_network "$stage" m5 false lightweight
+        configure_desktop_m5_network "$stage" m5 lightweight
     elif [[ "$PROFILE" == desktop-drm ]]; then
         configure_desktop "$stage" drm "offline" drm
     fi
@@ -1313,13 +1313,10 @@ generate_fontconfig_cache() {
 configure_desktop_m5_network() {
     local stage="$1"
     local desktop_generation="${2:-m4}"
-    local install_netsurf_evidence="${3:-true}"
-    local network_mode="${4:-full}"
+    local network_mode="${3:-full}"
     local script_directory safe_reboot_target
     local service_name="asterinas-desktop-m5-network"
     local desktop_ordering=""
-    local browser_service_name="asterinas-desktop-m6-browser"
-    local baidu_service_name="asterinas-desktop-m7-baidu"
     local safe_reboot_service_name="asterinas-safe-reboot"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -1389,71 +1386,6 @@ EOF
         "../$service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 
-    if [[ "$install_netsurf_evidence" == true ]]; then
-        install -D -m 0755 -- \
-        "$script_directory/desktop_m6_browser_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m6-browser-evidence"
-        install -D -m 0644 -- \
-        "$script_directory/desktop_m6_javascript.html" \
-        "$stage/usr/share/asterinas/desktop-m6-javascript.html"
-        install -D -m 0644 -- \
-        "$script_directory/desktop_m6_javascript_pass.html" \
-        "$stage/usr/share/asterinas/desktop-m6-javascript-pass.html"
-        cat >"$stage/etc/systemd/system/$browser_service_name.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M6 browser evidence
-After=asterinas-desktop-m5-network.service asterinas-desktop-m4-evidence.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/lib/asterinas/desktop-m6-browser-evidence
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-    chmod 0644 -- "$stage/etc/systemd/system/$browser_service_name.service"
-    ln -s -- \
-        "../$browser_service_name.service" \
-        "$stage/etc/systemd/system/graphical.target.wants/$browser_service_name.service"
-
-    install -D -m 0755 -- \
-        "$script_directory/desktop_m7_baidu_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m7-baidu-evidence"
-    cat >"$stage/etc/systemd/system/$baidu_service_name.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M7 Baidu page evidence
-After=asterinas-desktop-m6-browser.service
-
-[Service]
-Type=oneshot
-Environment=ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS=180
-TimeoutStartSec=240
-ExecStart=/usr/lib/asterinas/desktop-m7-baidu-evidence
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-    chmod 0644 -- "$stage/etc/systemd/system/$baidu_service_name.service"
-    install -d -m 0755 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d"
-    cat > \
-        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf" <<'EOF'
-[Service]
-Environment=ASTERINAS_DESKTOP_BROWSER_VERBOSE=1
-EOF
-    chmod 0644 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf"
-    install -d -m 0755 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service.d"
-    install -m 0644 -- \
-        "$script_directory/desktop_m5_overview.conf" \
-        "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service.d/m5-overview.conf"
-    ln -s -- \
-        "../$baidu_service_name.service" \
-        "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
-    fi
 }
 
 configure_logind_namespace_compatibility() {

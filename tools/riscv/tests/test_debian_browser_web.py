@@ -1897,7 +1897,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
         self.assertIn(
-            'configure_desktop_m5_network "$stage" m5 false lightweight', builder
+            'configure_desktop_m5_network "$stage" m5 lightweight', builder
         )
         self.assertNotIn("2> >(tee", (ROOTFS / "browser_web_evidence.sh").read_text())
         begin_unit = (ROOTFS / "browser_web_timeline_begin.service").read_text()

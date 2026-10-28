@@ -20,6 +20,14 @@ git show ce65773aa:tools/riscv/systemd/boot_systemd_desktop.py
 The current Megrez desktop path is the Debian `browser-web` image documented in
 `docs/porting/board-image-current.md`.
 
+## M6/M7 guest browser evidence (archived 2026-10-28)
+
+The Netsurf-era M6 JavaScript probe, M7 Baidu page services, their host gates,
+and their unit tests moved here after `browser-web` became the only browser
+image. The current browser path is `browser_web_evidence.sh` and
+`browser_web_marionette_gate.py`; GMAC now exposes only `network`, `desktop`,
+and `firefox` targets.
+
 ## Other archived tracks (2026-10-28)
 
 - `nixos/`: the old NixOS RISC-V research track, except the active

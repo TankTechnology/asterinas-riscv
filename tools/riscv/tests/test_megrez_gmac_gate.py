@@ -17,31 +17,15 @@ from unittest import mock
 from collections.abc import Iterable
 from pathlib import Path
 
-from tools.riscv.debian.rootfs.desktop_m4_gate import (
-    DESKTOP_M4_CORE_MILESTONES,
-    DESKTOP_M4_MILESTONES,
-)
+from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_CORE_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
     NETWORK_LAYERS,
     NetworkMode,
 )
-from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
-    DESKTOP_M6_JAVASCRIPT_PREFIX,
-    DESKTOP_M6_JAVASCRIPT_STATUSES,
-    DESKTOP_M6_READY_PREFIX,
-    DESKTOP_M6_REMOTE_MARKER,
-)
-from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
-    DESKTOP_M7_HOME_MARKER,
-    DESKTOP_M7_READY_MARKER,
-    DESKTOP_M7_SEARCH_MARKER,
-)
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
     PHYSICAL_DESKTOP_MILESTONES,
-    PHYSICAL_MILESTONES,
-    PHYSICAL_M7_MILESTONES,
     _parse_args,
     GateConfig,
     GateFailure,
@@ -51,7 +35,6 @@ from tools.riscv.megrez_gmac_gate import (
     check_address_unused,
     classify_physical_desktop_transcript,
     classify_physical_network_transcript,
-    classify_physical_transcript,
     physical_bootargs,
     run_gate,
 )
@@ -67,37 +50,12 @@ from tools.riscv.megrez_network_fixture import (
 from tools.riscv import megrez_gmac_gate as gmac_gate
 
 
-EXPECTED_PHYSICAL_MILESTONES = (
-    b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
-    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
-    DESKTOP_M4_MILESTONES[-1].encode(),
-    DESKTOP_M6_REMOTE_MARKER.encode(),
-)
 EXPECTED_PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
-EXPECTED_PHYSICAL_M7_MILESTONES = (
-    DESKTOP_M7_HOME_MARKER.encode(),
-    DESKTOP_M7_SEARCH_MARKER.encode(),
-    DESKTOP_M7_READY_MARKER.encode(),
-)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DWMAC_DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
-
-
-def complete_browser_evidence(status: str = "limited-pass") -> bytes:
-    return (
-        b"\n".join(
-            (
-                *EXPECTED_PHYSICAL_MILESTONES,
-                f"{DESKTOP_M6_JAVASCRIPT_PREFIX}{status}".encode(),
-                f"{DESKTOP_M6_READY_PREFIX}{status}".encode(),
-                *EXPECTED_PHYSICAL_M7_MILESTONES,
-            )
-        )
-        + b"\n"
-    )
 
 
 def complete_network_evidence() -> bytes:
@@ -381,7 +339,11 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertEqual(result["reason"], "fatal transcript marker: kernel panic")
 
     def test_bootargs_bind_static_profile_without_persistent_uboot_writes(self) -> None:
-        bootargs = physical_bootargs()
+        bootargs = physical_bootargs(
+            600,
+            target=GateTarget.FIREFOX,
+            network_mode=NetworkMode.PROXY,
+        )
 
         self.assertIn(
             "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
@@ -395,24 +357,20 @@ class MegrezGmacGateTests(unittest.TestCase):
             "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
             bootargs.split(),
         )
-        self.assertNotIn(
-            "asterinas.neighbor=eic7700-rj45,10.100.16.28,d8:43:ae:b1:f8:12",
-            bootargs.split(),
-        )
         self.assertEqual(bootargs.split()[0:2], ["console=ttyS0", "console=tty0"])
         self.assertNotIn("cpu_no_boost_1_6ghz", bootargs.split())
         self.assertIn("asterinas.mmc_write_partition2", bootargs.split())
         for variable in (
-            "ASTERINAS_DESKTOP_M4_CONSOLE",
             "ASTERINAS_DESKTOP_M5_CONSOLE",
-            "ASTERINAS_BROWSER_M6_CONSOLE",
+            "ASTERINAS_BROWSER_WEB_CONSOLE",
         ):
             self.assertIn(
                 f"systemd.setenv={variable}=/dev/ttyS0",
                 bootargs.split(),
             )
-        self.assertNotIn("ASTERINAS_BROWSER_M7_CONSOLE", bootargs)
+        self.assertNotIn("ASTERINAS_BROWSER_M6_CONSOLE", bootargs)
         for variable, value in (
+            ("ASTERINAS_WEB_NETWORK_MODE", "proxy"),
             ("ASTERINAS_DESKTOP_PROXY_URL", "http://10.100.19.216:17893"),
             ("ASTERINAS_DESKTOP_PROXY_HOST", "10.100.19.216"),
             ("ASTERINAS_DESKTOP_PROXY_PORT", "17893"),
@@ -429,8 +387,12 @@ class MegrezGmacGateTests(unittest.TestCase):
         ):
             self.assertIn(f"systemd.setenv={variable}={value}", bootargs.split())
         self.assertNotIn("saveenv", bootargs)
-        self.assertNotIn("reboot_after", bootargs)
-        recovery_bootargs = physical_bootargs(180)
+
+        recovery_bootargs = physical_bootargs(
+            180,
+            target=GateTarget.FIREFOX,
+            network_mode=NetworkMode.PROXY,
+        )
         self.assertIn("asterinas.reboot_after=180", recovery_bootargs.split())
         self.assertNotIn("ASTERINAS_SAFE_REBOOT_AFTER", recovery_bootargs)
         self.assertNotIn("ASTERINAS_SAFE_REBOOT_CONSOLE", recovery_bootargs)
@@ -459,14 +421,19 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         for unused_variable in (
             "ASTERINAS_DESKTOP_M4_CONSOLE",
+            "ASTERINAS_BROWSER_WEB_CONSOLE",
             "ASTERINAS_BROWSER_M6_CONSOLE",
-            "ASTERINAS_BROWSER_M7_CONSOLE",
         ):
             self.assertNotIn(unused_variable, network_bootargs)
         self.assertLess(
             len(f'setenv bootargs "{network_bootargs}"'.encode()),
             1024,
         )
+
+        desktop_default = physical_bootargs()
+        self.assertIn("asterinas.mmc_write_partition2", desktop_default.split())
+        self.assertNotIn("asterinas.net=", desktop_default)
+        self.assertNotIn("asterinas.reboot_after=", desktop_default)
 
         desktop_bootargs = physical_bootargs(180, target=GateTarget.DESKTOP)
         self.assertIn("asterinas.mmc_write_partition2", desktop_bootargs.split())
@@ -482,14 +449,15 @@ class MegrezGmacGateTests(unittest.TestCase):
         for service in (
             "asterinas-desktop-m5-network.service",
             "asterinas-desktop-m4-evidence.service",
-            "asterinas-desktop-m6-browser.service",
-            "asterinas-desktop-m7-baidu.service",
         ):
             self.assertIn(f"systemd.mask={service}", desktop_bootargs.split())
+        self.assertNotIn("asterinas-desktop-m6-browser.service", desktop_bootargs)
+        self.assertNotIn("asterinas-desktop-m7-baidu.service", desktop_bootargs)
         for excluded in (
             "asterinas.net=",
             "asterinas.neighbor=",
             "ASTERINAS_DESKTOP_M5_CONSOLE",
+            "ASTERINAS_BROWSER_WEB_CONSOLE",
             "ASTERINAS_BROWSER_M6_CONSOLE",
             "ASTERINAS_DESKTOP_PROXY_",
             "ASTERINAS_DESKTOP_FIXTURE_",
@@ -501,7 +469,11 @@ class MegrezGmacGateTests(unittest.TestCase):
             output = Path(temporary) / "evidence"
             output.mkdir()
             fixture = FixtureServer(FixtureConfig("127.0.0.1", 0))
-            arguments = argparse.Namespace(output_directory=output)
+            arguments = argparse.Namespace(
+                output_directory=output,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.DIRECT,
+            )
             operations = PhysicalGateOperations(arguments, fixture=fixture)
 
             with operations:
@@ -701,7 +673,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertEqual(parsed.load_transport, "ymodem")
         self.assertEqual(parsed.booti_compressed_crc32, "13572468")
         self.assertEqual(parsed.booti_uncompressed_size, 14530072)
-        self.assertEqual(parsed.target, GateTarget.BROWSER)
+        self.assertEqual(parsed.target, GateTarget.DESKTOP)
 
         network = _parse_args(
             required[:-2]
@@ -736,7 +708,15 @@ class MegrezGmacGateTests(unittest.TestCase):
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)
 
-        result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                target=GateTarget.NETWORK,
+                network_mode=NetworkMode.DIRECT,
+            ),
+            operations,
+        )
 
         self.assertFalse(result["passed"])
         self.assertEqual(
@@ -744,7 +724,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             ["invalidate", "address-check", "publish"],
         )
         self.assertIsNotNone(operations.published)
-        self.assertEqual(result["target"], "browser")
+        self.assertEqual(result["target"], "network")
 
     def test_network_target_passes_without_desktop_or_browser_evidence(self) -> None:
         evidence = complete_web_network_evidence(NetworkMode.PROXY)
@@ -766,16 +746,13 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertTrue(result["passed"], result)
         self.assertEqual(result["target"], "network")
         self.assertNotIn("javascript_status", result)
-        self.assertNotIn(DESKTOP_M4_MILESTONES[-1].encode(), operations.published[0])
-        self.assertNotIn(DESKTOP_M6_REMOTE_MARKER.encode(), operations.published[0])
         self.assertIn(b"late harmless log", operations.published[0])
 
     def test_desktop_target_passes_without_network_or_browser_evidence(self) -> None:
         evidence = complete_desktop_evidence()
         operations = FakeOperations(
             chunks=(
-                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n",
-                b"DEBIAN_BROWSER_M6_FAIL reason=browser-start-timeout\n" + evidence,
+                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n" + evidence,
                 b"late harmless log\n",
             ),
         )
@@ -798,8 +775,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertTrue(classify_physical_desktop_transcript(evidence).passed)
         self.assertTrue(
             classify_physical_desktop_transcript(
-                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n"
-                b"DEBIAN_BROWSER_M7_FAIL reason=process-search\n" + evidence
+                b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n" + evidence
             ).passed
         )
 
@@ -852,45 +828,8 @@ class MegrezGmacGateTests(unittest.TestCase):
             result["reason"], "fatal transcript marker: GMAC fatal bus error"
         )
 
-    def test_split_browser_network_markers_pass_without_icmp(self) -> None:
-        self.assertEqual(PHYSICAL_MILESTONES, EXPECTED_PHYSICAL_MILESTONES)
-        self.assertEqual(PHYSICAL_M7_MILESTONES, EXPECTED_PHYSICAL_M7_MILESTONES)
-        evidence = complete_browser_evidence()
-        operations = FakeOperations(
-            chunks=(
-                evidence[11:173],
-                evidence[173:-19],
-                evidence[-19:],
-                b"late harmless log\n",
-            ),
-            boot=evidence[:11],
-        )
-
-        result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
-
-        self.assertTrue(result["passed"], result)
-        self.assertEqual(
-            operations.events,
-            [
-                "invalidate",
-                "address-check",
-                "open",
-                "boot",
-                "read",
-                "read",
-                "read",
-                "drain",
-                "close",
-                "publish",
-            ],
-        )
-        self.assertNotIn("host_ping_count", result)
-        self.assertEqual(result["target"], "browser")
-        self.assertEqual(result["javascript_status"], "limited-pass")
-        self.assertIn(b"late harmless log", operations.published[0])
-
     def test_quiet_serial_interval_is_not_treated_as_disconnect(self) -> None:
-        evidence = complete_browser_evidence()
+        evidence = complete_desktop_evidence()
         operations = FakeOperations(chunks=(b"", evidence, b""))
 
         result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
@@ -898,7 +837,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertTrue(result["passed"], result)
 
     def test_failure_or_fatal_drain_closes_and_never_passes(self) -> None:
-        evidence = complete_browser_evidence()
+        evidence = complete_desktop_evidence()
         operations = FakeOperations(
             chunks=(evidence, b"Kernel panic - not syncing\n"),
         )
@@ -941,86 +880,6 @@ class MegrezGmacGateTests(unittest.TestCase):
 
         self.assertIn("close", operations.events)
         self.assertNotIn("publish", operations.events)
-
-    def test_classifier_rejects_missing_duplicate_reordered_and_guest_failure(
-        self,
-    ) -> None:
-        complete = complete_browser_evidence()
-        self.assertTrue(classify_physical_transcript(complete).passed)
-        cases = (
-            (
-                complete.replace(EXPECTED_PHYSICAL_MILESTONES[-1], b""),
-                "missing physical milestone",
-            ),
-            (
-                complete + b"\n" + EXPECTED_PHYSICAL_MILESTONES[-1],
-                "duplicate physical milestone",
-            ),
-            (
-                b"\n".join(reversed(EXPECTED_PHYSICAL_MILESTONES))
-                + b"\n" + (DESKTOP_M6_JAVASCRIPT_PREFIX + "limited-pass").encode()
-                + b"\n" + (DESKTOP_M6_READY_PREFIX + "limited-pass\n").encode()
-                + b"\n".join(EXPECTED_PHYSICAL_M7_MILESTONES),
-                "physical milestones out of order",
-            ),
-            (
-                complete + b"\nDEBIAN_NETWORK_M5_FAIL reason=guest-ping",
-                "fatal transcript marker: guest network failure",
-            ),
-        )
-        for transcript, reason in cases:
-            with self.subTest(reason=reason):
-                self.assertEqual(
-                    classify_physical_transcript(transcript).reason, reason
-                )
-
-    def test_classifier_requires_one_matching_ordered_browser_result(self) -> None:
-        for status in DESKTOP_M6_JAVASCRIPT_STATUSES:
-            with self.subTest(status=status):
-                self.assertTrue(
-                    classify_physical_transcript(
-                        complete_browser_evidence(status)
-                    ).passed
-                )
-
-        complete = complete_browser_evidence()
-        remote = DESKTOP_M6_REMOTE_MARKER.encode()
-        ready = (DESKTOP_M6_READY_PREFIX + "limited-pass").encode()
-        cases = (
-            (
-                complete + remote + b"\n",
-                "duplicate physical milestone",
-            ),
-            (
-                complete + ready + b"\n",
-                "missing or duplicate browser ready evidence",
-            ),
-            (
-                complete.replace(b"javascript=limited-pass", b"javascript=disabled"),
-                "missing or mismatched browser ready evidence",
-            ),
-            (
-                complete.replace(
-                    (DESKTOP_M6_JAVASCRIPT_PREFIX + "limited-pass\n").encode(),
-                    b"",
-                ),
-                "missing or duplicate JavaScript evidence",
-            ),
-            (
-                complete + b"DEBIAN_BROWSER_M6_FAIL reason=remote-window-timeout\n",
-                "fatal transcript marker: browser guest failure",
-            ),
-            (
-                complete + b"DEBIAN_BROWSER_M7_FAIL reason=home-title-timeout\n",
-                "fatal transcript marker: Baidu page guest failure",
-            ),
-        )
-        for transcript, reason in cases:
-            with self.subTest(reason=reason):
-                self.assertEqual(
-                    classify_physical_transcript(transcript).reason,
-                    reason,
-                )
 
     def test_address_probe_has_a_strict_process_contract(self) -> None:
         calls: list[tuple[str, ...]] = []
