@@ -484,7 +484,6 @@ class MegrezGmacGateTests(unittest.TestCase):
             "asterinas-desktop-m4-evidence.service",
             "asterinas-desktop-m6-browser.service",
             "asterinas-desktop-m7-baidu.service",
-            "asterinas-desktop-m8-browser-quality.service",
         ):
             self.assertIn(f"systemd.mask={service}", desktop_bootargs.split())
         for excluded in (

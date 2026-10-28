@@ -44,7 +44,6 @@ PROFILE_NAMES = (
     "desktop-m5-network",
     "desktop-drm",
     "browser-m5",
-    "desktop-m9-software",
     "browser-web",
 )
 

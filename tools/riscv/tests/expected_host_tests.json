@@ -23,8 +23,6 @@
     "tools.riscv.tests.test_debian_m5_network",
     "tools.riscv.tests.test_debian_m6_browser",
     "tools.riscv.tests.test_debian_m7_baidu",
-    "tools.riscv.tests.test_debian_m8_browser_quality",
-    "tools.riscv.tests.test_debian_m9_software",
     "tools.riscv.tests.test_debian_rootfs",
     "tools.riscv.tests.test_debian_signed_sources",
     "tools.riscv.tests.test_drm_cursor_gate",
@@ -123,7 +121,7 @@
     "tools.riscv.tests.test_wayland_demo",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 121,
+  "modules": 119,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -663,19 +661,6 @@
     "tools.riscv.tests.test_debian_m7_baidu.DebianDesktopM7BaiduGuestTests.test_guest_reports_bounded_home_and_search_process_failures",
     "tools.riscv.tests.test_debian_m7_baidu.DebianDesktopM7BaiduGuestTests.test_guest_reuses_the_serial_browser_console_when_m7_is_unset",
     "tools.riscv.tests.test_debian_m7_baidu.DebianDesktopM7BaiduGuestTests.test_guest_waits_for_home_render_before_announcing_home",
-    "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_guest_drives_bounded_browser_quality_contract",
-    "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_guest_rejects_invalid_environment_before_browser_actions",
-    "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_guest_reports_one_stable_failure_without_ready",
-    "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_profile_builder_and_unit_target_install_m8_contract",
-    "tools.riscv.tests.test_debian_m8_browser_quality.DesktopM8MarkerContractTests.test_marker_owner_values_are_frozen",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_builder_and_makefile_expose_m9_contract",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_classifier_accepts_ordered_m8_and_software_evidence",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_classifier_does_not_require_m8_quality_marker",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_classifier_rejects_missing_duplicate_reordered_and_failure",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_gate_stops_immediately_on_stage1_failure",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_profile_adds_vim_and_ffmpeg_without_fake_ffprobe_package",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareGuestTests.test_guest_smoke_emits_exact_pass_marker",
-    "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareGuestTests.test_guest_smoke_reports_a_bounded_failure",
     "tools.riscv.tests.test_debian_rootfs.DebianDesktopM3GateTests.test_classifier_requires_ordered_complete_desktop_evidence",
     "tools.riscv.tests.test_debian_rootfs.DebianDesktopM3GateTests.test_desktop_adapter_binds_schema_three_profile",
     "tools.riscv.tests.test_debian_rootfs.DebianDesktopM3GateTests.test_graphical_qemu_contract_adds_only_display_and_input_devices",
@@ -2569,5 +2554,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2435
+  "tests": 2422
 }

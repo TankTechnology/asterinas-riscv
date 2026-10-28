@@ -104,7 +104,6 @@ DESKTOP_MASK_BOOTARGS = " ".join(
         "asterinas-desktop-m4-evidence.service",
         "asterinas-desktop-m6-browser.service",
         "asterinas-desktop-m7-baidu.service",
-        "asterinas-desktop-m8-browser-quality.service",
     )
 )
 MAX_UBOOT_COMMAND_BYTES = 1024

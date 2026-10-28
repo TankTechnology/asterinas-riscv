@@ -8,11 +8,11 @@ refactoring work is tracked separately.
 
 - Current baseline after the first Phase 2 removal (parent commit
   `ce65773aa`).
-- Host modules: **121**
-- Host tests: **2,435**
+- Host modules: **119**
+- Host tests: **2,422**
 - Expected environment skips: **13**
-- Production Python files: **193**
-- Production shell files: **131**
+- Production Python files: **192**
+- Production shell files: **129**
 - Top-level shell entrypoints: **14**
 - Original Phase 0 baseline (`origin/main` at `3ceeccd04`):
   123 modules, 2,463 tests, 204 production Python files, 148 production shell
