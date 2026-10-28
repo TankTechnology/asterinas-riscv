@@ -271,6 +271,16 @@ record the red/green runs and current multicast-test limit.
 
 ## Unit tests
 
+Run the complete host-side suite in isolated workers before launching QEMU:
+
+```bash
+make test_riscv_host HOST_TEST_JOBS=32
+```
+
+The runner checks `tools/riscv/tests/expected_host_tests.json` for vanished
+tests and unexpected skips. Use `make test_riscv_host_list` to print the exact
+collected test IDs.
+
 Run the repository-contract tests before launching QEMU:
 
 ```bash
