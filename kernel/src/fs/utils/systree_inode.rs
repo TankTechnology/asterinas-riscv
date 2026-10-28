@@ -4,7 +4,7 @@ use alloc::borrow::Cow;
 use core::time::Duration;
 
 use aster_systree::{
-    SysAttr, SysBranchNode, SysNode, SysNodeId, SysNodeType, SysObj, SysStr, SysSymlink,
+    SysAttr, SysAttrSet, SysBranchNode, SysNode, SysNodeId, SysNodeType, SysObj, SysStr, SysSymlink,
 };
 
 use crate::{
@@ -203,7 +203,8 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
             if sysnode.is_attr_absent(name) {
                 return_errno_with_message!(Errno::ENOENT, "attribute is not present");
             }
-            let Some(attr) = sysnode.node_attrs().get(name) else {
+            let attrs = sysnode.node_attrs();
+            let Some(attr) = attrs.get(name) else {
                 return_errno_with_message!(Errno::ENOENT, "child node or attribute not found");
             };
 
@@ -236,7 +237,8 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
         if sysnode.is_attr_absent(name) {
             return_errno_with_message!(Errno::ENOENT, "attribute is not present");
         }
-        let Some(attr) = sysnode.node_attrs().get(name) else {
+        let attrs = sysnode.node_attrs();
+        let Some(attr) = attrs.get(name) else {
             return_errno_with_message!(Errno::ENOENT, "child node or attribute not found");
         };
 
@@ -266,7 +268,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
             SysTreeNodeKind::Branch(branch_node) => {
                 let attrs = branch_node.node_attrs();
                 let attr_iter = AttrDentryIter::new(
-                    Some((attrs.iter(), branch_node.as_ref())),
+                    Some((attrs, branch_node.as_ref())),
                     self.metadata().ino,
                     min_ino,
                 );
@@ -278,7 +280,7 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
             SysTreeNodeKind::Leaf(leaf_node) => {
                 let attrs = leaf_node.node_attrs();
                 let attr_iter = AttrDentryIter::new(
-                    Some((attrs.iter(), leaf_node.as_ref())),
+                    Some((attrs, leaf_node.as_ref())),
                     self.metadata().ino,
                     min_ino,
                 );
@@ -632,29 +634,41 @@ impl<KInode: SysTreeInodeTy + Send + Sync + 'static> Inode for KInode {
 }
 
 // Update AttrDentryIter to filter by min_ino
-struct AttrDentryIter<'a, I: Iterator<Item = &'a SysAttr>> {
-    attrs_and_node: Option<(I, &'a dyn SysNode)>,
+struct AttrDentryIter<'a> {
+    /// The attribute set and the node it belongs to. The set is held by `Arc`,
+    /// so the iterator keeps it alive while it yields entries.
+    attrs_and_node: Option<(Arc<SysAttrSet>, &'a dyn SysNode)>,
+    next_index: usize,
     dir_ino: Ino,
     min_ino: Ino,
 }
 
-impl<'a, I: Iterator<Item = &'a SysAttr>> AttrDentryIter<'a, I> {
-    fn new(attrs_and_node: Option<(I, &'a dyn SysNode)>, dir_ino: Ino, min_ino: Ino) -> Self {
+impl<'a> AttrDentryIter<'a> {
+    fn new(
+        attrs_and_node: Option<(Arc<SysAttrSet>, &'a dyn SysNode)>,
+        dir_ino: Ino,
+        min_ino: Ino,
+    ) -> Self {
         Self {
             attrs_and_node,
+            next_index: 0,
             dir_ino,
             min_ino,
         }
     }
 }
 
-impl<'a, I: Iterator<Item = &'a SysAttr>> Iterator for AttrDentryIter<'a, I> {
+impl<'a> Iterator for AttrDentryIter<'a> {
     type Item = Dentry;
 
     fn next(&mut self) -> Option<Dentry> {
-        let (iter, sys_node) = self.attrs_and_node.as_mut()?;
+        let Some((attrs, sys_node)) = self.attrs_and_node.as_ref() else {
+            return None;
+        };
 
-        for attr in iter {
+        for attr in attrs.iter().skip(self.next_index) {
+            self.next_index += 1;
+
             if sys_node.is_attr_absent(attr.name()) {
                 continue; // Skip hidden attributes
             }

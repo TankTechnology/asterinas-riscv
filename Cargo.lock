@@ -159,6 +159,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-device"
+version = "0.1.0"
+dependencies = [
+ "aster-systree",
+ "aster-util",
+ "component",
+ "device-id",
+ "ostd",
+ "spin 0.9.9",
+]
+
+[[package]]
 name = "aster-dwmac"
 version = "0.1.0"
 dependencies = [
@@ -234,6 +246,7 @@ dependencies = [
  "aster-block",
  "aster-cmdline",
  "aster-console",
+ "aster-device",
  "aster-dwmac",
  "aster-framebuffer",
  "aster-fuse",
@@ -427,6 +440,7 @@ dependencies = [
  "aster-util",
  "bitflags 2.13.1",
  "component",
+ "id-alloc",
  "inherit-methods-macro",
  "ostd",
  "spin 0.9.9",
