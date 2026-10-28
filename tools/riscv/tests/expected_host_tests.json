@@ -1,5 +1,5 @@
 {
-  "commit": "495787bcdb4f85c14186a3e50821db3dcf998f3a",
+  "commit": "ef35d98a03d9ca5aa9c525df04150af88cc8cf22",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -104,6 +104,7 @@
     "tools.riscv.tests.test_perf_baseline_audit",
     "tools.riscv.tests.test_perf_collect",
     "tools.riscv.tests.test_perf_concurrency",
+    "tools.riscv.tests.test_physical_boot_contract",
     "tools.riscv.tests.test_physical_graphics_gate",
     "tools.riscv.tests.test_physical_graphics_qemu_gate",
     "tools.riscv.tests.test_powervr_dma_stage",
@@ -126,7 +127,7 @@
     "tools.riscv.tests.test_wayland_demo",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 124,
+  "modules": 125,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -2180,6 +2181,11 @@
     "tools.riscv.tests.test_perf_collect.CollectSamplesTests.test_retains_warmup_but_does_not_count_it",
     "tools.riscv.tests.test_perf_collect.CollectSamplesTests.test_timeout_retains_logs_without_publishing_samples",
     "tools.riscv.tests.test_perf_concurrency.ConcurrencyTests.test_schbench_stderr_selects_request_not_wakeup_or_rps",
+    "tools.riscv.tests.test_physical_boot_contract.PhysicalBootContractTests.test_boot_stability_keeps_recovery_but_drops_network_inputs",
+    "tools.riscv.tests.test_physical_boot_contract.PhysicalBootContractTests.test_desktop_start_drops_recovery_but_keeps_the_local_surface",
+    "tools.riscv.tests.test_physical_boot_contract.PhysicalBootContractTests.test_filtering_rejects_a_noncanonical_base",
+    "tools.riscv.tests.test_physical_boot_contract.PhysicalBootContractTests.test_physical_composer_matches_the_frozen_golden",
+    "tools.riscv.tests.test_physical_boot_contract.PhysicalBootContractTests.test_physical_modules_do_not_redefine_the_base_tokens",
     "tools.riscv.tests.test_physical_graphics_gate.DomStageServerTests.test_records_sanitized_stage_http_decisions",
     "tools.riscv.tests.test_physical_graphics_gate.DomStageServerTests.test_rejects_a_stage_regression_and_bounds_waiting",
     "tools.riscv.tests.test_physical_graphics_gate.DomStageServerTests.test_serves_the_frozen_page_and_accepts_only_nonce_bound_stages",
@@ -2608,5 +2614,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2471
+  "tests": 2476
 }
