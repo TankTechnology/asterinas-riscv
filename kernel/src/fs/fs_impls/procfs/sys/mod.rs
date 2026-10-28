@@ -22,6 +22,10 @@ mod kernel;
 mod net;
 mod vm;
 
+pub(crate) fn boot_id_text() -> &'static str {
+    kernel::boot_id_text()
+}
+
 /// Represents the inode at `/proc/sys`.
 pub struct SysDirOps;
 

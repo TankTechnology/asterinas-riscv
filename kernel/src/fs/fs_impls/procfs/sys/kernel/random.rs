@@ -55,6 +55,9 @@ impl ProcDirOps for RandomDirOps {
 
 struct BootIdFileOps;
 
+static BOOT_ID: Once<[u8; 16]> = Once::new();
+static BOOT_ID_TEXT: Once<[u8; 37]> = Once::new();
+
 fn new_uuid() -> [u8; 16] {
     let mut value = [0; 16];
     getrandom(&mut value);
@@ -81,6 +84,16 @@ fn uuid_text(value: &[u8; 16]) -> [u8; 37] {
     output
 }
 
+/// Return the stable boot identity in the same UUID form exposed by procfs.
+///
+/// The value is initialized lazily so the procfs implementation and the early
+/// serial handoff marker share exactly one identity for the whole boot.
+pub(crate) fn boot_id_text() -> &'static str {
+    let text = BOOT_ID_TEXT.call_once(|| uuid_text(BOOT_ID.call_once(new_uuid)));
+    // `uuid_text` only writes ASCII hexadecimal digits, dashes, and a newline.
+    core::str::from_utf8(&text[..36]).expect("boot id text is ASCII")
+}
+
 impl BootIdFileOps {
     fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
         ProcFile::new(Self, parent, mkmod!(a+r))
@@ -89,11 +102,9 @@ impl BootIdFileOps {
 
 impl ProcFileOps for BootIdFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
-        static BOOT_ID: Once<[u8; 16]> = Once::new();
-
-        let boot_id = BOOT_ID.call_once(new_uuid);
         let mut printer = VmPrinter::new_skip(writer, offset);
-        printer.write_bytes(&uuid_text(boot_id))?;
+        printer.write_bytes(boot_id_text().as_bytes())?;
+        printer.write_bytes(b"\n")?;
         Ok(printer.bytes_written())
     }
 }
