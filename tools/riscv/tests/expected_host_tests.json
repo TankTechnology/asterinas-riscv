@@ -1,5 +1,5 @@
 {
-  "commit": "318816505aafdfddf6be9f777c1945707303325d",
+  "commit": "ce65773aa",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -16,7 +16,6 @@
     "tools.riscv.tests.test_debian_browser_m5_qemu_gate",
     "tools.riscv.tests.test_debian_browser_m5_runtime_gate",
     "tools.riscv.tests.test_debian_browser_web",
-    "tools.riscv.tests.test_debian_daily_use_gate",
     "tools.riscv.tests.test_debian_debug_console",
     "tools.riscv.tests.test_debian_desktop_drm",
     "tools.riscv.tests.test_debian_desktop_m4_framebuffer_probe",
@@ -125,7 +124,7 @@
     "tools.riscv.tests.test_wayland_demo",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 123,
+  "modules": 122,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -471,28 +470,6 @@
     "tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_trust_checker_accepts_exact_jit_overlay_runtime",
     "tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_unit_launcher_and_evidence_audit_actual_sandbox_and_tls",
     "tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_uploaded_baidu_screenshot_is_bound_to_fixture_digest",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseMakefileTests.test_make_target_is_explicit_and_networkless",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseManifestTests.test_requires_the_schema_four_daily_use_profile",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_accepts_a_last_login_line",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_accepts_complete_two_boot_transcript",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_commands_are_nonce_bound_and_bounded",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_apt_failure",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_duplicate_or_missing_kernel_starts",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_invalid_nonce_and_epoch",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_kernel_panic_and_release_mismatch",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_login_and_password_prompts",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_missing_autologin_identity",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_nonce_mismatch",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_nonzero_command_status",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_out_of_order_milestones",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_sigpwr_fallback",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_stale_guest_clock",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_wrong_resolver_and_dns_failure",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseProtocolTests.test_rejects_wrong_tty",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseQemuArgvTests.test_argv_adds_one_slirp_nic_and_allows_guest_reboot",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseSerialProtocolTests.test_autologin_rejects_a_login_prompt",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseSerialProtocolTests.test_wait_for_line_ignores_the_echoed_command",
-    "tools.riscv.tests.test_debian_daily_use_gate.DailyUseSerialProtocolTests.test_wait_for_line_rejects_a_marker_only_inside_the_echo",
     "tools.riscv.tests.test_debian_debug_console.DebugConsoleProtocolTests.test_accepts_qemu_virtio_root_partition",
     "tools.riscv.tests.test_debian_debug_console.DebugConsoleProtocolTests.test_allows_async_kernel_logs_between_protocol_lines",
     "tools.riscv.tests.test_debian_debug_console.DebugConsoleProtocolTests.test_allows_unframed_ansi_boot_logs",
@@ -2599,5 +2576,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2463
+  "tests": 2441
 }

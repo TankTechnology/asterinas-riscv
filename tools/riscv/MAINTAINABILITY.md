@@ -6,13 +6,17 @@ refactoring work is tracked separately.
 
 ## Baseline
 
-- Source: `origin/main` at `3ceeccd04` before the maintainability branch.
-- Host modules: **123**
-- Host tests: **2,463**
+- Current baseline after the first Phase 2 removal (parent commit
+  `ce65773aa`).
+- Host modules: **122**
+- Host tests: **2,441**
 - Expected environment skips: **13**
-- Production Python files: **204**
-- Production shell files: **148**
-- Top-level shell entrypoints: **15**
+- Production Python files: **194**
+- Production shell files: **131**
+- Top-level shell entrypoints: **14**
+- Original Phase 0 baseline (`origin/main` at `3ceeccd04`):
+  123 modules, 2,463 tests, 204 production Python files, 148 production shell
+  files, 15 top-level shell entrypoints.
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**
 - Canonical command:

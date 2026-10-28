@@ -1,4 +1,0 @@
-[Unit]
-Description=System Initialization
-Requires=local-fs.target swap.target
-Conflicts=emergency.service emergency.target

@@ -8,7 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from tools.riscv.debian.rootfs import daily_use_gate
 from tools.riscv.debian.rootfs import desktop_m3_gate
 from tools.riscv.debian.rootfs import desktop_m4_gate
 from tools.riscv.debian.rootfs import desktop_m5_network_gate
@@ -23,10 +22,6 @@ M4 = (
     "console=ttyS0 loglevel=4 "
     "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
     "init=/init -- --root-init=systemd"
-)
-DAILY = (
-    "console=ttyS0 loglevel=4 init=/init "
-    "systemd.unit=multi-user.target -- --root-init=systemd"
 )
 M5 = (
     "console=ttyS0 loglevel=4 init=/init "
@@ -75,7 +70,6 @@ class BootargsComposerTests(unittest.TestCase):
         )
         self.assertEqual(desktop_m3_gate.DESKTOP_M3_BOOTARGS, BASE)
         self.assertEqual(desktop_m4_gate.DesktopM4Operations.BOOTARGS, M4)
-        self.assertEqual(daily_use_gate.DAILY_USE_BOOTARGS, DAILY)
         self.assertEqual(desktop_m5_qemu_gate.DESKTOP_M5_QEMU_BOOTARGS, M5)
 
     def test_network_variants_match_frozen_goldens(self) -> None:
@@ -107,7 +101,6 @@ class BootargsComposerTests(unittest.TestCase):
             "systemd_m2_gate.py",
             "desktop_m3_gate.py",
             "desktop_m4_gate.py",
-            "daily_use_gate.py",
             "desktop_m5_qemu_gate.py",
         )
         for name in modules:
