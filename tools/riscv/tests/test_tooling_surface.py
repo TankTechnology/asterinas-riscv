@@ -25,6 +25,7 @@ class ToolingSurfaceTests(unittest.TestCase):
             for path in TOOLS.rglob(f"*{suffix}")
             if path.is_file()
             and "tests" not in path.parts
+            and "archive" not in path.parts
             and "__pycache__" not in path.parts
         ]
 
