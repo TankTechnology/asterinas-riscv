@@ -322,7 +322,7 @@ class PersistentShellContractTests(unittest.TestCase):
         downloaded_packages = (("bash", "riscv64", "1", "a" * 64),)
         manifest = SimpleNamespace(
             schema_version=1,
-            profile="minimal-m1",
+            profile="minimal",
             root_image_sha256=root_artifact.sha256,
             signed_metadata_sha256=in_release_artifact.sha256,
             downloaded_packages=downloaded_packages,
@@ -364,7 +364,7 @@ class PersistentShellContractTests(unittest.TestCase):
         downloaded_packages = (("bash", "riscv64", "1", "a" * 64),)
         valid = {
             "schema_version": 1,
-            "profile": "minimal-m1",
+            "profile": "minimal",
             "root_image_sha256": root_artifact.sha256,
             "signed_metadata_sha256": in_release_artifact.sha256,
             "downloaded_packages": downloaded_packages,

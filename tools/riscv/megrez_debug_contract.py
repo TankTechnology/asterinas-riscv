@@ -36,7 +36,7 @@ from tools.riscv.megrez_contract import (
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
-ROOT_IMAGE_BYTES = get_profile("minimal-m1").root_size_bytes
+ROOT_IMAGE_BYTES = get_profile("minimal").root_size_bytes
 BROWSER_ROOT_IMAGE_BYTES = get_profile("browser-web").root_size_bytes
 ROOT_IMAGE_SIZES = frozenset(
     get_profile(name).root_size_bytes for name in PROFILE_NAMES

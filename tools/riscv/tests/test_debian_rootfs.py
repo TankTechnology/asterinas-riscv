@@ -369,7 +369,7 @@ def _run_image_creation(
         [
             "/bin/bash",
             "-c",
-            'source "$1"; PROFILE=minimal-m1; configure_profile 0; '
+            'source "$1"; PROFILE=minimal; configure_profile 0; '
             'WORK_DIR="$2"; create_and_verify_image',
             "builder-image-test",
             str(BUILD_SCRIPT),
@@ -489,7 +489,7 @@ def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Pat
         )
         tool_path.chmod(0o755)
     # Profile lookup is part of the builder's normal startup path, including
-    # minimal-m1; keep a real interpreter available even when the other tools
+    # minimal; keep a real interpreter available even when the other tools
     # are deliberately fake.
     python = bin_directory / "python3"
     python.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n', encoding="utf-8")
@@ -2621,12 +2621,12 @@ class DebianRootfsBuilderTests(unittest.TestCase):
     def test_prints_exact_systemd_ext4_m3_package_contract(self) -> None:
         result = _run_builder(
             "--profile",
-            "systemd-ext4-m3",
+            "systemd-ext4",
             "--print-packages",
             cwd=self.directory,
         )
 
-        profile = get_profile("systemd-ext4-m3")
+        profile = get_profile("systemd-ext4")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), list(profile.requested_packages))
         self.assertEqual(profile.filesystem_type, "ext4")
@@ -2668,7 +2668,7 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         cases = (
             (("--profile", "desktop"), "unknown rootfs profile"),
             (
-                ("--profile", "systemd-m2", "--profile", "minimal-m1"),
+                ("--profile", "systemd-m2", "--profile", "minimal"),
                 "duplicate argument: --profile",
             ),
         )
@@ -2781,7 +2781,7 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 """
-        for profile in ("minimal-m1", "systemd-m2"):
+        for profile in ("minimal", "systemd-m2"):
             with self.subTest(profile=profile):
                 work_directory = self.directory / f"configure-{profile}"
                 stage = work_directory / "stage"
@@ -2808,7 +2808,7 @@ WantedBy=multi-user.target
                 )
                 unit = stage / "etc/systemd/system/asterinas-debian-m2.service"
                 wants = stage / "etc/systemd/system/multi-user.target.wants" / unit.name
-                if profile == "minimal-m1":
+                if profile == "minimal":
                     self.assertFalse(evidence.exists())
                     self.assertFalse(shutdown_sync.exists())
                     self.assertFalse(unit.exists())
@@ -4549,18 +4549,18 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
             encoding="utf-8",
         )
         arguments = self.writer_arguments()
-        arguments.extend(("--profile", "systemd-ext4-m3"))
+        arguments.extend(("--profile", "systemd-ext4"))
 
         result = self.run_writer(arguments)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(self.output.read_text())
         self.assertEqual(payload["schema_version"], 9)
-        self.assertEqual(payload["profile"], "systemd-ext4-m3")
+        self.assertEqual(payload["profile"], "systemd-ext4")
         self.assertEqual(payload["filesystem"]["type"], "ext4")
         manifest = load_manifest(self.output)
         validated = validate_frozen_root(self.image, manifest, self.packages_lock)
-        self.assertEqual(validated.profile, "systemd-ext4-m3")
+        self.assertEqual(validated.profile, "systemd-ext4")
 
     def test_refuses_output_equal_to_any_input(self) -> None:
         input_paths = (
@@ -4709,7 +4709,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             profile.identity_packages,
-            get_profile("minimal-m1").identity_packages
+            get_profile("minimal").identity_packages
             + (
                 "systemd",
                 "systemd-sysv",
@@ -4740,7 +4740,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
         manifest = load_manifest(manifest_path)
         validated = validate_frozen_root(self.image, manifest, packages_lock)
         self.assertEqual(validated.schema_version, 1)
-        self.assertEqual(validated.profile, "minimal-m1")
+        self.assertEqual(validated.profile, "minimal")
 
     def test_schema_v2_binds_systemd_profile_and_packages(self) -> None:
         packages_lock = self.directory / "m2-packages.lock"

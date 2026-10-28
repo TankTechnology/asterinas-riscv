@@ -794,7 +794,7 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 load_overlay_spec(duplicate, expected_profile="browser-web")
 
             with self.assertRaisesRegex(OverlayError, "profile does not match"):
-                load_overlay_spec(duplicate, expected_profile="minimal-m1")
+                load_overlay_spec(duplicate, expected_profile="minimal")
 
     def test_materializes_deterministic_image_without_changing_base(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

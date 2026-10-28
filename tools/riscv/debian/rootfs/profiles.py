@@ -34,8 +34,8 @@ _M1_IDENTITY_PACKAGES = (
 )
 
 _PROFILES = {
-    "minimal-m1": RootfsProfile(
-        name="minimal-m1",
+    "minimal": RootfsProfile(
+        name="minimal",
         schema_version=1,
         root_label="ASTER_DEBIANROOT",
         root_uuid="7b7ad749-77d0-4e59-89e4-e117244a70aa",
@@ -69,8 +69,8 @@ _PROFILES = {
             "dbus",
         ),
     ),
-    "systemd-ext4-m3": RootfsProfile(
-        name="systemd-ext4-m3",
+    "systemd-ext4": RootfsProfile(
+        name="systemd-ext4",
         schema_version=9,
         root_label="ASTER_DEBIANE4",
         root_uuid="d6f1c3c9-0e34-4e98-9e2e-6fca8e3dd1b4",

@@ -86,8 +86,8 @@ many internal cross-references even when nothing current enters them.
 | Surface | Decision | Why |
 |---|---|---|
 | `browser-web` profile | Keep | Current daily image, QEMU browser gate, physical graphics and Firefox daily-use gates. It is still built through the documented `build_rootfs.sh` command rather than a Makefile target; add a real build target during cleanup. |
-| `minimal-m1` profile | Keep | Default builder profile; persistent Debian shell and board-install contract. |
-| `systemd-ext4-m3` profile | Keep for now | The only remaining ext4/systemd qualifier; can absorb the old `systemd-m2` boot check. |
+| `minimal` profile | Keep | Default builder profile; persistent Debian shell and board-install contract. |
+| `systemd-ext4` profile | Keep for now | The only remaining ext4/systemd qualifier; can absorb the old `systemd-m2` boot check. |
 | `desktop-drm` profile and DRM gates | Paused | GPU/virtio-gpu work is frozen; do not delete or promote it in this cleanup. |
 | M1 two-boot rootfs gate | Keep | Proves board-install persistence independently of the desktop image. |
 | browser-web QEMU gate | Keep | Primary QEMU acceptance for the current image. |
@@ -106,7 +106,7 @@ deletion batch is intentionally small.
 
 | Candidate | Decision | Dependency that must move first |
 |---|---|---|
-| `systemd-m2` profile | Consolidate | Retarget its systemd reboot/power coverage to `systemd-ext4-m3` before removing the profile. |
+| `systemd-m2` profile | Consolidate | Retarget its systemd reboot/power coverage to `systemd-ext4` before removing the profile. |
 | `desktop-m3`, `desktop-m4` profiles and gate entrypoints | Archive | Keep the shared `desktop_m3_gate.py` helpers and `DESKTOP_M4_MILESTONES`; current physical/debug gates import them. |
 | `desktop-m4-firefox` and `test_riscv_debian_daily_use_gate` | Archive/delete | The Makefile target is broken: it passes empty `--boot-timeout ""` and `--command-timeout ""` to a positive-float parser (`rootfs_gate.py:463-464`). The profile was superseded by `browser-web` on the same day. |
 | `desktop-m5-network` profile, M5 `browser` target | Consolidate | Keep the M5 network service/evidence layer installed by browser-web; only the profile identity and its browser entrypoint are historical. |

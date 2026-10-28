@@ -1255,7 +1255,7 @@ class BrowserWebContractTests(unittest.TestCase):
                 [
                     str(ROOTFS / "build_rootfs.sh"),
                     "--profile",
-                    "minimal-m1",
+                    "minimal",
                     "--output-dir",
                     str(root / "output"),
                     "--cache-dir",
@@ -2372,7 +2372,7 @@ generate_fontconfig_cache "$stage" "$3"
         for profile, expected in (
             ("desktop-m5-network", 0),
             ("browser-web", 0),
-            ("minimal-m1", 1),
+            ("minimal", 1),
         ):
             with self.subTest(profile=profile):
                 result = subprocess.run(

@@ -28,7 +28,7 @@ from tools.riscv.debian.rootfs.profiles import (
 from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
 
 
-_M1_PROFILE = get_profile("minimal-m1")
+_M1_PROFILE = get_profile("minimal")
 ROOT_LABEL = _M1_PROFILE.root_label
 ROOT_UUID = _M1_PROFILE.root_uuid
 INSTALL_PACKAGES = _M1_PROFILE.requested_packages
@@ -430,7 +430,7 @@ def write_manifest(
     debian_release: str,
     build_timestamp: str,
     tool_versions: Sequence[str],
-    profile_name: str = "minimal-m1",
+    profile_name: str = "minimal",
     signed_source_files: Mapping[str, Path] | None = None,
 ) -> None:
     """Validates build inputs and atomically writes a canonical manifest."""
@@ -792,7 +792,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     writer.add_argument("--debian-release", required=True)
     writer.add_argument("--build-timestamp", required=True)
     writer.add_argument("--tool-version", action="append", required=True)
-    writer.add_argument("--profile", default="minimal-m1")
+    writer.add_argument("--profile", default="minimal")
     writer.add_argument("--signed-source", action="append", default=[])
     verifier = subparsers.add_parser("verify")
     verifier.add_argument("--image", required=True, type=Path)

@@ -351,7 +351,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
     def test_old_schema_rejects_signed_source_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             inputs = self._writer_inputs(Path(directory))
-            inputs["profile_name"] = "minimal-m1"
+            inputs["profile_name"] = "minimal"
             with self.assertRaisesRegex(ContractError, "only valid for browser-m5"):
                 write_manifest(**inputs)
 

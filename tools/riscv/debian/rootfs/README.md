@@ -28,16 +28,16 @@ depth-one indexed truncation with empty-leaf compaction. Deeper tree splitting
 and compaction remain rejected, so the profile deliberately disables
 `metadata_csum`, `64bit`, `flex_bg`, and `orphan_file` while enabling `extent`.
 
-The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
+The isolated builder profile `systemd-ext4` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
 The Makefile entry point is `make build_riscv_debian_systemd_ext4`; after the
 container build, verify the published image with:
 
 ```bash
 tools/riscv/debian/rootfs/verify_ext4_journal.sh \
-  --image target/debian-riscv/systemd-ext4-m3/rootfs/debian-root.ext2 \
-  --manifest target/debian-riscv/systemd-ext4-m3/rootfs/rootfs-manifest.json \
-  --packages-lock target/debian-riscv/systemd-ext4-m3/rootfs/packages.lock
+  --image target/debian-riscv/systemd-ext4/rootfs/debian-root.ext2 \
+  --manifest target/debian-riscv/systemd-ext4/rootfs/rootfs-manifest.json \
+  --packages-lock target/debian-riscv/systemd-ext4/rootfs/packages.lock
 ```
 
 Pass Stage1 `--root-fs=ext4 --root-init=systemd` when booting that profile;

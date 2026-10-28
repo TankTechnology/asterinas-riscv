@@ -32,7 +32,7 @@ from tools.riscv.megrez_preboard import _PinnedPermitOutput
 
 _MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 _PARTITION_SIZE_BYTES = 4 * 1024 * 1024 * 1024
-_ROOT_IMAGE_SIZE_BYTES = get_profile("minimal-m1").root_size_bytes
+_ROOT_IMAGE_SIZE_BYTES = get_profile("minimal").root_size_bytes
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _REASON_RE = re.compile(r"\A[a-z][a-z0-9-]*\Z")
 _RESULT_KEYS = {

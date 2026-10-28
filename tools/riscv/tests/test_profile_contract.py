@@ -80,7 +80,7 @@ class ProfileConsumersTests(unittest.TestCase):
         source = BUILD_ROOTFS.read_text(encoding="utf-8")
 
         self.assertIn("tools.riscv.debian.rootfs.profiles --profile", source)
-        self.assertNotIn('if [[ "$PROFILE" == minimal-m1 ]]; then', source)
+        self.assertNotIn('if [[ "$PROFILE" == minimal ]]; then', source)
         for duplicate in (
             'ROOT_LABEL="ASTER_DEBIANROOT"',
             'ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"',
@@ -97,7 +97,7 @@ class ProfileConsumersTests(unittest.TestCase):
         self.assertEqual(debug_contract.ROOT_IMAGE_SIZES, expected)
         self.assertEqual(
             debug_contract.ROOT_IMAGE_BYTES,
-            profiles.get_profile("minimal-m1").root_size_bytes,
+            profiles.get_profile("minimal").root_size_bytes,
         )
         self.assertEqual(
             debug_contract.BROWSER_ROOT_IMAGE_BYTES,
@@ -105,7 +105,7 @@ class ProfileConsumersTests(unittest.TestCase):
         )
 
     def test_shell_contracts_use_the_minimal_profile(self) -> None:
-        expected = profiles.get_profile("minimal-m1").root_size_bytes
+        expected = profiles.get_profile("minimal").root_size_bytes
 
         self.assertEqual(shell_contract._ROOT_IMAGE_SIZE_BYTES, expected)
         self.assertEqual(shell_board._ROOT_IMAGE_SIZE_BYTES, expected)

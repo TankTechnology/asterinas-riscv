@@ -7,7 +7,7 @@ umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
-readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m3/rootfs"
+readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M4_FIREFOX_OUTPUT_DIR="target/debian-riscv/desktop-m4-firefox/rootfs"
@@ -53,7 +53,7 @@ MIRROR="$DEFAULT_MIRROR"
 SUITE="$SUPPORTED_SUITE"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
-PROFILE="minimal-m1"
+PROFILE="minimal"
 FIREFOX_JIT_PACKAGE_DIR=""
 ROOT_LABEL=""
 ROOT_UUID=""
@@ -197,7 +197,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | browser-m5 | browser-web | desktop-drm) ;;
+        minimal | systemd-m2 | systemd-ext4 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -236,7 +236,7 @@ configure_profile() {
         OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
-    elif [[ "$PROFILE" == systemd-ext4-m3 && "$has_output_dir" == 0 ]]; then
+    elif [[ "$PROFILE" == systemd-ext4 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_EXT4_M3_OUTPUT_DIR"
     fi
 }
@@ -1114,7 +1114,7 @@ if [[ $- == *i* ]]; then
     PS1='asterinas-debian# '
 fi
 EOF
-    if [[ "$PROFILE" != minimal-m1 ]]; then
+    if [[ "$PROFILE" != minimal ]]; then
         # systemd's shutdown helper skips its final sync when it detects a
         # container. Preserve root filesystem metadata on Asterinas' reboot
         # path.
@@ -1122,7 +1122,7 @@ EOF
             "$script_directory/shutdown_sync.sh" \
             "$stage/usr/lib/systemd/system-shutdown/asterinas-sync"
     fi
-    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
+    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         install -D -m 0755 -- \
             "$script_directory/systemd_m2_evidence.sh" \
