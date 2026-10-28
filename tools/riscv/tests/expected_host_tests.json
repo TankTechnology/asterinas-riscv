@@ -1,5 +1,5 @@
 {
-  "commit": "3ceeccd042a01344d380e89bde4362db6aa615c3",
+  "commit": "e3ee22d6f92373509d073381c667f397e7ee5da3",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -107,6 +107,7 @@
     "tools.riscv.tests.test_physical_graphics_qemu_gate",
     "tools.riscv.tests.test_powervr_dma_stage",
     "tools.riscv.tests.test_powervr_release_gate",
+    "tools.riscv.tests.test_profile_contract",
     "tools.riscv.tests.test_qemu_uboot_booti",
     "tools.riscv.tests.test_qemu_uboot_contracts",
     "tools.riscv.tests.test_rgx_firmware_layout",
@@ -124,7 +125,7 @@
     "tools.riscv.tests.test_wayland_demo",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 122,
+  "modules": 123,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -2252,6 +2253,12 @@
     "tools.riscv.tests.test_powervr_release_gate.PowerVrReleaseGateTests.test_offline_dtb_is_uploaded_instead_of_read_from_mmc",
     "tools.riscv.tests.test_powervr_release_gate.PowerVrReleaseGateTests.test_run_bundle_and_lzma_must_match_the_frozen_kernel",
     "tools.riscv.tests.test_powervr_release_gate.PowerVrReleaseGateTests.test_test_kernel_is_rejected_before_serial_open",
+    "tools.riscv.tests.test_profile_contract.ProfileConsumersTests.test_builder_uses_profile_data_for_every_profile",
+    "tools.riscv.tests.test_profile_contract.ProfileConsumersTests.test_debug_contract_sizes_come_from_profiles",
+    "tools.riscv.tests.test_profile_contract.ProfileConsumersTests.test_shell_contracts_use_the_minimal_profile",
+    "tools.riscv.tests.test_profile_contract.ProfileRegistryTests.test_cli_output_is_the_builder_contract",
+    "tools.riscv.tests.test_profile_contract.ProfileRegistryTests.test_registry_is_public_and_unique",
+    "tools.riscv.tests.test_profile_contract.ProfileRegistryTests.test_unknown_profile_is_rejected",
     "tools.riscv.tests.test_qemu_uboot_booti.AuditSerialLogTests.test_accepts_complete_ordered_console_loss_diagnostics",
     "tools.riscv.tests.test_qemu_uboot_booti.AuditSerialLogTests.test_accepts_each_megrez_ad_envelope_and_normalizes_ap_order",
     "tools.riscv.tests.test_qemu_uboot_booti.AuditSerialLogTests.test_accepts_one_complete_marker_terminated_boot",
@@ -2595,5 +2602,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2460
+  "tests": 2466
 }

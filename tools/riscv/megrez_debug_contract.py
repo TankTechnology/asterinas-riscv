@@ -26,12 +26,17 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
+from tools.riscv.debian.rootfs.profiles import PROFILE_NAMES, get_profile
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
-ROOT_IMAGE_BYTES = 1024 * 1024 * 1024
-BROWSER_ROOT_IMAGE_BYTES = 2 * ROOT_IMAGE_BYTES
-ROOT_IMAGE_SIZES = frozenset((ROOT_IMAGE_BYTES, BROWSER_ROOT_IMAGE_BYTES))
+ROOT_IMAGE_BYTES = get_profile("minimal-m1").root_size_bytes
+BROWSER_ROOT_IMAGE_BYTES = get_profile("browser-web").root_size_bytes
+ROOT_IMAGE_SIZES = frozenset(
+    get_profile(name).root_size_bytes for name in PROFILE_NAMES
+)
+ROOT_IMAGE_MIN_BYTES = min(ROOT_IMAGE_SIZES)
+ROOT_IMAGE_MAX_BYTES = max(ROOT_IMAGE_SIZES)
 DEBIAN_BROWSER_MIN_REBOOT_AFTER = 600
 ARTIFACT_ORDER = ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
 DEBIAN_BROWSER_ARTIFACT_ORDER = (
@@ -113,7 +118,7 @@ class DebugContractError(ValueError):
 
 def _artifact_size_bounds(name: str) -> tuple[int, int]:
     if name == "root_image":
-        return ROOT_IMAGE_BYTES, BROWSER_ROOT_IMAGE_BYTES
+        return ROOT_IMAGE_MIN_BYTES, ROOT_IMAGE_MAX_BYTES
     if name in METADATA_ARTIFACT_NAMES:
         return 1, METADATA_ARTIFACT_BYTES
     return 1, MAX_ARTIFACT_BYTES
@@ -151,7 +156,9 @@ class ArtifactIdentity:
             raise DebugContractError("artifact must be a regular non-symlink file")
         minimum_size, maximum_size = _artifact_size_bounds(name)
         if name == "root_image" and before.st_size not in ROOT_IMAGE_SIZES:
-            raise DebugContractError("root image must be exactly 1 GiB or 2 GiB")
+            raise DebugContractError(
+                "root image size must match a registered rootfs profile"
+            )
         if before.st_size < minimum_size:
             raise DebugContractError("artifact is empty")
         if before.st_size > maximum_size:

@@ -372,7 +372,8 @@ def _run_image_creation(
         [
             "/bin/bash",
             "-c",
-            'source "$1"; WORK_DIR="$2"; create_and_verify_image',
+            'source "$1"; PROFILE=minimal-m1; configure_profile 0; '
+            'WORK_DIR="$2"; create_and_verify_image',
             "builder-image-test",
             str(BUILD_SCRIPT),
             str(work_directory),
@@ -490,6 +491,15 @@ def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Pat
             encoding="utf-8",
         )
         tool_path.chmod(0o755)
+    # Profile lookup is part of the builder's normal startup path, including
+    # minimal-m1; keep a real interpreter available even when the other tools
+    # are deliberately fake.
+    python = bin_directory / "python3"
+    python.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    dirname = bin_directory / "dirname"
+    dirname.write_text("#!/bin/sh\nexec /usr/bin/dirname \"$@\"\n", encoding="utf-8")
+    dirname.chmod(0o755)
     return bin_directory
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from typing import Any, Protocol
 
+from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.megrez_board_session import PartitionGeometry
 from tools.riscv.megrez_debian_shell_contract import (
     P2_NR_SECTORS,
@@ -31,7 +32,7 @@ from tools.riscv.megrez_preboard import _PinnedPermitOutput
 
 _MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 _PARTITION_SIZE_BYTES = 4 * 1024 * 1024 * 1024
-_ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
+_ROOT_IMAGE_SIZE_BYTES = get_profile("minimal-m1").root_size_bytes
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _REASON_RE = re.compile(r"\A[a-z][a-z0-9-]*\Z")
 _RESULT_KEYS = {

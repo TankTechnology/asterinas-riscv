@@ -23,7 +23,7 @@ readonly SUPPORTED_SUITE="trixie"
 readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
 readonly DEBIAN_KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
-ROOT_SIZE_BYTES="1073741824"
+ROOT_SIZE_BYTES=""
 readonly ROOT_BLOCK_SIZE_BYTES="4096"
 readonly MAX_SOURCE_DATE_EPOCH="4294967295"
 # 2024-01-01T00:00:00Z is old enough for every Trixie input and deterministic.
@@ -56,17 +56,11 @@ SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
 PROFILE="minimal-m1"
 FIREFOX_JIT_PACKAGE_DIR=""
-ROOT_LABEL="ASTER_DEBIANROOT"
-ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
+ROOT_LABEL=""
+ROOT_UUID=""
 ROOT_FILESYSTEM_TYPE="ext2"
 ROOT_FILESYSTEM_JOURNAL=0
-declare -a INSTALL_PACKAGES=(
-    bash
-    ca-certificates
-    coreutils
-    procps
-    util-linux
-)
+declare -a INSTALL_PACKAGES=()
 
 # A normal build uses the host's fixed qemu-riscv64 binfmt registration.  A
 # disposable container may instead opt into explicit user-mode execution:
@@ -207,9 +201,6 @@ configure_profile() {
         minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
-    if [[ "$PROFILE" == minimal-m1 ]]; then
-        return
-    fi
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     mapfile -t profile_fields < <(
