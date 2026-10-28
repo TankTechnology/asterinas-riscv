@@ -7,9 +7,12 @@ refactoring work is tracked separately.
 ## Baseline
 
 - Source: `origin/main` at `3ceeccd04` before the maintainability branch.
-- Host modules: **125**
-- Host tests: **2,476**
+- Host modules: **123**
+- Host tests: **2,452**
 - Expected environment skips: **13**
+- Production Python files: **204**
+- Production shell files: **148**
+- Top-level shell entrypoints: **15**
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**
 - Canonical command:
