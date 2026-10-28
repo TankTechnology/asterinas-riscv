@@ -105,14 +105,15 @@ Keep these entrypoint families:
   persistent-shell, boot-menu, xmodem, clock, DNS, and safe-reboot modules.
 - `physical_graphics_gate.py`, `physical_graphics_qemu_gate.py`,
   `debug_console_qemu_gate.py`, and the current QEMU/U-Boot gate modules.
-- `host_test_runner.py`, the test support package, and the LTP/perf core.
-- The paused `drm/` module set remains frozen until GPU work resumes.
+- `host_test_runner.py`, the test support package, and the LTP core.
 
-One-off Firefox/dmesg diagnostics, standalone probe tools, SDHCI probes,
-thread/video samplers, and QEMU GDB samplers are archived under
-`tools/riscv/archive/`. An acceptance or debug script is no longer kept merely
-because a historical test or report cited it; it must be reachable from one of
-the entrypoint families above.
+The paused DRM, standalone xHCI input, and perf experiment trees were removed
+from the active surface after a local backup; their implementation remains
+recoverable from git history. One-off Firefox/dmesg diagnostics, standalone
+probe tools, SDHCI probes, thread/video samplers, and QEMU GDB samplers were
+archived and their implementation code removed from git. An acceptance or debug
+script is no longer kept merely because a historical test or report cited it;
+it must be reachable from one of the entrypoint families above.
 
 ## Remaining optional structure work
 

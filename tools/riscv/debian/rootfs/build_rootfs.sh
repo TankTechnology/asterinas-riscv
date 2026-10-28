@@ -1789,20 +1789,6 @@ EOF
     install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
-    # The probe behind the pixel verdict: the evidence script runs it to answer
-    # "did the GPU draw anything", which is a different question from the
-    # renderer line's "which driver did Mesa choose". Installed for every
-    # desktop generation because it costs about a second, and a 2D run's answer
-    # is worth having to compare a 3D run against -- only a 3D run is required
-    # to produce it.
-    install -D -m 0755 -- \
-        "$script_directory/../../drm/egl-pixel-probe.py" \
-        "$stage/usr/lib/asterinas/egl-pixel-probe"
-    # A GBM/GLES2 probe for physical render nodes. It requires an explicit
-    # renderer expectation, so a software fallback cannot satisfy a GPU gate.
-    install -D -m 0755 -- \
-        "$script_directory/../../drm/gles-pixel-probe.py" \
-        "$stage/usr/lib/asterinas/gles-pixel-probe"
     if [[ "$generation" == m4 ]]; then
         install -D -m 0755 -- \
             "$script_directory/desktop_m4_framebuffer_probe.py" \
