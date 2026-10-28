@@ -40,7 +40,7 @@ from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_MARKERS,
     MAX_ARTIFACT_BYTES,
     METADATA_ARTIFACT_NAMES,
-    ROOT_IMAGE_BYTES,
+    BROWSER_ROOT_IMAGE_BYTES, ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -361,7 +361,7 @@ class MegrezDebugArtifactTests(unittest.TestCase):
         ):
             ArtifactIdentity.from_path("kernel", artifact, 0x80200000)
 
-    def test_root_image_identity_accepts_exact_one_or_two_gibibytes_at_zero_address(
+    def test_root_image_identity_accepts_registered_profile_sizes_at_zero_address(
         self,
     ) -> None:
         root_image = self.directory / "debian-root.ext2"
@@ -372,7 +372,7 @@ class MegrezDebugArtifactTests(unittest.TestCase):
 
         self.assertEqual(identity.size, ROOT_IMAGE_BYTES)
         self.assertEqual(identity.load_address, 0)
-        replace(identity, size=2 * ROOT_IMAGE_BYTES).validate()
+        replace(identity, size=BROWSER_ROOT_IMAGE_BYTES).validate()
         for invalid in (
             replace(identity, size=ROOT_IMAGE_BYTES - 4096),
             replace(identity, size=ROOT_IMAGE_BYTES + 4096),

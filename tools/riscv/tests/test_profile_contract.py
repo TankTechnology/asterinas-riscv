@@ -24,7 +24,7 @@ BUILD_ROOTFS = REPO_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
 class ProfileRegistryTests(unittest.TestCase):
     def test_registry_is_public_and_unique(self) -> None:
         names = profiles.PROFILE_NAMES
-        self.assertGreaterEqual(len(names), 7)
+        self.assertGreaterEqual(len(names), 6)
         self.assertEqual(len(names), len(set(names)))
 
         selected = [profiles.get_profile(name) for name in names]
