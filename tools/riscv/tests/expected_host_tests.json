@@ -1,5 +1,5 @@
 {
-  "commit": "50b94f986d611c513e426b54a5a9f06cf05836fd",
+  "commit": "ef677f9e9e3b2ed8a6f0db7df3b8ddfcb9def1a3",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -670,7 +670,9 @@
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_classifier_accepts_each_javascript_status",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_classifier_rejects_browser_failure_from_complete_transcript",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_classifier_rejects_duplicate_reordered_and_mismatched_evidence",
+    "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_debug_aggregate_uses_the_m6_owner_markers",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_m5_profile_adds_exact_browser_control_identity",
+    "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_marker_owner_values_are_frozen",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6GuestEvidenceTests.test_guest_evidence_distinguishes_failed_and_disabled_javascript",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6GuestEvidenceTests.test_guest_evidence_hex_encodes_last_title_before_remote_timeout",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6GuestEvidenceTests.test_guest_evidence_ignores_internal_window_without_process_identity",
@@ -693,6 +695,7 @@
     "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_guest_rejects_invalid_environment_before_browser_actions",
     "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_guest_reports_one_stable_failure_without_ready",
     "tools.riscv.tests.test_debian_m8_browser_quality.DebianDesktopM8BrowserQualityGuestTests.test_profile_builder_and_unit_target_install_m8_contract",
+    "tools.riscv.tests.test_debian_m8_browser_quality.DesktopM8MarkerContractTests.test_marker_owner_values_are_frozen",
     "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_builder_and_makefile_expose_m9_contract",
     "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_classifier_accepts_ordered_m8_and_software_evidence",
     "tools.riscv.tests.test_debian_m9_software.DebianDesktopM9SoftwareContractTests.test_classifier_does_not_require_m8_quality_marker",
@@ -2588,5 +2591,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2452
+  "tests": 2455
 }

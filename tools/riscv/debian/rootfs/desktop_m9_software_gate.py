@@ -28,8 +28,22 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
+from tools.riscv.megrez_network_fixture import BROWSER_DOWNLOAD_SHA256
 
 
+DESKTOP_M8_FIXTURE_MARKER = (
+    "DEBIAN_BROWSER_M8_FIXTURE text=cjk-latin image=png form=query"
+)
+DESKTOP_M8_SCROLL_MARKER = "DEBIAN_BROWSER_M8_SCROLL direction=end-home"
+DESKTOP_M8_NAVIGATION_MARKER = (
+    "DEBIAN_BROWSER_M8_NAVIGATION second=loaded back=loaded forward=loaded"
+)
+DESKTOP_M8_DOWNLOAD_MARKER = (
+    f"DEBIAN_BROWSER_M8_DOWNLOAD bytes=262144 sha256={BROWSER_DOWNLOAD_SHA256}"
+)
+DESKTOP_M8_SOAK_MARKER = "DEBIAN_BROWSER_M8_SOAK seconds=120 process=alive"
+DESKTOP_M8_CAPTURE_PREFIX = "DEBIAN_BROWSER_M8_CAPTURE bytes="
+DESKTOP_M8_FAILURE_PREFIX = "DEBIAN_BROWSER_M8_FAIL reason="
 DESKTOP_M8_READY_MARKER = "DEBIAN_BROWSER_M8_READY quality=lightweight"
 DESKTOP_M9_SOFTWARE_READY_MARKER = (
     "DEBIAN_DESKTOP_M9_SOFTWARE_READY "
