@@ -1,5 +1,5 @@
 {
-  "commit": "42b7ddaad7bc532d1b5029a30a8f63c62ef9068a",
+  "commit": "318816505aafdfddf6be9f777c1945707303325d",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -173,6 +173,8 @@
     "tools.riscv.tests.test_browser_daily_use_contract.BrowserDailyUseContractTests.test_retains_invalid_fetch_start_with_valid_navigation_intervals",
     "tools.riscv.tests.test_browser_daily_use_contract.BrowserDailyUseContractTests.test_shared_function_group_qualification_is_closed_and_role_aware",
     "tools.riscv.tests.test_browser_daily_use_contract.BrowserDailyUseContractTests.test_threshold_boundaries_derive_slow_states_and_count",
+    "tools.riscv.tests.test_browser_daily_use_contract.DailyUseOwnerContractTests.test_gate_and_upload_consume_the_shared_owner",
+    "tools.riscv.tests.test_browser_daily_use_contract.DailyUseOwnerContractTests.test_phase_and_artifact_owner_values_are_frozen",
     "tools.riscv.tests.test_browser_daily_use_gate.BrowserDailyUseGateTests.test_browser_timeout_exception_uses_canonical_phase_timeout",
     "tools.riscv.tests.test_browser_daily_use_gate.BrowserDailyUseGateTests.test_callback_cannot_create_or_delete_session",
     "tools.riscv.tests.test_browser_daily_use_gate.BrowserDailyUseGateTests.test_callback_cannot_inject_an_unbounded_failure_reason",
@@ -2597,5 +2599,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2461
+  "tests": 2463
 }

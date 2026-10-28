@@ -35,6 +35,10 @@ if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     sys.path.insert(0, "/run/asterinas-tools")
     from browser_m5_marionette_gate import CommandNotSentTimeout  # type: ignore[import-not-found]
     from browser_daily_use_contract import (  # type: ignore[import-not-found]
+        DAILY_USE_CHECKPOINT_ARTIFACT,
+        DAILY_USE_COMPONENT_ARTIFACTS,
+        DAILY_USE_PHASES,
+        DAILY_USE_RESULT_ARTIFACT,
         FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
@@ -55,6 +59,10 @@ else:
         CommandNotSentTimeout,
     )
     from tools.riscv.debian.rootfs.browser_daily_use_contract import (
+        DAILY_USE_CHECKPOINT_ARTIFACT,
+        DAILY_USE_COMPONENT_ARTIFACTS,
+        DAILY_USE_PHASES,
+        DAILY_USE_RESULT_ARTIFACT,
         FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
@@ -74,30 +82,10 @@ else:
     )
 
 
-PHASES = (
-    "session",
-    "samplers-ready",
-    "fixture",
-    "local-timing",
-    "context-switch",
-    "composite",
-    "samplers-stopped",
-    "cleanup",
-    "identities",
-    "coverage",
-    "artifacts",
-    "validated",
-)
-ARTIFACT_NAMES = (
-    "browser-fixture-capture.json",
-    "browser-local-capture.json",
-    "browser-context-switch.json",
-    "browser-composite-capture.json",
-    "browser-system-time.json",
-    "browser-thread-time.json",
-)
-RESULT_NAME = "browser-daily-use-result.json"
-CHECKPOINT_NAME = "browser-daily-use-checkpoint.json"
+PHASES = DAILY_USE_PHASES
+ARTIFACT_NAMES = DAILY_USE_COMPONENT_ARTIFACTS
+RESULT_NAME = DAILY_USE_RESULT_ARTIFACT
+CHECKPOINT_NAME = DAILY_USE_CHECKPOINT_ARTIFACT
 MAX_TIMEOUT_SECONDS = 120.0
 PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS = 300.0
 CONTEXT_CLEANUP_TIMEOUT_SECONDS = 5.0
