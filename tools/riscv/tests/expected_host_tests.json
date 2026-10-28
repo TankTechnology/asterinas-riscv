@@ -1,5 +1,5 @@
 {
-  "commit": "c73356af4a1b536a984b19f8e198cb473af9543e",
+  "commit": "42b7ddaad7bc532d1b5029a30a8f63c62ef9068a",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -2483,6 +2483,10 @@
     "tools.riscv.tests.test_qemu_uboot_contracts.ContractCompositionTests.test_sifive_userspace_profile_replaces_the_early_probe",
     "tools.riscv.tests.test_qemu_uboot_contracts.ContractCompositionTests.test_structured_drive_path_rejects_a_comma_for_every_transport",
     "tools.riscv.tests.test_qemu_uboot_contracts.ContractCompositionTests.test_tcp_probe_network_renders_one_slirp_virtio_nic",
+    "tools.riscv.tests.test_qemu_uboot_contracts.RxProtocolContractTests.test_rx_bytes_are_frozen",
+    "tools.riscv.tests.test_qemu_uboot_contracts.RxProtocolContractTests.test_rx_interaction_is_registered_with_one_guarded_step",
+    "tools.riscv.tests.test_qemu_uboot_contracts.RxProtocolContractTests.test_serial_framing_rejects_multiline_or_empty_lines",
+    "tools.riscv.tests.test_qemu_uboot_contracts.RxProtocolContractTests.test_unknown_interaction_is_rejected",
     "tools.riscv.tests.test_qemu_uboot_contracts.ThirdBoardContractTests.test_third_board_profile_is_registered",
     "tools.riscv.tests.test_qemu_uboot_contracts.ThirdBoardContractTests.test_third_board_scenario_completes_in_userspace",
     "tools.riscv.tests.test_qemu_uboot_contracts.ThirdBoardContractTests.test_third_board_uses_generated_payload_dtb",
@@ -2593,5 +2597,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2457
+  "tests": 2461
 }

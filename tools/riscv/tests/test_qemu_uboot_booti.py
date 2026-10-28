@@ -32,6 +32,7 @@ INITRAMFS_SOURCE = SCRIPT.parent / "qemu_uboot_init.S"
 sys.path.insert(0, str(SCRIPT.parent))
 from megrez_contract import load_contract  # noqa: E402
 import qemu_uboot_audit  # noqa: E402
+import qemu_uboot_shell as shell_module  # noqa: E402
 from make_qemu_uboot_initramfs import (  # noqa: E402
     InitramfsEntry,
     make_newc_archive,
@@ -60,9 +61,9 @@ SCRIPT_SPEC.loader.exec_module(qemu_uboot_booti)
 SESSION_MODULE = sys.modules["qemu_uboot_session"]
 EXECUTION_MODULE = sys.modules["qemu_uboot_execution"]
 EXECUTION_IO_MODULE = sys.modules["qemu_uboot_execution_io"]
-RX_READY_LINE = b"ASTERINAS_MEGREZ_RX_READY_20260721"
-RX_INPUT_BYTES = b"ASTERINAS_MEGREZ_RX_20260721\n"
-RX_ACK_LINE = b"ASTERINAS_MEGREZ_RX_ACK_20260721"
+RX_READY_LINE = shell_module.RX_READY_LINE
+RX_INPUT_BYTES = shell_module.RX_INPUT_BYTES
+RX_ACK_LINE = shell_module.RX_ACK_LINE
 
 
 def valid_linux_image(size: int = 64) -> bytearray:
@@ -3155,12 +3156,8 @@ class PreparedRunTests(_PreparedRunFixtures, unittest.TestCase):
         artifacts = self._run_artifacts()
         payload_sha256 = "c" * 64
         expected_bootargs = effective_bootargs(profile, FIRST_PROCESS_CONSOLE_LOSS)
-        serial_interaction = SESSION_MODULE.SerialInteraction(
-            ready_line=RX_READY_LINE,
-            input_steps=(
-                SESSION_MODULE.SerialInputStep(input_bytes=RX_INPUT_BYTES),
-            ),
-            completion_line=RX_ACK_LINE,
+        serial_interaction = shell_module.interaction_by_name(
+            shell_module.RX_INTERACTION_NAME
         )
 
         with tempfile.TemporaryDirectory() as tmp:

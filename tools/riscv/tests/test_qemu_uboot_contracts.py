@@ -20,6 +20,8 @@ RUNNER = TOOLS / "qemu_uboot_booti.py"
 sys.path.insert(0, str(TOOLS))
 
 import qemu_uboot_devices as qemu_devices  # noqa: E402
+import qemu_uboot_shell as qemu_shell  # noqa: E402
+from qemu_uboot_session import SerialInputStep, SerialInteraction  # noqa: E402
 
 from qemu_uboot_profiles import (  # noqa: E402
     ASTERINAS_USERSPACE_SMOKE,
@@ -1286,6 +1288,55 @@ class ThirdBoardContractTests(unittest.TestCase):
             ),
         )
         self.assertNotIn(scenario.completion_line, scenario.forbidden_markers)
+
+
+class RxProtocolContractTests(unittest.TestCase):
+    def test_rx_bytes_are_frozen(self) -> None:
+        self.assertEqual(
+            (
+                qemu_shell.RX_READY_LINE,
+                qemu_shell.RX_INPUT_BYTES,
+                qemu_shell.RX_ACK_LINE,
+            ),
+            (
+                b"ASTERINAS_MEGREZ_RX_READY_20260721",
+                b"ASTERINAS_MEGREZ_RX_20260721\n",
+                b"ASTERINAS_MEGREZ_RX_ACK_20260721",
+            ),
+        )
+
+    def test_rx_interaction_is_registered_with_one_guarded_step(self) -> None:
+        interaction = qemu_shell.interaction_by_name(qemu_shell.RX_INTERACTION_NAME)
+
+        self.assertEqual(interaction.ready_line, qemu_shell.RX_READY_LINE)
+        self.assertEqual(interaction.completion_line, qemu_shell.RX_ACK_LINE)
+        self.assertEqual(len(interaction.input_steps), 1)
+        self.assertEqual(
+            interaction.input_steps[0].input_bytes, qemu_shell.RX_INPUT_BYTES
+        )
+        self.assertIsNone(interaction.input_steps[0].ready_line)
+        self.assertIsNone(interaction.input_steps[0].ready_token)
+
+    def test_serial_framing_rejects_multiline_or_empty_lines(self) -> None:
+        step = SerialInputStep(input_bytes=qemu_shell.RX_INPUT_BYTES)
+        with self.assertRaises(ValueError):
+            SerialInteraction(
+                ready_line=qemu_shell.RX_READY_LINE + b"\n",
+                input_steps=(step,),
+                completion_line=qemu_shell.RX_ACK_LINE,
+            )
+        with self.assertRaises(ValueError):
+            SerialInteraction(
+                ready_line=qemu_shell.RX_READY_LINE,
+                input_steps=(step,),
+                completion_line=b"",
+            )
+        with self.assertRaises(ValueError):
+            SerialInputStep(input_bytes=b"")
+
+    def test_unknown_interaction_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown serial interaction"):
+            qemu_shell.interaction_by_name("missing")
 
 
 if __name__ == "__main__":
