@@ -37,9 +37,12 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 DESKTOP_M6_REMOTE_MARKER = (
     "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com resource=logo-png foreground=active"
 )
+DESKTOP_M6_JAVASCRIPT_PREFIX = "DEBIAN_BROWSER_M6_JAVASCRIPT status="
+DESKTOP_M6_READY_PREFIX = "DEBIAN_BROWSER_M6_READY remote=baidu javascript="
 DESKTOP_M6_JAVASCRIPT_STATUSES = ("limited-pass", "disabled", "failed")
 _JAVASCRIPT_RE = re.compile(
-    rb"DEBIAN_BROWSER_M6_JAVASCRIPT status=(limited-pass|disabled|failed)"
+    re.escape(DESKTOP_M6_JAVASCRIPT_PREFIX).encode()
+    + rb"(limited-pass|disabled|failed)"
 )
 
 
@@ -66,7 +69,7 @@ def classify_desktop_m6_browser(
 
     javascript = javascript_matches[0]
     status = javascript.group(1).decode("ascii")
-    ready = f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode()
+    ready = f"{DESKTOP_M6_READY_PREFIX}{status}".encode()
     if transcript.count(ready) != 1:
         return GateResult(False, "missing or mismatched browser ready evidence", None)
 

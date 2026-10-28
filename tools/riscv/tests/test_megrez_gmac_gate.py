@@ -27,7 +27,9 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     NetworkMode,
 )
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_JAVASCRIPT_PREFIX,
     DESKTOP_M6_JAVASCRIPT_STATUSES,
+    DESKTOP_M6_READY_PREFIX,
     DESKTOP_M6_REMOTE_MARKER,
 )
 from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
@@ -89,8 +91,8 @@ def complete_browser_evidence(status: str = "limited-pass") -> bytes:
         b"\n".join(
             (
                 *EXPECTED_PHYSICAL_MILESTONES,
-                f"DEBIAN_BROWSER_M6_JAVASCRIPT status={status}".encode(),
-                f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}".encode(),
+                f"{DESKTOP_M6_JAVASCRIPT_PREFIX}{status}".encode(),
+                f"{DESKTOP_M6_READY_PREFIX}{status}".encode(),
                 *EXPECTED_PHYSICAL_M7_MILESTONES,
             )
         )
@@ -957,8 +959,8 @@ class MegrezGmacGateTests(unittest.TestCase):
             ),
             (
                 b"\n".join(reversed(EXPECTED_PHYSICAL_MILESTONES))
-                + b"\nDEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass"
-                + b"\nDEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass\n"
+                + b"\n" + (DESKTOP_M6_JAVASCRIPT_PREFIX + "limited-pass").encode()
+                + b"\n" + (DESKTOP_M6_READY_PREFIX + "limited-pass\n").encode()
                 + b"\n".join(EXPECTED_PHYSICAL_M7_MILESTONES),
                 "physical milestones out of order",
             ),
@@ -984,7 +986,7 @@ class MegrezGmacGateTests(unittest.TestCase):
 
         complete = complete_browser_evidence()
         remote = DESKTOP_M6_REMOTE_MARKER.encode()
-        ready = b"DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass"
+        ready = (DESKTOP_M6_READY_PREFIX + "limited-pass").encode()
         cases = (
             (
                 complete + remote + b"\n",
@@ -1000,7 +1002,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             ),
             (
                 complete.replace(
-                    b"DEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass\n",
+                    (DESKTOP_M6_JAVASCRIPT_PREFIX + "limited-pass\n").encode(),
                     b"",
                 ),
                 "missing or duplicate JavaScript evidence",

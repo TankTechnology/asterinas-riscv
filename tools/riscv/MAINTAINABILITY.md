@@ -8,7 +8,7 @@ refactoring work is tracked separately.
 
 - Source: `origin/main` at `3ceeccd04` before the maintainability branch.
 - Host modules: **123**
-- Host tests: **2,452**
+- Host tests: **2,455**
 - Expected environment skips: **13**
 - Production Python files: **204**
 - Production shell files: **148**
