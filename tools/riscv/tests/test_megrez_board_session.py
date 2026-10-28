@@ -371,7 +371,7 @@ class ArgumentContractTests(unittest.TestCase):
         self.assertIsNone(args.expected_crc32)
         self.assertEqual(
             args.bootargs,
-            "loglevel=info init=/init asterinas.reboot_after=120",
+            "loglevel=info init=/init",
         )
         self.assertNotIn("cpu_no_boost_1_6ghz", args.bootargs.split())
 

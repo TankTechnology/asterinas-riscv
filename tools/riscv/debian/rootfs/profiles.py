@@ -199,6 +199,7 @@ _PROFILES = {
             "netsurf-gtk",
             "openbox",
             "pcmanfm",
+            "polkitd",
             "procps",
             "python3-minimal",
             "sudo",
@@ -267,6 +268,7 @@ _PROFILES = {
             "netsurf-gtk",
             "openbox",
             "pcmanfm",
+            "polkitd",
             "procps",
             "systemd-sysv",
             "udev",
@@ -399,11 +401,7 @@ _PROFILES["desktop-m9-software"] = RootfsProfile(
     ),
 )
 
-# The package set schema 7 introduced. It is kept separately from the set the
-# profile installs today so that a manifest written by an older build stays
-# admissible: the contract uses this tuple to recognise "this image predates
-# the packages added afterwards".
-BROWSER_WEB_SCHEMA_SEVEN_PACKAGES = (
+BROWSER_WEB_DESKTOP_PACKAGES = (
     "mousepad",
     "ristretto",
     "atril",
@@ -411,48 +409,6 @@ BROWSER_WEB_SCHEMA_SEVEN_PACKAGES = (
     "zip",
     "unzip",
     "dbus-x11",
-)
-
-BROWSER_WEB_DESKTOP_PACKAGES = BROWSER_WEB_SCHEMA_SEVEN_PACKAGES + (
-    # The online desktop is the board's daily-use environment, so it has to be
-    # able to write and build a program without a package download first:
-    # gcc/make were present but there was no editor and no C++ front end.
-    "vim",
-    "g++",
-    # Remote access replaces the serial console for day-to-day checks; the
-    # console drops characters on long lines and has no flow control.
-    "openssh-server",
-    # Chinese input. fonts-wqy-microhei already ships the glyphs, so without
-    # these the desktop can display Chinese but cannot type it.
-    "fcitx5",
-    "fcitx5-table",
-    "fcitx5-table-extra",
-    "fcitx5-chinese-addons",
-    "fcitx5-frontend-gtk3",
-    "fcitx5-frontend-gtk2",
-    # Day-to-day applications.  lxterminal is the GTK terminal the desktop
-    # launcher opens (xterm's Xlib XIM never receives keys from fcitx here,
-    # so Chinese input only worked in GTK clients); git and pip are what a
-    # user reaches for first; scrot is the screenshot tool every bug report
-    # starts with.
-    "lxterminal",
-    "git",
-    "python3-pip",
-    "scrot",
-    # tar(1) shells out to xz for -J; the base image has gzip but not xz, so
-    # `tar -cJf` failed in every workflow check that touched a .tar.xz.
-    "xz-utils",
-    # Remote access. openssh-server is the default SSH server (the two kernel
-    # bugs behind its old stall are fixed); dropbear stays installed for the
-    # disabled fake-pty fallback unit. rsync rides on either.
-    "dropbear-bin",
-    "rsync",
-    # The image ships /etc/sudoers.d/asterinas; without the package that file
-    # grants nothing, which left remote/console administration impossible.
-    "sudo",
-    # API-drivable Python harnesses (DeepSeek and friends) install cleanly
-    # into a venv; Debian splits ensurepip out of the base interpreter.
-    "python3-venv",
 )
 
 
@@ -468,18 +424,16 @@ _PROFILES["browser-web"] = RootfsProfile(
     # itself loads. Name the decoder explicitly instead of relying on a
     # recommendation the build discards.
     requested_packages=_PROFILES["browser-m5"].requested_packages
-    + ("xdotool", "libavcodec-extra61")
+    + ("xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
     identity_packages=_PROFILES["browser-m5"].identity_packages
-    + ("ca-certificates", "xdotool", "libavcodec-extra61")
+    + ("ca-certificates", "xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
-    # normal bookmark/places maintenance path.  Two gigabytes still left only
-    # 49 MB free on the board, which is where the browser's first profile
-    # write landed: the service failed with "No space left on device" and the
-    # desktop had no browser.  The board's root partition is 4 GiB, so give the
-    # long-lived online browser a real working margin.
+    # normal bookmark/places maintenance path.  Keep the smaller milestone
+    # images unchanged, but give the long-lived online browser a real working
+    # margin.
     root_size_bytes=3 * 1024 * 1024 * 1024,
 )
 

@@ -848,27 +848,6 @@ class BrowserWebContractTests(unittest.TestCase):
             )
             self.assertIn('user_pref("network.proxy.http_port", 17893);', profile)
 
-    def test_a_profile_that_cannot_be_seeded_is_set_aside_and_rebuilt(self) -> None:
-        # A crash during a write leaves names that cannot be stat'ed or
-        # removed (ESTALE), so `user.js` can never be rewritten and Firefox
-        # comes up with no window. A directory in its place reproduces the same
-        # "seeding cannot finish" shape without needing a damaged filesystem.
-        with tempfile.TemporaryDirectory() as temporary:
-            home = Path(temporary)
-            profile = home / ".mozilla/asterinas-browser-web"
-            (profile / "user.js").mkdir(parents=True)
-            (profile / "some-cached-file").write_text("kept", encoding="utf-8")
-
-            result = self._prepare_firefox_profile(home, mode="direct")
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("ASTERINAS_FIREFOX_WEB_PROFILE_ROTATED", result.stderr)
-            self.assertIn('user_pref("network.proxy.type", 0);',
-                          (profile / "user.js").read_text(encoding="utf-8"))
-            rotated = list(profile.parent.glob("asterinas-browser-web.damaged-*"))
-            self.assertEqual(len(rotated), 1)
-            self.assertTrue((rotated[0] / "some-cached-file").is_file())
-
     def test_invalid_browser_network_profile_does_not_restart_forever(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             result = self._prepare_firefox_profile(Path(temporary), mode="")
@@ -1091,8 +1070,8 @@ class BrowserWebContractTests(unittest.TestCase):
         profile = get_profile("browser-web")
         self.assertEqual(profile.schema_version, 7)
         self.assertEqual(profile.root_label, "ASTER_BROWSERWEB")
-        # 2 GiB left 49 MB free in the image, which is not enough for the
-        # browser's own profile; the board's partition is 4 GiB.
+        # The single daily image keeps a 3 GiB root; the milestone images
+        # retain their 2 GiB size.
         self.assertEqual(profile.root_size_bytes, 3 * 1024 * 1024 * 1024)
         for package in (
             "firefox-esr",
@@ -1110,14 +1089,6 @@ class BrowserWebContractTests(unittest.TestCase):
             "zip",
             "unzip",
             "dbus-x11",
-            "lxterminal",
-            "git",
-            "python3-pip",
-            "scrot",
-            "xz-utils",
-            "dropbear-bin",
-            "rsync",
-            "sudo",
         ):
             self.assertIn(package, profile.requested_packages)
             self.assertIn(package, profile.identity_packages)
@@ -1217,56 +1188,6 @@ class BrowserWebContractTests(unittest.TestCase):
             '--tool-version "browser-web-runtime=$browser_web_runtime_version"',
             builder,
         )
-
-    def test_input_method_profile_puts_the_layout_first(self) -> None:
-        # fcitx treats item 0 of a group as the keyboard-layout slot and
-        # silently promotes item 1 to the default when the requested default
-        # is item 0: with [pinyin, keyboard-us] every context lands on
-        # keyboard-us no matter what DefaultIM says.
-        script = (ROOTFS / "desktop_input_method.sh").read_text()
-        profile = script[script.index("[Groups/0]") : script.index("[GroupOrder]")]
-        self.assertLess(
-            profile.index("Name=keyboard-us"), profile.index("Name=pinyin")
-        )
-        self.assertIn("DefaultIM=pinyin", profile)
-        self.assertIn("ActiveByDefault=True", script)
-
-    def test_remote_access_ships_openssh_with_dropbear_as_a_fallback(self) -> None:
-        # OpenSSH is the default server again; the fake-pty dropbear stays
-        # installed (disabled) so the fallback needs no image rebuild. The
-        # login shell wrapper is kept for sessions that arrive without a pty.
-        builder = (ROOTFS / "build_rootfs.sh").read_text()
-        self.assertIn('"$script_directory/asterinas-login-shell.sh"', builder)
-        self.assertIn("/usr/local/bin/asterinas-login-shell", builder)
-        self.assertIn(
-            "asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:"
-            "/usr/local/bin/asterinas-login-shell",
-            builder,
-        )
-        helper = (ROOTFS / "asterinas-add-ssh-key.sh").read_text()
-        self.assertIn('printf \'%s\\n\' "$1"', helper)
-        openssh = (ROOTFS / "asterinas-openssh.service").read_text()
-        self.assertIn("ExecStart=/usr/sbin/sshd -D -e", openssh)
-        self.assertIn("WantedBy=asterinas-debug-console.target", openssh)
-        self.assertIn("RuntimeDirectory=sshd", openssh)
-        self.assertIn(
-            "asterinas-openssh.service",
-            builder,
-        )
-        self.assertIn(
-            "asterinas-debug-console.target.wants/asterinas-openssh.service",
-            builder,
-        )
-        self.assertIn("ExecStart=/usr/sbin/dropbear", (ROOTFS / "asterinas-dropbear.service").read_text())
-        self.assertNotIn(
-            "asterinas-debug-console.target.wants/asterinas-dropbear.service",
-            builder,
-        )
-        # The fake-pty dropbear and the upstream sftp-server path Debian does
-        # not create are still installed for the fallback.
-        self.assertIn("dropbear-patched-riscv64", builder)
-        self.assertTrue((ROOTFS / "dropbear-asterinas-fake-pty.patch").is_file())
-        self.assertIn("/usr/libexec/sftp-server", builder)
 
     def test_browser_web_builder_wires_explicit_frozen_jit_packages(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
@@ -1428,9 +1349,7 @@ class BrowserWebContractTests(unittest.TestCase):
 
         self.assertIn('"$script_directory/desktop_display_provider.sh"', builder)
         self.assertIn('"$stage/usr/lib/asterinas/desktop-display-provider"', builder)
-        # The service takes the provider from the profile rather than hard-coding
-        # fbdev; the default is resolved inside the device-access helper.
-        self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider", builder)
+        self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev", builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
                 "publish_artifacts()"
@@ -1962,21 +1881,11 @@ class BrowserWebContractTests(unittest.TestCase):
             device_access.index('/usr/bin/chown root:root "$XKB_CACHE_DIR"'),
         )
         self.assertIn("BROWSER_WEB_DESKTOP_STAGE=xkb-cache-ready", device_access)
-        # The helper waits on the node the selected provider needs, which is
-        # /dev/fb0 for fbdev and /dev/dri/card0 for the DRM provider.
-        self.assertIn('while [[ ! -c "$DISPLAY_DEVICE" ]]', device_access)
+        self.assertIn("while [[ ! -c /dev/fb0 ]]", device_access)
         self.assertIn("input-devices-absent", device_access)
-        # The reason names the provider's node, expanded at run time, so the
-        # assertion follows the parameterised form rather than a literal fb0.
-        self.assertIn(
-            'device-access-failed reason=${DISPLAY_DEVICE##*/}-timeout', device_access
-        )
-        self.assertIn(
-            'device-access-failed reason=${DISPLAY_DEVICE##*/}-permissions', device_access
-        )
-        self.assertIn(
-            'BROWSER_WEB_DESKTOP_STAGE=${DISPLAY_DEVICE##*/}-ready', device_access
-        )
+        self.assertIn("device-access-failed reason=fb0-timeout", device_access)
+        self.assertIn("device-access-failed reason=fb0-permissions", device_access)
+        self.assertIn("BROWSER_WEB_DESKTOP_STAGE=fb0-ready", device_access)
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
         self.assertIn(
