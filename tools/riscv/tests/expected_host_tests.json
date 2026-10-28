@@ -103,6 +103,7 @@
     "tools.riscv.tests.test_profile_contract",
     "tools.riscv.tests.test_qemu_uboot_booti",
     "tools.riscv.tests.test_qemu_uboot_contracts",
+    "tools.riscv.tests.test_repo_layout",
     "tools.riscv.tests.test_rgx_firmware_layout",
     "tools.riscv.tests.test_rgx_meta_boot",
     "tools.riscv.tests.test_rgx_meta_ldr",
@@ -118,7 +119,7 @@
     "tools.riscv.tests.test_validate_run_kernel_log",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 116,
+  "modules": 117,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -2408,6 +2409,11 @@
     "tools.riscv.tests.test_qemu_uboot_contracts.ThirdBoardContractTests.test_third_board_profile_is_registered",
     "tools.riscv.tests.test_qemu_uboot_contracts.ThirdBoardContractTests.test_third_board_scenario_completes_in_userspace",
     "tools.riscv.tests.test_qemu_uboot_contracts.ThirdBoardContractTests.test_third_board_uses_generated_payload_dtb",
+    "tools.riscv.tests.test_repo_layout.RepoLayoutGuardTests.test_allowlisted_file_may_not_grow",
+    "tools.riscv.tests.test_repo_layout.RepoLayoutGuardTests.test_archive_is_outside_the_active_guard",
+    "tools.riscv.tests.test_repo_layout.RepoLayoutGuardTests.test_current_tree_has_no_unapproved_oversized_file",
+    "tools.riscv.tests.test_repo_layout.RepoLayoutGuardTests.test_missing_allowlist_entry_is_rejected",
+    "tools.riscv.tests.test_repo_layout.RepoLayoutGuardTests.test_new_oversized_file_is_rejected",
     "tools.riscv.tests.test_rgx_firmware_layout.RgxFirmwareLayoutTests.test_rejects_invalid_or_overlapping_allocation_ranges",
     "tools.riscv.tests.test_rgx_firmware_layout.RgxFirmwareLayoutTests.test_rejects_malformed_table_bounds",
     "tools.riscv.tests.test_rgx_firmware_layout.RgxFirmwareLayoutTests.test_rejects_wrong_board_firmware_before_any_allocation",
@@ -2514,5 +2520,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2385
+  "tests": 2390
 }

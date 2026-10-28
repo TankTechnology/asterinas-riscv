@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "max_lines": 2000,
+  "files": {
+    "tools/riscv/debian/rootfs/browser_web_marionette_gate.py": 2660,
+    "tools/riscv/debian/rootfs/build_rootfs.sh": 2550,
+    "tools/riscv/megrez_desktop.py": 2623,
+    "tools/riscv/megrez_physical_graphics.py": 2367,
+    "tools/riscv/megrez_probe.py": 2023,
+    "tools/riscv/tests/test_debian_browser_web.py": 3977,
+    "tools/riscv/tests/test_debian_m5_network.py": 3234,
+    "tools/riscv/tests/test_debian_rootfs.py": 7346,
+    "tools/riscv/tests/test_megrez_board_session.py": 2069,
+    "tools/riscv/tests/test_megrez_debug.py": 2461,
+    "tools/riscv/tests/test_megrez_physical_graphics.py": 2615,
+    "tools/riscv/tests/test_qemu_uboot_booti.py": 7706
+  }
+}

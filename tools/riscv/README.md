@@ -1,5 +1,12 @@
 # RISC-V firmware boot validation
 
+> **Current product path:** the Megrez Debian `browser-web` image documented in
+> [`docs/porting/board-image-current.md`](../../docs/porting/board-image-current.md).
+> This page still contains both current commands and older milestone sections;
+> historical tooling material has been moved to
+> [`archive/README.md`](archive/README.md). For the host-test baseline and cleanup
+> decisions, see [`MAINTAINABILITY.md`](MAINTAINABILITY.md).
+
 This directory validates the firmware-to-kernel handoff without modeling a single development board in QEMU.
 The same runner describes a machine contract, a boot flow, and the observable milestones expected from the guest.
 The registered profiles currently cover QEMU `virt`, SiFive U, Sv39, and the Sv48/Svade/Svadu envelope used by the Megrez integration.
