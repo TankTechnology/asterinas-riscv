@@ -95,18 +95,18 @@ def debug_console_commands(nonce: str) -> tuple[DebugConsoleCommand, ...]:
             "_asterinas_debug_attempt=0; "
             "while ! systemctl is-active --quiet "
             "asterinas-desktop-m4-evidence.service && "
-            "! systemctl is-active --quiet asterinas-desktop-m5.service; do "
+            "! systemctl is-active --quiet asterinas-desktop.service; do "
             "_asterinas_debug_attempt=$((_asterinas_debug_attempt + 1)); "
             '[ "$_asterinas_debug_attempt" -ge 45 ] && break; sleep 1; done; '
             "if systemctl is-active --quiet asterinas-desktop-m4-evidence.service "
-            "|| systemctl is-active --quiet asterinas-desktop-m5.service; then "
+            "|| systemctl is-active --quiet asterinas-desktop.service; then "
             "echo active; else echo inactive; false; fi",
         ),
         (
             "desktop",
             "DESKTOP",
             "if systemctl is-active --quiet asterinas-desktop-m4.service || "
-            "systemctl is-active --quiet asterinas-desktop-m5.service; then "
+            "systemctl is-active --quiet asterinas-desktop.service; then "
             "echo active; else echo inactive; false; fi",
         ),
     )

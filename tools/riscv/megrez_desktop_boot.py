@@ -122,7 +122,7 @@ BOOTARGS = " ".join(
         "asterinas.reboot_after=300",
         "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=180",
         "systemd.mask=asterinas-browser-web-evidence.service",
-        "systemd.mask=asterinas-desktop-m5-network.service",
+        "systemd.mask=asterinas-desktop-network.service",
         "systemd.mask=serial-getty@ttyS0.service",
         "systemd.mask=console-getty.service",
         *BOARD_LINK_BOOTARGS,

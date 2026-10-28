@@ -21,7 +21,7 @@ if __package__ in (None, ""):
 
 from tools.riscv.debian.rootfs.browser_web_qemu_gate import BrowserWebQemuOperations
 from tools.riscv.debian.rootfs.desktop_m3_gate import _BOCHS_BAR_RE
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.firefox_startup_profile import (
     _config,
     _profile_boot_commands,
@@ -221,7 +221,7 @@ def run(config: GateConfig) -> int:
                     [
                         "debugfs",
                         "-R",
-                        "cat /home/asterinas/desktop-m5-session.log",
+                        "cat /home/asterinas/desktop-session.log",
                         str(config.output_directory / "debian-root.run.ext2"),
                     ],
                     check=False,

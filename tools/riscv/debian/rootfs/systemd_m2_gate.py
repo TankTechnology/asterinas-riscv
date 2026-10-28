@@ -237,7 +237,7 @@ class SystemdM2Operations(ConcreteOperations):
             root_fs = "ext2"
         expected_profile = {
             "ext2": (2, "systemd-m2"),
-            "ext4": (9, "systemd-ext4-m3"),
+            "ext4": (9, "systemd-ext4"),
         }.get(root_fs)
         if expected_profile is None:
             raise GateFailure(f"unsupported systemd root filesystem: {root_fs}")

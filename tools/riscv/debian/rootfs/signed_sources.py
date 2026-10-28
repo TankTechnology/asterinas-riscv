@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Strict multi-source provenance primitives for Debian browser M5."""
+"""Strict multi-source provenance primitives for Debian browser."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ SECURITY_SOURCE = SignedSource(
         "updates/non-free",
     ),
 )
-M5_SOURCES = (BASE_SOURCE, SECURITY_SOURCE)
+SIGNED_SOURCES = (BASE_SOURCE, SECURITY_SOURCE)
 
 
 def verify_inrelease(source: SignedSource, inrelease: Path, keyring: Path) -> str:
@@ -92,7 +92,7 @@ def require_unchanged(retained: Path, current: Path, role: str) -> None:
         raise ValueError(f"{role} InRelease changed during build")
 
 
-def source_for_apt_list(filename: str, sources: tuple[SignedSource, ...] = M5_SOURCES) -> SignedSource:
+def source_for_apt_list(filename: str, sources: tuple[SignedSource, ...] = SIGNED_SOURCES) -> SignedSource:
     """Map an apt Packages filename to exactly one configured signed source."""
 
     matches = []
@@ -134,10 +134,10 @@ def authenticate_packages(index: bytes, release_path: str, inrelease: bytes) -> 
 def signed_sources_manifest(sources: tuple[SignedSource, ...], files: dict[str, Path]) -> list[dict[str, str]]:
     """Return a deterministic schema-6 signed_sources fragment."""
 
-    expected_sources = {source.role: source for source in M5_SOURCES}
+    expected_sources = {source.role: source for source in SIGNED_SOURCES}
     supplied_sources = {source.role: source for source in sources}
-    if supplied_sources != expected_sources or len(sources) != len(M5_SOURCES):
-        raise ValueError("signed sources do not match the browser-m5 contract")
+    if supplied_sources != expected_sources or len(sources) != len(SIGNED_SOURCES):
+        raise ValueError("signed sources do not match the browser source contract")
     if set(files) != set(expected_sources):
         raise ValueError("signed source files do not match configured roles")
     rows = [
@@ -187,7 +187,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     values = parser.parse_args(arguments)
     try:
         if values.command == "verify":
-            source = {source.role: source for source in M5_SOURCES}[values.role]
+            source = {source.role: source for source in SIGNED_SOURCES}[values.role]
             print(verify_inrelease(source, values.inrelease, values.keyring))
         else:
             print(source_for_apt_list(values.filename).role)

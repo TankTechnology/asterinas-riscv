@@ -183,7 +183,7 @@ marker() {
 }
 
 printf 'ASTERINAS_FIREFOX_WEB wrapper-start pid=%s\n' "$$"
-# Xorg has a single owner: desktop-m5-session.  Starting a second server here
+# Xorg has a single owner: desktop-session.  Starting a second server here
 # races the provider for :0 and makes the first server disappear underneath
 # Firefox.  wait-x is the explicit readiness barrier and fails closed if the
 # desktop provider never publishes a usable endpoint.
@@ -196,7 +196,7 @@ marker BOOT_FIREFOX_WRAPPER_START
 /usr/bin/mkdir -p -- "$FIREFOX_HOME/Downloads"
 # The dedicated profile was written atomically before any Firefox process was
 # started, so a mode switch cannot inherit stale proxy preferences.
-# Keep the normal startup path at the same logging cost as the proven M5
+# Keep the normal startup path at the same logging cost as the proven browser
 # Firefox launcher.  Network-category tracing can generate a large amount of
 # synchronous ext2/virtio I/O on this guest; enable it only for an explicit
 # diagnostic run.

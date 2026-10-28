@@ -25,10 +25,10 @@ from tools.riscv.debian.rootfs.profiles import (
     RootfsProfile,
     get_profile,
 )
-from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
+from tools.riscv.debian.rootfs.signed_sources import SIGNED_SOURCES
 
 
-_M1_PROFILE = get_profile("minimal-m1")
+_M1_PROFILE = get_profile("minimal")
 ROOT_LABEL = _M1_PROFILE.root_label
 ROOT_UUID = _M1_PROFILE.root_uuid
 INSTALL_PACKAGES = _M1_PROFILE.requested_packages
@@ -182,7 +182,7 @@ def load_manifest(path: Path) -> RootfsManifest:
     if schema_version in (6, 7):
         signed_metadata: Mapping[str, Any] = {}
         signed_sources = _signed_sources(manifest["signed_sources"])
-        _validate_m5_sources(signed_sources)
+        _validate_signed_sources(signed_sources)
     else:
         signed_metadata = _mapping(manifest["signed_metadata"], "signed_metadata")
         _exact_keys(signed_metadata, _SIGNED_METADATA_KEYS, "signed_metadata")
@@ -309,7 +309,7 @@ def validate_frozen_root(
         )
     _require_exact(manifest.architecture, _ARCHITECTURE, "architecture")
     if manifest.schema_version in (6, 7):
-        _validate_m5_sources(manifest.signed_sources)
+        _validate_signed_sources(manifest.signed_sources)
     else:
         _require_https(manifest.mirror_url, "mirror_url")
         _require_https(manifest.signed_metadata_url, "signed_metadata.url")
@@ -430,7 +430,7 @@ def write_manifest(
     debian_release: str,
     build_timestamp: str,
     tool_versions: Sequence[str],
-    profile_name: str = "minimal-m1",
+    profile_name: str = "minimal",
     signed_source_files: Mapping[str, Path] | None = None,
 ) -> None:
     """Validates build inputs and atomically writes a canonical manifest."""
@@ -447,7 +447,7 @@ def write_manifest(
     else:
         if signed_source_files is not None:
             raise ContractError(
-                "signed_source_files is only valid for browser-m5 or browser-web"
+                "signed_source_files is only valid for browser profiles"
             )
         source_inputs = ()
     _require_disjoint_output(
@@ -457,7 +457,7 @@ def write_manifest(
     _require_exact(suite, _SUITE, "suite")
     _require_https(mirror_url, "mirror_url")
     if profile.schema_version in (6, 7):
-        _require_exact(mirror_url.rstrip("/"), M5_SOURCES[0].mirror_url, "mirror_url")
+        _require_exact(mirror_url.rstrip("/"), SIGNED_SOURCES[0].mirror_url, "mirror_url")
     if _DEBIAN_RELEASE_RE.fullmatch(debian_release) is None:
         raise ContractError("debian_release must be a signed Debian 13 point release")
     _require_build_timestamp(build_timestamp)
@@ -502,7 +502,7 @@ def write_manifest(
 
         try:
             manifest["signed_sources"] = signed_sources_manifest(
-                M5_SOURCES, dict(signed_source_files)
+                SIGNED_SOURCES, dict(signed_source_files)
             )
         except ValueError as error:
             raise ContractError(str(error)) from error
@@ -664,7 +664,7 @@ def _downloaded_packages(
         )
         if schema_version in (6, 7):
             role = _string(package["source_role"], f"{path}.source_role")
-            if role not in {source.role for source in M5_SOURCES}:
+            if role not in {source.role for source in SIGNED_SOURCES}:
                 raise ContractError(f"unexpected {path}.source_role: {role!r}")
             identity += (role,)
         identities.append(identity)
@@ -692,7 +692,7 @@ def _signed_sources(value: object) -> tuple[SignedSourceIdentity, ...]:
     return tuple(identities)
 
 
-def _validate_m5_sources(sources: tuple[SignedSourceIdentity, ...]) -> None:
+def _validate_signed_sources(sources: tuple[SignedSourceIdentity, ...]) -> None:
     expected = tuple(
         sorted(
             (
@@ -701,12 +701,12 @@ def _validate_m5_sources(sources: tuple[SignedSourceIdentity, ...]) -> None:
                 source.suite,
                 source.inrelease_url,
             )
-            for source in M5_SOURCES
+            for source in SIGNED_SOURCES
         )
     )
     actual = tuple(sorted(row[:4] for row in sources))
     if actual != expected:
-        raise ContractError("signed_sources do not match the browser-m5 source contract")
+        raise ContractError("signed_sources do not match the browser source contract")
     if tuple(sources) != tuple(sorted(sources)):
         raise ContractError("signed_sources must be sorted by role")
     for _, mirror_url, _, inrelease_url, _ in sources:
@@ -792,7 +792,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     writer.add_argument("--debian-release", required=True)
     writer.add_argument("--build-timestamp", required=True)
     writer.add_argument("--tool-version", action="append", required=True)
-    writer.add_argument("--profile", default="minimal-m1")
+    writer.add_argument("--profile", default="minimal")
     writer.add_argument("--signed-source", action="append", default=[])
     verifier = subparsers.add_parser("verify")
     verifier.add_argument("--image", required=True, type=Path)
@@ -862,7 +862,7 @@ def load_package_checksums(
             fields[0], fields[1], fields[2], sha256
         )
         if schema_version in (6, 7):
-            if fields[4] not in {source.role for source in M5_SOURCES}:
+            if fields[4] not in {source.role for source in SIGNED_SOURCES}:
                 raise ContractError(
                     f"unexpected package-checksums source role: {fields[4]!r}"
                 )

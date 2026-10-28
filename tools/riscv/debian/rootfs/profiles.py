@@ -25,7 +25,7 @@ class RootfsProfile:
     journal: bool = False
 
 
-_M1_IDENTITY_PACKAGES = (
+_BASE_IDENTITY_PACKAGES = (
     "base-files",
     "libc6",
     "bash",
@@ -34,8 +34,8 @@ _M1_IDENTITY_PACKAGES = (
 )
 
 _PROFILES = {
-    "minimal-m1": RootfsProfile(
-        name="minimal-m1",
+    "minimal": RootfsProfile(
+        name="minimal",
         schema_version=1,
         root_label="ASTER_DEBIANROOT",
         root_uuid="7b7ad749-77d0-4e59-89e4-e117244a70aa",
@@ -46,31 +46,10 @@ _PROFILES = {
             "procps",
             "util-linux",
         ),
-        identity_packages=_M1_IDENTITY_PACKAGES,
+        identity_packages=_BASE_IDENTITY_PACKAGES,
     ),
-    "systemd-m2": RootfsProfile(
-        name="systemd-m2",
-        schema_version=2,
-        root_label="ASTER_DEBIANM2",
-        root_uuid="4a5d8b91-2189-44fa-a908-ae88dc76f2a1",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "procps",
-            "systemd-sysv",
-            "util-linux",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-        ),
-    ),
-    "systemd-ext4-m3": RootfsProfile(
-        name="systemd-ext4-m3",
+    "systemd-ext4": RootfsProfile(
+        name="systemd-ext4",
         schema_version=9,
         root_label="ASTER_DEBIANE4",
         root_uuid="d6f1c3c9-0e34-4e98-9e2e-6fca8e3dd1b4",
@@ -83,7 +62,7 @@ _PROFILES = {
             "systemd-sysv",
             "util-linux",
         ),
-        identity_packages=_M1_IDENTITY_PACKAGES
+        identity_packages=_BASE_IDENTITY_PACKAGES
         + (
             "systemd",
             "systemd-sysv",
@@ -91,219 +70,6 @@ _PROFILES = {
         ),
         filesystem_type="ext4",
         journal=True,
-    ),
-    "desktop-m3": RootfsProfile(
-        name="desktop-m3",
-        schema_version=3,
-        root_label="ASTER_DEBIANM3",
-        root_uuid="87dc62d5-cd0b-47a3-a82b-32b24f2ed9d3",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "libpam-systemd",
-            "matchbox-window-manager",
-            "procps",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "xauth",
-            "x11-utils",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xterm",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-            "udev",
-            "libpam-systemd",
-            "xserver-xorg-core",
-            "xterm",
-        ),
-    ),
-    "desktop-m4": RootfsProfile(
-        name="desktop-m4",
-        schema_version=4,
-        root_label="ASTER_DEBIANM4",
-        root_uuid="e13bd1e8-8719-539f-b5e7-5c7b5f5df3c8",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "libpam-systemd",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "procps",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "x11-utils",
-            "xauth",
-            "xdotool",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xterm",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-            "udev",
-            "libpam-systemd",
-            "xserver-xorg-core",
-            "xterm",
-            "xdotool",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-        ),
-    ),
-    "desktop-m4-firefox": RootfsProfile(
-        name="desktop-m4-firefox",
-        schema_version=4,
-        # Stage1 deliberately matches the stable M4 label before it can
-        # hand off to systemd.  The UUID and profile name keep this larger
-        # Firefox image distinct in the immutable host-side contract.
-        root_label="ASTER_DEBIANM4",
-        root_uuid="5ef5d5ca-2a96-4db5-8f91-8debb9e8e6e4",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "firefox-esr",
-            "libdrm2",
-            "libegl1",
-            "libgl1-mesa-dri",
-            "libgles2",
-            "libpam-systemd",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "polkitd",
-            "procps",
-            "python3-minimal",
-            "sudo",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "x11-apps",
-            "x11-utils",
-            "xauth",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xdotool",
-            "xterm",
-        ),
-        identity_packages=(
-            "base-files",
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "firefox-esr",
-            "libdrm2",
-            "libegl1",
-            "libgl1-mesa-dri",
-            "libgles2",
-            "libpam-systemd",
-            "librsvg2-common",
-            "libc6",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "procps",
-            "python3-minimal",
-            "systemd",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "xserver-xorg-core",
-            "xterm",
-            "xdotool",
-        ),
-        root_size_bytes=2 * 1024 * 1024 * 1024,
-    ),
-
-    "desktop-m5-network": RootfsProfile(
-        name="desktop-m5-network",
-        schema_version=5,
-        root_label="ASTER_DEBIANM5",
-        root_uuid="182e1ea4-296d-5383-8bcb-ea67e40db074",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "curl",
-            "dbus",
-            "fonts-wqy-microhei",
-            "iproute2",
-            "iputils-ping",
-            "libpam-systemd",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "polkitd",
-            "procps",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "x11-apps",
-            "x11-utils",
-            "xauth",
-            "xdotool",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xterm",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-            "udev",
-            "libpam-systemd",
-            "xserver-xorg-core",
-            "xterm",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "curl",
-            "iproute2",
-            "iputils-ping",
-            "xdotool",
-            "x11-apps",
-        ),
     ),
     "desktop-drm": RootfsProfile(
         name="desktop-drm",
@@ -341,7 +107,7 @@ _PROFILES = {
             "xterm",
         ),
         identity_packages=(
-            *_M1_IDENTITY_PACKAGES,
+            *_BASE_IDENTITY_PACKAGES,
             "systemd",
             "systemd-sysv",
             "dbus",
@@ -361,46 +127,6 @@ _PROFILES = {
     ),
 }
 
-_PROFILES["browser-m5"] = RootfsProfile(
-    name="browser-m5",
-    schema_version=6,
-    root_label="ASTER_BROWSERM5",
-    root_uuid="41be8ca6-8168-5ef0-84b1-25824d8f87f5",
-    requested_packages=tuple(
-        package
-        for package in _PROFILES["desktop-m5-network"].requested_packages
-        if package not in {"netsurf-gtk", "xdotool"}
-    )
-    + ("firefox-esr", "python3-minimal"),
-    identity_packages=tuple(
-        package
-        for package in _PROFILES["desktop-m5-network"].identity_packages
-        if package not in {"netsurf-gtk", "xdotool"}
-    )
-    + ("firefox-esr", "python3-minimal"),
-)
-
-_PROFILES["desktop-m9-software"] = RootfsProfile(
-    name="desktop-m9-software",
-    # M9 adds runtime software evidence while retaining the signed metadata
-    # manifest format used by the stable M5 desktop profile.
-    schema_version=5,
-    root_label="ASTER_DEBIANM9",
-    root_uuid="6f7af5d0-3f2f-5a32-9f7e-c0aa3c8c2e91",
-    requested_packages=tuple(
-        sorted(
-            _PROFILES["desktop-m5-network"].requested_packages
-            + ("ffmpeg", "vim")
-        )
-    ),
-    identity_packages=tuple(
-        sorted(
-            _PROFILES["desktop-m5-network"].identity_packages
-            + ("ffmpeg", "vim")
-        )
-    ),
-)
-
 BROWSER_WEB_DESKTOP_PACKAGES = (
     "mousepad",
     "ristretto",
@@ -409,6 +135,59 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     "zip",
     "unzip",
     "dbus-x11",
+)
+
+# browser-web keeps its Firefox/network package set explicit so a change in one
+# profile cannot silently alter the current daily image.
+_BROWSER_WEB_BASE_REQUESTED_PACKAGES = (
+    "bash",
+    "ca-certificates",
+    "coreutils",
+    "curl",
+    "dbus",
+    "fonts-wqy-microhei",
+    "iproute2",
+    "iputils-ping",
+    "libpam-systemd",
+    "librsvg2-common",
+    "lxpanel",
+    "openbox",
+    "pcmanfm",
+    "polkitd",
+    "procps",
+    "systemd-sysv",
+    "udev",
+    "util-linux",
+    "x11-apps",
+    "x11-utils",
+    "xauth",
+    "xfonts-base",
+    "xinit",
+    "xserver-xorg-core",
+    "xserver-xorg-input-evdev",
+    "xserver-xorg-video-fbdev",
+    "xterm",
+    "firefox-esr",
+    "python3-minimal",
+)
+_BROWSER_WEB_BASE_IDENTITY_PACKAGES = _BASE_IDENTITY_PACKAGES + (
+    "systemd",
+    "systemd-sysv",
+    "dbus",
+    "udev",
+    "libpam-systemd",
+    "xserver-xorg-core",
+    "xterm",
+    "librsvg2-common",
+    "lxpanel",
+    "openbox",
+    "pcmanfm",
+    "curl",
+    "iproute2",
+    "iputils-ping",
+    "x11-apps",
+    "firefox-esr",
+    "python3-minimal",
 )
 
 
@@ -423,10 +202,10 @@ _PROFILES["browser-web"] = RootfsProfile(
     # which is most of them including bilibili, fails to play while the page
     # itself loads. Name the decoder explicitly instead of relying on a
     # recommendation the build discards.
-    requested_packages=_PROFILES["browser-m5"].requested_packages
+    requested_packages=_BROWSER_WEB_BASE_REQUESTED_PACKAGES
     + ("xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
-    identity_packages=_PROFILES["browser-m5"].identity_packages
+    identity_packages=_BROWSER_WEB_BASE_IDENTITY_PACKAGES
     + ("ca-certificates", "xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
     # Firefox's installed files consume most of a 1 GiB image.  A persistent

@@ -32,7 +32,6 @@ from tools.riscv.tests.test_browser_daily_use_contract import (
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
-FAST_CHECK = REPOSITORY_ROOT / "tools/riscv/firefox_fast_check.sh"
 README = REPOSITORY_ROOT / "tools/riscv/README.md"
 EXPERIMENT_ID = "fedcba9876543210fedcba9876543210"
 GATE_RUN_ID = "0123456789abcdef0123456789abcdef"
@@ -597,15 +596,7 @@ class DailyUseEntryPointTests(unittest.TestCase):
             self.assertIn(fragment, target)
         self.assertIn('test ! -e "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)"', target)
 
-    def test_fast_check_and_readme_cover_three_one_shot_runs(self) -> None:
-        fast = FAST_CHECK.read_text(encoding="utf-8")
-        for module in (
-            "test_browser_daily_use_upload",
-            "test_megrez_physical_graphics",
-            "test_megrez_firefox_daily_use",
-            "test_megrez_firefox_daily_use_report",
-        ):
-            self.assertIn(f"tools.riscv.tests.{module}", fast)
+    def test_readme_covers_three_one_shot_runs(self) -> None:
         readme = README.read_text(encoding="utf-8")
         for fragment in (
             "one profile per boot",

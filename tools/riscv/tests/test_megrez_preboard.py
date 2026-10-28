@@ -14,15 +14,16 @@ from unittest import mock
 
 from tools.riscv import megrez_preboard as preboard_module
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.megrez_debug_contract import (
+    BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
-    ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez_gmac_gate import GateTarget, physical_bootargs
 from tools.riscv.megrez_preboard import (
     PreboardError,
     PreboardPermit,
@@ -50,7 +51,7 @@ class MegrezPreboardTests(unittest.TestCase):
                 name=name,
                 path=str((artifact_directory / name).absolute()),
                 load_address=addresses.get(name, 0),
-                size=ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                size=BROWSER_ROOT_IMAGE_BYTES if name == "root_image" else 4096,
                 sha256=hashlib.sha256(name.encode()).hexdigest(),
                 crc32=f"{zlib.crc32(name.encode()):08x}",
             )
@@ -64,7 +65,7 @@ class MegrezPreboardTests(unittest.TestCase):
             artifacts=tuple(
                 self.identities[name] for name in DEBIAN_BROWSER_ARTIFACT_ORDER
             ),
-            bootargs=physical_bootargs(600),
+            bootargs=physical_bootargs(600, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
             smp=4,
             sv39=True,
             markers=DEBIAN_BROWSER_MARKERS,
@@ -372,67 +373,6 @@ class MegrezPreboardTests(unittest.TestCase):
                 repository_root=self.repository,
             )
         self.assertEqual(protected.read_text(), "keep")
-
-    def test_unified_cli_translates_recovery_then_issues_permit(self) -> None:
-        from tools.riscv import megrez_debug
-
-        plan_path = self.repository / "plan.json"
-        plan_path.write_bytes(self.plan.canonical_bytes())
-        native = self.repository / "native.json"
-        serial = self.repository / "serial.log"
-        sums = self.repository / "SHA256SUMS"
-        recovery_output = self.repository / "target/recovery.json"
-        for path in (native, serial, sums):
-            path.write_text("placeholder")
-
-        with mock.patch.object(
-            megrez_debug,
-            "create_recovery_evidence",
-            return_value=self.recovery,
-            create=True,
-        ) as create:
-            status = megrez_debug.main(
-                (
-                    "recovery",
-                    str(plan_path),
-                    "--native-result",
-                    str(native),
-                    "--serial-log",
-                    str(serial),
-                    "--sha256sums",
-                    str(sums),
-                    "--output",
-                    str(recovery_output),
-                )
-            )
-        self.assertEqual(status, 0)
-        create.assert_called_once_with(self.plan, native, serial, sums)
-        self.assertEqual(
-            RecoveryEvidence.from_bytes(recovery_output.read_bytes()), self.recovery
-        )
-
-        with mock.patch.object(
-            megrez_debug, "issue_preboard_permit", return_value=mock.sentinel.permit
-        ) as issue:
-            status = megrez_debug.main(
-                (
-                    "preboard",
-                    str(plan_path),
-                    "--desktop-result",
-                    str(self.desktop_path),
-                    "--recovery-result",
-                    str(recovery_output),
-                    "--output",
-                    str(self.output),
-                )
-            )
-        self.assertEqual(status, 0)
-        issue.assert_called_once_with(
-            self.plan,
-            self.desktop_path,
-            recovery_output,
-            self.output,
-        )
 
     def test_output_parent_swap_fails_closed_without_writing_outside(self) -> None:
         self.output.parent.mkdir(parents=True)

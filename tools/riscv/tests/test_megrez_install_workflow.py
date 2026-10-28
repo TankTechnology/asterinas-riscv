@@ -14,10 +14,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.megrez_debug_contract import (
+    BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
-    ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugPlan,
     StageResult,
@@ -29,7 +30,7 @@ from tools.riscv.megrez_debian_install import (
     run_network_install,
 )
 from tools.riscv.megrez_board_session import validate_recovery_epoch
-from tools.riscv.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez_gmac_gate import GateTarget, physical_bootargs
 from tools.riscv.megrez_preboard import PreboardPermit
 
 
@@ -55,7 +56,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
                 name,
                 str(path.absolute()),
                 addresses.get(name, 0),
-                ROOT_IMAGE_BYTES if name == "root_image" else 4096,
+                BROWSER_ROOT_IMAGE_BYTES if name == "root_image" else 4096,
                 hashlib.sha256(name.encode()).hexdigest(),
                 f"{zlib.crc32(name.encode()):08x}",
             )
@@ -63,7 +64,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             2,
             "debian-browser",
             tuple(self.identities[name] for name in DEBIAN_BROWSER_ARTIFACT_ORDER),
-            physical_bootargs(600),
+            physical_bootargs(600, target=GateTarget.FIREFOX, network_mode=NetworkMode.PROXY),
             4,
             True,
             DEBIAN_BROWSER_MARKERS,
@@ -450,53 +451,6 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
                 validate_recovery_epoch(invalid)
-
-    def test_unified_cli_dispatches_the_permit_bound_installer(self) -> None:
-        from tools.riscv import megrez_debug
-
-        plan_path = self.repository / "plan.json"
-        plan_path.write_bytes(self.plan.canonical_bytes())
-        expected = StageResult(
-            1,
-            "install",
-            True,
-            "install-pass",
-            self.plan.plan_sha256,
-            ("installer.serial.log",),
-        )
-        with mock.patch.object(
-            megrez_debug, "run_network_install", return_value=expected, create=True
-        ) as install:
-            status = megrez_debug.main(
-                (
-                    "install",
-                    str(plan_path),
-                    "/dev/ttyUSB0",
-                    "--permit",
-                    str(self.permit_path),
-                    "--output-directory",
-                    str(self.output),
-                    "--base-cpio",
-                    str(self.base),
-                    "--tftp-directory",
-                    str(self.tftp),
-                    "--root-url",
-                    "http://10.100.19.216:8080/debian-root.ext2.gz",
-                    "--timeout",
-                    "900",
-                )
-            )
-        self.assertEqual(status, 0)
-        install.assert_called_once_with(
-            self.plan,
-            self.permit_path,
-            "/dev/ttyUSB0",
-            self.output,
-            self.base,
-            self.tftp,
-            "http://10.100.19.216:8080/debian-root.ext2.gz",
-            timeout=900.0,
-        )
 
     def test_chunk_build_failure_stops_before_server_or_serial(self) -> None:
         calls: list[str] = []

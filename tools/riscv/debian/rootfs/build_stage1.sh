@@ -46,7 +46,7 @@ if (( $# == 1 )); then
                 usr/lib/asterinas/browser_composite_capture.py \
                 usr/lib/asterinas/browser-web-marionette-gate \
                 usr/lib/asterinas/browser_web_marionette_gate.py \
-                usr/lib/asterinas/browser_m5_marionette_gate.py \
+                usr/lib/asterinas/browser_marionette_transport.py \
                 usr/lib/asterinas/browser-daily-use-gate \
                 usr/lib/asterinas/browser-daily-use-upload \
                 usr/lib/asterinas/megrez-clock-sync \
@@ -85,7 +85,7 @@ BROWSER_DAILY_USE_CONTRACT_SOURCE="$SCRIPT_DIR/browser_daily_use_contract.py"
 BROWSER_PERF_CAPTURE_SOURCE="$SCRIPT_DIR/browser_perf_capture.py"
 BROWSER_WORKLOAD_CONTRACT_SOURCE="$SCRIPT_DIR/browser_workload_contract.py"
 BROWSER_COMPOSITE_CAPTURE_SOURCE="$SCRIPT_DIR/browser_composite_capture.py"
-BROWSER_M5_MARIONETTE_GATE_SOURCE="$SCRIPT_DIR/browser_m5_marionette_gate.py"
+BROWSER_MARIONETTE_TRANSPORT_SOURCE="$SCRIPT_DIR/browser_marionette_transport.py"
 BROWSER_DAILY_USE_GATE_SOURCE="$SCRIPT_DIR/browser_daily_use_gate.py"
 BROWSER_DAILY_USE_UPLOAD_SOURCE="$SCRIPT_DIR/browser_daily_use_upload.py"
 CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
@@ -206,8 +206,8 @@ install -D -m 0755 -- "$BROWSER_WORKLOAD_CONTRACT_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_workload_contract.py"
 install -D -m 0755 -- "$BROWSER_COMPOSITE_CAPTURE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_composite_capture.py"
-install -D -m 0755 -- "$BROWSER_M5_MARIONETTE_GATE_SOURCE" \
-    "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py"
+install -D -m 0755 -- "$BROWSER_MARIONETTE_TRANSPORT_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_marionette_transport.py"
 install -D -m 0755 -- "$BROWSER_DAILY_USE_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-gate"
 install -D -m 0755 -- "$BROWSER_DAILY_USE_UPLOAD_SOURCE" \
@@ -251,7 +251,7 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib/asterinas/browser_composite_capture.py" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
     "$STAGE/usr/lib/asterinas/browser_web_marionette_gate.py" \
-    "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py" \
+    "$STAGE/usr/lib/asterinas/browser_marionette_transport.py" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-gate" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-upload" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync" \
@@ -285,7 +285,7 @@ printf '%s\n' \
     usr/lib/asterinas/browser_composite_capture.py \
     usr/lib/asterinas/browser-web-marionette-gate \
     usr/lib/asterinas/browser_web_marionette_gate.py \
-    usr/lib/asterinas/browser_m5_marionette_gate.py \
+    usr/lib/asterinas/browser_marionette_transport.py \
     usr/lib/asterinas/browser-daily-use-gate \
     usr/lib/asterinas/browser-daily-use-upload \
     usr/lib/asterinas/megrez-clock-sync \
@@ -323,7 +323,7 @@ EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_workload_contract.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_composite_capture.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-web-marionette-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_web_marionette_gate.py\n'
-EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_m5_marionette_gate.py\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_marionette_transport.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-daily-use-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-daily-use-upload\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'

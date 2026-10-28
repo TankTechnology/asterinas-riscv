@@ -16,8 +16,8 @@ from tools.riscv.debian.rootfs.debug_console_qemu_gate import (
     DEBUG_CONSOLE_QEMU_MILESTONES,
     DebugConsoleQemuOperations,
 )
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DesktopM5QemuOperations
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NETWORK_LAYERS
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import DesktopNetworkQemuOperations
+from tools.riscv.debian.rootfs.desktop_network_gate import NETWORK_LAYERS
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 from tools.riscv.physical_graphics_qemu_gate import (
@@ -130,7 +130,7 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
         )
         self.assertNotIn("systemd.unit=", bootargs)
         self.assertIn("systemd.mask=asterinas-browser-web-evidence.service", bootargs)
-        self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", bootargs)
+        self.assertIn("systemd.mask=asterinas-desktop-network.service", bootargs)
         self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", bootargs)
         self.assertIn("asterinas.debian_network=qemu-slirp", bootargs)
         self.assertFalse(PhysicalGraphicsQemuOperations.CAPTURE_DEBUG_SCREENSHOT)
@@ -528,7 +528,7 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         config = mock.Mock(command_timeout=30.0, boot_timeout=83.0)
         with (
             mock.patch.object(
-                DesktopM5QemuOperations,
+                DesktopNetworkQemuOperations,
                 "run_protocol",
                 side_effect=lambda *_args: events.append("base"),
             ),

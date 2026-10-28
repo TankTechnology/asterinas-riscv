@@ -24,11 +24,11 @@ from collections.abc import Callable, Sequence
 from urllib.parse import parse_qs, quote_plus, urlparse
 import zlib
 
-if Path("/usr/lib/asterinas/browser_m5_marionette_gate.py").is_file():
+if Path("/usr/lib/asterinas/browser_marionette_transport.py").is_file():
     sys.path.insert(0, "/usr/lib/asterinas")
-    from browser_m5_marionette_gate import GateError, Marionette, _connect
+    from browser_marionette_transport import GateError, Marionette, _connect
 else:
-    from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
+    from tools.riscv.debian.rootfs.browser_marionette_transport import (
         GateError,
         Marionette,
         _connect,

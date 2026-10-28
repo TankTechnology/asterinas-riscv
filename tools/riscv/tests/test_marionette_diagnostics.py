@@ -7,7 +7,7 @@ import socket
 import unittest
 from unittest import mock
 
-from tools.riscv.debian.rootfs import browser_m5_marionette_gate as gate
+from tools.riscv.debian.rootfs import browser_marionette_transport as gate
 
 
 def frame(value):

@@ -17,7 +17,7 @@ PHYSICAL_TOKENS = (
     "asterinas.mmc_write_partition2",
     f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
     "systemd.mask=asterinas-browser-web-evidence.service",
-    "systemd.mask=asterinas-desktop-m5-network.service",
+    "systemd.mask=asterinas-desktop-network.service",
     "systemd.mask=serial-getty@ttyS0.service",
     "systemd.mask=console-getty.service",
     "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",

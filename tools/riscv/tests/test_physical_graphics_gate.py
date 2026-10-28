@@ -657,7 +657,7 @@ class PhysicalGraphicsRunTests(unittest.TestCase):
     def test_main_normalizes_transport_failure_and_closes_resources(self) -> None:
         gate = load_gate(self)
         transport = importlib.import_module(
-            "tools.riscv.debian.rootfs.browser_m5_marionette_gate"
+            "tools.riscv.debian.rootfs.browser_marionette_transport"
         )
         for phase in ("connect", "setup", "snapshot", "final"):
             with self.subTest(phase=phase):

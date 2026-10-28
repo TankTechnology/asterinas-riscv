@@ -26,11 +26,11 @@ from tools.riscv.debian.rootfs.debug_console_qemu_gate import (
     orchestrate_debug_console_qemu_gate,
 )
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_QEMU_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_QEMU_MILESTONES,
     NETWORK_LAYERS,
 )
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DesktopM5QemuOperations
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import DesktopNetworkQemuOperations
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 
 
@@ -215,9 +215,9 @@ class DebugConsoleProtocolTests(unittest.TestCase):
         self.assertEqual(len({command.payload for command in commands}), 5)
         self.assertTrue(all(NONCE in command.payload for command in commands))
         self.assertIn("asterinas-desktop-m4.service", commands[-1].payload)
-        self.assertIn("asterinas-desktop-m5.service", commands[-1].payload)
+        self.assertIn("asterinas-desktop.service", commands[-1].payload)
         self.assertIn("asterinas-desktop-m4-evidence.service", commands[-2].payload)
-        self.assertIn("asterinas-desktop-m5.service", commands[-2].payload)
+        self.assertIn("asterinas-desktop.service", commands[-2].payload)
         self.assertIn("while ! systemctl", commands[-2].payload)
         self.assertTrue(
             all("_asterinas_debug_output=$(" in command.payload for command in commands)
@@ -397,7 +397,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             self.operations.BOOTARGS.split().count(
-                "systemd.setenv=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight"
+                "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_MODE=lightweight"
             ),
             1,
         )
@@ -414,24 +414,24 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         self.assertFalse(self.operations.CAPTURE_SCREENSHOT)
         self.assertTrue(self.operations.CAPTURE_DEBUG_SCREENSHOT)
 
-    def test_accepts_m5_and_browser_web_manifests(self) -> None:
+    def test_accepts_schema_five_and_browser_web_manifests(self) -> None:
         self.assertEqual(
             self.operations._accepted_profile_identities(),
-            ((5, "desktop-m5-network"), (7, "browser-web")),
+            ((5, "desktop-network"), (7, "browser-web")),
         )
 
     def test_validate_inputs_binds_the_classifier_to_the_manifest_profile(self) -> None:
         with mock.patch.object(
-            DesktopM5QemuOperations,
+            DesktopNetworkQemuOperations,
             "validate_inputs",
-            return_value={"profile": "desktop-m5-network"},
+            return_value={"profile": "desktop-network"},
         ):
             identity = self.operations.validate_inputs(
                 mock.sentinel.config, mock.sentinel.snapshots
             )
 
-        self.assertEqual(identity["profile"], "desktop-m5-network")
-        self.assertEqual(self.operations._validated_profile, "desktop-m5-network")
+        self.assertEqual(identity["profile"], "desktop-network")
+        self.assertEqual(self.operations._validated_profile, "desktop-network")
 
     def test_runs_base_boot_before_debug_probes_and_then_captures(self) -> None:
         serial = mock.Mock()
@@ -457,7 +457,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         serial.wait_for_any.side_effect = wait_for_any
         with (
             mock.patch.object(
-                DesktopM5QemuOperations,
+                DesktopNetworkQemuOperations,
                 "run_protocol",
                 side_effect=lambda *_: calls.append("base"),
             ) as base_protocol,
@@ -501,8 +501,8 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         self.assertEqual(self.operations._screenshot, b"ppm")
         self.assertEqual(self.operations._screenshot_metadata, {"width": 1280})
 
-    def test_schema_five_waits_only_for_the_complete_m5_contract(self) -> None:
-        self.operations._validated_profile = "desktop-m5-network"
+    def test_schema_five_waits_only_for_the_complete_legacy_contract(self) -> None:
+        self.operations._validated_profile = "desktop-network"
         serial = mock.Mock()
         serial.wait_for_any.return_value = DESKTOP_M4_MILESTONES[-1].encode()
         session = {
@@ -512,7 +512,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         }
         config = mock.Mock(command_timeout=17.0, boot_timeout=83.0)
         with (
-            mock.patch.object(DesktopM5QemuOperations, "run_protocol"),
+            mock.patch.object(DesktopNetworkQemuOperations, "run_protocol"),
             mock.patch(
                 "tools.riscv.debian.rootfs.debug_console_qemu_gate."
                 "run_debug_console_phase",
@@ -541,7 +541,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
         session = {"serial": serial}
         config = mock.Mock(command_timeout=17.0, boot_timeout=83.0)
         with (
-            mock.patch.object(DesktopM5QemuOperations, "run_protocol"),
+            mock.patch.object(DesktopNetworkQemuOperations, "run_protocol"),
             mock.patch(
                 "tools.riscv.debian.rootfs.debug_console_qemu_gate."
                 "run_debug_console_phase",
@@ -554,7 +554,7 @@ class DebugConsoleQemuAdapterTests(unittest.TestCase):
     def test_publish_adds_structured_debug_evidence(self) -> None:
         self.operations.debug_evidence = self.evidence
         result: dict[str, object] = {}
-        with mock.patch.object(DesktopM5QemuOperations, "publish") as publish:
+        with mock.patch.object(DesktopNetworkQemuOperations, "publish") as publish:
             self.operations.publish(mock.sentinel.config, None, b"serial", result)
 
         self.assertEqual(
@@ -584,12 +584,12 @@ class DebugConsoleQemuClassifierTests(unittest.TestCase):
         ]
         return ("\n".join(lines) + "\n").encode()
 
-    def passing_m5_transcript(self) -> bytes:
+    def passing_schema_five_transcript(self) -> bytes:
         return (
             "\n".join(
                 (
                     *DEBUG_CONSOLE_QEMU_MILESTONES,
-                    *DESKTOP_M5_QEMU_MILESTONES,
+                    *DESKTOP_NETWORK_QEMU_MILESTONES,
                     *DESKTOP_M4_MILESTONES,
                 )
             )
@@ -607,9 +607,9 @@ class DebugConsoleQemuClassifierTests(unittest.TestCase):
 
     def test_accepts_existing_schema_five_desktop_contract(self) -> None:
         result = classify_debug_console_qemu(
-            self.passing_m5_transcript(),
+            self.passing_schema_five_transcript(),
             expected_debian_release="13.6",
-            expected_profile="desktop-m5-network",
+            expected_profile="desktop-network",
         )
 
         self.assertTrue(result.passed, result.reason)
@@ -667,8 +667,8 @@ class DebugConsoleQemuClassifierTests(unittest.TestCase):
 
     def test_rejects_transcript_for_the_other_validated_profile(self) -> None:
         cases = (
-            (self.passing_web_transcript(), "desktop-m5-network"),
-            (self.passing_m5_transcript(), "browser-web"),
+            (self.passing_web_transcript(), "desktop-network"),
+            (self.passing_schema_five_transcript(), "browser-web"),
         )
         for transcript, profile in cases:
             with self.subTest(profile=profile):

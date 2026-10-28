@@ -26,18 +26,10 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_CORE_MILESTONES,
     DESKTOP_M4_MILESTONES,
 )
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
-    DESKTOP_M5_MEGREZ_MILESTONES,
+from tools.riscv.debian.rootfs.desktop_network_gate import (
+    DESKTOP_NETWORK_MEGREZ_MILESTONES,
     NetworkMode,
     classify_web_network,
-)
-from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
-    DESKTOP_M6_REMOTE_MARKER,
-)
-from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
-    DESKTOP_M7_HOME_MARKER,
-    DESKTOP_M7_READY_MARKER,
-    DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.debian.rootfs.browser_web_contract import (
     firefox_ready_marker,
@@ -92,19 +84,11 @@ HOST_NEIGHBOR_BOOTARG = (
     f"asterinas.neighbor=eic7700-rj45,{HOST_ADDRESS},{HOST_HARDWARE_ADDRESS}"
 )
 NEIGHBOR_BOOTARGS = f"{GATEWAY_NEIGHBOR_BOOTARG} {HOST_NEIGHBOR_BOOTARG}"
-SERIAL_EVIDENCE_VARIABLES = (
-    "ASTERINAS_DESKTOP_M4_CONSOLE",
-    "ASTERINAS_DESKTOP_M5_CONSOLE",
-    "ASTERINAS_BROWSER_M6_CONSOLE",
-)
 DESKTOP_MASK_BOOTARGS = " ".join(
     f"systemd.mask={service}"
     for service in (
-        "asterinas-desktop-m5-network.service",
+        "asterinas-desktop-network.service",
         "asterinas-desktop-m4-evidence.service",
-        "asterinas-desktop-m6-browser.service",
-        "asterinas-desktop-m7-baidu.service",
-        "asterinas-desktop-m8-browser-quality.service",
     )
 )
 MAX_UBOOT_COMMAND_BYTES = 1024
@@ -127,40 +111,20 @@ DESKTOP_FIXTURE_BOOTARGS = " ".join(
     )
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
-PHYSICAL_MILESTONES = (
-    b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
-    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
-    DESKTOP_M4_MILESTONES[-1].encode(),
-    DESKTOP_M6_REMOTE_MARKER.encode(),
-)
 PHYSICAL_NETWORK_MILESTONES = (
     b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
-    *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
+    *(marker.encode() for marker in DESKTOP_NETWORK_MEGREZ_MILESTONES),
 )
 PHYSICAL_DESKTOP_MILESTONES = tuple(
     marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES
 )
-PHYSICAL_M7_MILESTONES = (
-    DESKTOP_M7_HOME_MARKER.encode(),
-    DESKTOP_M7_SEARCH_MARKER.encode(),
-    DESKTOP_M7_READY_MARKER.encode(),
-)
-_BROWSER_JAVASCRIPT_RE = re.compile(
-    rb"DEBIAN_BROWSER_M6_JAVASCRIPT status=(limited-pass|disabled|failed)"
-)
-_BROWSER_READY_RE = re.compile(
-    rb"DEBIAN_BROWSER_M6_READY remote=baidu javascript=(limited-pass|disabled|failed)"
-)
-PHYSICAL_READY_MARKERS = (DESKTOP_M7_READY_MARKER.encode(),)
 PHYSICAL_NETWORK_READY_MARKERS = (PHYSICAL_NETWORK_MILESTONES[-1],)
 PHYSICAL_DESKTOP_READY_MARKERS = (PHYSICAL_DESKTOP_MILESTONES[-1],)
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
     (b"debian_rootfs_fail reason=", "Stage1 rootfs failure"),
-    (b"debian_network_m5_fail reason=", "guest network failure"),
-    (b"debian_browser_m6_fail reason=", "browser guest failure"),
-    (b"debian_browser_m7_fail reason=", "Baidu page guest failure"),
+    (b"debian_network_fail reason=", "guest network failure"),
     (b"fatal bus error", "GMAC fatal bus error"),
 )
 
@@ -178,7 +142,6 @@ class GateTarget(str, Enum):
 
     NETWORK = "network"
     DESKTOP = "desktop"
-    BROWSER = "browser"
     FIREFOX = "firefox"
 
     def __str__(self) -> str:
@@ -228,7 +191,7 @@ class GateConfig:
     boot_timeout: float = 120.0
     drain_timeout: float = 2.0
     recovery_timeout: float = 360.0
-    target: GateTarget = GateTarget.BROWSER
+    target: GateTarget = GateTarget.DESKTOP
     network_mode: NetworkMode | None = None
 
     def __post_init__(self) -> None:
@@ -267,7 +230,7 @@ class GateOperations(Protocol):
 def physical_bootargs(
     reboot_after: int | None = None,
     *,
-    target: GateTarget = GateTarget.BROWSER,
+    target: GateTarget = GateTarget.DESKTOP,
     network_mode: NetworkMode | None = None,
     resolver_address: str | None = None,
 ) -> str:
@@ -315,7 +278,7 @@ def physical_bootargs(
         consoles = "console=ttyS0 console=tty0"
         if target is GateTarget.NETWORK:
             consoles = "console=ttyS0"
-        evidence_variables = ["ASTERINAS_DESKTOP_M5_CONSOLE"]
+        evidence_variables = ["ASTERINAS_DESKTOP_NETWORK_CONSOLE"]
         if target is GateTarget.FIREFOX:
             evidence_variables.append("ASTERINAS_BROWSER_WEB_CONSOLE")
         evidence = " ".join(
@@ -351,25 +314,6 @@ def physical_bootargs(
                 raise GateFailure("expanded FDT bootargs command exceeds 959 bytes")
         return bootargs
 
-    evidence_variables = (
-        ("ASTERINAS_DESKTOP_M5_CONSOLE",)
-        if target is GateTarget.NETWORK
-        else SERIAL_EVIDENCE_VARIABLES
-    )
-    evidence = " ".join(
-        f"systemd.setenv={name}=/dev/ttyS0" for name in evidence_variables
-    )
-    bootargs = (
-        "console=ttyS0 console=tty0 loglevel=info "
-        f"init=/init {ROOTFS_WRITE_BOOTARG} {NETWORK_BOOTARG} "
-        f"{NEIGHBOR_BOOTARGS}{restart} {evidence} {DESKTOP_PROXY_BOOTARGS} "
-        f"{DESKTOP_FIXTURE_BOOTARGS} "
-        "-- --root-init=systemd"
-    )
-    command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
-    if command_bytes >= MAX_UBOOT_COMMAND_BYTES:
-        raise GateFailure("U-Boot bootargs command exceeds 1023 bytes")
-    return bootargs
 
 
 def bounded_reboot_seconds(value: str) -> int:
@@ -382,51 +326,8 @@ def bounded_reboot_seconds(value: str) -> int:
     return seconds
 
 
-def classify_physical_transcript(transcript: bytes) -> GateResult:
-    """Classify all selected-GMAC, desktop, and network evidence in order."""
-
-    if not isinstance(transcript, bytes):
-        return GateResult(False, "physical transcript must be bytes", None)
-    if len(transcript) > MAX_TRANSCRIPT_BYTES:
-        return GateResult(False, "physical transcript exceeds 8 MiB", None)
-    fatal_reason = _fatal_transcript_reason(transcript)
-    if fatal_reason is not None:
-        return GateResult(False, fatal_reason, None)
-
-    positions: list[int] = []
-    for marker in PHYSICAL_MILESTONES:
-        count = transcript.count(marker)
-        if count == 0:
-            return GateResult(False, "missing physical milestone", None)
-        if count != 1:
-            return GateResult(False, "duplicate physical milestone", None)
-        positions.append(transcript.find(marker))
-
-    javascript_matches = tuple(_BROWSER_JAVASCRIPT_RE.finditer(transcript))
-    if len(javascript_matches) != 1:
-        return GateResult(False, "missing or duplicate JavaScript evidence", None)
-    ready_matches = tuple(_BROWSER_READY_RE.finditer(transcript))
-    if len(ready_matches) != 1:
-        return GateResult(False, "missing or duplicate browser ready evidence", None)
-    javascript = javascript_matches[0]
-    ready = ready_matches[0]
-    if javascript.group(1) != ready.group(1):
-        return GateResult(False, "missing or mismatched browser ready evidence", None)
-    positions.extend((javascript.start(), ready.start()))
-    for marker in PHYSICAL_M7_MILESTONES:
-        count = transcript.count(marker)
-        if count == 0:
-            return GateResult(False, "missing physical Baidu page milestone", None)
-        if count != 1:
-            return GateResult(False, "duplicate physical Baidu page milestone", None)
-        positions.append(transcript.find(marker))
-    if positions != sorted(positions):
-        return GateResult(False, "physical milestones out of order", None)
-    return GateResult(True, "pass", None)
-
-
 def classify_physical_network_transcript(transcript: bytes) -> GateResult:
-    """Classify selected-GMAC and Megrez M5 evidence without desktop coupling."""
+    """Classify selected-GMAC and Megrez network evidence without desktop coupling."""
 
     if not isinstance(transcript, bytes):
         return GateResult(False, "physical transcript must be bytes", None)
@@ -509,26 +410,15 @@ def classify_physical_desktop_transcript(transcript: bytes) -> GateResult:
 
 
 def _fatal_transcript_reason(
-    transcript: bytes, *, target: GateTarget = GateTarget.BROWSER
+    transcript: bytes, *, target: GateTarget = GateTarget.FIREFOX
 ) -> str | None:
     lowered = transcript.lower()
     for marker, reason in _FATAL_MARKERS:
-        if target is GateTarget.DESKTOP and reason in (
-            "guest network failure",
-            "browser guest failure",
-            "Baidu page guest failure",
-        ):
+        if target is GateTarget.DESKTOP and reason == "guest network failure":
             continue
         if marker in lowered:
             return f"fatal transcript marker: {reason}"
     return None
-
-
-def _browser_javascript_status(transcript: bytes) -> str:
-    match = _BROWSER_JAVASCRIPT_RE.search(transcript)
-    if match is None:
-        raise GateFailure("missing JavaScript evidence")
-    return match.group(1).decode("ascii")
 
 
 def check_address_unused(
@@ -635,12 +525,9 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             classify_physical_firefox_transcript,
             mode=config.network_mode,
         )
-    elif config.target is GateTarget.DESKTOP:
+    else:
         ready_markers = PHYSICAL_DESKTOP_READY_MARKERS
         classifier = classify_physical_desktop_transcript
-    else:
-        ready_markers = PHYSICAL_READY_MARKERS
-        classifier = classify_physical_transcript
     operations.invalidate()
     try:
         if config.target is not GateTarget.DESKTOP:
@@ -698,8 +585,6 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         if config.network_mode is not None:
             result["network_mode"] = config.network_mode.value
             result["recovery_observed"] = recovery_observed
-        if config.target is GateTarget.BROWSER:
-            result["javascript_status"] = _browser_javascript_status(bytes(transcript))
     except Exception as error:
         result = {
             "passed": False,
@@ -763,7 +648,7 @@ class PhysicalGateOperations:
 
     def _uses_network(self) -> bool:
         return (
-            getattr(self.arguments, "target", GateTarget.BROWSER)
+            getattr(self.arguments, "target", GateTarget.DESKTOP)
             is not GateTarget.DESKTOP
         )
 
@@ -965,7 +850,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target",
         choices=tuple(GateTarget),
-        default=GateTarget.BROWSER,
+        default=GateTarget.DESKTOP,
         type=GateTarget,
     )
     parser.add_argument("--output-directory", required=True, type=Path)

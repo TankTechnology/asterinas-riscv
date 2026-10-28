@@ -33,11 +33,11 @@ else:
         validate_navigation,
     )
 
-if Path("/run/asterinas-tools/browser_m5_marionette_gate.py").is_file():
+if Path("/run/asterinas-tools/browser_marionette_transport.py").is_file():
     sys.path.insert(0, "/run/asterinas-tools")
-    from browser_m5_marionette_gate import _connect  # type: ignore[import-not-found]
+    from browser_marionette_transport import _connect  # type: ignore[import-not-found]
 else:
-    from tools.riscv.debian.rootfs.browser_m5_marionette_gate import _connect
+    from tools.riscv.debian.rootfs.browser_marionette_transport import _connect
 
 
 class CaptureError(ValueError):

@@ -10,7 +10,7 @@ import struct
 from typing import Mapping
 import zlib
 
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
+from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 from tools.riscv.megrez_network_fixture import BROWSER_PNG_CAPTURE_PATH
 

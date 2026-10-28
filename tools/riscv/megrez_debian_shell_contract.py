@@ -49,7 +49,7 @@ _QEMU_PAGING = "sv39"
 _MEGREZ_PAGING = "sv48"
 _GATE_REBOOT_AFTER_SECONDS = 180
 _LONG_OPERATION_REBOOT_AFTER_SECONDS = 600
-_ROOT_IMAGE_SIZE_BYTES = get_profile("minimal-m1").root_size_bytes
+_ROOT_IMAGE_SIZE_BYTES = get_profile("minimal").root_size_bytes
 _MAX_BOOT_ARTIFACT_SIZE_BYTES = 64 * 1024 * 1024
 _MAX_METADATA_SIZE_BYTES = 8 * 1024 * 1024
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
@@ -359,8 +359,8 @@ def validate_rootfs_identity(plan: PersistentShellPlan) -> RootfsManifest:
         checksums = load_package_checksums(Path(artifacts["package_checksums"].path))
     except RootfsContractError as error:
         raise ShellContractError(f"rootfs identity is invalid: {error}") from error
-    if validated.schema_version != 1 or validated.profile != "minimal-m1":
-        raise ShellContractError("persistent shell requires the minimal-m1 root")
+    if validated.schema_version != 1 or validated.profile != "minimal":
+        raise ShellContractError("persistent shell requires the minimal root")
     if checksums != validated.downloaded_packages:
         raise ShellContractError("package checksums do not match the manifest")
     if not hmac.compare_digest(

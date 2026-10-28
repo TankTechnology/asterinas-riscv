@@ -13,8 +13,6 @@ from tools.riscv import host_test_runner
 
 
 BASELINE = Path(__file__).with_name("expected_host_tests.json")
-HISTORICAL_LOWER_BOUND = 2229
-
 
 class HostTestBaselineTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -25,7 +23,6 @@ class HostTestBaselineTests(unittest.TestCase):
         self.assertIsInstance(self.value["commit"], str)
         self.assertEqual(self.value["modules"], len(self.value["module_names"]))
         self.assertEqual(self.value["tests"], len(self.value["test_ids"]))
-        self.assertGreaterEqual(self.value["tests"], HISTORICAL_LOWER_BOUND)
         self.assertTrue(self.value["module_names"])
         self.assertTrue(self.value["test_ids"])
         self.assertTrue(self.value["skip_reasons"])

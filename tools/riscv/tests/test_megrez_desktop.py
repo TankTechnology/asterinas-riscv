@@ -360,7 +360,7 @@ class DesktopStartLifecycleTests(unittest.TestCase):
         )
         self.assertIn("asterinas.mmc_write_partition2", tokens)
         self.assertIn("systemd.mask=asterinas-browser-web-evidence.service", tokens)
-        self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", tokens)
+        self.assertIn("systemd.mask=asterinas-desktop-network.service", tokens)
         self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", tokens)
         forbidden = (
             "asterinas.mmc-write-partition2",

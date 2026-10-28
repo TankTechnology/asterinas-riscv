@@ -51,4 +51,5 @@ index and the tracked recovery-evidence page linked above.
 ## Current status
 
 This file is an append-only evidence ledger, not a live status page. See the
-[single live status entry](../README.md) for the current boundary and next gate.
+[single live board record](../board-image-current.md) for the current boundary
+and known issues; the porting index is [`../README.md`](../README.md).

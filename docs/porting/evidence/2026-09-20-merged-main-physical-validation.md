@@ -104,7 +104,7 @@ required formatting changes to two Rust and thirteen C files plus one Nix file,
 which are applied. Do not use the repository-level `make format` for this: its
 first step runs `sed -i 's/ *$//'` over every git-tracked non-patch file and
 rewrites binary tracked files such as
-`tools/riscv/xfce/shots/xfce-desktop-full.png`; the corresponding check step
+`tools/riscv/archive/xfce/shots/xfce-desktop-full.png`; the corresponding check step
 skips binaries.
 
 Three check failures remain and are **pre-existing on `origin/main`**, not

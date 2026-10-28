@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "max_lines": 2000,
+  "files": {
+    "tools/riscv/debian/rootfs/browser_web_marionette_gate.py": 2660,
+    "tools/riscv/debian/rootfs/build_rootfs.sh": 2550,
+    "tools/riscv/megrez_desktop.py": 2623,
+    "tools/riscv/megrez_physical_graphics.py": 2367,
+    "tools/riscv/megrez_probe.py": 2023
+  }
+}

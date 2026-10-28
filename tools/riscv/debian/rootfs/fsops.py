@@ -28,7 +28,7 @@ _PUBLISHED_PATHS = (
     "source-metadata/InRelease",
     "source-metadata/package-checksums",
 )
-_M5_PUBLISHED_PATHS = _PUBLISHED_PATHS + ("source-metadata/Security-InRelease",)
+_BROWSER_PUBLISHED_PATHS = _PUBLISHED_PATHS + ("source-metadata/Security-InRelease",)
 
 
 class FsOpsError(ValueError):
@@ -403,7 +403,7 @@ def publish_set(
 ) -> None:
     """Publishes the exact rootfs artifact set with rollback on process failure."""
 
-    paths = _M5_PUBLISHED_PATHS if include_security_inrelease else _PUBLISHED_PATHS
+    paths = _BROWSER_PUBLISHED_PATHS if include_security_inrelease else _PUBLISHED_PATHS
     sources = _open_publication_sources(source_root, paths)
     entries: list[_PublishFile] = []
     try:

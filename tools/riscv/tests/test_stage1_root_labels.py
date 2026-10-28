@@ -37,14 +37,8 @@ _MODE_FUNCTION_RE = re.compile(
 # label is the failure this test exists to prevent, so the list is explicit
 # rather than derived from whatever the source happens to contain.
 PROFILE_NAMES = (
-    "minimal-m1",
-    "systemd-m2",
-    "desktop-m3",
-    "desktop-m4",
-    "desktop-m5-network",
+    "minimal",
     "desktop-drm",
-    "browser-m5",
-    "desktop-m9-software",
     "browser-web",
 )
 

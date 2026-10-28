@@ -18,13 +18,13 @@ from tools.riscv.debian.rootfs.debug_console_protocol import (
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import capture_rendered_ppm
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
-from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
+from tools.riscv.debian.rootfs.desktop_network_gate import (
     NetworkMode,
-    classify_desktop_m5_qemu,
+    classify_desktop_network_qemu,
     classify_web_network,
 )
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
-    DesktopM5QemuOperations,
+from tools.riscv.debian.rootfs.desktop_network_qemu_gate import (
+    DesktopNetworkQemuOperations,
     qemu_web_network_bootargs,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
@@ -48,7 +48,7 @@ DEBUG_CONSOLE_QEMU_MILESTONES = (
 )
 _DEBUG_CONSOLE_QEMU_FATAL_MARKERS = (
     (b"debian_rootfs_fail reason=", "stage1 failure"),
-    (b"debian_network_m5_fail reason=", "network guest failure"),
+    (b"debian_network_fail reason=", "network guest failure"),
     (b"debian_browser_web_fail reason=", "browser guest failure"),
     (b"kernel panic", "kernel panic"),
     (b"uncaught panic:", "kernel panic"),
@@ -58,10 +58,10 @@ _DEBUG_CONSOLE_QEMU_FATAL_MARKERS = (
 )
 _WEB_NETWORK_READY = b"DEBIAN_WEB_NETWORK_READY mode=direct layers=10"
 _WEB_DESKTOP_READY = b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready"
-_M5_DESKTOP_READY = DESKTOP_M4_MILESTONES[-1].encode()
+_SCHEMA_FIVE_DESKTOP_READY = DESKTOP_M4_MILESTONES[-1].encode()
 _POST_CONSOLE_FAILURE_MARKERS = (
     b"DEBIAN_ROOTFS_FAIL reason=",
-    b"DEBIAN_NETWORK_M5_FAIL reason=",
+    b"DEBIAN_NETWORK_FAIL reason=",
     b"DEBIAN_BROWSER_WEB_FAIL reason=",
     b"Kernel panic",
     b"Uncaught panic:",
@@ -77,7 +77,7 @@ def _debug_console_qemu_bootargs() -> str:
     prefix = prefix.replace("loglevel=4", "loglevel=off", 1)
     return (
         f"{prefix} "
-        "systemd.setenv=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight "
+        "systemd.setenv=ASTERINAS_DESKTOP_NETWORK_MODE=lightweight "
         f"-- {initargs} --debug-console=root"
     )
 
@@ -95,7 +95,7 @@ def classify_debug_console_qemu(
         return GateResult(False, "debug-console transcript must be bytes", None)
     if not expected_debian_release:
         return GateResult(False, "missing expected Debian release", None)
-    if expected_profile not in ("desktop-m5-network", "browser-web"):
+    if expected_profile not in ("desktop-network", "browser-web"):
         return GateResult(False, "unsupported debug-console rootfs profile", None)
     lowered = transcript.lower()
     for marker, reason in _DEBUG_CONSOLE_QEMU_FATAL_MARKERS:
@@ -117,7 +117,7 @@ def classify_debug_console_qemu(
     if positions != sorted(positions):
         return GateResult(False, "debug-console milestones out of order", None)
     if expected_profile == "browser-web":
-        if _M5_DESKTOP_READY in transcript:
+        if _SCHEMA_FIVE_DESKTOP_READY in transcript:
             return GateResult(False, "mixed desktop-network acceptance contract", None)
         if require_web_network:
             network = classify_web_network(transcript, mode=NetworkMode.DIRECT)
@@ -128,14 +128,14 @@ def classify_debug_console_qemu(
         return GateResult(True, "pass", None)
     if _WEB_NETWORK_READY in transcript or _WEB_DESKTOP_READY in transcript:
         return GateResult(False, "mixed desktop-network acceptance contract", None)
-    return classify_desktop_m5_qemu(
+    return classify_desktop_network_qemu(
         transcript,
         expected_debian_release=expected_debian_release,
     )
 
 
-class DebugConsoleQemuOperations(DesktopM5QemuOperations):
-    """Add fixed root-shell probes to the established M5 desktop gate."""
+class DebugConsoleQemuOperations(DesktopNetworkQemuOperations):
+    """Add fixed root-shell probes to the established desktop gate."""
 
     ARTIFACT_PREFIX = "debug-root-console"
     MILESTONES = DEBUG_CONSOLE_QEMU_MILESTONES
@@ -152,7 +152,7 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
     @classmethod
     def _accepted_profile_identities(cls) -> tuple[tuple[int, str], ...]:
         return (
-            (5, "desktop-m5-network"),
+            (5, "desktop-network"),
             (7, "browser-web"),
         )
 
@@ -178,8 +178,8 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
     def _wait_for_profile_acceptance(self, serial: Any, deadline: float) -> None:
         if self._validated_profile == "browser-web":
             readiness = (_WEB_DESKTOP_READY, _WEB_NETWORK_READY)
-        elif self._validated_profile == "desktop-m5-network":
-            readiness = (_M5_DESKTOP_READY,)
+        elif self._validated_profile == "desktop-network":
+            readiness = (_SCHEMA_FIVE_DESKTOP_READY,)
         else:
             raise GateFailure("rootfs profile was not validated")
         for marker in readiness:

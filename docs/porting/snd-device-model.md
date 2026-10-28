@@ -11,7 +11,7 @@ fallback — run against Asterinas. The deliverable is a **reusable `/dev/snd`
 device model** in the kernel that speaks the ALSA **ioctl ABI** and drives the
 existing virtio-sound transport.
 
-Key conclusion (see `tools/riscv/nixos/POLISH-M5-report.md`): the userspace half
+Key conclusion (see `tools/riscv/archive/nixos/POLISH-M5-report.md`): the userspace half
 is *free* — Alpine ships prebuilt riscv64-musl `alsa-lib` + `alsa-utils`, no
 cross-compilation needed. The entire real work is the kernel-side ABI layer
 described here.

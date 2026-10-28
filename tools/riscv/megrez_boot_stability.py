@@ -701,23 +701,23 @@ def boot_diagnostics_commands(nonce: str) -> tuple[str, ...]:
         "{ printf '%s\\n' '== graphical units =='; "
         "systemctl show --no-pager "
         "--property Id,ActiveState,SubState,MainPID,NRestarts "
-        "asterinas-desktop-m4.service asterinas-desktop-m5.service "
+        "asterinas-desktop-m4.service asterinas-desktop.service "
         "asterinas-browser-web.service || true; } "
         '>"$_asterinas_boot_diag.05" 2>&1',
         "{ printf '%s\\n' '== process tree =='; "
         "ps -eo pid,ppid,stat,wchan:24,comm,args || true; } "
         '>"$_asterinas_boot_diag.06" 2>&1',
         "{ printf '%s\\n' '== graphical service status =='; "
-        "systemctl status --no-pager --full asterinas-desktop-m5.service "
+        "systemctl status --no-pager --full asterinas-desktop.service "
         "asterinas-browser-web.service || true; } "
         '>"$_asterinas_boot_diag.07" 2>&1',
         "{ printf '%s\\n' '== graphical journal =='; "
-        "journalctl -b --no-pager -n 200 -u asterinas-desktop-m5.service "
+        "journalctl -b --no-pager -n 200 -u asterinas-desktop.service "
         "-u asterinas-browser-web.service || true; } "
         '>"$_asterinas_boot_diag.08" 2>&1',
         "{ printf '%s\\n' '== graphical logs =='; "
         "for _asterinas_boot_log in /home/asterinas/Xorg.0.log "
-        "/home/asterinas/desktop-m5-session.log "
+        "/home/asterinas/desktop-session.log "
         "/home/asterinas/firefox-web-stderr.log "
         "/home/asterinas/firefox-web-mozilla.log; do "
         "printf '%s\\n' \"--- $_asterinas_boot_log ---\"; "

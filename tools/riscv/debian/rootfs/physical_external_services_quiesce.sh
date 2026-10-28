@@ -7,10 +7,10 @@ readonly _asterinas_control=/run/systemd/system.control
 readonly _asterinas_home=/run/asterinas-physical-home
 readonly _asterinas_browser=asterinas-browser-web.service
 readonly -a _asterinas_external_units=(
-    asterinas-desktop-m5.service
+    asterinas-desktop.service
     asterinas-browser-web.service
     asterinas-browser-web-evidence.service
-    asterinas-desktop-m5-network.service
+    asterinas-desktop-network.service
     serial-getty@ttyS0.service
     console-getty.service
 )
@@ -65,7 +65,7 @@ printf '%s\n' \
 
 for _asterinas_external_unit in \
     asterinas-browser-web-evidence.service \
-    asterinas-desktop-m5-network.service \
+    asterinas-desktop-network.service \
     serial-getty@ttyS0.service \
     console-getty.service; do
     /usr/bin/ln -sfn /dev/null \
@@ -106,12 +106,12 @@ done
     /usr/bin/mount --bind "$_asterinas_home" /home/asterinas || \
     record_failure $? bind-home
 systemctl_bounded reset-failed \
-    asterinas-desktop-m5.service \
+    asterinas-desktop.service \
     asterinas-browser-web-timeline-basic.service \
     asterinas-browser-web.service \
     asterinas-browser-web-evidence.service \
-    asterinas-desktop-m5-network.service >/dev/null 2>&1 || true
-systemctl_bounded start --no-block asterinas-desktop-m5.service \
+    asterinas-desktop-network.service >/dev/null 2>&1 || true
+systemctl_bounded start --no-block asterinas-desktop.service \
     >/dev/null 2>&1 || record_failure $? start-desktop
 systemctl_bounded start --no-block \
     asterinas-browser-web-timeline-basic.service \
@@ -128,11 +128,11 @@ _asterinas_evidence_pid="$(
 )"
 _asterinas_network_state="$(
     systemctl_bounded is-active \
-        asterinas-desktop-m5-network.service 2>/dev/null || true
+        asterinas-desktop-network.service 2>/dev/null || true
 )"
 _asterinas_network_pid="$(
     systemctl_bounded show --property MainPID --value \
-        asterinas-desktop-m5-network.service 2>/dev/null || true
+        asterinas-desktop-network.service 2>/dev/null || true
 )"
 _asterinas_terminal_status=0
 [[ "$_asterinas_evidence_state" == inactive ]] &&

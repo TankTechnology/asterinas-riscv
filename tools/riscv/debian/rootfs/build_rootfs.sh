@@ -6,14 +6,7 @@ set -euo pipefail
 umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
-readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
-readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m3/rootfs"
-readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
-readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
-readonly DESKTOP_M4_FIREFOX_OUTPUT_DIR="target/debian-riscv/desktop-m4-firefox/rootfs"
-readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
-readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
-readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
+readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
@@ -54,7 +47,7 @@ MIRROR="$DEFAULT_MIRROR"
 SUITE="$SUPPORTED_SUITE"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
-PROFILE="minimal-m1"
+PROFILE="minimal"
 FIREFOX_JIT_PACKAGE_DIR=""
 ROOT_LABEL=""
 ROOT_UUID=""
@@ -181,9 +174,6 @@ parse_arguments() {
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
-            if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
-                printf '%s\n' ffprobe ffmpeg
-            fi
         else
             printf '%s\n' "${INSTALL_PACKAGES[@]}"
         fi
@@ -198,7 +188,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
+        minimal | systemd-ext4 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -221,25 +211,11 @@ configure_profile() {
     ROOT_FILESYSTEM_JOURNAL=0
     [[ "${profile_fields[4]}" == journal ]] && ROOT_FILESYSTEM_JOURNAL=1
     INSTALL_PACKAGES=("${profile_fields[@]:5}")
-    if [[ "$PROFILE" == systemd-m2 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m3 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m4-firefox && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M4_FIREFOX_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m9-software && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M9_SOFTWARE_OUTPUT_DIR"
-    elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
-    elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
+    if [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
-    elif [[ "$PROFILE" == systemd-ext4-m3 && "$has_output_dir" == 0 ]]; then
+    elif [[ "$PROFILE" == systemd-ext4 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_EXT4_M3_OUTPUT_DIR"
     fi
 }
@@ -374,7 +350,7 @@ validate_existing_publication_targets() {
     else
         target="$OUTPUT_DIR/source-metadata/Security-InRelease"
         [[ ! -e "$target" && ! -L "$target" ]] ||
-            die "stale browser-m5 artifact in non-browser output: $target"
+            die "stale browser artifact in non-browser output: $target"
     fi
 }
 
@@ -394,10 +370,6 @@ require_tools() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
     done
-    if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
-        command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
-        command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
-    fi
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         command -v proot >/dev/null 2>&1 ||
             die "explicit qemu mode requires proot"
@@ -678,7 +650,7 @@ audit_packages() {
 
     log "phase 6/8: auditing package lock and signed-index checksums"
     if is_firefox_profile; then
-        verify_m5_releases_are_unchanged
+        verify_signed_releases_are_unchanged
         : >"$WORK_DIR/package-index-checksums"
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -793,7 +765,7 @@ verify_release_is_unchanged() {
         die "signed release changed during build: InRelease SHA-256 mismatch"
 }
 
-verify_m5_releases_are_unchanged() {
+verify_signed_releases_are_unchanged() {
     local script_directory
     local repository_root
     local role
@@ -1117,7 +1089,7 @@ if [[ $- == *i* ]]; then
     PS1='asterinas-debian# '
 fi
 EOF
-    if [[ "$PROFILE" != minimal-m1 ]]; then
+    if [[ "$PROFILE" != minimal ]]; then
         # systemd's shutdown helper skips its final sync when it detects a
         # container. Preserve root filesystem metadata on Asterinas' reboot
         # path.
@@ -1125,7 +1097,7 @@ EOF
             "$script_directory/shutdown_sync.sh" \
             "$stage/usr/lib/systemd/system-shutdown/asterinas-sync"
     fi
-    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
+    if [[ "$PROFILE" == systemd-ext4 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         install -D -m 0755 -- \
             "$script_directory/systemd_m2_evidence.sh" \
@@ -1148,49 +1120,9 @@ EOF
         ln -s -- \
             ../asterinas-debian-m2.service \
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
-    elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
-        configure_desktop "$stage" "${PROFILE#desktop-}"
-    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
-        configure_desktop "$stage" m4
-        # The daily-use image runs the desktop session itself, not the M4
-        # framebuffer/X11 evidence probes.  Remove both evidence entry points
-        # so a later graphical boot cannot race the session.
-        rm -f -- \
-            "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service" \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m4-evidence.service" \
-            "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service" \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
-        # The board boot path has no DHCP and no reachable public resolver;
-        # the shim is the only DNS path.  It skips itself when the board
-        # bootargs do not name a forwarder, so the QEMU gate is unaffected.
-        configure_dns_shim "$stage" "$script_directory"
-    elif [[ "$PROFILE" == desktop-m5-network ]]; then
-        configure_desktop "$stage" m4
-        configure_desktop_m5_network "$stage"
-    elif [[ "$PROFILE" == desktop-m9-software ]]; then
-        configure_desktop "$stage" m4
-        configure_desktop_m5_network "$stage"
-        configure_desktop_m9_software "$stage"
-    elif [[ "$PROFILE" == browser-m5 ]]; then
-        configure_desktop "$stage" "m5"
-        configure_desktop_m5_network "$stage" m5 false
-        # Keep logind diagnosis independent from the Firefox workload.  The
-        # service is bounded and emits evidence while the desktop waits, so a
-        # stalled seat/udev path cannot be mistaken for a Firefox failure.
-        install -D -m 0755 -- \
-            "$script_directory/logind_diagnostic.sh" \
-            "$stage/usr/lib/asterinas/logind-diagnostic"
-        install -D -m 0644 -- \
-            "$script_directory/logind_diagnostic.service" \
-            "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
-        install -d -m 0755 -- \
-            "$stage/etc/systemd/system/sysinit.target.wants"
-        ln -s -- \
-            ../asterinas-logind-diagnostic.service \
-            "$stage/etc/systemd/system/sysinit.target.wants/asterinas-logind-diagnostic.service"
     elif [[ "$PROFILE" == browser-web ]]; then
-        configure_desktop "$stage" "m5" online
-        configure_desktop_m5_network "$stage" m5 false lightweight
+        configure_desktop "$stage" "browser" online
+        configure_desktop_network "$stage" browser lightweight
     elif [[ "$PROFILE" == desktop-drm ]]; then
         configure_desktop "$stage" drm "offline" drm
     fi
@@ -1203,9 +1135,6 @@ EOF
         grep -qx 'FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns curl=riscv64 getent=riscv64 firefox=riscv64 trust_static=pass runtime_proven=0' \
             "$stage/usr/share/asterinas/browser-web-online-rootfs-static.log" ||
             die "online Firefox rootfs checker did not emit its exact PASS"
-    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
-        # The daily-use image's apt path runs on the QEMU slirp resolver.
-        printf 'nameserver 10.0.2.3\n' >"$stage/etc/resolv.conf"
     else
         printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
     fi
@@ -1231,13 +1160,7 @@ EOF
         # closed if a real workspace somehow does not.
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             finalize_browser_startup_caches "$stage"
-        elif [[ "$PROFILE" == desktop-m5-network ||
-                "$PROFILE" == desktop-m9-software ]]; then
-            # Keep the helper overrideable for the skeletal desktop-M5 unit
-            # tests; real builds have target systemd-sysusers and take the
-            # branch above.
-            finalize_browser_startup_caches "$stage"
-        elif [[ ("$PROFILE" == browser-web || "$PROFILE" == browser-m5) &&
+        elif [[ "$PROFILE" == browser-web &&
                 -d "$WORK_DIR/source-metadata" ]]; then
             die "target systemd-sysusers is missing; cannot finalize browser startup caches"
         fi
@@ -1250,20 +1173,13 @@ EOF
         : >"$stage/var/.updated"
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             local startup_cache_marker
-            if [[ "$PROFILE" == browser-m5 ]]; then
-                python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
-                    --profile browser-web --service-name asterinas-browser-m5.service \
-                    >"$WORK_DIR/browser-startup-cache-check.log"
+            python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
+                --profile "$PROFILE" \
+                >"$WORK_DIR/browser-startup-cache-check.log"
+            if [[ "$PROFILE" == browser-web ]]; then
                 startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
             else
-                python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
-                    --profile "$PROFILE" \
-                    >"$WORK_DIR/browser-startup-cache-check.log"
-                if [[ "$PROFILE" == browser-web ]]; then
-                    startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
-                else
-                    startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
-                fi
+                startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
             fi
             grep -Fqx "$startup_cache_marker" \
                 "$WORK_DIR/browser-startup-cache-check.log" ||
@@ -1275,7 +1191,7 @@ EOF
 
 profile_uses_startup_caches() {
     case "$1" in
-        desktop-m5-network | desktop-m9-software | browser-web | browser-m5) return 0 ;;
+        browser-web) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1394,17 +1310,13 @@ generate_fontconfig_cache() {
     die "staged fontconfig cache is absent after an audited rebuild"
 }
 
-configure_desktop_m5_network() {
+configure_desktop_network() {
     local stage="$1"
     local desktop_generation="${2:-m4}"
-    local install_netsurf_evidence="${3:-true}"
-    local network_mode="${4:-full}"
+    local network_mode="${3:-full}"
     local script_directory safe_reboot_target
-    local service_name="asterinas-desktop-m5-network"
+    local service_name="asterinas-desktop-network"
     local desktop_ordering=""
-    local browser_service_name="asterinas-desktop-m6-browser"
-    local baidu_service_name="asterinas-desktop-m7-baidu"
-    local quality_service_name="asterinas-desktop-m8-browser-quality"
     local safe_reboot_service_name="asterinas-safe-reboot"
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -1412,8 +1324,8 @@ configure_desktop_m5_network() {
         desktop_ordering="Before=asterinas-desktop-$desktop_generation.service"
     fi
     install -D -m 0755 -- \
-        "$script_directory/desktop_m5_network_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
+        "$script_directory/desktop_network_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-network-evidence"
     install -D -m 0755 -- \
         "$script_directory/megrez_safe_reboot.sh" \
         "$stage/usr/lib/asterinas/megrez-safe-reboot"
@@ -1444,13 +1356,13 @@ EOF
     done
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
-Description=Asterinas Debian M5 wired-network evidence
+Description=Asterinas Debian wired-network evidence
 After=local-fs.target
 $desktop_ordering
 
 [Service]
 Type=oneshot
-$(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
+$(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_NETWORK_MODE=lightweight'; fi)
 # Asterinas' iproute2 netlink path is known to complete on the board, but a
 # broken userspace probe must never hold graphical.target forever.  Bound the
 # unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
@@ -1464,7 +1376,7 @@ Restart=no
 # inactive instead of parked in `systemctl --failed`.  Evidence mismatches
 # still exit 1 and remain visible as failures.
 SuccessExitStatus=75
-ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
+ExecStart=/usr/lib/asterinas/desktop-network-evidence
 
 [Install]
 WantedBy=graphical.target
@@ -1474,132 +1386,6 @@ EOF
         "../$service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 
-    if [[ "$install_netsurf_evidence" == true ]]; then
-        install -D -m 0755 -- \
-        "$script_directory/desktop_m6_browser_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m6-browser-evidence"
-        install -D -m 0644 -- \
-        "$script_directory/desktop_m6_javascript.html" \
-        "$stage/usr/share/asterinas/desktop-m6-javascript.html"
-        install -D -m 0644 -- \
-        "$script_directory/desktop_m6_javascript_pass.html" \
-        "$stage/usr/share/asterinas/desktop-m6-javascript-pass.html"
-        cat >"$stage/etc/systemd/system/$browser_service_name.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M6 browser evidence
-After=asterinas-desktop-m5-network.service asterinas-desktop-m4-evidence.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/lib/asterinas/desktop-m6-browser-evidence
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-    chmod 0644 -- "$stage/etc/systemd/system/$browser_service_name.service"
-    ln -s -- \
-        "../$browser_service_name.service" \
-        "$stage/etc/systemd/system/graphical.target.wants/$browser_service_name.service"
-
-    install -D -m 0755 -- \
-        "$script_directory/desktop_m7_baidu_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m7-baidu-evidence"
-    cat >"$stage/etc/systemd/system/$baidu_service_name.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M7 Baidu page evidence
-After=asterinas-desktop-m6-browser.service
-
-[Service]
-Type=oneshot
-Environment=ASTERINAS_BROWSER_M7_TIMEOUT_SECONDS=180
-TimeoutStartSec=240
-ExecStart=/usr/lib/asterinas/desktop-m7-baidu-evidence
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-    chmod 0644 -- "$stage/etc/systemd/system/$baidu_service_name.service"
-    install -d -m 0755 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d"
-    cat > \
-        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf" <<'EOF'
-[Service]
-Environment=ASTERINAS_DESKTOP_BROWSER_VERBOSE=1
-EOF
-    chmod 0644 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m4.service.d/m7-browser-diagnostics.conf"
-    install -d -m 0755 -- \
-        "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service.d"
-    install -m 0644 -- \
-        "$script_directory/desktop_m5_overview.conf" \
-        "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service.d/m5-overview.conf"
-    ln -s -- \
-        "../$baidu_service_name.service" \
-        "$stage/etc/systemd/system/graphical.target.wants/$baidu_service_name.service"
-    install -D -m 0755 -- \
-        "$script_directory/desktop_m8_browser_quality_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m8-browser-quality-evidence"
-    install -d -o 1000 -g 1000 -m 0755 -- "$stage/home/asterinas/Downloads"
-    cat >"$stage/etc/systemd/system/$quality_service_name.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M8 lightweight browser quality evidence
-After=asterinas-desktop-m7-baidu.service
-
-[Service]
-Type=oneshot
-Environment=ASTERINAS_BROWSER_M8_TIMEOUT_SECONDS=300
-TimeoutStartSec=360
-ExecStart=/usr/lib/asterinas/desktop-m8-browser-quality-evidence
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-    chmod 0644 -- "$stage/etc/systemd/system/$quality_service_name.service"
-    ln -s -- \
-        "../$quality_service_name.service" \
-        "$stage/etc/systemd/system/graphical.target.wants/$quality_service_name.service"
-    fi
-}
-
-configure_desktop_m9_software() {
-    local stage="$1"
-    local script_directory
-    local service_name="asterinas-desktop-m9-software"
-
-    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-    # M9 is an application smoke gate, not a second browser-quality run. Keep
-    # the M8 unit available for explicit quality profiles, but do not start it
-    # concurrently with FFmpeg on the constrained RISC-V guest.
-    rm -f -- \
-        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m8-browser-quality.service"
-    install -D -m 0755 -- \
-        "$script_directory/desktop_m9_software_evidence.sh" \
-        "$stage/usr/lib/asterinas/desktop-m9-software-evidence"
-    cat >"$stage/etc/systemd/system/$service_name.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M9 desktop software evidence
-After=asterinas-desktop-m7-baidu.service
-
-[Service]
-Type=oneshot
-Environment=ASTERINAS_DESKTOP_M9_TIMEOUT_SECONDS=120
-Environment=ASTERINAS_DESKTOP_M9_COMMAND_TIMEOUT_SECONDS=120
-Environment=ASTERINAS_DESKTOP_M9_WORK_DIRECTORY=/var/tmp
-TimeoutStartSec=300
-ExecStart=/usr/lib/asterinas/desktop-m9-software-evidence
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-    chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
-    install -d -m 0755 -- "$stage/etc/systemd/system/graphical.target.wants"
-    ln -s -- \
-        "../$service_name.service" \
-        "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 }
 
 configure_logind_namespace_compatibility() {
@@ -1697,18 +1483,21 @@ configure_desktop() {
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     session_source="$script_directory/desktop_${generation}_session.sh"
+    if [[ "$generation" == browser ]]; then
+        session_source="$script_directory/desktop_session.sh"
+    fi
     evidence_source="$script_directory/desktop_${generation}_evidence.sh"
-    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+    if [[ "$generation" == browser && "$browser_mode" == online ]]; then
         evidence_source="$script_directory/browser_web_evidence.sh"
     fi
-    if [[ "$generation" == m5 ]]; then
-        # M5 gates write their authoritative markers directly to /dev/console.
+    if [[ "$generation" == browser ]]; then
+        # network gates write their authoritative markers directly to /dev/console.
         # Keep the high-volume desktop/Xorg stream in the journal instead of
         # duplicating it on the emulated serial console.
         desktop_standard_output=journal+console
         desktop_standard_error=journal+console
     fi
-    if [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+    if [[ "$generation" == browser && "$browser_mode" == online ]]; then
         # The online browser image receives a fixed /dev from Asterinas stage1;
         # no udev-created device is needed.  Starting udevd on this kernel
         # costs nearly a minute while probing unsupported device events.
@@ -1831,65 +1620,6 @@ EOF
     install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
     ln -sfn ../asterinas-sigpwr-poweroff.service \
         "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
-    if [[ "$PROFILE" == desktop-m4-firefox ]]; then
-        # The daily-use image logs the console account in on ttyS0 without a
-        # password prompt.  The account stays locked; autologin starts the
-        # shell and sudoers grants passwordless privilege escalation.
-        #
-        # The daily-use boot entry must NOT pass `--debug-console=root`: the
-        # board showed the getty cycling Started -> Deactivated successfully
-        # -> restart 11/12/13 -> start-limit-hit while the debug console owned
-        # ttyS0.  The menu validator accepts a desktop entry without the
-        # debug console for this image; the debug entry stays available as a
-        # separate boot choice when a root shell is needed.
-        #
-        # Do not use the Debian serial-getty template: it carries
-        # BindsTo=dev-ttyS0.device, and Asterinas exposes /dev/ttyS0 through
-        # devtmpfs without publishing that sysfs device unit, so systemd
-        # waits 90 s and then fails the getty.  A dedicated unit has only the
-        # user-session ordering and opens /dev/ttyS0 directly.
-        install -d -m 0755 -- "$stage/usr/local/sbin"
-        cat >"$stage/usr/local/sbin/asterinas-console-login" <<'EOF'
-#!/bin/sh
-# agetty owns the serial tty.  login(1) cannot complete its
-# controlling-terminal handoff on Asterinas, so start the provisioned
-# unprivileged session directly from the login helper.
-exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups \
-    env HOME=/home/asterinas USER=asterinas LOGNAME=asterinas \
-    SHELL=/bin/bash /bin/bash -i
-EOF
-        chmod 0755 -- "$stage/usr/local/sbin/asterinas-console-login"
-        cat >"$stage/etc/systemd/system/asterinas-console-getty.service" <<'EOF'
-[Unit]
-Description=Asterinas serial console (autologin)
-After=systemd-user-sessions.service
-Before=getty.target
-
-[Service]
-Type=idle
-ExecStart=-/sbin/agetty --autologin asterinas --noclear --keep-baud 115200,57600,38400,9600 -l /usr/local/sbin/asterinas-console-login ttyS0 linux
-Restart=always
-StandardInput=tty-force
-StandardOutput=tty
-StandardError=tty
-TTYPath=/dev/ttyS0
-TTYReset=yes
-TTYVHangup=no
-
-[Install]
-WantedBy=getty.target
-EOF
-        chmod 0644 -- \
-            "$stage/etc/systemd/system/asterinas-console-getty.service"
-        install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
-        ln -sfn ../asterinas-console-getty.service \
-            "$stage/etc/systemd/system/getty.target.wants/asterinas-console-getty.service"
-        # Mask the template getty and console-getty so only the dedicated
-        # unit owns ttyS0 on the daily-use boot.
-        ln -sfn /dev/null \
-            "$stage/etc/systemd/system/serial-getty@ttyS0.service"
-        ln -sfn /dev/null "$stage/etc/systemd/system/console-getty.service"
-    fi
     if [[ "$generation" == m4 || "$generation" == drm ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \
@@ -1932,7 +1662,7 @@ EOF
                 "$script_directory/asterinas-$launcher.desktop" \
                 "$stage/home/asterinas/Desktop/asterinas-$launcher.desktop"
         done
-    elif [[ "$generation" == m5 ]]; then
+    elif [[ "$generation" == browser ]]; then
         if [[ "$browser_mode" == online ]]; then
             install_online_desktop_shell "$stage"
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
@@ -1947,10 +1677,10 @@ EOF
             # graphical.target, and the leading '-' keeps a sync failure from
             # stopping the desktop.
             install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
-                "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
+                "$stage/etc/systemd/system/asterinas-desktop.service.d/clock-sync.conf"
             configure_dns_shim "$stage" "$script_directory"
-            install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
-                "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
+            install -D -m 0644 -- "$script_directory/browser_marionette_transport.py" \
+                "$stage/usr/lib/asterinas/browser_marionette_transport.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
@@ -1986,9 +1716,9 @@ EOF
             install -D -m 0644 -- "$script_directory/browser_web.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web.service"
             install -d -m 0755 -- \
-                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d"
+                "$stage/etc/systemd/system/asterinas-desktop-network.service.d"
             install -m 0644 -- "$script_directory/browser_web_network.conf" \
-                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf"
+                "$stage/etc/systemd/system/asterinas-desktop-network.service.d/browser-web.conf"
             install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_begin.service" \
@@ -2041,94 +1771,6 @@ EOF
                 die "Firefox trust checker did not prove the selected trust mode"
             chmod 0644 -- \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log"
-        else
-        local browser_directory="$stage/usr/share/asterinas/browser-m5"
-        local decoded_video="$WORK_DIR/browser-m5.webm"
-        install -d -m 0755 -- "$browser_directory"
-        install -m 0644 -- "$script_directory/browser_m5_probe.html" \
-            "$browser_directory/index.html"
-        base64 --decode "$script_directory/browser_m5.webm.base64" >"$decoded_video"
-        PYTHONPATH="$repository_root" python3 -c \
-            'from pathlib import Path; from tools.riscv.debian.rootfs.browser_m5 import validate_probe_assets, probe_video_file; import sys; video=validate_probe_assets(Path(sys.argv[1]), Path(sys.argv[2])); Path(sys.argv[3]).read_bytes() == video or sys.exit("decoded browser fixture mismatch"); probe_video_file(Path(sys.argv[3]))' \
-            "$script_directory/browser_m5_probe.html" \
-            "$script_directory/browser_m5.webm.base64" "$decoded_video"
-        install -m 0644 -- "$decoded_video" "$browser_directory/browser-m5.webm"
-        install -D -m 0755 -- "$script_directory/browser_m5_marionette_gate.py" \
-            "$stage/usr/lib/asterinas/browser-m5-marionette-gate"
-        install -D -m 0755 -- "$script_directory/browser_m5_firefox.sh" \
-            "$stage/usr/lib/asterinas/browser-m5-firefox"
-        install -D -m 0755 -- "$script_directory/browser_m5_window_observer.sh" \
-            "$stage/usr/lib/asterinas/browser-m5-window-observer"
-        install -D -m 0755 -- "$script_directory/browser_m5_network_observer.sh" \
-            "$stage/usr/lib/asterinas/browser-m5-network-observer"
-        install -d -m 0755 -- "$stage/usr/lib/firefox-esr/distribution"
-        cat >"$stage/usr/lib/firefox-esr/distribution/policies.json" <<'EOF'
-{
-  "policies": {
-    "DisableDefaultBrowserAgent": true,
-    "DisableFirefoxStudies": true,
-    "DisablePocket": true,
-    "DisableTelemetry": true,
-    "DontCheckDefaultBrowser": true,
-    "NoDefaultBookmarks": true,
-    "OverrideFirstRunPage": "",
-    "OverridePostUpdatePage": ""
-  }
-}
-EOF
-        chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
-        cat >"$stage/etc/systemd/system/asterinas-browser-m5.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M5 private-network Firefox workload
-Requires=asterinas-desktop-m5.service
-After=asterinas-desktop-m5.service
-
-[Service]
-Type=simple
-User=asterinas
-AmbientCapabilities=
-CapabilityBoundingSet=
-NoNewPrivileges=yes
-PrivateNetwork=yes
-Environment=HOME=/home/asterinas
-ExecStart=/usr/lib/asterinas/browser-m5-firefox
-Restart=on-failure
-RestartSec=2s
-
-[Install]
-WantedBy=graphical.target
-EOF
-        cat >"$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service" <<'EOF'
-[Unit]
-Description=Asterinas Debian M5 initial network namespace observer
-Requires=asterinas-browser-m5.service
-After=asterinas-browser-m5.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/lib/asterinas/browser-m5-network-observer
-RemainAfterExit=yes
-
-[Install]
-WantedBy=graphical.target
-EOF
-        chmod 0644 -- \
-            "$stage/etc/systemd/system/asterinas-browser-m5.service" \
-            "$stage/etc/systemd/system/asterinas-browser-m5-network-observer.service"
-        install -d -m 0755 -- \
-            "$stage/etc/systemd/system/systemd-logind.service.d"
-        cat >"$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf" <<'EOF'
-[Service]
-# systemd-logind uses Type=notify-reload upstream, but this kernel can leave
-# its readiness notification pending while it probes VT/seat devices.  Keep
-# logind running for diagnostics, while allowing the desktop unit to proceed
-# once the daemon has been exec'd instead of waiting for the notify handshake.
-Type=simple
-NotifyAccess=none
-TimeoutStartSec=60s
-EOF
-        chmod 0644 -- \
-            "$stage/etc/systemd/system/systemd-logind.service.d/asterinas-browser-m5-timeout.conf"
         fi
     fi
 
@@ -2147,20 +1789,6 @@ EOF
     install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
-    # The probe behind the pixel verdict: the evidence script runs it to answer
-    # "did the GPU draw anything", which is a different question from the
-    # renderer line's "which driver did Mesa choose". Installed for every
-    # desktop generation because it costs about a second, and a 2D run's answer
-    # is worth having to compare a 3D run against -- only a 3D run is required
-    # to produce it.
-    install -D -m 0755 -- \
-        "$script_directory/../../drm/egl-pixel-probe.py" \
-        "$stage/usr/lib/asterinas/egl-pixel-probe"
-    # A GBM/GLES2 probe for physical render nodes. It requires an explicit
-    # renderer expectation, so a software fallback cannot satisfy a GPU gate.
-    install -D -m 0755 -- \
-        "$script_directory/../../drm/gles-pixel-probe.py" \
-        "$stage/usr/lib/asterinas/gles-pixel-probe"
     if [[ "$generation" == m4 ]]; then
         install -D -m 0755 -- \
             "$script_directory/desktop_m4_framebuffer_probe.py" \
@@ -2202,7 +1830,7 @@ StandardError=$desktop_standard_error
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
 Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider
-$(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
+$(if [[ "$generation" == browser && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
@@ -2214,28 +1842,14 @@ EOF
     chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
     rm -f -- \
         "$stage/etc/systemd/system/getty.target.wants/getty@tty1.service"
-    local evidence_unit_dependencies=""
-    local evidence_service_namespace=""
-    local evidence_service_environment=""
-    local evidence_service_timeout=""
-    if [[ "$generation" == m5 && "$browser_mode" == offline ]]; then
-        evidence_unit_dependencies=$'Requires=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nAfter=asterinas-browser-m5.service asterinas-browser-m5-network-observer.service\nJoinsNamespaceOf=asterinas-browser-m5.service'
-        evidence_service_namespace='PrivateNetwork=yes'
-        evidence_service_environment='Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=4500'
-        evidence_service_timeout='TimeoutStartSec=4800s'
-    fi
     cat >"$stage/etc/systemd/system/$service_name-evidence.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop evidence
 After=basic.target
 Wants=$service_name.service
-$evidence_unit_dependencies
 
 [Service]
 Type=oneshot
-$evidence_service_namespace
-$evidence_service_environment
-$evidence_service_timeout
 ExecStart=/usr/lib/asterinas/desktop-$generation-evidence
 RemainAfterExit=yes
 
@@ -2261,12 +1875,7 @@ EOF
             ../$service_name-evidence.service \
             "$stage/etc/systemd/system/graphical.target.wants/$service_name-evidence.service"
     fi
-    if [[ "$generation" == m5 && "$browser_mode" == offline ]]; then
-        ln -s -- ../asterinas-browser-m5.service \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5.service"
-        ln -s -- ../asterinas-browser-m5-network-observer.service \
-            "$stage/etc/systemd/system/graphical.target.wants/asterinas-browser-m5-network-observer.service"
-    elif [[ "$generation" == m5 && "$browser_mode" == online ]]; then
+    if [[ "$generation" == browser && "$browser_mode" == online ]]; then
         # Asterinas supplies its fixed /dev nodes from the initramfs.  Debian's
         # static-node tmpfiles unit attempts unsupported device-node updates on
         # this kernel and can block sysinit indefinitely; mask only that unit.
@@ -2533,7 +2142,7 @@ browser_web_runtime_digest() {
     local source_directory="$1"
     local input
     local -a inputs=(
-        desktop_m5_session.sh
+        desktop_session.sh
         desktop_wallpaper.svg
         desktop_anime_wallpaper.png
         desktop_files_icon.svg
@@ -2544,12 +2153,12 @@ browser_web_runtime_digest() {
         asterinas-files.desktop
         asterinas-terminal.desktop
         browser_web_open_firefox.sh
-        desktop_m5_network_evidence.sh
-        desktop_m5_network_gate.py
+        desktop_network_evidence.sh
+        desktop_network_gate.py
         browser_web_firefox.sh
         browser_web_marionette_gate.py
         megrez_clock_sync.py
-        browser_m5_marionette_gate.py
+        browser_marionette_transport.py
         browser_web_evidence.sh
         browser_web.service
         browser_web_evidence.service
@@ -2612,7 +2221,7 @@ die() {
 }
 
 is_firefox_profile() {
-    [[ "$PROFILE" == browser-m5 || "$PROFILE" == browser-web ]]
+    [[ "$PROFILE" == browser-web ]]
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

@@ -22,8 +22,8 @@ readonly BOOT_ID_FILE="${ASTERINAS_SAFE_REBOOT_BOOT_ID_FILE:-/proc/sys/kernel/ra
 readonly WATCHDOG_FILE="${ASTERINAS_SAFE_REBOOT_WATCHDOG_FILE:-/proc/sys/kernel/asterinas_reboot_watchdog}"
 readonly -a WRITE_HEAVY_UNITS=(
     asterinas-browser-web.service
-    asterinas-desktop-m5-network.service
-    asterinas-desktop-m5.service
+    asterinas-desktop-network.service
+    asterinas-desktop.service
 )
 
 emit() {

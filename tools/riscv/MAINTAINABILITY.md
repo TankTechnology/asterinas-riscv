@@ -6,13 +6,12 @@ refactoring work is tracked separately.
 
 ## Baseline
 
-- Source: `origin/main` at `3ceeccd04` before the maintainability branch.
-- Host modules: **123**
-- Host tests: **2,463**
-- Expected environment skips: **13**
-- Production Python files: **204**
-- Production shell files: **148**
-- Top-level shell entrypoints: **15**
+- Current baseline after retiring the `browser-m5` and `desktop-network` image
+  profiles.
+- The executable host-test baseline is
+  `tools/riscv/tests/expected_host_tests.json`; it records the exact test IDs
+  and expected skips, so this page does not duplicate volatile file or test
+  counts.
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**
 - Canonical command:
@@ -63,6 +62,76 @@ baseline was recorded:
   than a fixed number of lines, which was racy under parallel load.
 - `test_physical_graphics_qemu_gate`: accept the parameterized
   `bochs-display,xres=...` device spelling.
+
+## Phase 2 completion record
+
+The current product path is the `browser-web` image in
+`docs/porting/board-image-current.md`. The cleanup removed the historical image
+families and their test-only scaffolding:
+
+- Active rootfs profiles are `minimal`, `systemd-ext4`, `browser-web`, and the
+  paused `desktop-drm`. The old M1–M9 profile identities are gone.
+- `browser-m5` assets, offline video/probe scripts, QEMU gate, and profile-only
+  tests are retired. `browser-web` owns its package set directly, and signed
+  source tests use the browser-web schema.
+- `desktop-m5-network` is no longer an image profile. Its network evidence
+  service and QEMU network gate remain installed by `browser-web`.
+- M6/M7 guest services, gates, and tests are archived under
+  `tools/riscv/archive/milestones/`. GMAC exposes only the current `network`,
+  `desktop`, and `firefox` targets; the debug contract uses browser-web
+  readiness markers.
+- Current naming is functional: `desktop_network_*` for the network service,
+  `browser_marionette_transport` for the shared transport, and
+  `desktop-browser-session` for the browser desktop. The active
+  code/Makefile/test surface has no M5 naming.
+- File-count limits were removed. The executable baseline in
+  `tests/expected_host_tests.json` remains the local test gate; no production
+  or module count is duplicated in documentation.
+
+Evidence under `docs/porting/evidence/` and historical reports remain intact.
+The archived reports are indexed in `tools/riscv/archive/README.md`; archived
+implementation code was removed from git after a local backup.
+
+## Minimal keep set
+
+The current product path does not need every historical acceptance script.
+Keep these entrypoint families:
+
+- `build_rootfs.sh` and `build_stage1.sh` with the profile/contract/gate
+  libraries they import.
+- `browser_web_qemu_gate.py`, the browser-web contract/Marionette/evidence
+  modules, and the guest scripts installed by the rootfs builder.
+- `megrez_debian_install.py`, `megrez_installer.py`, the board-session,
+  persistent-shell, boot-menu, xmodem, clock, DNS, and safe-reboot modules.
+- `physical_graphics_gate.py`, `physical_graphics_qemu_gate.py`,
+  `debug_console_qemu_gate.py`, and the current QEMU/U-Boot gate modules.
+- `host_test_runner.py`, the test support package, and the LTP core.
+
+The paused DRM, standalone xHCI input, and perf experiment trees were removed
+from the active surface after a local backup; their implementation remains
+recoverable from git history. One-off Firefox/dmesg diagnostics, standalone
+probe tools, SDHCI probes, thread/video samplers, and QEMU GDB samplers were
+archived and their implementation code removed from git. An acceptance or debug
+script is no longer kept merely because a historical test or report cited it;
+it must be reachable from one of the entrypoint families above.
+
+## Remaining optional structure work
+
+The remaining maintenance cost is production-file size, not obsolete product
+surface or test monoliths. All `tools/riscv/tests` modules are now below the
+2,000-line guard; the remaining allowlist entries are production files:
+
+- `build_rootfs.sh`,
+- `browser_web_marionette_gate.py`,
+- `megrez_desktop.py`,
+- `megrez_physical_graphics.py`,
+- `megrez_probe.py`.
+
+Split these only when their behavior changes; `build_rootfs.sh` should be the
+last and highest-risk split because it owns the staged image build. The paused
+`desktop-drm` surface stays untouched while GPU work is paused. Archived code
+is not imported by active code, tests, Makefile targets, or the documented
+product path.
 
 ## Next boundaries
 
