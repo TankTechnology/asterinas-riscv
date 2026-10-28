@@ -582,6 +582,9 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_rootfs_docs \
+		tools.riscv.tests.test_debian_desktop_input \
+		tools.riscv.tests.test_debian_systemd_gate \
 		tools.riscv.tests.test_debian_network -v
 
 .PHONY: test_riscv_debian_debug_console
