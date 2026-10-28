@@ -2099,16 +2099,6 @@ class BrowserWebContractTests(unittest.TestCase):
                     cache_check.check_cache_profile(root)
                 font_cache.write_bytes(font_cache_bytes)
 
-                unit_contents = unit.read_text()
-                unit.unlink()
-                self.assertEqual(
-                    cache_check.check_cache_profile(root, profile="desktop-m5-network"),
-                    "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network "
-                    "sysusers=static ldconfig=riscv64 journal=catalog "
-                    "fontconfig=cached stamps=current",
-                )
-                unit.write_text(unit_contents)
-
                 original = passwd.read_text()
                 for mutation in (
                     original.replace("asterinas:x:1000:1000", "asterinas:x:1001:1000"),
@@ -2354,7 +2344,7 @@ generate_fontconfig_cache "$stage" "$3"
     def test_desktop_network_profile_requires_prebuilt_startup_caches(self) -> None:
         builder = ROOTFS / "build_rootfs.sh"
         tools = subprocess.run(
-            [str(builder), "--profile", "desktop-m5-network", "--print-tools"],
+            [str(builder), "--profile", "browser-web", "--print-tools"],
             cwd=ROOT,
             check=True,
             capture_output=True,
@@ -2363,7 +2353,6 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertNotIn("systemd-sysusers", tools)
         self.assertNotIn("journalctl", tools)
         for profile, expected in (
-            ("desktop-m5-network", 0),
             ("browser-web", 0),
             ("minimal", 1),
         ):

@@ -7,7 +7,6 @@ umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4/rootfs"
-readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
@@ -189,7 +188,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal | systemd-ext4 | desktop-m5-network | browser-web | desktop-drm) ;;
+        minimal | systemd-ext4 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -212,9 +211,7 @@ configure_profile() {
     ROOT_FILESYSTEM_JOURNAL=0
     [[ "${profile_fields[4]}" == journal ]] && ROOT_FILESYSTEM_JOURNAL=1
     INSTALL_PACKAGES=("${profile_fields[@]:5}")
-    if [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
-    elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
+    if [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
@@ -1123,9 +1120,6 @@ EOF
         ln -s -- \
             ../asterinas-debian-m2.service \
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
-    elif [[ "$PROFILE" == desktop-m5-network ]]; then
-        configure_desktop "$stage" m4
-        configure_desktop_m5_network "$stage"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
@@ -1166,11 +1160,6 @@ EOF
         # closed if a real workspace somehow does not.
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             finalize_browser_startup_caches "$stage"
-        elif [[ "$PROFILE" == desktop-m5-network ]]; then
-            # Keep the helper overrideable for the skeletal desktop-M5 unit
-            # tests; real builds have target systemd-sysusers and take the
-            # branch above.
-            finalize_browser_startup_caches "$stage"
         elif [[ "$PROFILE" == browser-web &&
                 -d "$WORK_DIR/source-metadata" ]]; then
             die "target systemd-sysusers is missing; cannot finalize browser startup caches"
@@ -1202,7 +1191,7 @@ EOF
 
 profile_uses_startup_caches() {
     case "$1" in
-        desktop-m5-network | browser-web) return 0 ;;
+        browser-web) return 0 ;;
         *) return 1 ;;
     esac
 }

@@ -38,7 +38,6 @@ _MODE_FUNCTION_RE = re.compile(
 # rather than derived from whatever the source happens to contain.
 PROFILE_NAMES = (
     "minimal",
-    "desktop-m5-network",
     "desktop-drm",
     "browser-web",
 )

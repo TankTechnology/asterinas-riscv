@@ -71,63 +71,6 @@ _PROFILES = {
         filesystem_type="ext4",
         journal=True,
     ),
-    "desktop-m5-network": RootfsProfile(
-        name="desktop-m5-network",
-        schema_version=5,
-        root_label="ASTER_DEBIANM5",
-        root_uuid="182e1ea4-296d-5383-8bcb-ea67e40db074",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "curl",
-            "dbus",
-            "fonts-wqy-microhei",
-            "iproute2",
-            "iputils-ping",
-            "libpam-systemd",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "polkitd",
-            "procps",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "x11-apps",
-            "x11-utils",
-            "xauth",
-            "xdotool",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xterm",
-        ),
-        identity_packages=_BASE_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-            "udev",
-            "libpam-systemd",
-            "xserver-xorg-core",
-            "xterm",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "curl",
-            "iproute2",
-            "iputils-ping",
-            "xdotool",
-            "x11-apps",
-        ),
-    ),
     "desktop-drm": RootfsProfile(
         name="desktop-drm",
         schema_version=8,
@@ -196,16 +139,56 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
 
 # browser-web keeps its Firefox/network package set explicit so a change in one
 # profile cannot silently alter the current daily image.
-_BROWSER_WEB_BASE_REQUESTED_PACKAGES = tuple(
-    package
-    for package in _PROFILES["desktop-m5-network"].requested_packages
-    if package not in {"netsurf-gtk", "xdotool"}
-) + ("firefox-esr", "python3-minimal")
-_BROWSER_WEB_BASE_IDENTITY_PACKAGES = tuple(
-    package
-    for package in _PROFILES["desktop-m5-network"].identity_packages
-    if package not in {"netsurf-gtk", "xdotool"}
-) + ("firefox-esr", "python3-minimal")
+_BROWSER_WEB_BASE_REQUESTED_PACKAGES = (
+    "bash",
+    "ca-certificates",
+    "coreutils",
+    "curl",
+    "dbus",
+    "fonts-wqy-microhei",
+    "iproute2",
+    "iputils-ping",
+    "libpam-systemd",
+    "librsvg2-common",
+    "lxpanel",
+    "openbox",
+    "pcmanfm",
+    "polkitd",
+    "procps",
+    "systemd-sysv",
+    "udev",
+    "util-linux",
+    "x11-apps",
+    "x11-utils",
+    "xauth",
+    "xfonts-base",
+    "xinit",
+    "xserver-xorg-core",
+    "xserver-xorg-input-evdev",
+    "xserver-xorg-video-fbdev",
+    "xterm",
+    "firefox-esr",
+    "python3-minimal",
+)
+_BROWSER_WEB_BASE_IDENTITY_PACKAGES = _BASE_IDENTITY_PACKAGES + (
+    "systemd",
+    "systemd-sysv",
+    "dbus",
+    "udev",
+    "libpam-systemd",
+    "xserver-xorg-core",
+    "xterm",
+    "librsvg2-common",
+    "lxpanel",
+    "openbox",
+    "pcmanfm",
+    "curl",
+    "iproute2",
+    "iputils-ping",
+    "x11-apps",
+    "firefox-esr",
+    "python3-minimal",
+)
 
 
 _PROFILES["browser-web"] = RootfsProfile(

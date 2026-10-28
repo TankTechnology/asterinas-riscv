@@ -28,7 +28,6 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
     DesktopM5QemuOperations,
     desktop_m5_qemu_argv,
 )
-from tools.riscv.debian.rootfs.profiles import get_profile
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -58,17 +57,6 @@ def _browser_transcript(status: str = "limited-pass") -> bytes:
 
 
 class DebianDesktopM6BrowserContractTests(unittest.TestCase):
-    def test_m5_profile_adds_exact_browser_control_identity(self) -> None:
-        profile = get_profile("desktop-m5-network")
-
-        self.assertIn("xdotool", profile.requested_packages)
-        self.assertEqual(profile.identity_packages[-2:], ("xdotool", "x11-apps"))
-        self.assertEqual(
-            DESKTOP_M6_REMOTE_MARKER,
-            "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com "
-            "resource=logo-png foreground=active",
-        )
-
     def test_marker_owner_values_are_frozen(self) -> None:
         self.assertEqual(
             (

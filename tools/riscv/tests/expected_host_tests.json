@@ -557,8 +557,7 @@
     "tools.riscv.tests.test_debian_dev_overlay.DevelopmentOverlayTests.test_symlink_target_text_cannot_spoof_inode_type",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_browser_web_profile_carries_daily_tools",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_builder_drops_unsupported_sysctl_files",
-    "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_builder_installs_m4_desktop_and_m5_network_evidence",
-    "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_builder_prints_m5_packages_without_build_tools",
+    "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_builder_prints_browser_web_packages_without_build_tools",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_classifier_requires_order_and_scans_complete_transcript",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_desktop_core_contract_excludes_browser",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_desktop_core_evidence_does_not_probe_netsurf",
@@ -574,7 +573,6 @@
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_guest_evidence_reports_proxy_https_and_asset_failures",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_guest_evidence_requires_link_and_proxied_https_without_dns",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_guest_network_deadline_matches_the_qemu_contract",
-    "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_manifest_parser_accepts_only_the_m5_profile_for_schema_five",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_native_megrez_tcp_probe_production_branch_compiles_strictly",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_native_megrez_tcp_probe_validates_exact_http_response",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_native_megrez_tcp_probe_validates_streamed_stress_response",
@@ -622,7 +620,6 @@
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_classifier_rejects_browser_failure_from_complete_transcript",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_classifier_rejects_duplicate_reordered_and_mismatched_evidence",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_debug_aggregate_uses_the_m6_owner_markers",
-    "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_m5_profile_adds_exact_browser_control_identity",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6BrowserContractTests.test_marker_owner_values_are_frozen",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6GuestEvidenceTests.test_guest_evidence_distinguishes_failed_and_disabled_javascript",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6GuestEvidenceTests.test_guest_evidence_hex_encodes_last_title_before_remote_timeout",
@@ -2466,5 +2463,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2338
+  "tests": 2335
 }

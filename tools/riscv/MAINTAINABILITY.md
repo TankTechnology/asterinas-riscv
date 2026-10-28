@@ -6,9 +6,9 @@ refactoring work is tracked separately.
 
 ## Baseline
 
-- Current baseline after retiring the `browser-m5` profile.
+- Current baseline after retiring the `browser-m5` and `desktop-m5-network` image profiles.
 - Host modules: **115**
-- Host tests: **2,338**
+- Host tests: **2,335**
 - Expected environment skips: **13**
 - Production Python files: **164**
 - Production shell files: **76**
@@ -108,7 +108,7 @@ deletion batch is intentionally small.
 | `systemd-m2` profile | Consolidate | Retarget its systemd reboot/power coverage to `systemd-ext4` before removing the profile. |
 | `desktop-m3`, `desktop-m4` profiles and gate entrypoints | Archive | Keep the shared `desktop_m3_gate.py` helpers and `DESKTOP_M4_MILESTONES`; current physical/debug gates import them. |
 | `desktop-m4-firefox` and `test_riscv_debian_daily_use_gate` | Archive/delete | The Makefile target is broken: it passes empty `--boot-timeout ""` and `--command-timeout ""` to a positive-float parser (`rootfs_gate.py:463-464`). The profile was superseded by `browser-web` on the same day. |
-| `desktop-m5-network` profile, M5 `browser` target | Consolidate | Keep the M5 network service/evidence layer installed by browser-web; only the profile identity and its browser entrypoint are historical. |
+| `desktop-m5-network` profile, M5 `browser` target | Removed | The browser-web package set is inlined and the profile identity is gone. Keep the network service/evidence layer installed by browser-web. |
 | `browser-m5` profile and QEMU gate | Removed | The browser-web package set is inlined; the offline video/probe/service assets and browser-m5-only tests are gone. Keep `browser_m5_marionette_gate.py`, which is current shared Marionette code. |
 | `desktop-m9-software` profile and M9 gate | Archive/consolidate | `vim` is already in browser-web; only the ffmpeg smoke has no browser-web equivalent. |
 | M6, M7, M8 gates/services | Consolidate/archive | M6/M7 marker strings are imported by current `megrez_gmac_gate.py` and `megrez_debug_contract.py`; preserve/move those marker assertions before removing the milestone gate. M8 is a thin M9 duplicate. |
@@ -162,8 +162,9 @@ tests and the wider DRM/PowerVR cluster (about 153 IDs) stay paused. The
 aggregate `test_riscv_debian_rootfs_unit` target still runs the M6/M7/M8/M9
 modules and must be trimmed together with those gates.
 
-The browser-m5 retirement reduced 16 IDs to the current 2,338/115. Moving the
-M6/M7 marker subset reduces a further 27 IDs to about 2,311/113-114. The optional
+The browser-m5 and desktop-m5-network retirements reduced 19 IDs to the
+current 2,335/115. Moving the M6/M7 marker subset reduces a further 27 IDs to
+about 2,308/113-114. The optional
 NixOS-preflight and dual-host work would reduce another 60, leaving about
 2,269/108. `test_suite_baseline.py:16,28` has a historical lower bound of 2,229;
 do not remove LMBench/perf or boot-menu tests in the same batch without

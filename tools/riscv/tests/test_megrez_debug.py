@@ -740,16 +740,17 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             "\t".join(self.package_rows[0]) + "\n",
             encoding="utf-8",
         )
+        in_release_sha256 = hashlib.sha256(self.paths["in_release"].read_bytes()).hexdigest()
         self.manifest = SimpleNamespace(
-            schema_version=5,
-            profile="desktop-m5-network",
+            schema_version=7,
+            profile="browser-web",
             root_image_sha256=self.root_identity.sha256,
-            packages_lock_sha256=hashlib.sha256(
-                self.paths["packages_lock"].read_bytes()
-            ).hexdigest(),
-            signed_metadata_sha256=hashlib.sha256(
-                self.paths["in_release"].read_bytes()
-            ).hexdigest(),
+            packages_lock_sha256=hashlib.sha256(self.paths["packages_lock"].read_bytes()).hexdigest(),
+            signed_metadata_sha256="",
+            signed_sources=(
+                ("base", "mirror", "suite", "base-url", in_release_sha256),
+                ("security", "security-mirror", "security-suite", "security-url", "1" * 64),
+            ),
             downloaded_packages=self.package_rows,
         )
 
@@ -803,7 +804,7 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             self.paths["root_image"], self.manifest, self.paths["packages_lock"]
         )
         load_checksums.assert_called_once_with(
-            self.paths["package_checksums"], schema_version=5
+            self.paths["package_checksums"], schema_version=7
         )
 
     def test_create_plan_accepts_browser_web_multi_source_manifest(self) -> None:
@@ -886,18 +887,8 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             ("bash", "riscv64", "different", hashlib.sha256(b"bash").hexdigest()),
         )
         variants = (
-            SimpleNamespace(
-                **{
-                    **vars(self.manifest),
-                    "signed_metadata_sha256": "0" * 64,
-                }
-            ),
-            SimpleNamespace(
-                **{
-                    **vars(self.manifest),
-                    "packages_lock_sha256": "0" * 64,
-                }
-            ),
+            SimpleNamespace(**{**vars(self.manifest), "signed_sources": (("base", "mirror", "suite", "base-url", "0" * 64), self.manifest.signed_sources[1])}),
+            SimpleNamespace(**{**vars(self.manifest), "packages_lock_sha256": "0" * 64}),
         )
         for manifest in variants:
             with (

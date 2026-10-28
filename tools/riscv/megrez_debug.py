@@ -211,7 +211,7 @@ def _create_plan(arguments: argparse.Namespace) -> DebugPlan:
             )
         except (ContractError, OSError) as error:
             raise WorkflowError(f"plan-rootfs-invalid: {error}") from error
-        if manifest.profile not in ("desktop-m5-network", "browser-web"):
+        if manifest.profile != "browser-web":
             raise WorkflowError("plan-rootfs-profile-mismatch")
         in_release_sha256 = manifest.signed_metadata_sha256
         if manifest.profile == "browser-web":
