@@ -588,7 +588,8 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_rootfs_docs \
 		tools.riscv.tests.test_debian_desktop_input \
 		tools.riscv.tests.test_debian_systemd_gate \
-		tools.riscv.tests.test_debian_network -v
+		tools.riscv.tests.test_debian_network_contract \
+		tools.riscv.tests.test_debian_network_qemu -v
 
 .PHONY: test_riscv_debian_debug_console
 test_riscv_debian_debug_console:
