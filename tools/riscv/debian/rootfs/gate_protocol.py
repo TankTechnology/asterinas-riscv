@@ -8,6 +8,7 @@ import hashlib
 import os
 import re
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -17,6 +18,44 @@ MAX_COMMAND_PAYLOAD_BYTES = 64 * 1024
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 GENERIC_SV39_CPU = "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true"
 GATE_PACKAGE_NAMES = ("base-files", "libc6", "bash", "coreutils", "util-linux")
+
+
+def systemd_bootargs(
+    *,
+    pre_init: Sequence[str] = (),
+    post_init: Sequence[str] = (),
+    init_args: Sequence[str] = ("--root-init=systemd",),
+) -> str:
+    """Compose one canonical systemd kernel command line."""
+
+    if isinstance(pre_init, str) or isinstance(post_init, str) or isinstance(
+        init_args, str
+    ):
+        raise ValueError("bootargs fragments must be token sequences")
+    tokens = [
+        "console=ttyS0",
+        "loglevel=4",
+        *pre_init,
+        "init=/init",
+        *post_init,
+        "--",
+        *init_args,
+    ]
+    for token in tokens:
+        if not isinstance(token, str) or not token or any(
+            character.isspace() for character in token
+        ):
+            raise ValueError("bootargs tokens must be non-empty and whitespace-free")
+    if tokens.count("init=/init") != 1 or tokens.count("--") != 1:
+        raise ValueError("bootargs must contain one init and one separator")
+    if (
+        not init_args
+        or init_args.count("--root-init=systemd") != 1
+        or init_args[-1] != "--root-init=systemd"
+    ):
+        raise ValueError("bootargs must end with one root-init selector")
+    return " ".join(tokens)
+
 
 _NONCE_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _BASH_VERSION_RE = re.compile(r"\A[0-9]+\.[0-9]+(?:\.[0-9]+)?")

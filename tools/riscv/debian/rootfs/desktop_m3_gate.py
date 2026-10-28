@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from tools.riscv.debian.rootfs.contract import load_manifest
-from tools.riscv.debian.rootfs.gate_protocol import GateResult, qemu_argv
+from tools.riscv.debian.rootfs.gate_protocol import (
+    GateResult,
+    qemu_argv,
+    systemd_bootargs,
+)
 from tools.riscv.debian.rootfs.gate_runtime import (
     GateTermination,
     TerminationSignalState,
@@ -31,7 +35,7 @@ from tools.riscv.debian.rootfs.rootfs_gate_backend import (
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
 
 
-DESKTOP_M3_BOOTARGS = "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd"
+DESKTOP_M3_BOOTARGS = systemd_bootargs()
 DESKTOP_M3_MILESTONES = (
     "DEBIAN_DESKTOP_M3_UDEV state=active",
     "DEBIAN_DESKTOP_M3_LOGIND state=active",
