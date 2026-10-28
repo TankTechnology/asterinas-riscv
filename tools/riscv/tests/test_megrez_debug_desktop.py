@@ -18,6 +18,8 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_QEMU_MILESTONES,
 )
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_JAVASCRIPT_PREFIX,
+    DESKTOP_M6_READY_PREFIX,
     DESKTOP_M6_REMOTE_MARKER,
 )
 from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
@@ -169,8 +171,8 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             *DESKTOP_M5_QEMU_MILESTONES,
             *DESKTOP_M4_MILESTONES,
             DESKTOP_M6_REMOTE_MARKER,
-            "DEBIAN_BROWSER_M6_JAVASCRIPT status=limited-pass",
-            "DEBIAN_BROWSER_M6_READY remote=baidu javascript=limited-pass",
+            f"{DESKTOP_M6_JAVASCRIPT_PREFIX}limited-pass",
+            f"{DESKTOP_M6_READY_PREFIX}limited-pass",
             DESKTOP_M7_HOME_MARKER,
             DESKTOP_M7_SEARCH_MARKER,
             DESKTOP_M7_READY_MARKER,

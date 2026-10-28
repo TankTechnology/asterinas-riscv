@@ -10,8 +10,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tools.riscv.debian.rootfs.desktop_m9_software_gate import (
+    DESKTOP_M8_CAPTURE_PREFIX as CAPTURE_PREFIX,
+    DESKTOP_M8_DOWNLOAD_MARKER as DOWNLOAD_MARKER,
+    DESKTOP_M8_FAILURE_PREFIX as FAILURE_PREFIX,
+    DESKTOP_M8_FIXTURE_MARKER as FIXTURE_MARKER,
+    DESKTOP_M8_NAVIGATION_MARKER as NAVIGATION_MARKER,
+    DESKTOP_M8_READY_MARKER as READY_MARKER,
+    DESKTOP_M8_SCROLL_MARKER as SCROLL_MARKER,
+    DESKTOP_M8_SOAK_MARKER as SOAK_MARKER,
+)
 from tools.riscv.debian.rootfs.profiles import get_profile
-from tools.riscv.megrez_network_fixture import BROWSER_DOWNLOAD_SHA256
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -21,17 +30,35 @@ EVIDENCE_SCRIPT = (
 ROOTFS_BUILDER = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
 FIXTURE_BASE = "http://127.0.0.1:17894"
-FIXTURE_MARKER = "DEBIAN_BROWSER_M8_FIXTURE text=cjk-latin image=png form=query"
-SCROLL_MARKER = "DEBIAN_BROWSER_M8_SCROLL direction=end-home"
-NAVIGATION_MARKER = (
-    "DEBIAN_BROWSER_M8_NAVIGATION second=loaded back=loaded forward=loaded"
-)
-DOWNLOAD_MARKER = (
-    f"DEBIAN_BROWSER_M8_DOWNLOAD bytes=262144 sha256={BROWSER_DOWNLOAD_SHA256}"
-)
-SOAK_MARKER = "DEBIAN_BROWSER_M8_SOAK seconds=120 process=alive"
-CAPTURE_PREFIX = "DEBIAN_BROWSER_M8_CAPTURE bytes="
-READY_MARKER = "DEBIAN_BROWSER_M8_READY quality=lightweight"
+
+
+
+class DesktopM8MarkerContractTests(unittest.TestCase):
+    def test_marker_owner_values_are_frozen(self) -> None:
+        self.assertEqual(
+            (
+                FIXTURE_MARKER,
+                SCROLL_MARKER,
+                NAVIGATION_MARKER,
+                SOAK_MARKER,
+                CAPTURE_PREFIX,
+                READY_MARKER,
+            ),
+            (
+                "DEBIAN_BROWSER_M8_FIXTURE text=cjk-latin image=png form=query",
+                "DEBIAN_BROWSER_M8_SCROLL direction=end-home",
+                "DEBIAN_BROWSER_M8_NAVIGATION second=loaded back=loaded forward=loaded",
+                "DEBIAN_BROWSER_M8_SOAK seconds=120 process=alive",
+                "DEBIAN_BROWSER_M8_CAPTURE bytes=",
+                "DEBIAN_BROWSER_M8_READY quality=lightweight",
+            ),
+        )
+        self.assertTrue(
+            DOWNLOAD_MARKER.startswith(
+                "DEBIAN_BROWSER_M8_DOWNLOAD bytes=262144 sha256="
+            )
+        )
+
 
 
 class DebianDesktopM8BrowserQualityGuestTests(unittest.TestCase):
@@ -337,9 +364,9 @@ done
                 self.assertNotEqual(result.returncode, 0)
                 lines = paths["console"].read_text(encoding="utf-8").splitlines()
                 failures = [
-                    line for line in lines if line.startswith("DEBIAN_BROWSER_M8_FAIL")
+                    line for line in lines if line.startswith(FAILURE_PREFIX)
                 ]
-                self.assertEqual(failures, [f"DEBIAN_BROWSER_M8_FAIL reason={reason}"])
+                self.assertEqual(failures, [f"{FAILURE_PREFIX}reason={reason}"])
                 self.assertNotIn(READY_MARKER, lines)
 
     def test_guest_rejects_invalid_environment_before_browser_actions(self) -> None:

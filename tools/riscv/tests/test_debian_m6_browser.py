@@ -17,7 +17,9 @@ from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
 )
 from tools.riscv.debian.rootfs import desktop_m6_browser_gate
 from tools.riscv.debian.rootfs.desktop_m6_browser_gate import (
+    DESKTOP_M6_JAVASCRIPT_PREFIX,
     DESKTOP_M6_JAVASCRIPT_STATUSES,
+    DESKTOP_M6_READY_PREFIX,
     DESKTOP_M6_REMOTE_MARKER,
     DesktopM6BrowserOperations,
     classify_desktop_m6_browser,
@@ -49,8 +51,8 @@ def _browser_transcript(status: str = "limited-pass") -> bytes:
         *DESKTOP_M5_QEMU_MILESTONES,
         *DESKTOP_M4_MILESTONES,
         DESKTOP_M6_REMOTE_MARKER,
-        f"DEBIAN_BROWSER_M6_JAVASCRIPT status={status}",
-        f"DEBIAN_BROWSER_M6_READY remote=baidu javascript={status}",
+        f"{DESKTOP_M6_JAVASCRIPT_PREFIX}{status}",
+        f"{DESKTOP_M6_READY_PREFIX}{status}",
     )
     return ("\n".join(markers) + "\n").encode()
 
@@ -66,6 +68,28 @@ class DebianDesktopM6BrowserContractTests(unittest.TestCase):
             "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com "
             "resource=logo-png foreground=active",
         )
+
+    def test_marker_owner_values_are_frozen(self) -> None:
+        self.assertEqual(
+            (
+                DESKTOP_M6_REMOTE_MARKER,
+                DESKTOP_M6_JAVASCRIPT_PREFIX,
+                DESKTOP_M6_READY_PREFIX,
+            ),
+            (
+                "DEBIAN_BROWSER_M6_REMOTE host=www.baidu.com "
+                "resource=logo-png foreground=active",
+                "DEBIAN_BROWSER_M6_JAVASCRIPT status=",
+                "DEBIAN_BROWSER_M6_READY remote=baidu javascript=",
+            ),
+        )
+
+    def test_debug_aggregate_uses_the_m6_owner_markers(self) -> None:
+        from tools.riscv.megrez_debug_contract import DEBIAN_BROWSER_MARKERS
+
+        self.assertIn(DESKTOP_M6_REMOTE_MARKER, DEBIAN_BROWSER_MARKERS)
+        self.assertIn(DESKTOP_M6_JAVASCRIPT_PREFIX, DEBIAN_BROWSER_MARKERS)
+        self.assertIn(DESKTOP_M6_READY_PREFIX, DEBIAN_BROWSER_MARKERS)
 
     def test_classifier_accepts_each_javascript_status(self) -> None:
         self.assertEqual(
