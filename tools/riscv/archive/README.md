@@ -1,9 +1,18 @@
 # Archived RISC-V research material
 
-This directory holds historical material removed from the active `tools/riscv`
-surface. Archived code is not imported by the current build, tests, Makefile
-targets, or documented product path. Keep evidence files in
+This directory holds historical reports and evidence removed from the active
+`tools/riscv` surface. Archived code is not imported by the current build,
+tests, Makefile targets, or documented product path. Keep evidence files in
 `docs/porting/evidence/`; they are not archive candidates.
+
+## Archived implementation removed from git (2026-10-28)
+
+The archived implementation files (Python, shell, C, Nix, and generated
+auxiliary configuration) were removed from the repository to stop inactive code
+from counting toward the maintained RISC-V tool surface. The complete tree was
+saved in the operator's local backup before removal, and the implementation
+remains recoverable from the git history before this change. Reports, images,
+logs, and evidence in this directory are retained.
 
 ## systemd demo (archived 2026-10-28)
 

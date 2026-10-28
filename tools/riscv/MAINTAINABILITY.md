@@ -89,7 +89,8 @@ families and their test-only scaffolding:
   or module count is duplicated in documentation.
 
 Evidence under `docs/porting/evidence/` and historical reports remain intact.
-The archived material is indexed in `tools/riscv/archive/README.md`.
+The archived reports are indexed in `tools/riscv/archive/README.md`; archived
+implementation code was removed from git after a local backup.
 
 ## Minimal keep set
 
