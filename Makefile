@@ -1235,6 +1235,7 @@ test_riscv_uboot_booti_unit:
 	@python3 -m unittest \
 		tools.riscv.tests.test_qemu_uboot_contracts \
 		tools.riscv.tests.test_qemu_uboot_booti \
+		tools.riscv.tests.test_qemu_uboot_display \
 		tools.riscv.tests.test_qemu_uboot_serial_audit \
 		tools.riscv.tests.test_qemu_uboot_controller \
 		tools.riscv.tests.test_qemu_uboot_preparation -v

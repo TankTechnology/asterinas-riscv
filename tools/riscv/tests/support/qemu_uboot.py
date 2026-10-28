@@ -204,6 +204,83 @@ MEGREZ_STALE_SERIAL_LOG = (
     )
 )
 
+class _PreparedRunFixtures:
+    @staticmethod
+    def _run_artifacts() -> object:
+        return qemu_uboot_booti.ArtifactExpectations(
+            kernel_size=11326096,
+            kernel_crc32="57c40418",
+            dtb_size=5048,
+            dtb_crc32="6e7844b8",
+            initrd_size=3411,
+            initrd_crc32="153879f1",
+        )
+
+    @staticmethod
+    def _successful_session() -> object:
+        return qemu_uboot_booti.SessionResult(
+            marker_seen=True,
+            booti_sent_count=1,
+            timed_out=False,
+            killed=False,
+            cleanup_complete=True,
+            returncode=0,
+            failure=None,
+            termination_action="SIGTERM",
+        )
+
+    @staticmethod
+    def _materialize_run_inputs(directory: Path) -> dict[str, Path]:
+        paths = {
+            "uboot": directory / "u-boot",
+            "boot_disk": directory / "boot.ext4",
+            "manifest": directory / "manifest.json",
+            "dtb_audit": directory / "qemu-dtb-audit.json",
+            "source_dtb": directory / "qemu-virt.source.dtb",
+            "variant_audit": directory / "qemu-dtb-variant-audit.json",
+        }
+        for name, path in paths.items():
+            path.write_bytes(f"immutable {name}\n".encode())
+        return paths
+
+    @staticmethod
+    def _passing_audit(
+        profile: object,
+        scenario: object,
+    ) -> object:
+        is_console_loss = (
+            scenario is qemu_uboot_booti.BootScenario.FIRST_PROCESS_CONSOLE_LOSS
+        )
+        variant = FIRST_PROCESS_CONSOLE_LOSS if is_console_loss else None
+        diagnostic_text = (
+            "\n".join(CONSOLE_LOSS_DIAGNOSTIC_LINES) + "\n" if is_console_loss else ""
+        )
+        effective = (
+            effective_bootargs(profile, FIRST_PROCESS_CONSOLE_LOSS)
+            if scenario
+            in {
+                qemu_uboot_booti.BootScenario.REGISTERED_CONSOLE_SUPPRESSION,
+                qemu_uboot_booti.BootScenario.FIRST_PROCESS_CONSOLE_LOSS,
+            }
+            else profile.bootargs
+        )
+        return qemu_uboot_booti.BootAudit(
+            booti_command_count=1,
+            userspace_marker_count=0 if is_console_loss else 1,
+            effective_bootargs=effective,
+            diagnostic=qemu_uboot_audit.audit_diagnostic_markers(
+                diagnostic_text,
+                variant=variant,
+            ),
+            application_processor_ids=(1, 2, 3),
+            random_source="timestamp",
+            classification=(
+                FIRST_PROCESS_CONSOLE_LOSS.classification if is_console_loss else "PASS"
+            ),
+            passed=True,
+            failures=(),
+        )
+
 __all__ = tuple(
     name
     for name in globals()
