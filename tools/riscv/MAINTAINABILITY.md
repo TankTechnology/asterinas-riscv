@@ -7,8 +7,8 @@ refactoring work is tracked separately.
 ## Baseline
 
 - Source: `origin/main` at `3ceeccd04` before the maintainability branch.
-- Host modules: **122**
-- Host tests: **2,460**
+- Host modules: **123**
+- Host tests: **2,466**
 - Expected environment skips: **13**
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**

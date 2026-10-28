@@ -23,6 +23,7 @@ from tools.riscv.debian.rootfs.contract import (
     load_package_checksums,
     validate_frozen_root,
 )
+from tools.riscv.debian.rootfs.profiles import get_profile
 
 
 P2_START_LBA = 0x000F_A022
@@ -48,7 +49,7 @@ _QEMU_PAGING = "sv39"
 _MEGREZ_PAGING = "sv48"
 _GATE_REBOOT_AFTER_SECONDS = 180
 _LONG_OPERATION_REBOOT_AFTER_SECONDS = 600
-_ROOT_IMAGE_SIZE_BYTES = 1024 * 1024 * 1024
+_ROOT_IMAGE_SIZE_BYTES = get_profile("minimal-m1").root_size_bytes
 _MAX_BOOT_ARTIFACT_SIZE_BYTES = 64 * 1024 * 1024
 _MAX_METADATA_SIZE_BYTES = 8 * 1024 * 1024
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
