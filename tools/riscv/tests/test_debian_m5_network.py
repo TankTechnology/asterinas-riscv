@@ -428,42 +428,6 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_profile_extends_m4_with_exact_network_identity(self) -> None:
-        m4 = get_profile("desktop-m4")
-        m5 = get_profile("desktop-m5-network")
-
-        self.assertEqual(m5.schema_version, 5)
-        self.assertEqual(m5.root_label, "ASTER_DEBIANM5")
-        self.assertEqual(m5.root_uuid, "182e1ea4-296d-5383-8bcb-ea67e40db074")
-        self.assertEqual(
-            m5.requested_packages,
-            tuple(
-                sorted(
-                    # xdotool is already part of the M4 requested set.
-                    m4.requested_packages
-                    + (
-                        "curl",
-                        "fonts-wqy-microhei",
-                        "iproute2",
-                        "iputils-ping",
-                        "polkitd",
-                        "x11-apps",
-                    )
-                )
-            ),
-        )
-        # Package order is not part of the identity contract; xdotool and the
-        # desktop base may appear in a different position than the M4 list.
-        self.assertEqual(
-            sorted(m5.identity_packages),
-            sorted(
-                m4.identity_packages
-                + ("curl", "iproute2", "iputils-ping", "x11-apps")
-            ),
-        )
-        self.assertIn("fonts-wqy-microhei", m5.requested_packages)
-        self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)
-
     def test_browser_web_profile_carries_daily_tools(self) -> None:
         profile = get_profile("browser-web")
         for package in ("vim", "build-essential"):
@@ -513,7 +477,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
         self.assertEqual(manifest.schema_version, 5)
         self.assertEqual(manifest.profile, "desktop-m5-network")
-        payload["profile"] = "desktop-m4"
+        payload["profile"] = "desktop-m4-firefox"
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaisesRegex(ContractError, "profile schema version"):
             load_manifest(manifest_path)

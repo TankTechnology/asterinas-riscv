@@ -6,10 +6,7 @@ set -euo pipefail
 umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
-readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4/rootfs"
-readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
-readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M4_FIREFOX_OUTPUT_DIR="target/debian-riscv/desktop-m4-firefox/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
@@ -197,7 +194,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal | systemd-m2 | systemd-ext4 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | browser-m5 | browser-web | desktop-drm) ;;
+        minimal | systemd-ext4 | desktop-m4-firefox | desktop-m5-network | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -220,13 +217,7 @@ configure_profile() {
     ROOT_FILESYSTEM_JOURNAL=0
     [[ "${profile_fields[4]}" == journal ]] && ROOT_FILESYSTEM_JOURNAL=1
     INSTALL_PACKAGES=("${profile_fields[@]:5}")
-    if [[ "$PROFILE" == systemd-m2 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m3 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
-    elif [[ "$PROFILE" == desktop-m4-firefox && "$has_output_dir" == 0 ]]; then
+    if [[ "$PROFILE" == desktop-m4-firefox && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M4_FIREFOX_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
@@ -1122,7 +1113,7 @@ EOF
             "$script_directory/shutdown_sync.sh" \
             "$stage/usr/lib/systemd/system-shutdown/asterinas-sync"
     fi
-    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4 ]]; then
+    if [[ "$PROFILE" == systemd-ext4 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         install -D -m 0755 -- \
             "$script_directory/systemd_m2_evidence.sh" \
@@ -1145,8 +1136,6 @@ EOF
         ln -s -- \
             ../asterinas-debian-m2.service \
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
-    elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
-        configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
         configure_desktop "$stage" m4
         # The daily-use image runs the desktop session itself, not the M4

@@ -25,7 +25,7 @@ class RootfsProfile:
     journal: bool = False
 
 
-_M1_IDENTITY_PACKAGES = (
+_BASE_IDENTITY_PACKAGES = (
     "base-files",
     "libc6",
     "bash",
@@ -46,28 +46,7 @@ _PROFILES = {
             "procps",
             "util-linux",
         ),
-        identity_packages=_M1_IDENTITY_PACKAGES,
-    ),
-    "systemd-m2": RootfsProfile(
-        name="systemd-m2",
-        schema_version=2,
-        root_label="ASTER_DEBIANM2",
-        root_uuid="4a5d8b91-2189-44fa-a908-ae88dc76f2a1",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "procps",
-            "systemd-sysv",
-            "util-linux",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-        ),
+        identity_packages=_BASE_IDENTITY_PACKAGES,
     ),
     "systemd-ext4": RootfsProfile(
         name="systemd-ext4",
@@ -83,7 +62,7 @@ _PROFILES = {
             "systemd-sysv",
             "util-linux",
         ),
-        identity_packages=_M1_IDENTITY_PACKAGES
+        identity_packages=_BASE_IDENTITY_PACKAGES
         + (
             "systemd",
             "systemd-sysv",
@@ -91,89 +70,6 @@ _PROFILES = {
         ),
         filesystem_type="ext4",
         journal=True,
-    ),
-    "desktop-m3": RootfsProfile(
-        name="desktop-m3",
-        schema_version=3,
-        root_label="ASTER_DEBIANM3",
-        root_uuid="87dc62d5-cd0b-47a3-a82b-32b24f2ed9d3",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "libpam-systemd",
-            "matchbox-window-manager",
-            "procps",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "xauth",
-            "x11-utils",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xterm",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-            "udev",
-            "libpam-systemd",
-            "xserver-xorg-core",
-            "xterm",
-        ),
-    ),
-    "desktop-m4": RootfsProfile(
-        name="desktop-m4",
-        schema_version=4,
-        root_label="ASTER_DEBIANM4",
-        root_uuid="e13bd1e8-8719-539f-b5e7-5c7b5f5df3c8",
-        requested_packages=(
-            "bash",
-            "ca-certificates",
-            "coreutils",
-            "dbus",
-            "libpam-systemd",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-            "procps",
-            "systemd-sysv",
-            "udev",
-            "util-linux",
-            "x11-utils",
-            "xauth",
-            "xdotool",
-            "xfonts-base",
-            "xinit",
-            "xserver-xorg-core",
-            "xserver-xorg-input-evdev",
-            "xserver-xorg-video-fbdev",
-            "xterm",
-        ),
-        identity_packages=_M1_IDENTITY_PACKAGES
-        + (
-            "systemd",
-            "systemd-sysv",
-            "dbus",
-            "udev",
-            "libpam-systemd",
-            "xserver-xorg-core",
-            "xterm",
-            "xdotool",
-            "librsvg2-common",
-            "lxpanel",
-            "netsurf-gtk",
-            "openbox",
-            "pcmanfm",
-        ),
     ),
     "desktop-m4-firefox": RootfsProfile(
         name="desktop-m4-firefox",
@@ -284,7 +180,7 @@ _PROFILES = {
             "xserver-xorg-video-fbdev",
             "xterm",
         ),
-        identity_packages=_M1_IDENTITY_PACKAGES
+        identity_packages=_BASE_IDENTITY_PACKAGES
         + (
             "systemd",
             "systemd-sysv",
@@ -341,7 +237,7 @@ _PROFILES = {
             "xterm",
         ),
         identity_packages=(
-            *_M1_IDENTITY_PACKAGES,
+            *_BASE_IDENTITY_PACKAGES,
             "systemd",
             "systemd-sysv",
             "dbus",
