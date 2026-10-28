@@ -8,10 +8,10 @@ refactoring work is tracked separately.
 
 - Current baseline after the first Phase 2 removal (parent commit
   `ce65773aa`).
-- Host modules: **122**
-- Host tests: **2,441**
+- Host modules: **121**
+- Host tests: **2,435**
 - Expected environment skips: **13**
-- Production Python files: **194**
+- Production Python files: **193**
 - Production shell files: **131**
 - Top-level shell entrypoints: **14**
 - Original Phase 0 baseline (`origin/main` at `3ceeccd04`):
@@ -110,7 +110,7 @@ deletion batch is intentionally small.
 | `desktop-m3`, `desktop-m4` profiles and gate entrypoints | Archive | Keep the shared `desktop_m3_gate.py` helpers and `DESKTOP_M4_MILESTONES`; current physical/debug gates import them. |
 | `desktop-m4-firefox` and `test_riscv_debian_daily_use_gate` | Archive/delete | The Makefile target is broken: it passes empty `--boot-timeout ""` and `--command-timeout ""` to a positive-float parser (`rootfs_gate.py:463-464`). The profile was superseded by `browser-web` on the same day. |
 | `desktop-m5-network` profile, M5 `browser` target | Consolidate | Keep the M5 network service/evidence layer installed by browser-web; only the profile identity and its browser entrypoint are historical. |
-| `browser-m5` profile and QEMU gate | Archive | First inline the package set into `browser-web` (`profiles.py:426-431`); extract `BROWSER_M5_MILESTONES`, which `test_debian_browser_web.py` imports, and keep `browser_m5_marionette_gate.py`, which is current shared Marionette code. |
+| `browser-m5` profile and QEMU gate | QEMU gate removed; profile pending | The browser-web package set is now inlined and the obsolete gate/test are gone. Keep `browser_m5_marionette_gate.py`, which is current shared Marionette code; the profile itself waits for the signed-source fixture retarget. |
 | `desktop-m9-software` profile and M9 gate | Archive/consolidate | `vim` is already in browser-web; only the ffmpeg smoke has no browser-web equivalent. |
 | M6, M7, M8 gates/services | Consolidate/archive | M6/M7 marker strings are imported by current `megrez_gmac_gate.py` and `megrez_debug_contract.py`; preserve/move those marker assertions before removing the milestone gate. M8 is a thin M9 duplicate. |
 | `tools/riscv/nixos/` except `ltp/` and `build_busybox.sh` | Archive | `ltp_gate.py:631,676,799` hardcodes `nixos/ltp/build_ltp.sh`; `nixos/ltp/build_ltp.sh` needs `nixos/build_busybox.sh`. The rest is the superseded NixOS track. |
@@ -144,7 +144,7 @@ have been moved.
 | `test_debian_m6_browser.py` | 18 | 16 removable; two current marker/debug assertions move to the GMAC/debug tests first. |
 | `test_debian_m7_baidu.py` | 11 | Marker constants are current exports; preserve explicit assertions, then remove the milestone tests. |
 | `test_debian_m9_software.py` | 8 | Remove with `desktop-m9-software`. |
-| `test_debian_browser_m5.py` + `test_debian_browser_m5_qemu_gate.py` | 4 + 6 | Remove after inlining packages and extracting `BROWSER_M5_MILESTONES`, which `test_debian_browser_web.py` imports. |
+| `test_debian_browser_m5.py` | 4 | QEMU-gate tests are removed; the remaining admission tests stay with the profile until its signed-source fixtures are retargeted. |
 | `test_debian_m8_browser_quality.py` | 5 | Remove with M8/M9; it currently tests the M9 gate. |
 | `test_debian_desktop_m4_framebuffer_probe.py` + `_rw.py` | 6 + 6 | Remove with the old desktop-m4 profiles; keep shared M4 milestones. |
 | `test_wayland_demo.py` | 1 | Remove with `tools/riscv/wayland`. |

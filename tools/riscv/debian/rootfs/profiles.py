@@ -411,6 +411,20 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     "dbus-x11",
 )
 
+# Keep browser-web independent of the historical browser-m5 profile.  These
+# are the same packages browser-m5 used to contribute, with its offline
+# NetSurf admission inputs removed.
+_BROWSER_WEB_BASE_REQUESTED_PACKAGES = tuple(
+    package
+    for package in _PROFILES["desktop-m5-network"].requested_packages
+    if package not in {"netsurf-gtk", "xdotool"}
+) + ("firefox-esr", "python3-minimal")
+_BROWSER_WEB_BASE_IDENTITY_PACKAGES = tuple(
+    package
+    for package in _PROFILES["desktop-m5-network"].identity_packages
+    if package not in {"netsurf-gtk", "xdotool"}
+) + ("firefox-esr", "python3-minimal")
+
 
 _PROFILES["browser-web"] = RootfsProfile(
     name="browser-web",
@@ -423,10 +437,10 @@ _PROFILES["browser-web"] = RootfsProfile(
     # which is most of them including bilibili, fails to play while the page
     # itself loads. Name the decoder explicitly instead of relying on a
     # recommendation the build discards.
-    requested_packages=_PROFILES["browser-m5"].requested_packages
+    requested_packages=_BROWSER_WEB_BASE_REQUESTED_PACKAGES
     + ("xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
-    identity_packages=_PROFILES["browser-m5"].identity_packages
+    identity_packages=_BROWSER_WEB_BASE_IDENTITY_PACKAGES
     + ("ca-certificates", "xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
     # Firefox's installed files consume most of a 1 GiB image.  A persistent

@@ -23,7 +23,6 @@ import zlib
 from tools.riscv.debian.rootfs import browser_web_desktop_shell_qemu_gate as shell_gate
 from tools.riscv.debian.rootfs import browser_web_marionette_gate as web_gate
 from tools.riscv.debian.rootfs import browser_web_qemu_gate as web_qemu_gate
-from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     GateError,
     MAX_SCREENSHOT_COMMAND_SECONDS,
@@ -2436,7 +2435,6 @@ generate_fontconfig_cache "$stage" "$3"
                     passing + marker + b"\n", expected_debian_release="13.6"
                 )
                 self.assertFalse(result.passed)
-        self.assertFalse(set(BROWSER_WEB_MILESTONES) & set(BROWSER_M5_MILESTONES))
 
     def test_qemu_progress_tracks_split_structured_lines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

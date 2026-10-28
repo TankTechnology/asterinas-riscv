@@ -13,7 +13,6 @@
     "tools.riscv.tests.test_browser_system_time",
     "tools.riscv.tests.test_browser_workload_contract",
     "tools.riscv.tests.test_debian_browser_m5",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate",
     "tools.riscv.tests.test_debian_browser_m5_runtime_gate",
     "tools.riscv.tests.test_debian_browser_web",
     "tools.riscv.tests.test_debian_debug_console",
@@ -124,7 +123,7 @@
     "tools.riscv.tests.test_wayland_demo",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 122,
+  "modules": 121,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -336,12 +335,6 @@
     "tools.riscv.tests.test_debian_browser_m5.DebianBrowserM5AdmissionTests.test_offline_silent_video_probe_is_self_contained",
     "tools.riscv.tests.test_debian_browser_m5.DebianBrowserM5AdmissionTests.test_probe_rejects_a_network_dependency",
     "tools.riscv.tests.test_debian_browser_m5.DebianBrowserM5AdmissionTests.test_probe_rejects_overwritten_or_reordered_result_nodes",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate.DebianBrowserM5QemuGateTests.test_adapter_binds_schema_six_to_one_slirp_nic_without_debug",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate.DebianBrowserM5QemuGateTests.test_browser_milestones_end_in_formal_ready",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate.DebianBrowserM5QemuGateTests.test_classifier_fails_closed_for_every_guest_failure_domain",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate.DebianBrowserM5QemuGateTests.test_classifier_rejects_missing_or_reordered_content",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate.DebianBrowserM5QemuGateTests.test_classifier_requires_network_private_namespace_and_live_content",
-    "tools.riscv.tests.test_debian_browser_m5_qemu_gate.DebianBrowserM5QemuGateTests.test_make_target_is_explicit_and_only_extends_host_budget",
     "tools.riscv.tests.test_debian_browser_m5_runtime_gate.DebianBrowserM5RuntimeGateTests.test_accepts_observed_firefox_esr_ended_media_shape",
     "tools.riscv.tests.test_debian_browser_m5_runtime_gate.DebianBrowserM5RuntimeGateTests.test_accepts_only_exact_ordered_permanent_dom_and_local_resource",
     "tools.riscv.tests.test_debian_browser_m5_runtime_gate.DebianBrowserM5RuntimeGateTests.test_diagnose_cli_preserves_ready_false_as_retryable_evidence",
@@ -2576,5 +2569,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2441
+  "tests": 2435
 }
