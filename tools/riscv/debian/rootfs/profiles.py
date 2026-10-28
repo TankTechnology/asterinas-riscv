@@ -438,6 +438,9 @@ _PROFILES["browser-web"] = RootfsProfile(
 )
 
 
+PROFILE_NAMES = tuple(_PROFILES)
+
+
 def get_profile(name: str) -> RootfsProfile:
     """Returns a frozen profile or rejects an unknown identity."""
 
