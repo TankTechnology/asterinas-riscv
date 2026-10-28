@@ -18,7 +18,7 @@ readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
-readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
+readonly SECURITY_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
 readonly SUPPORTED_SUITE="trixie"
 readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
@@ -883,8 +883,22 @@ extract_package_index_checksums() {
     ' "$index" | LC_ALL=C sort -u >"$output"
 }
 
+archive_package_row() {
+    local archive="$1"
+    local package
+    local version
+    local architecture
+
+    package="$(dpkg-deb -f "$archive" Package 2>/dev/null || true)"
+    version="$(dpkg-deb -f "$archive" Version 2>/dev/null || true)"
+    architecture="$(dpkg-deb -f "$archive" Architecture 2>/dev/null || true)"
+    [[ -n "$package" && -n "$version" && -n "$architecture" ]] || return 1
+    printf '%s\t%s\t%s\n' "$package" "$architecture" "$version"
+}
+
 admit_downloaded_packages() {
     local archive
+    local archive_row
     local archive_sha256
     local admitted_row
     local admitted_name
@@ -893,6 +907,21 @@ admit_downloaded_packages() {
 
     : >"$WORK_DIR/source-metadata/package-checksums"
     for archive in "$WORK_DIR"/debs/*.deb; do
+        # debootstrap leaves its original archives in apt's cache.  A
+        # subsequent security update can install a newer version while
+        # retaining the superseded archive.  Discard those before the
+        # signed-index hash audit: the superseded archive is not expected in
+        # the current indexes, while every installed archive must still be
+        # authenticated below.
+        if archive_row="$(archive_package_row "$archive")"; then
+            IFS=$'\t' read -r admitted_name admitted_architecture \
+                admitted_version <<<"$archive_row"
+            if ! package_row_is_installed \
+                "$admitted_name" "$admitted_architecture" "$admitted_version" \
+                "$WORK_DIR/packages.lock"; then
+                continue
+            fi
+        fi
         archive_sha256="$(sha256sum "$archive")"
         archive_sha256="${archive_sha256%% *}"
         admitted_row="$(resolve_downloaded_package_row \
@@ -1725,6 +1754,52 @@ Defaults !use_pty
 asterinas ALL=(ALL:ALL) NOPASSWD: ALL
 EOF
     chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
+    # Fallback for images that do not carry sudo or whose user is not in the
+    # sudoers file: allow the active local console session to ask logind for
+    # reboot/poweroff.  This changes no kernel permission; it only lets the
+    # normal systemd shutdown path proceed without a polkit agent prompt.
+    install -d -m 0755 -- "$stage/etc/polkit-1/rules.d"
+    cat >"$stage/etc/polkit-1/rules.d/49-asterinas-console-power.rules" <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (subject.local && subject.active &&
+        (action.id == "org.freedesktop.login1.reboot" ||
+         action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.power-off" ||
+         action.id == "org.freedesktop.login1.power-off-multiple-sessions")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+    chmod 0644 -- "$stage/etc/polkit-1/rules.d/49-asterinas-console-power.rules"
+    # The board has no RTC, and a fixed stale clock leaks into every boot.  Seed
+    # it from the reproducible image build timestamp; an online sync may replace
+    # it later.  The marker says whether the value was applied or skipped.
+    install -D -m 0755 -- "$script_directory/megrez_clock_bootstrap.sh" \
+        "$stage/usr/lib/asterinas/megrez-clock-bootstrap"
+    printf '%s\n' "$SOURCE_DATE_EPOCH" >"$stage/etc/asterinas-build-time"
+    chmod 0644 -- "$stage/etc/asterinas-build-time"
+    cat >"$stage/etc/systemd/system/asterinas-clock-bootstrap.service" <<'EOF'
+[Unit]
+Description=Seed the guest clock from the image build time
+DefaultDependencies=no
+After=local-fs.target
+Before=basic.target
+ConditionPathExists=/etc/asterinas-build-time
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/megrez-clock-bootstrap
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-clock-bootstrap.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sfn ../asterinas-clock-bootstrap.service \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-bootstrap.service"
     # sudo (and interactive tools) allocate a pty; debootstrap leaves fstab
     # unconfigured, so /dev/pts is never mounted and sudo fails with
     # "unable to allocate pty". Mount devpts like a normal Debian installation.

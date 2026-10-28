@@ -453,6 +453,32 @@ def _run_admit_downloaded_packages(
     )
 
 
+def _make_test_deb(
+    path: Path,
+    *,
+    package: str,
+    version: str,
+    architecture: str = "riscv64",
+) -> None:
+    package_root = path.parent / f"{path.name}.root"
+    control_directory = package_root / "DEBIAN"
+    control_directory.mkdir(parents=True)
+    (control_directory / "control").write_text(
+        f"Package: {package}\n"
+        f"Version: {version}\n"
+        f"Architecture: {architecture}\n"
+        "Maintainer: Test Fixture <fixture@example.com>\n"
+        "Description: package admission test fixture\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["dpkg-deb", "--build", "--root-owner-group", str(package_root), str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _make_fake_tools(directory: Path, *, failing_tool: str | None = None) -> Path:
     bin_directory = directory / "fake-bin"
     bin_directory.mkdir()
@@ -1608,6 +1634,20 @@ int main(void)
             browser.index("browser-web-timeline reset-physical"),
             browser.index("browser_stage browser-start"),
         )
+    def test_physical_graphics_control_keeps_browser_optional(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text(encoding="utf-8")
+        browser = source[source.index("browser_stage browser-start"):]
+        self.assertIn("ASTERINAS_DESKTOP_BROWSER_OPTIONAL start=failed", browser)
+        self.assertIn(
+            "__ASTERINAS_PHYSICAL_BROWSER_START__ status=%s\\n' \"$status\"",
+            browser,
+        )
+        readiness = source[
+            source.index("startup_ready_once() {"):source.index("startup_ready() {")
+        ]
+        self.assertIn("readiness_reason=openbox", readiness)
+        self.assertNotIn("readiness_reason=firefox", readiness)
+        self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000 optional=1", source)
 
     def test_physical_graphics_control_disarms_only_after_desktop_readiness(
         self,
@@ -1622,6 +1662,7 @@ int main(void)
         self.assertIn("ASTERINAS_DESKTOP_DISPLAY_READY", source)
         self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY", source)
         self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_DISARMED", source)
+        self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_ABSENT", source)
         self.assertIn("ASTERINAS_DESKTOP_BOOT_READY", source)
 
     def test_desktop_readiness_hands_off_safe_reboot_after_kernel_disarm(self) -> None:
@@ -3661,6 +3702,68 @@ esac
 
         self.assertFalse((outside_directory / f"{digest}.deb").exists())
         self.assertNotEqual(result.returncode, 0)
+
+    def test_skips_archive_superseded_by_installed_version(self) -> None:
+        work_directory = self.directory / "superseded-work"
+        debs_directory = work_directory / "debs"
+        metadata_directory = work_directory / "source-metadata"
+        debs_directory.mkdir(parents=True)
+        metadata_directory.mkdir()
+        archive = (
+            debs_directory / "firefox-esr_140.16.0esr-1~deb13u1_riscv64.deb"
+        )
+        _make_test_deb(
+            archive,
+            package="firefox-esr",
+            version="140.16.0esr-1~deb13u1",
+        )
+        (work_directory / "package-index-checksums").write_text(
+            "",
+            encoding="utf-8",
+        )
+        (work_directory / "packages.lock").write_text(
+            "firefox-esr\triscv64\t153.5.1esr-1~deb13u1\n",
+            encoding="utf-8",
+        )
+
+        result = _run_admit_downloaded_packages(
+            work_directory,
+            self.directory / "cache",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (metadata_directory / "package-checksums").read_text(encoding="utf-8"),
+            "",
+        )
+
+    def test_rejects_installed_archive_absent_from_verified_indexes(self) -> None:
+        work_directory = self.directory / "absent-work"
+        debs_directory = work_directory / "debs"
+        metadata_directory = work_directory / "source-metadata"
+        debs_directory.mkdir(parents=True)
+        metadata_directory.mkdir()
+        archive = debs_directory / "example_1.0_riscv64.deb"
+        _make_test_deb(archive, package="example", version="1.0")
+        (work_directory / "package-index-checksums").write_text(
+            "",
+            encoding="utf-8",
+        )
+        (work_directory / "packages.lock").write_text(
+            "example\triscv64\t1.0\n",
+            encoding="utf-8",
+        )
+
+        result = _run_admit_downloaded_packages(
+            work_directory,
+            self.directory / "cache",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "downloaded package hash is absent from the verified package index",
+            result.stderr,
+        )
 
     def test_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):

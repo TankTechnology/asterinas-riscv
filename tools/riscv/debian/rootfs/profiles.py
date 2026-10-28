@@ -199,6 +199,7 @@ _PROFILES = {
             "netsurf-gtk",
             "openbox",
             "pcmanfm",
+            "polkitd",
             "procps",
             "python3-minimal",
             "sudo",
@@ -267,6 +268,7 @@ _PROFILES = {
             "netsurf-gtk",
             "openbox",
             "pcmanfm",
+            "polkitd",
             "procps",
             "systemd-sysv",
             "udev",
@@ -422,17 +424,17 @@ _PROFILES["browser-web"] = RootfsProfile(
     # itself loads. Name the decoder explicitly instead of relying on a
     # recommendation the build discards.
     requested_packages=_PROFILES["browser-m5"].requested_packages
-    + ("xdotool", "libavcodec-extra61")
+    + ("xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
     identity_packages=_PROFILES["browser-m5"].identity_packages
-    + ("ca-certificates", "xdotool", "libavcodec-extra61")
+    + ("ca-certificates", "xdotool", "libavcodec-extra61", "vim", "build-essential")
     + BROWSER_WEB_DESKTOP_PACKAGES,
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
     # normal bookmark/places maintenance path.  Keep the smaller milestone
     # images unchanged, but give the long-lived online browser a real working
     # margin.
-    root_size_bytes=2 * 1024 * 1024 * 1024,
+    root_size_bytes=3 * 1024 * 1024 * 1024,
 )
 
 

@@ -44,6 +44,11 @@ if [[ "$MANUAL_REBOOT" == 1 && -z "${ASTERINAS_SAFE_REBOOT_AFTER:-}" ]]; then
 fi
 
 DEADLINE="${ASTERINAS_SAFE_REBOOT_AFTER:-}"
+# An explicit zero disables the userspace self-reboot.  An unset value
+# keeps the bounded kernel-cmdline handoff; the board-session default
+# supplies no deadline, so a normal boot remains off by default.
+[[ "$MANUAL_REBOOT" == 1 && "$DEADLINE" == 0 ]] && fail manual-deadline-required
+[[ "$DEADLINE" == 0 ]] && exit 0
 KERNEL_DEADLINE=''
 [[ "$CMDLINE_PATH" == /* && -f "$CMDLINE_PATH" && ! -L "$CMDLINE_PATH" ]] ||
     fail invalid-cmdline-file

@@ -64,6 +64,7 @@ DESKTOP_M4_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_evidence.sh"
 )
 SAFE_REBOOT_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_safe_reboot.sh"
+CLOCK_BOOTSTRAP_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_bootstrap.sh"
 MEGREZ_TCP_PROBE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_tcp_probe_init.c"
 )
@@ -266,7 +267,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
     def test_guest_network_deadline_matches_the_qemu_contract(self) -> None:
         self.assertIn(
-            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"',
+            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-30}"',
             EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
         )
 
@@ -437,25 +438,38 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             m5.requested_packages,
             tuple(
                 sorted(
+                    # xdotool is already part of the M4 requested set.
                     m4.requested_packages
                     + (
                         "curl",
                         "fonts-wqy-microhei",
                         "iproute2",
                         "iputils-ping",
+                        "polkitd",
                         "x11-apps",
-                        "xdotool",
                     )
                 )
             ),
         )
+        # Package order is not part of the identity contract; xdotool and the
+        # desktop base may appear in a different position than the M4 list.
         self.assertEqual(
-            m5.identity_packages,
-            m4.identity_packages
-            + ("curl", "iproute2", "iputils-ping", "xdotool", "x11-apps"),
+            sorted(m5.identity_packages),
+            sorted(
+                m4.identity_packages
+                + ("curl", "iproute2", "iputils-ping", "x11-apps")
+            ),
         )
         self.assertIn("fonts-wqy-microhei", m5.requested_packages)
         self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)
+
+    def test_browser_web_profile_carries_daily_tools(self) -> None:
+        profile = get_profile("browser-web")
+        for package in ("vim", "build-essential"):
+            self.assertIn(package, profile.requested_packages)
+            self.assertIn(package, profile.identity_packages)
+        self.assertEqual(profile.root_size_bytes, 3 * 1024 * 1024 * 1024)
+        self.assertEqual(profile.root_label, "ASTER_BROWSERWEB")
 
     def test_manifest_parser_accepts_only_the_m5_profile_for_schema_five(self) -> None:
         profile = get_profile("desktop-m5-network")
@@ -612,6 +626,10 @@ configure_and_normalize_rootfs
         )
         self.assertIn("Type=simple", safe_reboot_unit.read_text(encoding="utf-8"))
         self.assertNotIn("Type=oneshot", safe_reboot_unit.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "ASTERINAS_SAFE_REBOOT_AFTER",
+            safe_reboot_unit.read_text(encoding="utf-8"),
+        )
         self.assertIn(
             "WantedBy=multi-user.target asterinas-debug-console.target",
             safe_reboot_unit.read_text(encoding="utf-8"),
@@ -793,6 +811,15 @@ configure_and_normalize_rootfs
             "Defaults !use_pty\nasterinas ALL=(ALL:ALL) NOPASSWD: ALL\n",
         )
         self.assertEqual(stat.S_IMODE(sudoers.stat().st_mode), 0o440)
+        polkit_rule = (
+            stage / "etc/polkit-1/rules.d/49-asterinas-console-power.rules"
+        )
+        polkit_text = polkit_rule.read_text(encoding="utf-8")
+        self.assertIn("subject.local && subject.active", polkit_text)
+        self.assertIn("org.freedesktop.login1.reboot", polkit_text)
+        self.assertIn("org.freedesktop.login1.power-off", polkit_text)
+        self.assertIn("polkit.Result.YES", polkit_text)
+        self.assertEqual(stat.S_IMODE(polkit_rule.stat().st_mode), 0o644)
         self.assertIn(
             "devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0",
             (stage / "etc/fstab").read_text(encoding="utf-8"),
@@ -844,6 +871,24 @@ configure_and_normalize_rootfs
                 / "asterinas-desktop-m4.service"
             ).is_symlink()
         )
+        build_time = stage / "etc/asterinas-build-time"
+        self.assertEqual(build_time.read_text(encoding="utf-8"), "1704067200\n")
+        clock_unit = stage / "etc/systemd/system/asterinas-clock-bootstrap.service"
+        clock_text = clock_unit.read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=/usr/lib/asterinas/megrez-clock-bootstrap", clock_text
+        )
+        self.assertIn("ConditionPathExists=/etc/asterinas-build-time", clock_text)
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/basic.target.wants"
+                / "asterinas-clock-bootstrap.service"
+            ).is_symlink()
+        )
+        clock_script = stage / "usr/lib/asterinas/megrez-clock-bootstrap"
+        self.assertEqual(clock_script.read_bytes(), CLOCK_BOOTSTRAP_SCRIPT.read_bytes())
+        self.assertEqual(stat.S_IMODE(clock_script.stat().st_mode), 0o755)
 
     def test_safe_reboot_uses_uptime_and_syncs_before_reboot(self) -> None:
         fake_bin = self.directory / "safe-reboot-bin"
@@ -1468,6 +1513,27 @@ configure_and_normalize_rootfs
         self.assertFalse(
             any("ASTERINAS_USERSPACE_REBOOT_SYNC_DONE" in line for line in console_lines)
         )
+
+    def test_safe_reboot_defaults_off_and_treats_zero_as_off(self) -> None:
+        cmdline = self.directory / "safe-reboot-default-cmdline"
+        cmdline.write_text("console=ttyS0\n", encoding="utf-8")
+        for value in (None, "0"):
+            environment = os.environ.copy()
+            environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
+            environment["ASTERINAS_SAFE_REBOOT_CMDLINE_PATH"] = str(cmdline)
+            if value is not None:
+                environment["ASTERINAS_SAFE_REBOOT_AFTER"] = value
+            result = subprocess.run(
+                ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "")
 
     def _fake_network_tools(
         self, *, address: str, directory: Path | None = None
@@ -2476,6 +2542,24 @@ drop_unsupported_sysctl_files "$2"
         )
         self.assertIn("10-coredump-debian.conf", builder)
         self.assertIn("50-pid-max.conf", builder)
+
+    def test_dns_shim_unit_fails_fast_without_a_forwarder(self) -> None:
+        source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        block = source[source.index("asterinas-dns-shim.service"):]
+        block = block[: block.index("[Install]")]
+        # Main keeps the shim long-lived, but skips it when no forwarder is
+        # configured and treats exit 1/3 as explicit inactive states.  There is
+        # no Restart=always loop.
+        self.assertIn("Type=simple", block)
+        self.assertIn("Restart=no", block)
+        self.assertIn(
+            "ExecCondition=/bin/sh -c 'test -n \"${ASTERINAS_DESKTOP_DNS_HOST:-}\"'",
+            block,
+        )
+        self.assertIn("SuccessExitStatus=1 3", block)
+        self.assertNotIn("Type=oneshot", block)
+        self.assertNotIn("Restart=always", block)
+        self.assertNotIn("RestartPreventExitStatus", block)
 
     def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
         console = self.directory / "qemu-console"
