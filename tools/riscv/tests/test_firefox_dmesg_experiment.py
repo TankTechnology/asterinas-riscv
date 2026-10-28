@@ -181,7 +181,8 @@ class RunnerConstructionTests(unittest.TestCase):
     def test_installed_diagnostic_sources_must_match_the_generated_sources(self):
         generated = "print('driver')\n"
         helper = experiment.GUEST_HELPER.read_bytes()
-        outputs = [generated.encode(), helper]
+        gate = experiment.DIAGNOSTIC_GATE_SOURCE.encode()
+        outputs = [generated.encode(), helper, gate]
 
         def run(_arguments, **_kwargs):
             return SimpleNamespace(returncode=0, stdout=outputs.pop(0))
@@ -194,7 +195,7 @@ class RunnerConstructionTests(unittest.TestCase):
             hashlib.sha256(generated.encode()).hexdigest(),
         )
 
-        outputs[:] = [b"wrong", helper]
+        outputs[:] = [b"wrong", helper, gate]
         with self.assertRaisesRegex(ValueError, "hash mismatch"):
             experiment.verify_installed_diagnostics(
                 Path("root.ext2"), generated, run=run
@@ -208,6 +209,8 @@ class RunnerConstructionTests(unittest.TestCase):
         self.assertIn(
             'destination": "/usr/lib/asterinas/firefox-diagnostic-snapshot"', preparer
         )
+        self.assertIn('"source": "firefox-dmesg-gate"', preparer)
+        self.assertIn('"destination": DIAGNOSTIC_GATE_PATH', preparer)
 
     def test_pinned_baseline_and_exact_transform_anchors(self):
         baseline = experiment.load_baseline(experiment.DEFAULT_BASELINE)
@@ -256,22 +259,28 @@ class RunnerConstructionTests(unittest.TestCase):
     def test_generated_serial_command_is_bounded_and_has_one_replacement(self):
         from tools.riscv.megrez_physical_graphics import physical_cycle_command
 
-        baseline = experiment.load_baseline(experiment.DEFAULT_BASELINE)
         original = physical_cycle_command(
             1,
-            "0123456789abcdef",
+            "0123",
             300,
             expected_browser_pid=70,
             expected_width=1280,
             expected_height=1024,
             setup_timeout=600,
         )
-        command = experiment.build_serial_command(original, baseline)
+        command = experiment.build_serial_command(original)
         self.assertLessEqual(len(command.encode()), 4000)
-        self.assertEqual(command.count("python3 -c"), 1)
+        self.assertTrue(
+            command.startswith(
+                f"ASTERINAS_PHYSICAL_GATE={experiment.DIAGNOSTIC_GATE_PATH} "
+            )
+        )
+        self.assertEqual(
+            command.count("/run/asterinas-tools/physical-graphics-control "), 1
+        )
         with self.assertRaisesRegex(RuntimeError, "contract"):
             experiment.build_serial_command(
-                original.replace("physical-graphics-gate", "other"), baseline
+                original.replace("physical-graphics-control", "other")
             )
 
     def test_boot_arguments_are_exact_and_idempotence_is_rejected(self):

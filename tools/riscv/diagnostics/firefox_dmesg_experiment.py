@@ -9,7 +9,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import time
@@ -24,8 +23,14 @@ from tools.riscv.diagnostics.firefox_transport_records import FirefoxTransportRe
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 DEFAULT_BASELINE = Path(__file__).with_name("firefox_checkpoint_baseline.py")
-BASELINE_SHA256 = "457bfd780dbd182c745be5edeb17e32195c0302462b604757becc6f84e15623a"
+BASELINE_SHA256 = "a6d851042cbfb944addcb9cdec9d6d5054a48e5ca15fce55ff63498008c27ab3"
 GUEST_HELPER = Path(__file__).with_name("firefox_dmesg_guest.py")
+DIAGNOSTIC_GATE_PATH = "/usr/lib/asterinas/firefox-dmesg-gate"
+DIAGNOSTIC_GATE_SOURCE = (
+    "#!/bin/sh\n"
+    "exec /usr/bin/python3 /usr/lib/asterinas/firefox-dmesg-driver.py \"$@\"\n"
+)
+CONTROL_COMMAND = "/run/asterinas-tools/physical-graphics-control "
 SERIAL_COMMAND_LIMIT = 4000
 TRANSPORT_PREFIX = "A_WEB_MARIONETTE_TRANSPORT "
 CHECKPOINT_PREFIX = "A_FF_CHECKPOINT "
@@ -61,10 +66,14 @@ def verify_installed_diagnostics(root_image, generated_source, *, run=subprocess
     expected = {
         "guest_source_sha256": hashlib.sha256(generated_source.encode()).hexdigest(),
         "guest_helper_sha256": sha256(GUEST_HELPER),
+        "guest_gate_sha256": hashlib.sha256(
+            DIAGNOSTIC_GATE_SOURCE.encode()
+        ).hexdigest(),
     }
     paths = {
         "guest_source_sha256": "/usr/lib/asterinas/firefox-dmesg-driver.py",
         "guest_helper_sha256": "/usr/lib/asterinas/firefox_dmesg_guest.py",
+        "guest_gate_sha256": DIAGNOSTIC_GATE_PATH,
     }
     actual = {}
     for name, path in paths.items():
@@ -248,24 +257,10 @@ def build_guest_source(baseline):
     )
 
 
-def guest_loader(baseline):
-    # The generated source is installed in the hash-audited diagnostic rootfs.
-    # Keeping only this fixed loader on the serial command line leaves ample
-    # room for the existing bounded physical-gate arguments.
-    del baseline
-    return (
-        "import runpy;runpy.run_path("
-        "'/usr/lib/asterinas/firefox-dmesg-driver.py',run_name='__main__')"
-    )
-
-
-def build_serial_command(original, baseline):
-    executable = "/usr/lib/asterinas/physical-graphics-gate "
-    if original.count(executable) != 1:
+def build_serial_command(original):
+    if original.count(CONTROL_COMMAND) != 1:
         raise RuntimeError("unexpected guest command contract")
-    result = original.replace(
-        executable, "python3 -c " + shlex.quote(guest_loader(baseline)) + " ", 1
-    )
+    result = f"ASTERINAS_PHYSICAL_GATE={DIAGNOSTIC_GATE_PATH} {original}"
     if len(result.encode()) > SERIAL_COMMAND_LIMIT:
         raise RuntimeError("guest command exceeds serial line budget")
     return result
@@ -425,7 +420,6 @@ def main(arguments=None):
     baseline = load_baseline()
     generated_source = build_guest_source(baseline)
     installed_source = verify_installed_diagnostics(config.root_image, generated_source)
-    generated_loader = guest_loader(baseline)
     evidence = SerialEvidence(output, progress)
     original_next = gate._next_line
     original_drain = gate.PhysicalGraphicsQemuOperations.drain_serial
@@ -444,7 +438,6 @@ def main(arguments=None):
 
     gate._next_line = next_line
     gate.PhysicalGraphicsQemuOperations.drain_serial = drain
-    baseline.guest_loader = lambda: generated_loader
     baseline.diagnostic_bootargs = diagnostic_bootargs
     progress("boot_started")
     base_status = baseline.main()

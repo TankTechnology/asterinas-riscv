@@ -118,7 +118,7 @@ readonly device_deadline=$((SECONDS + 120))
 while [[ ! -c "$DISPLAY_DEVICE" ]]; do
     if ((SECONDS >= device_deadline)); then
         if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-            printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=${DISPLAY_DEVICE#/}-timeout" \
+            printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=${DISPLAY_DEVICE##*/}-timeout" \
                 >>/run/browser-web-device-stage.log
         fi
         printf '%s\n' "ASTERINAS_DESKTOP_DEVICE_ACCESS failed: $DISPLAY_DEVICE did not appear" >&2
@@ -197,14 +197,14 @@ fi
 if ! chown asterinas:video "${display_nodes[@]}" ||
     ! chmod 0660 "${display_nodes[@]}"; then
     if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-        printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=${DISPLAY_DEVICE#/}-permissions" \
+        printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=${DISPLAY_DEVICE##*/}-permissions" \
             >>/run/browser-web-device-stage.log
     fi
     printf '%s\n' "ASTERINAS_DESKTOP_DEVICE_ACCESS failed: cannot configure $DISPLAY_DEVICE" >&2
     exit 1
 fi
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-    printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=${DISPLAY_DEVICE#/}-ready" >>/run/browser-web-device-stage.log
+    printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=${DISPLAY_DEVICE##*/}-ready" >>/run/browser-web-device-stage.log
 fi
 if ((${#input_devices[@]} > 0)); then
     if ! chown asterinas:input "${input_devices[@]}" || ! chmod 0660 "${input_devices[@]}"; then
