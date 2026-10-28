@@ -3,6 +3,7 @@
 
 set -u
 
+physical_gate=${ASTERINAS_PHYSICAL_GATE:-/run/asterinas-tools/physical-graphics-gate}
 offline_desktop=${ASTERINAS_DESKTOP_OFFLINE:-0}
 case "$offline_desktop" in
     0|1) ;;
@@ -487,7 +488,7 @@ cycle() {
             else
                 PYTHONDONTWRITEBYTECODE=1 \
                     nsenter -t "$original_pid" -n \
-                    /run/asterinas-tools/physical-graphics-gate \
+                    "$physical_gate" \
                     --nonce "$nonce" --cycle "$cycle" --firefox-pid "$original_pid" \
                     --timeout "$timeout" --setup-timeout "$setup_timeout" \
                     --expected-width "$width" --expected-height "$height"
@@ -520,7 +521,7 @@ final() {
     if [ "$original_pid" = "$expected_pid" ]; then
         PYTHONDONTWRITEBYTECODE=1 \
             nsenter -t "$original_pid" -n \
-            /run/asterinas-tools/physical-graphics-gate \
+            "$physical_gate" \
             --nonce "$nonce" --cycle "$cycle" --firefox-pid "$original_pid" \
             --verify-final --timeout "$timeout" --setup-timeout "$setup_timeout"
         status=$?

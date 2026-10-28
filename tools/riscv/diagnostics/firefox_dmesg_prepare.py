@@ -23,6 +23,8 @@ from tools.riscv.diagnostics.firefox_actor_overlay import (
 )
 from tools.riscv.diagnostics.firefox_dmesg_experiment import (
     BASELINE_SHA256,
+    DIAGNOSTIC_GATE_PATH,
+    DIAGNOSTIC_GATE_SOURCE,
     GUEST_HELPER,
     build_guest_source,
     load_baseline,
@@ -81,6 +83,9 @@ def prepare(base, source_archive, payload, output, *, unbuffered_socket=False):
     compile(driver, "firefox-dmesg-driver.py", "exec")
     driver_path = payload / "firefox-dmesg-driver.py"
     driver_path.write_text(driver)
+    gate_path = payload / "firefox-dmesg-gate"
+    gate_path.write_text(DIAGNOSTIC_GATE_SOURCE)
+    gate_path.chmod(0o755)
     helper_path = payload / "firefox_dmesg_guest.py"
     shutil.copyfile(GUEST_HELPER, helper_path)
     collector_path = payload / "firefox-diagnostic-snapshot"
@@ -92,6 +97,7 @@ def prepare(base, source_archive, payload, output, *, unbuffered_socket=False):
             "wrapper_derived_sha256": digest_bytes(modified_wrapper.encode()),
             "checkpoint_baseline_sha256": BASELINE_SHA256,
             "dmesg_driver_sha256": digest_bytes(driver.encode()),
+            "dmesg_gate_sha256": digest_bytes(gate_path.read_bytes()),
             "dmesg_guest_helper_sha256": digest_bytes(helper_path.read_bytes()),
             "snapshot_collector_sha256": digest_bytes(collector_path.read_bytes()),
         }
@@ -116,6 +122,12 @@ def prepare(base, source_archive, payload, output, *, unbuffered_socket=False):
             {
                 "source": "firefox-dmesg-driver.py",
                 "destination": "/usr/lib/asterinas/firefox-dmesg-driver.py",
+                "mode": "0755",
+                "create": True,
+            },
+            {
+                "source": "firefox-dmesg-gate",
+                "destination": DIAGNOSTIC_GATE_PATH,
                 "mode": "0755",
                 "create": True,
             },

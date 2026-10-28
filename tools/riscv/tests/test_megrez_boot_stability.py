@@ -67,8 +67,11 @@ class _Operations:
 
     def boot(self, _plan, bootargs: str, _timeout: float) -> None:
         self.events.append(f"boot-{self.cycle}")
-        if "asterinas.mmc_write_partition2" in bootargs:
-            raise AssertionError("boot stability gate may not write partition 2")
+        tokens = bootargs.split()
+        if "asterinas.mmc_write_partition2" not in tokens:
+            raise AssertionError("boot stability gate must write partition 2")
+        if not any(token.startswith("asterinas.reboot_after=") for token in tokens):
+            raise AssertionError("boot stability gate must retain a recovery timer")
         self._guest_started = True
 
     def prove_boot_readiness(self, _timeout: float):
@@ -931,15 +934,26 @@ class BootStabilityPublicationTests(unittest.TestCase):
             gate.DeploymentAttestation.from_mapping(malformed)
 
     def test_main_invalidates_stale_pass_before_reading_the_plan(self) -> None:
-        repository = Path(gate.__file__).resolve().parents[2]
-        physical = repository / "target/current-main-physical-graphics/physical"
-        with tempfile.TemporaryDirectory(dir=physical) as temporary:
-            output = Path(temporary)
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            output = (
+                repository
+                / "target"
+                / "current-main-physical-graphics"
+                / "physical"
+                / "boot-stability"
+            )
+            output.mkdir(parents=True)
+            module = repository / "tools/riscv/megrez_boot_stability.py"
+            module.parent.mkdir(parents=True)
             stale = output / "result.json"
             stale.write_text('{"passed":true}\n')
 
-            with mock.patch.object(
-                gate, "_read_plan", side_effect=gate.HostGateError("bad plan")
+            with (
+                mock.patch.object(gate, "__file__", str(module)),
+                mock.patch.object(
+                    gate, "_read_plan", side_effect=gate.HostGateError("bad plan")
+                ),
             ):
                 status = gate.main(
                     (

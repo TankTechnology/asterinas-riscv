@@ -352,13 +352,17 @@ class DesktopStartLifecycleTests(unittest.TestCase):
         self.assertEqual(tokens.count("--"), 1)
         self.assertEqual(
             tokens[tokens.index("--") + 1 :],
-            ["--root-init=systemd", "--debug-console=isolated-root"],
+            [
+                "--root-init=systemd",
+                "--debug-console=isolated-root",
+                "--volatile-home",
+            ],
         )
+        self.assertIn("asterinas.mmc_write_partition2", tokens)
         self.assertIn("systemd.mask=asterinas-browser-web-evidence.service", tokens)
         self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", tokens)
         self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", tokens)
         forbidden = (
-            "asterinas.mmc_write_partition2",
             "asterinas.mmc-write-partition2",
             "asterinas.net=",
             "asterinas.neighbor=",
@@ -1371,7 +1375,8 @@ class _DiagnosticOperations:
 
     def boot(self, _plan, bootargs: str, _timeout: float) -> None:
         self.events.append("boot")
-        if "asterinas.reboot_after=900" not in bootargs:
+        tokens = bootargs.split()
+        if not any(token.startswith("asterinas.reboot_after=") for token in tokens):
             raise AssertionError("diagnostic boot must retain bounded recovery")
         self._guest_started = True
 

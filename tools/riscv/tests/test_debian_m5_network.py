@@ -8,6 +8,7 @@ import os
 import stat
 import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
@@ -356,7 +357,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                 "ASTERINAS_DESKTOP_M4_INPUT_DIRECTORY": str(input_directory),
                 "ASTERINAS_DESKTOP_M4_XORG_LOG": str(xorg_log),
                 "ASTERINAS_DESKTOP_M4_SESSION_LOG": str(session_log),
-                "ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS": "1",
+                "ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS": "0",
                 "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS": "1",
             },
             check=False,
@@ -2926,6 +2927,7 @@ printf '200\t10.0.2.15'
     def test_qemu_web_bootargs_are_split_below_uboot_console_limit(self) -> None:
         operations = object.__new__(NetworkM5QemuOperations)
         operations.BOOTARGS = qemu_web_network_bootargs(network_gate.NetworkMode.PROXY)
+        operations.config = SimpleNamespace(root_fs="ext2")
         commands = operations._boot_commands(0x40000000)
         bootarg_commands = tuple(
             command
@@ -3133,11 +3135,10 @@ printf '200\t10.0.2.15'
         self.assertNotIn("-nic", arguments)
         self.assertEqual(arguments.count("user,id=net0"), 1)
         self.assertEqual(arguments.count("virtio-net-device,netdev=net0"), 1)
-        for device in (
-            "bochs-display",
-            "virtio-keyboard-device",
-            "virtio-tablet-device",
-        ):
+        self.assertTrue(
+            any(argument.startswith("bochs-display") for argument in arguments)
+        )
+        for device in ("virtio-keyboard-device", "virtio-tablet-device"):
             self.assertIn(device, arguments)
 
     def test_qemu_operations_owns_and_publishes_fixture_lifecycle(self) -> None:

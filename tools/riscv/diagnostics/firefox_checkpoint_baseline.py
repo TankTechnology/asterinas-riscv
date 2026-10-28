@@ -8,7 +8,6 @@ import inspect
 import json
 from pathlib import Path
 import re
-import shlex
 import sys
 import time
 import zlib
@@ -245,11 +244,12 @@ def main():
 
     def command(*args, **kwargs):
         value = original_command(*args, **kwargs)
-        executable = "/usr/lib/asterinas/physical-graphics-gate "
+        executable = "/run/asterinas-tools/physical-graphics-control "
         if value.count(executable) != 1:
             raise RuntimeError("unexpected guest command contract")
-        value = value.replace(
-            executable, "python3 -c " + shlex.quote(guest_loader()) + " ", 1
+        value = (
+            "ASTERINAS_PHYSICAL_GATE=/usr/lib/asterinas/firefox-dmesg-gate "
+            + value
         )
         if len(value.encode()) > 4000:
             raise RuntimeError("guest command exceeds serial line budget")
