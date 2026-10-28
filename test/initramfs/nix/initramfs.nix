@@ -1,4 +1,4 @@
-{ lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox
+{ lib, pkgs, stdenvNoCC, fetchFromGitHub, hostPlatform, writeClosure, busybox, simProbe
 , benchmark, conformance, regression, dnsServer, }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
@@ -34,6 +34,7 @@ in stdenvNoCC.mkDerivation {
     ln -sfn usr/lib $out/lib
     ln -sfn usr/lib64 $out/lib64
     cp -r ${busybox}/bin/* $out/bin/
+    install -m755 ${simProbe}/bin/sim-probe $out/bin/sim-probe
     ${lib.optionalString is_evtest_included ''
       cp -r ${pkgs.evtest}/bin/* $out/bin/
     ''}
