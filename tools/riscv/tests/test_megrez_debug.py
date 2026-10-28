@@ -39,12 +39,18 @@ from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     MAX_ARTIFACT_BYTES,
+    METADATA_ARTIFACT_NAMES,
     ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
     StageResult,
 )
+from tools.riscv.megrez_contract import (
+    ROOTFS_ARTIFACT_NAMES,
+    ROOTFS_METADATA_ARTIFACT_NAMES,
+)
+from tools.riscv.megrez_debian_shell_contract import SHELL_ARTIFACT_ORDER
 from tools.riscv.megrez_gmac_gate import physical_bootargs
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
 from tools.riscv.megrez_debug_probe import (
@@ -67,6 +73,40 @@ from tools.riscv.megrez_board_session import MEGREZ_USB_HOST_COMMAND
 from tools.riscv.megrez_preboard import RecoveryEvidence
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
+
+
+class ArtifactOrderContractTests(unittest.TestCase):
+    def test_shared_rootfs_artifact_names_are_frozen(self) -> None:
+        self.assertEqual(
+            ROOTFS_ARTIFACT_NAMES,
+            (
+                "root_image",
+                "root_manifest",
+                "packages_lock",
+                "package_checksums",
+                "in_release",
+            ),
+        )
+        self.assertEqual(
+            ROOTFS_METADATA_ARTIFACT_NAMES,
+            (
+                "root_manifest",
+                "packages_lock",
+                "package_checksums",
+                "in_release",
+            ),
+        )
+        self.assertEqual(
+            METADATA_ARTIFACT_NAMES, frozenset(ROOTFS_METADATA_ARTIFACT_NAMES)
+        )
+
+    def test_debug_and_shell_orders_end_with_the_shared_rootfs_set(self) -> None:
+        suffix = len(ROOTFS_ARTIFACT_NAMES)
+        self.assertEqual(
+            DEBIAN_BROWSER_ARTIFACT_ORDER[-suffix:], ROOTFS_ARTIFACT_NAMES
+        )
+        self.assertEqual(SHELL_ARTIFACT_ORDER[-suffix:], ROOTFS_ARTIFACT_NAMES)
+
 
 
 class MegrezDebugProbeServerTests(unittest.TestCase):
