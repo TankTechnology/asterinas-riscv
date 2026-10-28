@@ -10,12 +10,11 @@ import re
 from typing import Any
 
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
-    DESKTOP_M3_BOOTARGS,
     DesktopM3Operations,
     classify_desktop,
     desktop_m3_qemu_argv,
 )
-from tools.riscv.debian.rootfs.gate_protocol import GateResult
+from tools.riscv.debian.rootfs.gate_protocol import GateResult, systemd_bootargs
 from tools.riscv.debian.rootfs.gate_runtime import (
     GateTermination,
     TerminationSignalState,
@@ -118,10 +117,8 @@ class DesktopM4Operations(DesktopM3Operations):
     # QEMU's virtio keyboard/tablet contract fixes event0/event1 ordering;
     # select the corresponding non-ioctl handoff in the rootfs before Xorg
     # starts.  Physical profiles retain strict identity resolution.
-    BOOTARGS = (
-        "console=ttyS0 loglevel=4 "
-        "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
-        "init=/init -- --root-init=systemd"
+    BOOTARGS = systemd_bootargs(
+        pre_init=("systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered",)
     )
 
     @staticmethod
