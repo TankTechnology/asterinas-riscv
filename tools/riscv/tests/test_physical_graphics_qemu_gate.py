@@ -102,7 +102,9 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-cpu") + 1], GENERIC_SV39_CPU)
         self.assertEqual(argv[argv.index("-smp") + 1], "4")
         self.assertEqual(argv[argv.index("-display") + 1], "none")
-        self.assertEqual(argv.count("bochs-display"), 1)
+        self.assertEqual(
+            sum(value.startswith("bochs-display") for value in argv), 1
+        )
         self.assertEqual(argv.count("virtio-keyboard-device"), 1)
         self.assertEqual(argv.count("virtio-tablet-device"), 1)
         self.assertEqual(sum(value == "-drive" for value in argv), 2)

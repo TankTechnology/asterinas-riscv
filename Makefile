@@ -27,6 +27,7 @@ OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
 COVERAGE ?= 0
+HOST_TEST_JOBS ?= 32
 
 # Specify the primary system console (supported: tty0, ttyS0, hvc0).
 # - tty0: The active virtual terminal (VT).
@@ -556,6 +557,15 @@ build_riscv_rootfs_image:
 		--build-arg BASE_IMAGE="$(RISCV_ROOTFS_BASE_IMAGE)" \
 		-f "$(RISCV_ROOTFS_DOCKERFILE)" \
 		-t "$(RISCV_ROOTFS_IMAGE)" .
+
+.PHONY: test_riscv_host test_riscv_host_list
+test_riscv_host:
+	@PYTHONPATH="$(CURDIR)" python3 tools/riscv/host_test_runner.py \
+		--jobs "$(HOST_TEST_JOBS)"
+
+test_riscv_host_list:
+	@PYTHONPATH="$(CURDIR)" python3 tools/riscv/host_test_runner.py \
+		--list --json --jobs "$(HOST_TEST_JOBS)"
 
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:

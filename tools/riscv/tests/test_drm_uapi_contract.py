@@ -90,6 +90,29 @@ class DrmUapiContractTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        support = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-fsyntax-only",
+                "-x",
+                "c",
+                "-",
+            ],
+            input=(
+                "#include <drm/virtgpu_drm.h>\n"
+                "int main(void) {\n"
+                "    (void)DRM_IOCTL_VIRTGPU_CONTEXT_INIT;\n"
+                "    return (int)sizeof(struct drm_virtgpu_context_init);\n"
+                "}\n"
+            ),
+            text=True,
+            capture_output=True,
+        )
+        if support.returncode != 0:
+            raise unittest.SkipTest(
+                "host DRM uapi headers predate VIRTGPU_CONTEXT_INIT"
+            )
         cls._directory = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls._directory.cleanup)
         binary = Path(cls._directory.name) / "drm-uapi-contract"
