@@ -90,9 +90,15 @@ many internal cross-references even when nothing current enters them.
 | M5 network `network` target | Keep | It already accepts schema-7 `browser-web` artifacts; only the old M5 `browser` target is obsolete. |
 | debug-console and physical-graphics gates | Keep | They consume the current browser-web/board artifacts. |
 | physical Firefox daily-use gate | Keep | This, not the old QEMU `daily_use_gate`, is the required daily-use coverage. |
+| board install, persistent shell, boot menu, boot stability | Keep | The current board deployment path still uses the menu/manifest/shell contracts; do not archive them with the milestone gates. |
+| `tools/riscv/perf/` contract core, native/smoke LMBench, `make_megrez_package.sh`, `verify_megrez_sim.sh` | Keep | Recent benchmark/LTP tooling and the documented board preflight/package workflow; they are not obsolete just because they lack a Makefile target. |
 | host runner and baseline manifest | Keep | The local gate for every cleanup change. |
 
 ### Consolidation and archive candidates
+
+Zero textual references is not automatically safe to delete: some files are
+manual harness leaves or are referenced by a dated evidence page. The first
+deletion batch is intentionally small.
 
 | Candidate | Decision | Dependency that must move first |
 |---|---|---|
@@ -103,15 +109,23 @@ many internal cross-references even when nothing current enters them.
 | `browser-m5` profile and QEMU gate | Archive | First inline the package set into `browser-web` (`profiles.py:426-431`); keep `browser_m5_marionette_gate.py`, which is current shared Marionette code. |
 | `desktop-m9-software` profile and M9 gate | Archive/consolidate | `vim` is already in browser-web; only the ffmpeg smoke has no browser-web equivalent. |
 | M6, M7, M8 gates/services | Archive | NetSurf milestone evidence, installed only for the old M5/M9 profiles and superseded by the Firefox browser-web gate. |
-| `tools/riscv/nixos/` | Archive candidate | Keep/migrate `nixos/ltp` build inputs used by `ltp_gate.py`; the other N1/N3/M*/audio/etexec/mlock/shm tracks are a superseded NixOS research stack. |
-| `tools/riscv/systemd/`, `xorg/`, `xfce/`, `wayland/`, `lvgl/`, `game/` | Archive candidate | These are the pre-Debian custom desktop stacks. Before archiving, move `xorg/gen_tls_certs.py` and `xorg/tls_cert_server.py`, which the current M5 network QEMU gate uses. |
-| `tools/riscv/perf/` | Do not archive wholesale | It has a recent Debian benchmark-aggregation contract; only remove orphan GPU/desktop-performance leaves after owner review. |
-| `tools/riscv/diagnostics/` | Keep | Most of it serves the current Firefox/physical diagnostics even though some leaves are old. |
-| old top-level probes (`demo-all.sh`, `fm3-gate.sh`, `fm4-gate.sh`, `pm1-gate.sh`, `megrez_control_chain.py`, `qemu_uboot_linux_ref_init.S`) | Delete/archive candidate | No current Makefile, production, test, or docs entry reaches most of them; manually verify the remaining boot-menu/manual-command references first. |
+| `tools/riscv/nixos/` except `ltp/` and `build_busybox.sh` | Archive | `ltp_gate.py:631,676,799` hardcodes `nixos/ltp/build_ltp.sh`; `nixos/ltp/build_ltp.sh` needs `nixos/build_busybox.sh`. The rest is the superseded NixOS track. |
+| `tools/riscv/systemd/` code, `demo-all.sh`, root `README-DEMO.md` | Delete candidate | A self-contained systemd+NixOS demo chain. Remove the `demo-all.sh` entry from `tooling_surface.json` atomically; archive the reports. |
+| `tools/riscv/xorg/` except `gen_tls_certs.py` and `tls_cert_server.py` | Archive | Those two helpers are used by the current M5 network QEMU gate (`desktop_m5_qemu_gate.py:121-122`). |
+| `tools/riscv/xfce/` | Archive | No current code reference, but `docs/porting/evidence/2026-09-20-merged-main-physical-validation.md:107` cites its screenshot; keep the evidence link valid or update it when moving. |
+| `tools/riscv/wayland/`, `tools/riscv/lvgl/`, `tools/riscv/game/`, `qemu_desktop_boot.py` | Delete candidate | Wayland has only `test_wayland_demo.py`; LVGL is documented only in old QEMU/LVGL sections; `game/snake.c` has zero references and its builder was already removed. |
+| `tools/riscv/nsmatrix/`, `tools/riscv/pidns/` and their KE reports | Archive | Historical kernel-namespace results; keep them together as archived evidence, not current tests. |
+| `tools/riscv/perf/` GPU/desktop-performance leaves | Paused | `drm-gbm-probe.c`, `boot-bench.c`, `ab-redundant-units.sh`, `sample-qemu-io.sh`, `toggle-desktop-session.sh`, `phase-timing.sh` and `toggle-redundant-units.sh` are DRM/GPU-adjacent. Do not delete while GPU work is paused. |
+| `tools/riscv/perf/debian/` unlinked case wrappers | Consolidate after owner review | Added by the recent #184 benchmark contract but not linked from README/Makefile; do not treat as dead solely because grep finds no caller. |
+| `build_megrez_sdhci_probe.sh` + `megrez_sdhci_gate.py` | Consolidate | Test/doc-only SDHCI chain (12 tests); retire together with its README section and test. |
+| `dual_host_qemu_probe.py` | Consolidate | Reachable only through its Makefile target and 25 baseline tests; retire only if the dual-host probe is no longer needed. |
+| `eic7700_isolation.sh` | Archive | Historical status-doc/spec references only; update those links before removal. |
 
 The old reports and logs under `tools/riscv/` are historical evidence, not
 active code. Move them to an archive index rather than leaving them beside the
-current tools.
+current tools. Two report citations need preserving during the move:
+`docs/porting/snd-device-model.md:14` cites `nixos/POLISH-M5-report.md`, and the
+2026-09-20 evidence page cites the XFCE screenshot.
 
 ### Test-baseline impact
 
@@ -127,6 +141,11 @@ should be removed with their feature, not silently skipped:
 | `test_debian_browser_m5.py` + `test_debian_browser_m5_qemu_gate.py` | 4 + 6 |
 | `test_debian_m8_browser_quality.py` | 5 |
 | `test_debian_desktop_m4_framebuffer_probe.py` + `_rw.py` | 6 + 6 |
+| `test_wayland_demo.py` | 1 |
+| `test_megrez_sdhci_gate.py` | 12 |
+| `test_dual_host_qemu_probe.py` | 25 |
+| `test_nixos_track_audit.py` | 30 |
+| `test_nixos_m7_assets.py` | 6 |
 
 `test_debian_rootfs.py` contains roughly 30 historical profile/gate tests among
 its 206; the rest is current gate/runtime/stage1 coverage and must stay.
@@ -154,8 +173,11 @@ commands; they need an archive index rather than being treated as live docs.
 
 1. Freeze this inventory and add an automated reference check for code under
    `tools/riscv/` (not for evidence).
-2. Delete truly unreferenced scripts/reports and the broken daily-use target;
-   update `expected_host_tests.json` and state every removed ID.
+2. Remove the truly independent zero-reference files first: `game/snake.c` and
+   `megrez_control_chain.py`; then retire the systemd demo unit
+   (`demo-all.sh`, `README-DEMO.md`, `tools/riscv/systemd/` code) and the broken
+   daily-use target. Other zero-reference files are coupled to a feature or an
+   evidence page and wait for their batch.
 3. Inline browser-web's package set, then remove/archive the old profiles and
    their gates while retargeting shared tests.
 4. Archive the legacy desktop/NixOS stacks after moving their shared leaves.
