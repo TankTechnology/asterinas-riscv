@@ -582,6 +582,7 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_gate \
 		tools.riscv.tests.test_debian_rootfs_builder \
 		tools.riscv.tests.test_debian_stage1 \
 		tools.riscv.tests.test_debian_rootfs_docs \
@@ -663,6 +664,7 @@ test_riscv_firefox_daily_use_physical_unit:
 		tools.riscv.tests.test_browser_daily_use_upload \
 		tools.riscv.tests.test_megrez_network_fixture \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_gate \
 		tools.riscv.tests.test_debian_rootfs_builder \
 		tools.riscv.tests.test_debian_stage1 \
 		tools.riscv.tests.test_megrez_physical_graphics \
@@ -675,7 +677,7 @@ test_riscv_megrez_boot_stability_unit:
 		tools.riscv.tests.test_megrez_boot_stability \
 		tools.riscv.tests.test_megrez_rockos_attestation \
 		tools.riscv.tests.test_megrez_physical_graphics \
-		tools.riscv.tests.test_debian_rootfs.DebianRootfsGateRuntimeTests -v
+		tools.riscv.tests.test_debian_gate.DebianRootfsGateRuntimeTests -v
 
 .PHONY: test_riscv_megrez_desktop_unit
 test_riscv_megrez_desktop_unit:
