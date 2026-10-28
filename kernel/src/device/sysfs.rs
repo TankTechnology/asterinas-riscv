@@ -30,26 +30,46 @@ struct DrmSysDevice<'a> {
 }
 
 pub(super) fn init_in_first_process() -> Result<()> {
-    let class_node = build_class_node()?;
-    let bus_node = AttrLessSysNode::new("bus");
-    bus_node.add_child(AttrLessSysNode::new("platform") as Arc<dyn SysObj>)?;
+    // The device model owns `/sys/dev`, `/sys/class`, `/sys/bus` and
+    // `/sys/devices`. What is built here is the DRM and console view, which
+    // the model has no driver for yet, so it is attached through the model's
+    // legacy entry points instead of being added to the tree root directly.
+    aster_device::register_legacy_class_dir(build_tty_class()? as Arc<dyn SysObj>)
+        .map_err(device_model_error)?;
+    aster_device::register_legacy_class_dir(build_graphics_class()? as Arc<dyn SysObj>)
+        .map_err(device_model_error)?;
+    aster_device::register_legacy_bus_dir(AttrLessSysNode::new("platform") as Arc<dyn SysObj>)
+        .map_err(device_model_error)?;
 
-    let root = crate::fs::sysfs::systree_singleton().root();
-    root.add_child(class_node as Arc<dyn SysObj>)?;
-    root.add_child(bus_node as Arc<dyn SysObj>)?;
     let drm_device = DrmSysDevice {
         nodes: super::dri::exposed_nodes(),
         driver: super::dri::driver_name(),
         modalias: VIRTIO_GPU_MODALIAS,
     };
-    if let Some(dev_node) = build_dev_node(&[drm_device])? {
-        root.add_child(dev_node as Arc<dyn SysObj>)?;
+    for node in build_dev_nodes(&[drm_device])? {
+        aster_device::register_legacy_dev_entry(node as Arc<dyn SysObj>)
+            .map_err(device_model_error)?;
     }
     Ok(())
 }
 
-/// Builds `/sys/dev/char/<major>:<minor>` for the DRM nodes, when there are
-/// any.
+/// Reports a device-model failure as an I/O error.
+///
+/// A node that cannot be attached means the corresponding entry under `/sys`
+/// is missing, which is what libdrm and Mesa see as "there is no device".
+fn device_model_error(error: aster_device::common::Error) -> Error {
+    warn!("failed to register a sysfs node with the device model: {error}");
+    Error::with_message(
+        Errno::EIO,
+        "failed to register a sysfs node with the device model",
+    )
+}
+
+/// Builds one `/sys/dev/char/<major>:<minor>` node per character node of the
+/// DRM devices.
+///
+/// The device model creates `/sys/dev/char` itself; these nodes are attached
+/// to it by the caller with `register_legacy_dev_entry`.
 ///
 /// This subtree is not decoration. libdrm asks two questions of it before it
 /// will hand a device to Mesa, and both are answered nowhere else:
@@ -62,13 +82,8 @@ pub(super) fn init_in_first_process() -> Result<()> {
 /// `/sys/dev` is the one part of the device model that is keyed by the
 /// character device's own major:minor rather than by a bus or class, which is
 /// why it is built here and not from a class node.
-fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<AttrLessSysNode>>> {
-    if devices.iter().all(|device| device.nodes.is_empty()) {
-        return Ok(None);
-    }
-
-    let dev_node = AttrLessSysNode::new("dev");
-    let char_node = AttrLessSysNode::new("char");
+fn build_dev_nodes(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Vec<Arc<DevSysNode>>> {
+    let mut nodes = Vec::new();
 
     for drm_device in devices {
         for (node_name, minor) in drm_device.nodes {
@@ -116,12 +131,11 @@ fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<Attr
             device_node.add_child(drm_node as Arc<dyn SysObj>)?;
 
             node.add_child(device_node as Arc<dyn SysObj>)?;
-            char_node.add_child(node as Arc<dyn SysObj>)?;
+            nodes.push(node);
         }
     }
 
-    dev_node.add_child(char_node as Arc<dyn SysObj>)?;
-    Ok(Some(dev_node))
+    Ok(nodes)
 }
 
 /// The `uevent` contents of one DRM device.
@@ -164,13 +178,19 @@ fn char_node_uevent(node_name: &str, minor: u32) -> String {
     )
 }
 
-fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
-    let class_node = AttrLessSysNode::new("class");
-
+/// Builds `/sys/class/tty`.
+fn build_tty_class() -> SysTreeResult<Arc<AttrLessSysNode>> {
     let tty_class_node = AttrLessSysNode::new("tty");
     tty_class_node.add_child(Tty0SysNode::new() as Arc<dyn SysObj>)?;
-    class_node.add_child(tty_class_node as Arc<dyn SysObj>)?;
+    Ok(tty_class_node)
+}
 
+/// Builds `/sys/class/graphics`.
+///
+/// The framebuffer is reached through `/sys/class/graphics/fb0` rather than
+/// through a bus, because there is no platform device for it here; the
+/// `device/subsystem` link is what makes the node look attached to one.
+fn build_graphics_class() -> SysTreeResult<Arc<AttrLessSysNode>> {
     let graphics_class_node = AttrLessSysNode::new("graphics");
     let framebuffer_node = AttrLessSysNode::new("fb0");
     let device_node = AttrLessSysNode::new("device");
@@ -179,9 +199,7 @@ fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
     )?;
     framebuffer_node.add_child(device_node as Arc<dyn SysObj>)?;
     graphics_class_node.add_child(framebuffer_node as Arc<dyn SysObj>)?;
-    class_node.add_child(graphics_class_node as Arc<dyn SysObj>)?;
-
-    Ok(class_node)
+    Ok(graphics_class_node)
 }
 
 pub(super) fn active_vt_attr_value(index: u32) -> String {
@@ -326,10 +344,20 @@ inherit_sys_leaf_node!(Tty0SysNode, fields, {
 
 #[cfg(ktest)]
 mod test {
-    use aster_systree::SysBranchNode;
+    use aster_systree::{SysBranchNode, SysNode, SysObj};
     use ostd::prelude::ktest;
 
     use super::*;
+
+    /// Finds the character node called `name` among the nodes built for a set
+    /// of DRM devices, the way `/sys/dev/char` would key them.
+    fn char_node(nodes: &[Arc<DevSysNode>], name: &str) -> Arc<DevSysNode> {
+        nodes
+            .iter()
+            .find(|node| node.name() == name)
+            .unwrap()
+            .clone()
+    }
 
     fn virtio_device<'a>(nodes: &'a [(&'static str, u32)]) -> DrmSysDevice<'a> {
         DrmSysDevice {
@@ -344,12 +372,10 @@ mod test {
     /// identifier out of, and a `drm` directory it can list for the node name.
     #[ktest]
     fn drm_dev_node_matches_the_shape_libdrm_walks() {
-        let dev = build_dev_node(&[virtio_device(&[("card0", 0), ("renderD128", 128)])])
-            .unwrap()
-            .unwrap();
-        let char = dev.child("char").unwrap().cast_to_branch().unwrap();
+        let nodes =
+            build_dev_nodes(&[virtio_device(&[("card0", 0), ("renderD128", 128)])]).unwrap();
 
-        let card = char.child("226:0").unwrap().cast_to_branch().unwrap();
+        let card = char_node(&nodes, "226:0");
         let device = card.child("device").unwrap().cast_to_branch().unwrap();
         assert_eq!(
             device
@@ -368,11 +394,7 @@ mod test {
         let drm = device.child("drm").unwrap().cast_to_branch().unwrap();
         assert!(drm.child("card0").is_some());
 
-        let render = char
-            .child("226:128")
-            .unwrap()
-            .cast_to_branch()
-            .unwrap()
+        let render = char_node(&nodes, "226:128")
             .child("device")
             .unwrap()
             .cast_to_branch()
@@ -403,7 +425,7 @@ mod test {
         // present: `show_attr` is what libdrm's `fopen`+`read` reaches, so this
         // asserts the whole path from the tree to the bytes -- and the bytes
         // are the ones `drmGetDeviceNameFromFd2()` greps for `DEVNAME=`.
-        let card_node = char.child("226:0").unwrap().cast_to_branch().unwrap();
+        let card_node = char_node(&nodes, "226:0");
         assert!(
             card_node
                 .show_attr("uevent")
@@ -426,24 +448,13 @@ mod test {
             driver: "pvrsrvkm",
             modalias: "platform:pvrsrvkm",
         };
-        let dev = build_dev_node(&[display_device, gpu_device])
-            .unwrap()
-            .unwrap();
-        let char = dev.child("char").unwrap().cast_to_branch().unwrap();
-        let display = char
-            .child("226:0")
-            .unwrap()
-            .cast_to_branch()
-            .unwrap()
+        let nodes = build_dev_nodes(&[display_device, gpu_device]).unwrap();
+        let display = char_node(&nodes, "226:0")
             .child("device")
             .unwrap()
             .cast_to_branch()
             .unwrap();
-        let render = char
-            .child("226:128")
-            .unwrap()
-            .cast_to_branch()
-            .unwrap()
+        let render = char_node(&nodes, "226:128")
             .child("device")
             .unwrap()
             .cast_to_branch()
@@ -506,14 +517,13 @@ mod test {
     /// node for a device that is not there.
     #[ktest]
     fn drm_dev_node_is_absent_without_a_device() {
-        assert!(build_dev_node(&[]).unwrap().is_none());
-        assert!(build_dev_node(&[virtio_device(&[])]).unwrap().is_none());
+        assert!(build_dev_nodes(&[]).unwrap().is_empty());
+        assert!(build_dev_nodes(&[virtio_device(&[])]).unwrap().is_empty());
     }
 
     #[ktest]
     fn framebuffer_subsystem_symlink_matches_linux_platform_topology() {
-        let class = build_class_node().unwrap();
-        let graphics = class.child("graphics").unwrap().cast_to_branch().unwrap();
+        let graphics = build_graphics_class().unwrap();
         let fb0 = graphics.child("fb0").unwrap().cast_to_branch().unwrap();
         let device = fb0.child("device").unwrap().cast_to_branch().unwrap();
         let subsystem = device
