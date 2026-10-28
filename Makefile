@@ -645,7 +645,6 @@ test_riscv_megrez_debug_unit:
 		tools.riscv.tests.test_first_process_diag_source \
 		tools.riscv.tests.test_megrez_debug_plan \
 		tools.riscv.tests.test_megrez_debug_board \
-		tools.riscv.tests.test_megrez_debug_desktop \
 		tools.riscv.tests.test_megrez_install_workflow \
 		tools.riscv.tests.test_megrez_preboard -v
 
@@ -709,11 +708,6 @@ test_riscv_megrez_boot_menu_unit: test_riscv_megrez_boot_manifest_unit
 		tools.riscv.tests.test_megrez_boot_menu \
 		tools.riscv.tests.test_debian_stage1.DebianStage1Tests -v
 
-.PHONY: test_riscv_megrez_debug_desktop
-test_riscv_megrez_debug_desktop:
-	@python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_megrez_debug_desktop -v
-
 .PHONY: prepare_riscv_megrez_desktop_boot
 prepare_riscv_megrez_desktop_boot:
 	@test -f "$(MEGREZ_DESKTOP_BOOT_PLAN)" || \
@@ -753,29 +747,6 @@ test_riscv_megrez_install_unit:
 		tools.riscv.tests.test_megrez_board_session \
 		tools.riscv.tests.test_megrez_board_session_contract \
 		tools.riscv.tests.test_megrez_install_workflow -v
-
-.PHONY: test_riscv_megrez_debug_fast
-test_riscv_megrez_debug_fast: test_riscv_megrez_debug_unit
-	@test -n "$(MEGREZ_DEBUG_PLAN)" || \
-		{ echo "MEGREZ_DEBUG_PLAN is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez_debug simulate \
-		"$(MEGREZ_DEBUG_PLAN)" --tier fast \
-		--output-directory "$(MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE)" \
-		--uboot-build-directory "$(MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE)"
-
-.PHONY: test_riscv_megrez_debug_board
-test_riscv_megrez_debug_board: test_riscv_megrez_debug_unit
-	@test -n "$(MEGREZ_DEBUG_PLAN)" || \
-		{ echo "MEGREZ_DEBUG_PLAN is required" >&2; exit 2; }
-	@test -n "$(MEGREZ_DEBUG_DEVICE)" || \
-		{ echo "MEGREZ_DEBUG_DEVICE is required" >&2; exit 2; }
-	@test -n "$(MEGREZ_DEBUG_SIMULATION_RESULT)" || \
-		{ echo "MEGREZ_DEBUG_SIMULATION_RESULT is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez_debug board \
-		"$(MEGREZ_DEBUG_PLAN)" "$(MEGREZ_DEBUG_DEVICE)" \
-		--simulation-result "$(MEGREZ_DEBUG_SIMULATION_RESULT)" \
-		--output-directory "$(MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE)" \
-		--timeout "$(MEGREZ_DEBUG_BOARD_TIMEOUT)"
 
 .PHONY: prepare_riscv_megrez_physical_graphics
 prepare_riscv_megrez_physical_graphics:

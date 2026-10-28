@@ -21,7 +21,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tools.riscv import megrez_debug as debug_module
 from tools.riscv import megrez_debug_board as board_module
 from tools.riscv.debian.rootfs.desktop_network_gate import (
     DESKTOP_NETWORK_MEGREZ_MILESTONES,
@@ -45,11 +44,6 @@ from tools.riscv.megrez_debian_shell_contract import SHELL_ARTIFACT_ORDER
 from tools.riscv.debian.rootfs.desktop_network_gate import NetworkMode
 from tools.riscv.megrez_gmac_gate import GateTarget, physical_bootargs
 from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
-from tools.riscv.megrez_debug_probe import (
-    PROBE_STRESS_BYTES,
-    PROBE_STRESS_SIZES,
-    ProbeServer,
-)
 from tools.riscv.megrez_debug_board import (
     BoardRunConfig,
     BoardRunFailure,

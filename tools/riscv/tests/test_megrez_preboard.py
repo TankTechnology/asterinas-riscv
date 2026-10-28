@@ -374,67 +374,6 @@ class MegrezPreboardTests(unittest.TestCase):
             )
         self.assertEqual(protected.read_text(), "keep")
 
-    def test_unified_cli_translates_recovery_then_issues_permit(self) -> None:
-        from tools.riscv import megrez_debug
-
-        plan_path = self.repository / "plan.json"
-        plan_path.write_bytes(self.plan.canonical_bytes())
-        native = self.repository / "native.json"
-        serial = self.repository / "serial.log"
-        sums = self.repository / "SHA256SUMS"
-        recovery_output = self.repository / "target/recovery.json"
-        for path in (native, serial, sums):
-            path.write_text("placeholder")
-
-        with mock.patch.object(
-            megrez_debug,
-            "create_recovery_evidence",
-            return_value=self.recovery,
-            create=True,
-        ) as create:
-            status = megrez_debug.main(
-                (
-                    "recovery",
-                    str(plan_path),
-                    "--native-result",
-                    str(native),
-                    "--serial-log",
-                    str(serial),
-                    "--sha256sums",
-                    str(sums),
-                    "--output",
-                    str(recovery_output),
-                )
-            )
-        self.assertEqual(status, 0)
-        create.assert_called_once_with(self.plan, native, serial, sums)
-        self.assertEqual(
-            RecoveryEvidence.from_bytes(recovery_output.read_bytes()), self.recovery
-        )
-
-        with mock.patch.object(
-            megrez_debug, "issue_preboard_permit", return_value=mock.sentinel.permit
-        ) as issue:
-            status = megrez_debug.main(
-                (
-                    "preboard",
-                    str(plan_path),
-                    "--desktop-result",
-                    str(self.desktop_path),
-                    "--recovery-result",
-                    str(recovery_output),
-                    "--output",
-                    str(self.output),
-                )
-            )
-        self.assertEqual(status, 0)
-        issue.assert_called_once_with(
-            self.plan,
-            self.desktop_path,
-            recovery_output,
-            self.output,
-        )
-
     def test_output_parent_swap_fails_closed_without_writing_outside(self) -> None:
         self.output.parent.mkdir(parents=True)
         original = self.output.parent.with_name("pinned-original")

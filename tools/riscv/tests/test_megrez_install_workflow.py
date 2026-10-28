@@ -452,53 +452,6 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(RuntimeError):
                 validate_recovery_epoch(invalid)
 
-    def test_unified_cli_dispatches_the_permit_bound_installer(self) -> None:
-        from tools.riscv import megrez_debug
-
-        plan_path = self.repository / "plan.json"
-        plan_path.write_bytes(self.plan.canonical_bytes())
-        expected = StageResult(
-            1,
-            "install",
-            True,
-            "install-pass",
-            self.plan.plan_sha256,
-            ("installer.serial.log",),
-        )
-        with mock.patch.object(
-            megrez_debug, "run_network_install", return_value=expected, create=True
-        ) as install:
-            status = megrez_debug.main(
-                (
-                    "install",
-                    str(plan_path),
-                    "/dev/ttyUSB0",
-                    "--permit",
-                    str(self.permit_path),
-                    "--output-directory",
-                    str(self.output),
-                    "--base-cpio",
-                    str(self.base),
-                    "--tftp-directory",
-                    str(self.tftp),
-                    "--root-url",
-                    "http://10.100.19.216:8080/debian-root.ext2.gz",
-                    "--timeout",
-                    "900",
-                )
-            )
-        self.assertEqual(status, 0)
-        install.assert_called_once_with(
-            self.plan,
-            self.permit_path,
-            "/dev/ttyUSB0",
-            self.output,
-            self.base,
-            self.tftp,
-            "http://10.100.19.216:8080/debian-root.ext2.gz",
-            timeout=900.0,
-        )
-
     def test_chunk_build_failure_stops_before_server_or_serial(self) -> None:
         calls: list[str] = []
 

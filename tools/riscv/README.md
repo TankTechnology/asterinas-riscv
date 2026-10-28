@@ -758,63 +758,6 @@ rest rather than accepting and ignoring them: a second ring count is rejected
 because submission is single-ring, and a non-zero ring-poll mask is rejected
 because polling is not implemented.
 
-## Simulation-first Megrez debug attempt
-
-The Megrez debug workflow binds one immutable Asterinas artifact plan to a
-generic Sv39/SMP=4 QEMU fast result before touching the board. The physical
-step holds one serial descriptor, verifies the kernel, stage-1 initramfs, and
-Megrez DTB already in RAM by exact CRC32, and transfers only cache misses over
-XMODEM. It patches the live DTB for the firmware framebuffer and USB host,
-runs exactly one `booti`, and waits for the plan's guest marker followed by
-the automatic U-Boot recovery prompt.
-
-It never transfers the 1-GiB Debian root image, runs `saveenv`, resets the
-board, or boots Linux. A failed or interrupted attempt publishes
-`passed:false`; `result.json` is written after the serial and transport
-evidence.
-
-```bash
-make test_riscv_megrez_debug_board \
-  MEGREZ_DEBUG_PLAN="$PWD/target/megrez-debug/debug-plan.json" \
-  MEGREZ_DEBUG_DEVICE=/dev/ttyUSB0 \
-  MEGREZ_DEBUG_SIMULATION_RESULT="$PWD/target/qemu-uboot/megrez-debug/fast/result.json"
-```
-
-The command has one declining timeout, capped at 900 seconds. Its default
-is 120 seconds. A desktop plan using `asterinas.reboot_after=600` must use
-`--timeout 900`: the Megrez guest clock can advance more slowly than host
-monotonic time, so a 660-second host budget can expire before the bounded guest
-recovery. Reusing RAM is safe only when U-Boot reports the exact planned
-size/address CRC; otherwise the artifact is retransmitted and verified again
-before `booti`.
-
-For a diagnostic boot that may hang before Asterinas can arm
-`asterinas.reboot_after`, add `--hardware-watchdog`. This is an explicit
-pre-boot recovery option, not the desktop default:
-
-```bash
-PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug board \
-  /absolute/path/to/plan.json /dev/ttyUSB0 \
-  --simulation-result /absolute/path/to/fast/result.json \
-  --output-directory /absolute/path/to/physical-evidence \
-  --timeout 120 \
-  --hardware-watchdog
-```
-
-The option follows the EIC7700X TRM's Synopsys DesignWare watchdog contract at
-`0x50800000`. Before touching that block, it reads the system-controller clock
-gate at `0x51828200` and active-low reset at `0x51828444`, preserves unrelated
-bits, deasserts only WDT0 reset when required, and verifies both values again.
-It then verifies component type `0x44570120`, selects maximum `TOP=0xf`
-(`TORR[7:4]` is reserved on EIC7700X), kicks with `0x76`, enables
-interrupt-then-reset mode, and reads the control registers back. Any
-prerequisite, type, or readback mismatch aborts before the kernel starts. It
-writes neither storage nor U-Boot environment. A watchdog recovery that occurs
-after the first current-guest marker but before the terminal marker is reported
-immediately as `guest-reboot-before-terminal`; a bare pre-boot prompt is not
-mistaken for current-attempt evidence. The host retains its independent
-300-second cap even though the current DT describes a 200 MHz watchdog clock.
-
 ## Current-main Megrez physical graphics
 
 This gate is based on `origin/main` commit
