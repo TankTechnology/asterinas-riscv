@@ -15,6 +15,12 @@ docker run --rm -v $PWD:/root/asterinas -w /root/asterinas \
 # 如果 U-Boot 构建报 "The source tree is not clean"：
 #   make -C target/qemu-uboot/cache/u-boot mrproper   # 清掉上一轮的树内产物
 
+# 一键产包（构建 → 打包 → SHA256/CRC32 → 自动跑上面的预演）
+tools/riscv/make_megrez_package.sh
+
+# 上板前用真机 DTB 做静态预检（缺 stdout-path/memory/timebase 等会直接报 fail）
+python3 tools/riscv/megrez_dtb_check.py /path/to/megrez.dtb --verbose
+
 # 产物命名（带 commit + run id）
 # asterinas-megrez-<commit>-<run-id>.booti
 # rv-init-megrez-<commit>-<run-id>.cpio.gz
