@@ -10,6 +10,7 @@ LS_CD_INTERACTION_NAME = "megrez-busybox-ls-cd"
 STANDARD_COMMANDS_INTERACTION_NAME = "megrez-busybox-standard-commands"
 FULL_INITRAMFS_INTERACTION_NAME = "riscv-full-initramfs-standard-commands"
 SERIAL_RELIABILITY_INTERACTION_NAME = "riscv-full-initramfs-serial-reliability"
+RX_INTERACTION_NAME = "megrez-rx"
 READY_LINE = b"ASTERINAS_MEGREZ_SHELL_READY_20260721"
 COMMAND_BYTES = b"printf 'ASTERINAS_MEGREZ_SHELL_ACK_20260721\\n'\n"
 ACK_LINE = b"ASTERINAS_MEGREZ_SHELL_ACK_20260721"
@@ -56,6 +57,9 @@ SERIAL_RELIABILITY_COMPLETION_BYTES = (
     b"printf 'ASTERINAS_RISCV_SERIAL_RELIABILITY_ACK_%s\\n' 20260722 "
     b"> /dev/ttyS0\n"
 )
+RX_READY_LINE = b"ASTERINAS_MEGREZ_RX_READY_20260721"
+RX_INPUT_BYTES = b"ASTERINAS_MEGREZ_RX_20260721\n"
+RX_ACK_LINE = b"ASTERINAS_MEGREZ_RX_ACK_20260721"
 
 
 def interaction_by_name(name: str) -> SerialInteraction:
@@ -87,6 +91,12 @@ def interaction_by_name(name: str) -> SerialInteraction:
                 ),
             ),
             completion_line=FULL_INITRAMFS_ACK_LINE,
+        )
+    if name == RX_INTERACTION_NAME:
+        return SerialInteraction(
+            ready_line=RX_READY_LINE,
+            input_steps=(SerialInputStep(input_bytes=RX_INPUT_BYTES),),
+            completion_line=RX_ACK_LINE,
         )
     if name == SERIAL_RELIABILITY_INTERACTION_NAME:
         return SerialInteraction(
