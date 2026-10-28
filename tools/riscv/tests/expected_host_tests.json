@@ -2411,7 +2411,6 @@
     "tools.riscv.tests.test_thread_pc_sampler.ThreadPcSamplerTests.test_missing_thread_name_fails_without_stopping_process",
     "tools.riscv.tests.test_tlb_shootdown_probe_timing.TlbShootdownProbeTimingTest.test_reports_mprotect_syscalls_separately_from_reader_join",
     "tools.riscv.tests.test_tooling_surface.ToolingSurfaceTests.test_allowlist_names_still_exist_or_are_documented_for_removal",
-    "tools.riscv.tests.test_tooling_surface.ToolingSurfaceTests.test_production_file_counts_only_shrink",
     "tools.riscv.tests.test_tooling_surface.ToolingSurfaceTests.test_top_level_shell_scripts_are_allowlisted",
     "tools.riscv.tests.test_validate_run_kernel_log.ValidateRunKernelLogTests.test_accepts_complete_ipv6_dual_stack_transcript",
     "tools.riscv.tests.test_validate_run_kernel_log.ValidateRunKernelLogTests.test_accepts_complete_smp4_icache_regression",
@@ -2463,5 +2462,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2335
+  "tests": 2334
 }

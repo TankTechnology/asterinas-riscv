@@ -6,16 +6,12 @@ refactoring work is tracked separately.
 
 ## Baseline
 
-- Current baseline after retiring the `browser-m5` and `desktop-m5-network` image profiles.
-- Host modules: **115**
-- Host tests: **2,335**
-- Expected environment skips: **13**
-- Production Python files: **164**
-- Production shell files: **76**
-- Top-level shell entrypoints: **10**
-- Original Phase 0 baseline (`origin/main` at `3ceeccd04`):
-  123 modules, 2,463 tests, 204 production Python files, 148 production shell
-  files, 15 top-level shell entrypoints.
+- Current baseline after retiring the `browser-m5` and `desktop-m5-network` image
+  profiles.
+- The executable host-test baseline is
+  `tools/riscv/tests/expected_host_tests.json`; it records the exact test IDs
+  and expected skips, so this page does not duplicate volatile file or test
+  counts.
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**
 - Canonical command:
@@ -162,9 +158,8 @@ tests and the wider DRM/PowerVR cluster (about 153 IDs) stay paused. The
 aggregate `test_riscv_debian_rootfs_unit` target still runs the M6/M7/M8/M9
 modules and must be trimmed together with those gates.
 
-The browser-m5 and desktop-m5-network retirements reduced 19 IDs to the
-current 2,335/115. Moving the M6/M7 marker subset reduces a further 27 IDs to
-about 2,308/113-114. The optional
+The browser-m5 and desktop-m5-network retirements removed their profile-only
+tests. Moving the M6/M7 marker subset removes a further 27 IDs. The optional
 NixOS-preflight and dual-host work would reduce another 60, leaving about
 2,269/108. `test_suite_baseline.py:16,28` has a historical lower bound of 2,229;
 do not remove LMBench/perf or boot-menu tests in the same batch without
