@@ -18,7 +18,7 @@ readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
-readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
+readonly SECURITY_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
 readonly SUPPORTED_SUITE="trixie"
 readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
@@ -883,8 +883,22 @@ extract_package_index_checksums() {
     ' "$index" | LC_ALL=C sort -u >"$output"
 }
 
+archive_package_row() {
+    local archive="$1"
+    local package
+    local version
+    local architecture
+
+    package="$(dpkg-deb -f "$archive" Package 2>/dev/null || true)"
+    version="$(dpkg-deb -f "$archive" Version 2>/dev/null || true)"
+    architecture="$(dpkg-deb -f "$archive" Architecture 2>/dev/null || true)"
+    [[ -n "$package" && -n "$version" && -n "$architecture" ]] || return 1
+    printf '%s\t%s\t%s\n' "$package" "$architecture" "$version"
+}
+
 admit_downloaded_packages() {
     local archive
+    local archive_row
     local archive_sha256
     local admitted_row
     local admitted_name
@@ -893,6 +907,21 @@ admit_downloaded_packages() {
 
     : >"$WORK_DIR/source-metadata/package-checksums"
     for archive in "$WORK_DIR"/debs/*.deb; do
+        # debootstrap leaves its original archives in apt's cache.  A
+        # subsequent security update can install a newer version while
+        # retaining the superseded archive.  Discard those before the
+        # signed-index hash audit: the superseded archive is not expected in
+        # the current indexes, while every installed archive must still be
+        # authenticated below.
+        if archive_row="$(archive_package_row "$archive")"; then
+            IFS=$'\t' read -r admitted_name admitted_architecture \
+                admitted_version <<<"$archive_row"
+            if ! package_row_is_installed \
+                "$admitted_name" "$admitted_architecture" "$admitted_version" \
+                "$WORK_DIR/packages.lock"; then
+                continue
+            fi
+        fi
         archive_sha256="$(sha256sum "$archive")"
         archive_sha256="${archive_sha256%% *}"
         admitted_row="$(resolve_downloaded_package_row \
