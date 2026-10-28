@@ -28,6 +28,21 @@ image. The current browser path is `browser_web_evidence.sh` and
 `browser_web_marionette_gate.py`; GMAC now exposes only `network`, `desktop`,
 and `firefox` targets.
 
+## Firefox/dmesg diagnostics (archived 2026-10-28)
+
+The one-off Firefox actor, transport, dmesg, klog, and log-profile diagnostics
+and their host tests moved to `archive/diagnostics/`. The current Firefox
+acceptance path is the browser-web QEMU/physical daily-use gate; the full
+`make test_riscv_host` runner replaces the old `firefox_fast_check.sh`.
+
+## Standalone debug probes (archived 2026-10-28)
+
+The one-off Megrez probe, dual-host probe, SDHCI probe, Firefox debug tool,
+thread-PC/video samplers, and QEMU GDB sampling helpers moved to
+`archive/debug/`. The keep-set starts from the browser-web, board-install,
+QEMU/U-Boot, debug-console, and physical-graphics product paths; a diagnostic
+script is retained only while a current Makefile target or product path calls it.
+
 ## Other archived tracks (2026-10-28)
 
 - `nixos/`: the old NixOS RISC-V research track, except the active

@@ -709,41 +709,6 @@ test_riscv_megrez_boot_menu_unit: test_riscv_megrez_boot_manifest_unit
 		tools.riscv.tests.test_megrez_boot_menu \
 		tools.riscv.tests.test_debian_stage1.DebianStage1Tests -v
 
-.PHONY: test_riscv_megrez_probe_unit
-test_riscv_megrez_probe_unit: test_riscv_megrez_boot_manifest_unit
-	@python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_megrez_probe \
-		tools.riscv.tests.test_debian_stage1.DebianStage1Tests -v
-
-MEGREZ_PROBE_BUNDLE ?= target/megrez-probe/current.json
-MEGREZ_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
-MEGREZ_PROBE_INITRAMFS ?= target/megrez-probe/build/initramfs.cpio
-
-.PHONY: test_riscv_megrez_probe_qemu
-test_riscv_megrez_probe_qemu:
-	@python3 -m tools.riscv.megrez_probe boot syscall213 \
-		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
-		--output-directory target/megrez-probe/qemu-normal \
-		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
-		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)"
-	@python3 -m tools.riscv.megrez_probe boot \
-		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
-		--output-directory target/megrez-probe/qemu-deadline \
-		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
-		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)" \
-		--qemu-deadline-only
-
-DUAL_HOST_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
-DUAL_HOST_PROBE_INITRAMFS ?= target/dual-host-qemu-probe/artifacts/initramfs.cpio
-ROCKOS_SSH ?=
-
-.PHONY: test_riscv_dual_host_probe
-test_riscv_dual_host_probe:
-	@python3 -m tools.riscv.dual_host_qemu_probe \
-		--kernel "$(DUAL_HOST_PROBE_KERNEL)" \
-		--initramfs "$(DUAL_HOST_PROBE_INITRAMFS)" \
-		--rockos "$(ROCKOS_SSH)"
-
 .PHONY: test_riscv_megrez_debug_desktop
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \

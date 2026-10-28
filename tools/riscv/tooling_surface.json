@@ -1,15 +1,11 @@
 {
   "schema_version": 1,
   "top_level_shell": [
-    "build_megrez_sdhci_probe.sh",
-    "firefox_fast_check.sh",
     "firefox_kernel_static_check.sh",
     "kernel_ktest.sh",
     "ltp-gate.sh",
     "make_megrez_package.sh",
     "prepare_qemu_uboot_booti.sh",
-    "qemu_live_pc_sampler.sh",
-    "qemu_system_gdb_probe.sh",
     "verify_megrez_sim.sh"
   ]
 }

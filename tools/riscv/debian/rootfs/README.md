@@ -541,70 +541,6 @@ The unit gate is local and does not launch QEMU or use the network:
 make test_riscv_debian_rootfs_unit
 ```
 
-## Short Firefox GDB probe
-
-For startup diagnosis, use the bounded qemu-user probe before attempting the
-full Asterinas web gate.  It requires an extracted, writable riscv64 rootfs
-and invokes an explicit `qemu-riscv64-static` inside a bwrap rootfs namespace
-with `-L /`; it never registers or changes a host `binfmt_misc` handler. This
-is important because `-L` alone changes loader lookup, not guest absolute
-paths:
-
-```bash
-tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
-  /path/to/extracted-rootfs \
-  "$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)" \
-  45
-```
-
-The output directory contains the exact GDB command file, register and
-backtrace evidence, QEMU stderr, and metadata including the binfmt read-only
-check. `riscv64-linux-gnu-gdb` is required because the target is RISC-V; the
-host-native `gdb` is not a substitute. The host also needs `bwrap` and an
-explicit `qemu-riscv64-static` binary (the latter can be supplied via
-`QEMU_RISCV64_STATIC`). This probe is intentionally limited
-to loader entry and `__libc_start_main@plt`; use the Asterinas QEMU `-S -gdb`
-workflow separately for kernel breakpoints.
-
-The kernel-side reset probe is also reusable and does not boot the guest past
-the first instruction:
-
-```bash
-tools/riscv/qemu_system_gdb_probe.sh \
-  target/osdk/aster-kernel/aster-kernel-osdk-bin.Image \
-  "$PWD/../backups/asterinas-system-gdb-$(date +%Y%m%d)" \
-  15
-```
-
-The raw `.Image` is used as the QEMU payload.  To add kernel symbols, point
-`ASTERINAS_KERNEL_SYMBOLS` at the matching unstripped ELF
-(`target/osdk/aster-kernel/aster-kernel-osdk-bin`) before running the command.
-The default remains a reset-only snapshot; set `ASTERINAS_KERNEL_CONTINUE=1`
-only when deliberately testing a boot handoff toward `_start`.
-
-For a live Firefox Web gate that is already known to reach the slow page
-phase, enable the system-emulation stub explicitly on a loopback port.  The
-normal gate does not contain a GDB argument, and this opt-in does not add
-`-S`, so the VM continues booting before a debugger connects:
-
-```bash
-ASTERINAS_QEMU_GDB_PORT=23456 \
-  python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
-  --network-mode direct \
-  ...the frozen browser-web gate arguments...
-
-tools/riscv/qemu_live_pc_sampler.sh 23456 \
-  "$PWD/../backups/firefox-live-pc-$(date +%Y%m%d)" 20 2
-```
-
-The sampler uses `riscv64-linux-gnu-gdb`, captures PC/RA/SP for every QEMU
-hart, and detaches after each sample.  It stops early after three consecutive
-connection failures, which normally means the gate has already terminated.
-Use a matching unstripped kernel ELF to symbolize kernel PCs.  User PCs must
-be interpreted with the sampled process's `/proc/<pid>/maps`; an address alone
-does not distinguish a shared library from JIT/anonymous executable memory.
-Neither command registers or modifies a host binfmt handler.
-
 ## Firefox Web acceptance semantics
 
 The schema-seven `browser-web` gate separates deterministic browser
@@ -637,22 +573,6 @@ still requires uid 1000, zero capabilities, `NoNewPrivileges=1`, stable
 service identity, and absence of sandbox-disable arguments/environment.  A
 future build that actually enables the sandbox must report `Seccomp: 2` and
 is recorded as `enabled`.
-
-The read-only toolchain helper provides a common preflight, evidence summary,
-and hash manifest:
-
-```bash
-python3 -m tools.riscv.firefox_debug_tool preflight
-BACKUP_DIR="$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)"
-python3 -m tools.riscv.firefox_debug_tool summarize \
-  --gdb "$BACKUP_DIR/gdb-entry.txt" \
-  --gdb "$BACKUP_DIR/gdb-libc-start.txt" \
-  --syscall-log "$BACKUP_DIR/qemu-user-strace.log" \
-  --output "$BACKUP_DIR/summary.json"
-python3 -m tools.riscv.firefox_debug_tool manifest \
-  "$BACKUP_DIR" \
-  --output "$BACKUP_DIR/manifest.json"
-```
 
 For a bounded guest startup profile, append the opt-in kernel parameters
 `asterinas.vm_profile=1 asterinas.vm_pagecache_profile=1
