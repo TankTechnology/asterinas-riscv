@@ -99,7 +99,7 @@ from tools.riscv.debian.rootfs.contract import (
     write_manifest,
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
-from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
+from tools.riscv.debian.rootfs.signed_sources import SIGNED_SOURCES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DESKTOP_M5_QEMU_BOOTARGS
 from tools.riscv.debian.rootfs.profiles import get_profile
@@ -1037,7 +1037,7 @@ class BrowserWebContractTests(unittest.TestCase):
                     "inrelease_url": source.inrelease_url,
                     "inrelease_sha256": zero,
                 }
-                for source in M5_SOURCES
+                for source in SIGNED_SOURCES
             ],
             "packages_lock_sha256": zero,
             "downloaded_packages": [
@@ -1503,7 +1503,7 @@ class BrowserWebContractTests(unittest.TestCase):
             self.assertEqual(manifest.downloaded_packages[0][4], "security")
             for mutation in (
                 "schema6-browser-web",
-                "schema7-browser-m5",
+                "schema7-desktop-m5-network",
                 "missing-source-role",
                 "missing-runtime-digest",
                 "malformed-runtime-digest",
@@ -1511,8 +1511,8 @@ class BrowserWebContractTests(unittest.TestCase):
                 forged = copy.deepcopy(payload)
                 if mutation == "schema6-browser-web":
                     forged["schema_version"] = 6
-                elif mutation == "schema7-browser-m5":
-                    forged["profile"] = "browser-m5"
+                elif mutation == "schema7-desktop-m5-network":
+                    forged["profile"] = "desktop-m5-network"
                 elif mutation == "missing-runtime-digest":
                     forged["tool_versions"].pop("browser-web-runtime")
                 elif mutation == "malformed-runtime-digest":
@@ -1585,7 +1585,7 @@ class BrowserWebContractTests(unittest.TestCase):
                 packages_lock=package_lock,
                 inrelease=inrelease,
                 package_checksums=checksums,
-                mirror_url=M5_SOURCES[0].mirror_url,
+                mirror_url=SIGNED_SOURCES[0].mirror_url,
                 suite="trixie",
                 debian_release="13.6",
                 build_timestamp="2026-08-28T00:00:00Z",
@@ -1728,22 +1728,15 @@ class BrowserWebContractTests(unittest.TestCase):
                 )
                 self.assertEqual(completed.stdout, expected)
 
-    def test_m5_profile_keeps_formal_markers_without_debug_console_flood(self) -> None:
+    def test_browser_web_keeps_formal_markers_without_debug_console_flood(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
-        offline_evidence = (ROOTFS / "desktop_m5_evidence.sh").read_text()
         online_evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
         self.assertIn("desktop_standard_output=journal", builder)
         self.assertIn("desktop_standard_error=journal", builder)
         self.assertIn("StandardOutput=$desktop_standard_output", builder)
         self.assertIn("StandardError=$desktop_standard_error", builder)
         self.assertNotIn("systemd.log_level=debug", DESKTOP_M5_QEMU_BOOTARGS)
-        for marker in (
-            "DEBIAN_BROWSER_M5_READY",
-            "DEBIAN_FIREFOX_BAIDU_READY",
-        ):
-            with self.subTest(marker=marker):
-                evidence = offline_evidence if "_M5_" in marker else online_evidence
-                self.assertIn(marker, evidence)
+        self.assertIn("DEBIAN_FIREFOX_BAIDU_READY", online_evidence)
         self.assertIn(
             'readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"',
             online_evidence,

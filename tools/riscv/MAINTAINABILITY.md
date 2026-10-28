@@ -6,13 +6,12 @@ refactoring work is tracked separately.
 
 ## Baseline
 
-- Current baseline after the first Phase 2 removal (parent commit
-  `ce65773aa`).
-- Host modules: **116**
-- Host tests: **2,354**
+- Current baseline after retiring the `browser-m5` profile.
+- Host modules: **115**
+- Host tests: **2,338**
 - Expected environment skips: **13**
-- Production Python files: **165**
-- Production shell files: **81**
+- Production Python files: **164**
+- Production shell files: **76**
 - Top-level shell entrypoints: **10**
 - Original Phase 0 baseline (`origin/main` at `3ceeccd04`):
   123 modules, 2,463 tests, 204 production Python files, 148 production shell
@@ -110,7 +109,7 @@ deletion batch is intentionally small.
 | `desktop-m3`, `desktop-m4` profiles and gate entrypoints | Archive | Keep the shared `desktop_m3_gate.py` helpers and `DESKTOP_M4_MILESTONES`; current physical/debug gates import them. |
 | `desktop-m4-firefox` and `test_riscv_debian_daily_use_gate` | Archive/delete | The Makefile target is broken: it passes empty `--boot-timeout ""` and `--command-timeout ""` to a positive-float parser (`rootfs_gate.py:463-464`). The profile was superseded by `browser-web` on the same day. |
 | `desktop-m5-network` profile, M5 `browser` target | Consolidate | Keep the M5 network service/evidence layer installed by browser-web; only the profile identity and its browser entrypoint are historical. |
-| `browser-m5` profile and QEMU gate | QEMU gate removed; profile pending | The browser-web package set is now inlined and the obsolete gate/test are gone. Keep `browser_m5_marionette_gate.py`, which is current shared Marionette code; the profile itself waits for the signed-source fixture retarget. |
+| `browser-m5` profile and QEMU gate | Removed | The browser-web package set is inlined; the offline video/probe/service assets and browser-m5-only tests are gone. Keep `browser_m5_marionette_gate.py`, which is current shared Marionette code. |
 | `desktop-m9-software` profile and M9 gate | Archive/consolidate | `vim` is already in browser-web; only the ffmpeg smoke has no browser-web equivalent. |
 | M6, M7, M8 gates/services | Consolidate/archive | M6/M7 marker strings are imported by current `megrez_gmac_gate.py` and `megrez_debug_contract.py`; preserve/move those marker assertions before removing the milestone gate. M8 is a thin M9 duplicate. |
 | `tools/riscv/nixos/` except `ltp/` and `build_busybox.sh` | Archive | `ltp_gate.py:631,676,799` hardcodes `nixos/ltp/build_ltp.sh`; `nixos/ltp/build_ltp.sh` needs `nixos/build_busybox.sh`. The rest is the superseded NixOS track. |
@@ -144,7 +143,7 @@ have been moved.
 | `test_debian_m6_browser.py` | 18 | 16 removable; two current marker/debug assertions move to the GMAC/debug tests first. |
 | `test_debian_m7_baidu.py` | 11 | Marker constants are current exports; preserve explicit assertions, then remove the milestone tests. |
 | `test_debian_m9_software.py` | 8 | Remove with `desktop-m9-software`. |
-| `test_debian_browser_m5.py` | 4 | QEMU-gate tests are removed; the remaining admission tests stay with the profile until its signed-source fixtures are retargeted. |
+| `test_debian_browser_m5.py` | 4 | Removed with the browser-m5 offline assets. |
 | `test_debian_m8_browser_quality.py` | 5 | Remove with M8/M9; it currently tests the M9 gate. |
 | `test_debian_desktop_m4_framebuffer_probe.py` + `_rw.py` | 6 + 6 | Remove with the old desktop-m4 profiles; keep shared M4 milestones. |
 | `test_wayland_demo.py` | 1 | Remove with `tools/riscv/wayland`. |
@@ -155,16 +154,16 @@ have been moved.
 
 `test_debian_rootfs.py` contains roughly 30 historical profile/gate tests among
 its 206; split those tests rather than deleting the module. The rest is current
-gate/runtime/stage1 coverage. `test_debian_signed_sources.py` currently uses
-browser-m5 as a fixture; retarget it to browser-web instead of deleting its 27
-tests. The 36 `test_debian_browser_m5_runtime_gate.py` tests cover the current
-shared Marionette library and stay. The desktop-DRM tests and the wider
-DRM/PowerVR cluster (about 153 IDs) stay paused. The aggregate
-`test_riscv_debian_rootfs_unit` target still runs the M6/M7/M8/M9 modules and
-must be trimmed together with those gates.
+gate/runtime/stage1 coverage. `test_debian_signed_sources.py` now uses
+browser-web as its fixture. The 27 remaining
+`test_debian_browser_m5_runtime_gate.py` tests cover the current shared
+Marionette transport and stay until that module is renamed. The desktop-DRM
+tests and the wider DRM/PowerVR cluster (about 153 IDs) stay paused. The
+aggregate `test_riscv_debian_rootfs_unit` target still runs the M6/M7/M8/M9
+modules and must be trimmed together with those gates.
 
-The expected first reduction is 105 IDs to 2,358/112 modules. Moving the M6/M7
-marker subset reduces a further 27 IDs to about 2,331/110-111. The optional
+The browser-m5 retirement reduced 16 IDs to the current 2,338/115. Moving the
+M6/M7 marker subset reduces a further 27 IDs to about 2,311/113-114. The optional
 NixOS-preflight and dual-host work would reduce another 60, leaving about
 2,269/108. `test_suite_baseline.py:16,28` has a historical lower bound of 2,229;
 do not remove LMBench/perf or boot-menu tests in the same batch without

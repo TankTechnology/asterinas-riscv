@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "max_production_python": 165,
-  "max_production_shell": 81,
+  "max_production_python": 164,
+  "max_production_shell": 76,
   "max_top_level_shell": 10,
   "top_level_shell": [
     "build_megrez_sdhci_probe.sh",

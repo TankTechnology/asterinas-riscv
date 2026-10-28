@@ -184,25 +184,6 @@ _PROFILES = {
     ),
 }
 
-_PROFILES["browser-m5"] = RootfsProfile(
-    name="browser-m5",
-    schema_version=6,
-    root_label="ASTER_BROWSERM5",
-    root_uuid="41be8ca6-8168-5ef0-84b1-25824d8f87f5",
-    requested_packages=tuple(
-        package
-        for package in _PROFILES["desktop-m5-network"].requested_packages
-        if package not in {"netsurf-gtk", "xdotool"}
-    )
-    + ("firefox-esr", "python3-minimal"),
-    identity_packages=tuple(
-        package
-        for package in _PROFILES["desktop-m5-network"].identity_packages
-        if package not in {"netsurf-gtk", "xdotool"}
-    )
-    + ("firefox-esr", "python3-minimal"),
-)
-
 BROWSER_WEB_DESKTOP_PACKAGES = (
     "mousepad",
     "ristretto",
@@ -213,9 +194,8 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     "dbus-x11",
 )
 
-# Keep browser-web independent of the historical browser-m5 profile.  These
-# are the same packages browser-m5 used to contribute, with its offline
-# NetSurf admission inputs removed.
+# browser-web keeps its Firefox/network package set explicit so a change in one
+# profile cannot silently alter the current daily image.
 _BROWSER_WEB_BASE_REQUESTED_PACKAGES = tuple(
     package
     for package in _PROFILES["desktop-m5-network"].requested_packages

@@ -477,7 +477,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
         self.assertEqual(manifest.schema_version, 5)
         self.assertEqual(manifest.profile, "desktop-m5-network")
-        payload["profile"] = "browser-m5"
+        payload["profile"] = "browser-web"
         manifest_path.write_text(json.dumps(payload), encoding="utf-8")
         with self.assertRaisesRegex(ContractError, "profile schema version"):
             load_manifest(manifest_path)

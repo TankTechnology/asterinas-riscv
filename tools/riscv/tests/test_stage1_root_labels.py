@@ -40,7 +40,6 @@ PROFILE_NAMES = (
     "minimal",
     "desktop-m5-network",
     "desktop-drm",
-    "browser-m5",
     "browser-web",
 )
 
