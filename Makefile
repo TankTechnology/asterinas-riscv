@@ -642,7 +642,8 @@ test_riscv_dwmac_rx_model:
 test_riscv_megrez_debug_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_first_process_diag_source \
-		tools.riscv.tests.test_megrez_debug \
+		tools.riscv.tests.test_megrez_debug_plan \
+		tools.riscv.tests.test_megrez_debug_board \
 		tools.riscv.tests.test_megrez_debug_desktop \
 		tools.riscv.tests.test_megrez_install_workflow \
 		tools.riscv.tests.test_megrez_preboard -v

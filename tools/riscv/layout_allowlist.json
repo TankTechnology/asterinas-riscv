@@ -10,7 +10,6 @@
     "tools/riscv/tests/test_debian_browser_web.py": 3977,
     "tools/riscv/tests/test_debian_network.py": 3234,
     "tools/riscv/tests/test_megrez_board_session.py": 2069,
-    "tools/riscv/tests/test_megrez_debug.py": 2461,
     "tools/riscv/tests/test_megrez_physical_graphics.py": 2615,
     "tools/riscv/tests/test_qemu_uboot_booti.py": 7706
   }
