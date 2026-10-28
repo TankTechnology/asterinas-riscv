@@ -654,7 +654,8 @@ test_riscv_physical_graphics_unit:
 		python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_physical_graphics_gate \
 		tools.riscv.tests.test_hdmi_pixel_oracle \
-		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_megrez_physical_graphics_plan \
+		tools.riscv.tests.test_megrez_physical_graphics_runs \
 		tools.riscv.tests.test_physical_graphics_qemu_gate -v
 
 .PHONY: test_riscv_firefox_daily_use_physical_unit
@@ -668,7 +669,8 @@ test_riscv_firefox_daily_use_physical_unit:
 		tools.riscv.tests.test_debian_gate \
 		tools.riscv.tests.test_debian_rootfs_builder \
 		tools.riscv.tests.test_debian_stage1 \
-		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_megrez_physical_graphics_plan \
+		tools.riscv.tests.test_megrez_physical_graphics_runs \
 		tools.riscv.tests.test_megrez_firefox_daily_use \
 		tools.riscv.tests.test_megrez_firefox_daily_use_report -v
 
@@ -677,7 +679,8 @@ test_riscv_megrez_boot_stability_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_boot_stability \
 		tools.riscv.tests.test_megrez_rockos_attestation \
-		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_megrez_physical_graphics_plan \
+		tools.riscv.tests.test_megrez_physical_graphics_runs \
 		tools.riscv.tests.test_debian_gate.DebianRootfsGateRuntimeTests -v
 
 .PHONY: test_riscv_megrez_desktop_unit
