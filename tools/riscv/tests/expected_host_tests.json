@@ -1,5 +1,5 @@
 {
-  "commit": "ef677f9e9e3b2ed8a6f0db7df3b8ddfcb9def1a3",
+  "commit": "c73356af4a1b536a984b19f8e198cb473af9543e",
   "module_names": [
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
@@ -1527,6 +1527,8 @@
     "tools.riscv.tests.test_megrez_debian_shell.PersistentShellQemuPermitTests.test_qemu_result_rejects_symlinked_result_or_serial_log",
     "tools.riscv.tests.test_megrez_debian_shell.PersistentShellQemuPermitTests.test_qemu_result_requires_two_sv39_smp4_boots_and_exact_inputs",
     "tools.riscv.tests.test_megrez_debian_shell.PersistentShellQemuPermitTests.test_run_qemu_gate_invalidates_stale_evidence_and_runs_once",
+    "tools.riscv.tests.test_megrez_debug.ArtifactOrderContractTests.test_debug_and_shell_orders_end_with_the_shared_rootfs_set",
+    "tools.riscv.tests.test_megrez_debug.ArtifactOrderContractTests.test_shared_rootfs_artifact_names_are_frozen",
     "tools.riscv.tests.test_megrez_debug.MegrezDebugArtifactTests.test_identity_hashes_one_held_regular_file",
     "tools.riscv.tests.test_megrez_debug.MegrezDebugArtifactTests.test_identity_rejects_a_different_inode_opened_after_lstat",
     "tools.riscv.tests.test_megrez_debug.MegrezDebugArtifactTests.test_identity_rejects_invalid_name_and_address",
@@ -2591,5 +2593,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2455
+  "tests": 2457
 }

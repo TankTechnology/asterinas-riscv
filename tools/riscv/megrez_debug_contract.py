@@ -29,6 +29,10 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.debian.rootfs.profiles import PROFILE_NAMES, get_profile
+from tools.riscv.megrez_contract import (
+    ROOTFS_ARTIFACT_NAMES,
+    ROOTFS_METADATA_ARTIFACT_NAMES,
+)
 
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 METADATA_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -44,17 +48,11 @@ ARTIFACT_ORDER = ("kernel", "initramfs", "qemu_dtb", "megrez_dtb")
 DEBIAN_BROWSER_ARTIFACT_ORDER = (
     *ARTIFACT_ORDER,
     "u_boot",
-    "root_image",
-    "root_manifest",
-    "packages_lock",
-    "package_checksums",
-    "in_release",
+    *ROOTFS_ARTIFACT_NAMES,
 )
 ARTIFACT_NAMES = frozenset(DEBIAN_BROWSER_ARTIFACT_ORDER)
 LOADED_ARTIFACT_NAMES = frozenset(ARTIFACT_ORDER)
-METADATA_ARTIFACT_NAMES = frozenset(
-    ("root_manifest", "packages_lock", "package_checksums", "in_release")
-)
+METADATA_ARTIFACT_NAMES = frozenset(ROOTFS_METADATA_ARTIFACT_NAMES)
 DEBIAN_BROWSER_MARKERS = (
     "ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
     *DESKTOP_M5_MEGREZ_MILESTONES,

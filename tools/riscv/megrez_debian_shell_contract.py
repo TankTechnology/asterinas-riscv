@@ -24,6 +24,10 @@ from tools.riscv.debian.rootfs.contract import (
     validate_frozen_root,
 )
 from tools.riscv.debian.rootfs.profiles import get_profile
+from tools.riscv.megrez_contract import (
+    ROOTFS_ARTIFACT_NAMES,
+    ROOTFS_METADATA_ARTIFACT_NAMES,
+)
 
 
 P2_START_LBA = 0x000F_A022
@@ -36,11 +40,7 @@ SHELL_ARTIFACT_ORDER = (
     "qemu_uboot",
     "qemu_dtb",
     "megrez_dtb",
-    "root_image",
-    "root_manifest",
-    "packages_lock",
-    "package_checksums",
-    "in_release",
+    *ROOTFS_ARTIFACT_NAMES,
 )
 
 _SCHEMA_VERSION = 1
@@ -53,12 +53,7 @@ _ROOT_IMAGE_SIZE_BYTES = get_profile("minimal-m1").root_size_bytes
 _MAX_BOOT_ARTIFACT_SIZE_BYTES = 64 * 1024 * 1024
 _MAX_METADATA_SIZE_BYTES = 8 * 1024 * 1024
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
-_METADATA_ARTIFACTS = {
-    "root_manifest",
-    "packages_lock",
-    "package_checksums",
-    "in_release",
-}
+_METADATA_ARTIFACTS = set(ROOTFS_METADATA_ARTIFACT_NAMES)
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _CRC32_RE = re.compile(r"\A[0-9a-f]{8}\Z")
 _GIT_COMMIT_RE = re.compile(r"\A[0-9a-f]{40}\Z")

@@ -44,6 +44,19 @@ _HASH_CHUNK_SIZE = 1024 * 1024
 _FROZEN_V1_SHA256 = "a0a520b67690f91111a835eb795c0e5e21e3768551bd945454f94c82b7aae5bc"
 
 
+ROOT_IMAGE_ARTIFACT_NAME = "root_image"
+ROOTFS_METADATA_ARTIFACT_NAMES = (
+    "root_manifest",
+    "packages_lock",
+    "package_checksums",
+    "in_release",
+)
+ROOTFS_ARTIFACT_NAMES = (
+    ROOT_IMAGE_ARTIFACT_NAME,
+    *ROOTFS_METADATA_ARTIFACT_NAMES,
+)
+
+
 class ContractError(ValueError):
     """The contract or a manifest violates its strict schema."""
 
