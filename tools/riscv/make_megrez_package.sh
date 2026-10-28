@@ -22,6 +22,8 @@
 #                                      [--initramfs FILE] [--image FILE]
 #
 #   --out DIR         output directory (default: target/megrez-package)
+#   --dtb FILE        also check this board DTB before packaging (see
+#                     megrez_dtb_check.py); a failing check aborts the package
 #   --no-preflight    skip the QEMU U-Boot preflight
 #   --initramfs FILE  use this initramfs instead of building one in a container
 #   --image FILE      use this kernel Image instead of building it
@@ -35,6 +37,7 @@ OUT_DIR="${REPO_ROOT}/target/megrez-package"
 RUN_PREFLIGHT=1
 INITRAMFS=""
 IMAGE=""
+DTB=""
 DEV_IMAGE="${ASTERINAS_DEV_IMAGE:-asterinas/asterinas:0.18.0-20260702}"
 
 while [ $# -gt 0 ]; do
@@ -42,6 +45,7 @@ while [ $# -gt 0 ]; do
         --out) OUT_DIR="$2"; shift 2 ;;
         --no-preflight) RUN_PREFLIGHT=0; shift ;;
         --initramfs) INITRAMFS="$2"; shift 2 ;;
+        --dtb) DTB="$2"; shift 2 ;;
         --image) IMAGE="$2"; shift 2 ;;
         -h|--help) sed -n '4,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -78,12 +82,47 @@ if [ -z "${INITRAMFS}" ]; then
         echo "docker is required to build the initramfs (pass --initramfs to skip)" >&2
         exit 1
     fi
+    # TARGET_ARCH matters: without it the container builds the x86_64
+    # initramfs, whose /init exec fails on the board with
+    # "the ELF file is of a different architecture".
     docker run --rm -v "${REPO_ROOT}:/root/asterinas" -w /root/asterinas "${DEV_IMAGE}" \
-        bash -lc 'make initramfs >/tmp/init.log 2>&1 && cp -f "$(readlink -f test/initramfs/build/initramfs.cpio.gz)" target/megrez/initramfs.cpio.gz' \
+        bash -lc 'make initramfs TARGET_ARCH=riscv64 >/tmp/init.log 2>&1 && cp -f "$(readlink -f test/initramfs/build/initramfs.cpio.gz)" target/megrez/initramfs.cpio.gz' \
         || { echo "initramfs build failed; see the container output above" >&2; exit 1; }
     INITRAMFS="${REPO_ROOT}/target/megrez/initramfs.cpio.gz"
+    python3 - "${INITRAMFS}" <<'PYCHECK' || exit 1
+import gzip, struct, sys
+raw = gzip.open(sys.argv[1], "rb").read()
+offset = 0
+machines = set()
+while offset + 110 <= len(raw) and raw[offset:offset + 6] == b"070701":
+    def field(at):
+        return int(raw[offset + at:offset + at + 8], 16)
+    size, name_size = field(54), field(94)
+    offset += 110
+    name = raw[offset:offset + name_size - 1].decode("utf-8", "replace")
+    offset += name_size
+    offset = (offset + 3) & ~3
+    data = raw[offset:offset + size]
+    offset = (offset + size + 3) & ~3
+    if data[:4] == b"\x7fELF" and len(data) >= 20:
+        machines.add(struct.unpack_from("<H", data, 18)[0])
+if not machines:
+    sys.exit("initramfs contains no ELF binaries; wrong initramfs?")
+if machines != {243}:  # EM_RISCV
+    sys.exit(f"initramfs ELF machine(s) {sorted(machines)} != RISC-V (243); "
+             "build it with TARGET_ARCH=riscv64")
+print(f"  initramfs ELF machine(s): {sorted(machines)} (RISC-V)")
+PYCHECK
 fi
 [ -f "${INITRAMFS}" ] || { echo "no initramfs at ${INITRAMFS}" >&2; exit 1; }
+
+if [ -n "${DTB}" ]; then
+    echo "== [3/5] board DTB check =="
+    # Runs before packaging: a DTB the kernel cannot boot with makes the
+    # package useless, so it stops here.
+    python3 tools/riscv/megrez_dtb_check.py "${DTB}" --verbose \
+        || { echo "board DTB check failed; not packaging" >&2; exit 1; }
+fi
 
 echo "== [3/5] packaging into ${OUT_DIR} =="
 mkdir -p "${OUT_DIR}"
