@@ -91,6 +91,28 @@ families and their test-only scaffolding:
 Evidence under `docs/porting/evidence/` and historical reports remain intact.
 The archived material is indexed in `tools/riscv/archive/README.md`.
 
+## Minimal keep set
+
+The current product path does not need every historical acceptance script.
+Keep these entrypoint families:
+
+- `build_rootfs.sh` and `build_stage1.sh` with the profile/contract/gate
+  libraries they import.
+- `browser_web_qemu_gate.py`, the browser-web contract/Marionette/evidence
+  modules, and the guest scripts installed by the rootfs builder.
+- `megrez_debian_install.py`, `megrez_installer.py`, the board-session,
+  persistent-shell, boot-menu, xmodem, clock, DNS, and safe-reboot modules.
+- `physical_graphics_gate.py`, `physical_graphics_qemu_gate.py`,
+  `debug_console_qemu_gate.py`, and the current QEMU/U-Boot gate modules.
+- `host_test_runner.py`, the test support package, and the LTP/perf core.
+- The paused `drm/` module set remains frozen until GPU work resumes.
+
+One-off Firefox/dmesg diagnostics, standalone probe tools, SDHCI probes,
+thread/video samplers, and QEMU GDB samplers are archived under
+`tools/riscv/archive/`. An acceptance or debug script is no longer kept merely
+because a historical test or report cited it; it must be reachable from one of
+the entrypoint families above.
+
 ## Remaining optional structure work
 
 The remaining maintenance cost is production-file size, not obsolete product
