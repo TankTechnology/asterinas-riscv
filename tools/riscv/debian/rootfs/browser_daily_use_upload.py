@@ -22,6 +22,10 @@ from urllib.parse import urlsplit
 if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     sys.path.insert(0, "/run/asterinas-tools")
     from browser_daily_use_contract import (  # type: ignore[import-not-found]
+        DAILY_USE_CHECKPOINT_ARTIFACT,
+        DAILY_USE_COMPONENT_ARTIFACTS,
+        DAILY_USE_PHASES,
+        DAILY_USE_RESULT_ARTIFACT,
         FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
@@ -30,6 +34,10 @@ if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     )
 else:
     from tools.riscv.debian.rootfs.browser_daily_use_contract import (
+        DAILY_USE_CHECKPOINT_ARTIFACT,
+        DAILY_USE_COMPONENT_ARTIFACTS,
+        DAILY_USE_PHASES,
+        DAILY_USE_RESULT_ARTIFACT,
         FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
@@ -41,16 +49,9 @@ else:
 SCHEMA_VERSION = 1
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES = MAX_ARTIFACT_BYTES
-COMPONENT_NAMES = (
-    "browser-fixture-capture.json",
-    "browser-local-capture.json",
-    "browser-context-switch.json",
-    "browser-composite-capture.json",
-    "browser-system-time.json",
-    "browser-thread-time.json",
-)
-RESULT_NAME = "browser-daily-use-result.json"
-CHECKPOINT_NAME = "browser-daily-use-checkpoint.json"
+COMPONENT_NAMES = DAILY_USE_COMPONENT_ARTIFACTS
+RESULT_NAME = DAILY_USE_RESULT_ARTIFACT
+CHECKPOINT_NAME = DAILY_USE_CHECKPOINT_ARTIFACT
 SUCCESS_ARTIFACT_NAMES = (*COMPONENT_NAMES, RESULT_NAME)
 FAILURE_ARTIFACT_NAMES = (CHECKPOINT_NAME,)
 _RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
@@ -64,20 +65,7 @@ _CHECKPOINT_FIELDS = frozenset(
 )
 _FAILURE_FIELDS = frozenset({"type", "reason"})
 _FUNCTION_GROUP_FIELDS = frozenset({"name", "state", "reason"})
-_PHASES = (
-    "session",
-    "samplers-ready",
-    "fixture",
-    "local-timing",
-    "context-switch",
-    "composite",
-    "samplers-stopped",
-    "cleanup",
-    "identities",
-    "coverage",
-    "artifacts",
-    "validated",
-)
+_PHASES = DAILY_USE_PHASES
 class EvidenceBundleError(ValueError):
     """A daily-use upload bundle or source artifact violates its contract."""
 
