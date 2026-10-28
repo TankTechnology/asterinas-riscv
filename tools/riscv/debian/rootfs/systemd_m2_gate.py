@@ -14,6 +14,7 @@ from typing import Any, Callable, Mapping, Protocol
 from tools.riscv.debian.rootfs.gate_protocol import (
     classify_systemd_m2,
     qemu_argv,
+    systemd_bootargs,
 )
 from tools.riscv.debian.rootfs.gate_runtime import (
     GateTermination,
@@ -31,9 +32,9 @@ from tools.riscv.debian.rootfs.rootfs_gate_backend import (
 from tools.riscv.debian.rootfs.contract import load_manifest
 
 
-SYSTEMD_M2_BOOTARGS = "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd"
-SYSTEMD_EXT4_M3_BOOTARGS = (
-    "console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd"
+SYSTEMD_M2_BOOTARGS = systemd_bootargs()
+SYSTEMD_EXT4_M3_BOOTARGS = systemd_bootargs(
+    init_args=("--root-fs=ext4", "--root-init=systemd")
 )
 
 

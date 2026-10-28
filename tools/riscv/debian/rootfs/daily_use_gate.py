@@ -34,6 +34,7 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import desktop_m5_qemu_argv
 from tools.riscv.debian.rootfs.gate_protocol import (
     MAX_COMMAND_PAYLOAD_BYTES,
     GateResult,
+    systemd_bootargs,
 )
 from tools.riscv.debian.rootfs.gate_runtime import TerminationSignalState
 from tools.riscv.debian.rootfs.rootfs_gate import (
@@ -51,9 +52,8 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import (
 
 
 PROFILE_NAME = "desktop-m4-firefox"
-DAILY_USE_BOOTARGS = (
-    "console=ttyS0 loglevel=4 init=/init systemd.unit=multi-user.target "
-    "-- --root-init=systemd"
+DAILY_USE_BOOTARGS = systemd_bootargs(
+    post_init=("systemd.unit=multi-user.target",)
 )
 NONCE_PATH = "/home/asterinas/daily-use-nonce"
 APT_TIMEOUT_SECONDS = 600.0
