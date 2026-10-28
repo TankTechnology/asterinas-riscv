@@ -40,6 +40,9 @@ from tools.riscv.megrez_physical_graphics import (
     _read_plan,
     physical_bootargs,
 )
+from tools.riscv.physical_boot_contract import (
+    desktop_start_bootargs as _desktop_start_bootargs,
+)
 
 
 BUNDLE_SCHEMA_VERSION = 1
@@ -524,17 +527,7 @@ class DesktopPublisher(Protocol):
 def desktop_start_bootargs(plan: Any) -> str:
     """Derive a local, read-only desktop boot without an automatic reboot."""
 
-    excluded = (
-        "asterinas.net=",
-        "asterinas.neighbor=",
-        "asterinas.reboot_after=",
-        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_",
-    )
-    return " ".join(
-        token
-        for token in physical_bootargs(plan).split()
-        if not token.startswith(excluded)
-    )
+    return _desktop_start_bootargs(physical_bootargs(plan))
 
 
 def _elapsed_seconds(clock: Callable[[], float], start: float) -> float:

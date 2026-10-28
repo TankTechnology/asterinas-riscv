@@ -41,6 +41,9 @@ from tools.riscv.megrez_physical_graphics import (
     _safe_output_directory,
     physical_bootargs,
 )
+from tools.riscv.physical_boot_contract import (
+    boot_stability_bootargs as _boot_stability_bootargs,
+)
 
 
 BOOT_STABILITY_CYCLES = 3
@@ -599,16 +602,7 @@ class _FatalDiagnosticsError(HostGateError):
 def boot_stability_bootargs(plan: Any) -> str:
     """Removes network activation and fixture inputs from the physical boot."""
 
-    excluded = (
-        "asterinas.net=",
-        "asterinas.neighbor=",
-        "systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_",
-    )
-    return " ".join(
-        token
-        for token in physical_bootargs(plan).split()
-        if not token.startswith(excluded)
-    )
+    return _boot_stability_bootargs(physical_bootargs(plan))
 
 
 def contains_fatal_diagnostics(payload: bytes) -> bool:
