@@ -9,7 +9,13 @@ import copy
 import math
 import unittest
 
+from tools.riscv.debian.rootfs import browser_daily_use_gate as daily_gate
+from tools.riscv.debian.rootfs import browser_daily_use_upload as daily_upload
 from tools.riscv.debian.rootfs.browser_daily_use_contract import (
+    DAILY_USE_CHECKPOINT_ARTIFACT,
+    DAILY_USE_COMPONENT_ARTIFACTS,
+    DAILY_USE_PHASES,
+    DAILY_USE_RESULT_ARTIFACT,
     FUNCTION_GROUPS,
     OPTIONAL_FUNCTION_GROUPS,
     PERFORMANCE_CATEGORIES,
@@ -22,6 +28,57 @@ from tools.riscv.debian.rootfs.browser_daily_use_contract import (
 
 
 RUN_ID = "0123456789abcdef0123456789abcdef"
+
+
+class DailyUseOwnerContractTests(unittest.TestCase):
+    def test_phase_and_artifact_owner_values_are_frozen(self) -> None:
+        self.assertEqual(
+            DAILY_USE_PHASES,
+            (
+                "session",
+                "samplers-ready",
+                "fixture",
+                "local-timing",
+                "context-switch",
+                "composite",
+                "samplers-stopped",
+                "cleanup",
+                "identities",
+                "coverage",
+                "artifacts",
+                "validated",
+            ),
+        )
+        self.assertEqual(
+            DAILY_USE_COMPONENT_ARTIFACTS,
+            (
+                "browser-fixture-capture.json",
+                "browser-local-capture.json",
+                "browser-context-switch.json",
+                "browser-composite-capture.json",
+                "browser-system-time.json",
+                "browser-thread-time.json",
+            ),
+        )
+        self.assertEqual(DAILY_USE_RESULT_ARTIFACT, "browser-daily-use-result.json")
+        self.assertEqual(
+            DAILY_USE_CHECKPOINT_ARTIFACT, "browser-daily-use-checkpoint.json"
+        )
+
+    def test_gate_and_upload_consume_the_shared_owner(self) -> None:
+        self.assertEqual(daily_gate.PHASES, DAILY_USE_PHASES)
+        self.assertEqual(daily_gate.ARTIFACT_NAMES, DAILY_USE_COMPONENT_ARTIFACTS)
+        self.assertEqual(daily_gate.RESULT_NAME, DAILY_USE_RESULT_ARTIFACT)
+        self.assertEqual(
+            daily_gate.CHECKPOINT_NAME, DAILY_USE_CHECKPOINT_ARTIFACT
+        )
+        self.assertEqual(daily_upload.COMPONENT_NAMES, DAILY_USE_COMPONENT_ARTIFACTS)
+        self.assertEqual(daily_upload.RESULT_NAME, DAILY_USE_RESULT_ARTIFACT)
+        self.assertEqual(
+            daily_upload.CHECKPOINT_NAME, DAILY_USE_CHECKPOINT_ARTIFACT
+        )
+        self.assertEqual(daily_upload._PHASES, DAILY_USE_PHASES)
+
 
 
 def complete_result() -> dict[str, object]:

@@ -18,6 +18,10 @@ import threading
 import unittest
 from unittest import mock
 
+from tools.riscv.debian.rootfs.browser_daily_use_contract import (
+    DAILY_USE_COMPONENT_ARTIFACTS,
+    DAILY_USE_RESULT_ARTIFACT,
+)
 from tools.riscv.tests.test_browser_daily_use_contract import (
     complete_result,
     set_group,
@@ -26,15 +30,8 @@ from tools.riscv.tests.test_browser_daily_use_contract import (
 
 EXPERIMENT_ID = "fedcba9876543210fedcba9876543210"
 GATE_RUN_ID = "0123456789abcdef0123456789abcdef"
-COMPONENT_NAMES = (
-    "browser-fixture-capture.json",
-    "browser-local-capture.json",
-    "browser-context-switch.json",
-    "browser-composite-capture.json",
-    "browser-system-time.json",
-    "browser-thread-time.json",
-)
-RESULT_NAME = "browser-daily-use-result.json"
+COMPONENT_NAMES = DAILY_USE_COMPONENT_ARTIFACTS
+RESULT_NAME = DAILY_USE_RESULT_ARTIFACT
 SUCCESS_NAMES = (*COMPONENT_NAMES, RESULT_NAME)
 
 

@@ -34,6 +34,31 @@ PERFORMANCE_CATEGORIES = (
     "context-switch",
 )
 
+DAILY_USE_PHASES = (
+    "session",
+    "samplers-ready",
+    "fixture",
+    "local-timing",
+    "context-switch",
+    "composite",
+    "samplers-stopped",
+    "cleanup",
+    "identities",
+    "coverage",
+    "artifacts",
+    "validated",
+)
+DAILY_USE_COMPONENT_ARTIFACTS = (
+    "browser-fixture-capture.json",
+    "browser-local-capture.json",
+    "browser-context-switch.json",
+    "browser-composite-capture.json",
+    "browser-system-time.json",
+    "browser-thread-time.json",
+)
+DAILY_USE_RESULT_ARTIFACT = "browser-daily-use-result.json"
+DAILY_USE_CHECKPOINT_ARTIFACT = "browser-daily-use-checkpoint.json"
+
 MAX_DURATION_MS = 3_600_000.0
 MAX_ARTIFACTS = 16
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
