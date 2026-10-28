@@ -55,12 +55,15 @@ from tools.riscv.megrez_debug_board import (
 from tools.riscv.megrez_debug_contract import DebugPlan
 from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
 from tools.riscv.hdmi_pixel_oracle import PixelComparison, PixelMismatch, compare_hdmi_pixels
+from tools.riscv.physical_boot_contract import (
+    PHYSICAL_REBOOT_AFTER,
+    physical_bootargs as _physical_bootargs,
+)
 
 
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 MAX_HDMI_BYTES = 64 * 1024 * 1024
 MAX_GUEST_SCREENSHOT_BYTES = 512 * 1024
-PHYSICAL_REBOOT_AFTER = 1140
 PHYSICAL_REBOOT_HEADROOM = 30.0
 # The non-JIT physical Firefox image has repeatedly needed 355--467 seconds
 # for WebDriver:NewSession. Keep a bounded margin above the measured tail.
@@ -712,27 +715,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         raise HostGateError("plan root-init arguments are not canonical")
     if tokens[:separator].count("init=/init") != 1:
         raise HostGateError("plan must contain one stage1 init selector")
-    physical = (
-        "console=tty0",
-        "loglevel=off",
-        "asterinas.klog_capture=info",
-        "init=/init",
-        "asterinas.mmc_write_partition2",
-        f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
-        "systemd.mask=asterinas-browser-web-evidence.service",
-        "systemd.mask=asterinas-desktop-m5-network.service",
-        "systemd.mask=serial-getty@ttyS0.service",
-        "systemd.mask=console-getty.service",
-        "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
-        "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
-        "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
-        "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=9",
-        "--",
-        "--root-init=systemd",
-        "--debug-console=isolated-root",
-        "--volatile-home",
-    )
-    return " ".join(physical)
+    return _physical_bootargs()
 
 
 def physical_preflight_command() -> str:
