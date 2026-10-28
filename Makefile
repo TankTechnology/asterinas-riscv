@@ -785,6 +785,7 @@ test_riscv_megrez_install_unit:
 		python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debian_installer \
 		tools.riscv.tests.test_megrez_board_session \
+		tools.riscv.tests.test_megrez_board_session_contract \
 		tools.riscv.tests.test_megrez_install_workflow -v
 
 .PHONY: test_riscv_megrez_debug_fast
