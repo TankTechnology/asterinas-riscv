@@ -334,13 +334,18 @@ class DrmVirglGuestProbeTests(unittest.TestCase):
                 try:
                     assert process.stdout is not None
                     output = b""
-                    deadline = time.monotonic() + 2.0
-                    while output.count(b"\n") < 2:
+                    deadline = time.monotonic() + 5.0
+                    # The fake emits several report lines before READY; a fixed
+                    # newline count is racy under a loaded parallel suite.  Wait
+                    # for the lifecycle's documented completion marker instead.
+                    while READY_MARKER not in output:
                         readable, _, _ = select.select(
                             [process.stdout], [], [], max(0.0, deadline - time.monotonic())
                         )
                         self.assertTrue(readable, "virgl marker timed out")
-                        output += os.read(process.stdout.fileno(), 4096)
+                        chunk = os.read(process.stdout.fileno(), 4096)
+                        self.assertTrue(chunk, "virgl process closed before READY")
+                        output += chunk
                     lines = output.decode().splitlines()
                     self.assertEqual(lines[-1], READY_MARKER.decode())
                     # The lifecycle fake is a virgl host, so the report the
