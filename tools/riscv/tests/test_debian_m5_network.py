@@ -438,6 +438,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             m5.requested_packages,
             tuple(
                 sorted(
+                    # xdotool is already part of the M4 requested set.
                     m4.requested_packages
                     + (
                         "curl",
@@ -446,18 +447,29 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                         "iputils-ping",
                         "polkitd",
                         "x11-apps",
-                        "xdotool",
                     )
                 )
             ),
         )
+        # Package order is not part of the identity contract; xdotool and the
+        # desktop base may appear in a different position than the M4 list.
         self.assertEqual(
-            m5.identity_packages,
-            m4.identity_packages
-            + ("curl", "iproute2", "iputils-ping", "xdotool", "x11-apps"),
+            sorted(m5.identity_packages),
+            sorted(
+                m4.identity_packages
+                + ("curl", "iproute2", "iputils-ping", "x11-apps")
+            ),
         )
         self.assertIn("fonts-wqy-microhei", m5.requested_packages)
         self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)
+
+    def test_browser_web_profile_carries_daily_tools(self) -> None:
+        profile = get_profile("browser-web")
+        for package in ("vim", "build-essential"):
+            self.assertIn(package, profile.requested_packages)
+            self.assertIn(package, profile.identity_packages)
+        self.assertEqual(profile.root_size_bytes, 3 * 1024 * 1024 * 1024)
+        self.assertEqual(profile.root_label, "ASTER_BROWSERWEB")
 
     def test_manifest_parser_accepts_only_the_m5_profile_for_schema_five(self) -> None:
         profile = get_profile("desktop-m5-network")
@@ -2531,13 +2543,21 @@ drop_unsupported_sysctl_files "$2"
         self.assertIn("10-coredump-debian.conf", builder)
         self.assertIn("50-pid-max.conf", builder)
 
-    def test_dns_shim_unit_is_oneshot_and_does_not_loop(self) -> None:
+    def test_dns_shim_unit_fails_fast_without_a_forwarder(self) -> None:
         source = BUILD_SCRIPT.read_text(encoding="utf-8")
         block = source[source.index("asterinas-dns-shim.service"):]
         block = block[: block.index("[Install]")]
-        self.assertIn("Type=oneshot", block)
+        # Main keeps the shim long-lived, but skips it when no forwarder is
+        # configured and treats exit 1/3 as explicit inactive states.  There is
+        # no Restart=always loop.
+        self.assertIn("Type=simple", block)
         self.assertIn("Restart=no", block)
+        self.assertIn(
+            "ExecCondition=/bin/sh -c 'test -n \"${ASTERINAS_DESKTOP_DNS_HOST:-}\"'",
+            block,
+        )
         self.assertIn("SuccessExitStatus=1 3", block)
+        self.assertNotIn("Type=oneshot", block)
         self.assertNotIn("Restart=always", block)
         self.assertNotIn("RestartPreventExitStatus", block)
 

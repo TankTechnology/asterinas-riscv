@@ -1070,7 +1070,9 @@ class BrowserWebContractTests(unittest.TestCase):
         profile = get_profile("browser-web")
         self.assertEqual(profile.schema_version, 7)
         self.assertEqual(profile.root_label, "ASTER_BROWSERWEB")
-        self.assertEqual(profile.root_size_bytes, 2 * 1024 * 1024 * 1024)
+        # The single daily image keeps a 3 GiB root; the milestone images
+        # retain their 2 GiB size.
+        self.assertEqual(profile.root_size_bytes, 3 * 1024 * 1024 * 1024)
         for package in (
             "firefox-esr",
             "python3-minimal",
