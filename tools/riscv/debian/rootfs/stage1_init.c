@@ -1236,7 +1236,11 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             (mount("devpts", "/newroot/dev/pts", "devpts", 0, NULL) != 0 &&
              errno != EBUSY) ||
             (symlink("pts/ptmx", "/newroot/dev/ptmx") != 0 &&
-             errno != EEXIST)) {
+             errno != EEXIST) ||
+            ensure_directory("/newroot/dev/shm") != 0 ||
+            (mount("tmpfs", "/newroot/dev/shm", "tmpfs", 0, NULL) != 0 &&
+             errno != EBUSY) ||
+            chmod("/newroot/dev/shm", 01777) != 0) {
             return -1;
         }
         result = 0;

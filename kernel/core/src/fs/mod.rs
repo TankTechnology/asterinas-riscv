@@ -55,6 +55,7 @@ pub(crate) fn init_in_first_process(ctx: &Context) {
             )
             .unwrap();
         crate::device::pty::init_in_first_process(&path_resolver, ctx).unwrap();
+        crate::device::shm::init_in_first_process(&path_resolver, ctx).unwrap();
     }
 
     // Initialize the file table for the first process.
