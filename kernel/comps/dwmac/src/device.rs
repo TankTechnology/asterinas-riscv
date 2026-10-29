@@ -401,6 +401,12 @@ impl DwmacDevice {
             .map_err(DeviceError::Platform)
     }
 
+    /// Dumps the MAC/MTL/DMA state machines for datapath debugging.
+    ///
+    /// This fires on every RX progress report, so it is debug-level: the board
+    /// boots with `loglevel=info`, which keeps a demo console quiet without
+    /// losing the snapshot when the link is actually being diagnosed
+    /// (`loglevel=debug`).
     fn log_hardware_state(&self, stage: &str) {
         let registers = (
             self.read(MAC_DEBUG.offset()),
@@ -410,12 +416,12 @@ impl DwmacDevice {
         );
         let (Ok(mac_debug), Ok(mtl_rx_debug), Ok(dma_debug), Ok(mtl_queue_interrupt)) = registers
         else {
-            ostd::info!("ASTERINAS_GMAC_HW_STATE stage={} read_failure=true", stage);
+            ostd::debug!("ASTERINAS_GMAC_HW_STATE stage={} read_failure=true", stage);
             return;
         };
         let state =
             decode_flow_control_debug(mac_debug, mtl_rx_debug, dma_debug, mtl_queue_interrupt);
-        ostd::info!(
+        ostd::debug!(
             "ASTERINAS_GMAC_HW_STATE stage={} mac_debug={:#010x} mtl_rx_debug={:#010x} dma_debug={:#010x} mtl_irq={:#010x} mac_tx_state={} mac_tx_active={} mac_rx_fifo_state={} mac_rx_active={} mtl_rx_packets={} mtl_rx_fill={} mtl_rx_read_state={} mtl_rx_write_active={} dma_tx_state={} dma_rx_state={} mtl_rx_overflow={}",
             stage,
             mac_debug,
