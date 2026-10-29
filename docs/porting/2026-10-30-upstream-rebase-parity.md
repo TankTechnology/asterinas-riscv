@@ -16,6 +16,8 @@ is green.
 - Direct Debian rootfs boot with real toolchain checks (gcc compile/run,
   Python, Node, git).
 - Non-root dsh headless turn, including a C compile/run through the bash tool.
+  The non-root dsh web server also starts (UID 1000), publishes its token URL,
+  and serves the authenticated UI with HTTP 200.
 - Guest networking through QEMU slirp: virtio-net 10-byte header fix, port-0
   privilege fix, non-root HTTP and API access.
 - Minimal Stage1 devtmpfs/cgroup2 handoff.
@@ -65,7 +67,7 @@ is green.
 | RISC-V board boot | Image header, raw Image sidecar, and DT `simple-framebuffer` parsing are implemented; QEMU raw gate passes, U-Boot `booti` reaches userspace, and the manual bochs-display boot reaches the desktop | EIC7700 cache/PCIe glue, a repository-level U-Boot desktop scenario with networking |
 | Megrez drivers | Not ported | DW APB UART, SDHCI/MMC, DWMAC, USB xHCI/HID, watchdog |
 | Desktop/Firefox | Xorg fbdev accepts the framebuffer; openbox/pcmanfm/lxpanel render, and Firefox maps its New Tab window. The browser helper path and trust contract are fixed | Online navigation workload, input/keyboard gate, repository-level desktop gate |
-| dsh | Headless non-root and C build verified | dsh web non-root, launcher PATH/service, reproducible asset provenance |
+| dsh | Non-root headless turn, C compile/run, and non-root web UI (UID 1000, HTTP 200) are verified | Launcher PATH/service integration and reproducible asset provenance |
 | Host tests/gates | Not ported | Runner, expected baseline, rootfs/board/browser unit gates |
 
 ## Explicitly out of scope
