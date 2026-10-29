@@ -108,6 +108,27 @@ is green.
 | dsh | Non-root headless turn, C compile/run, and non-root web UI (UID 1000, HTTP 200) are verified | Launcher PATH/service integration and reproducible asset provenance |
 | Host tests/gates | Kernel ktests run on the rebased line (aster-core: 147 passed); the downstream host suite is not ported | Runner, expected baseline, rootfs/board/browser unit gates |
 
+
+## Local build environment (QEMU/U-Boot)
+
+- Kernel: build `cargo-osdk` from the rebased `osdk/` source (0.19) and run
+  `cargo osdk build --target-arch riscv64 --scheme riscv --boot-method
+  vmm-direct` from `kernel/`. The `--scheme riscv` option is required: a plain
+  build uses GRUB and does not emit `target/osdk/asterinas-osdk-bin.Image`.
+  The image is the RISC-V Linux Image consumed by `booti`; the stripped boot
+  ELF lives in `target/osdk/asterinas/asterinas-osdk-bin.elf`.
+- Use `RUSTUP_TOOLCHAIN=nightly-2026-07-21-x86_64-unknown-linux-gnu` and an
+  explicit HTTP(S) proxy for Cargo in the local build container. The container's
+  stock OSDK 0.18 cannot parse `vmm-direct`.
+- Stage1: build with `tools/riscv/debian/rootfs/build_stage1.sh` using the
+  `codex/asterinas-cross-builder:aa6f7533` image (riscv64-linux-gnu-gcc with a
+  static libc). The host Nix cross compiler alone is missing the static
+  riscv64 libc.
+- The manual U-Boot boot disk combines the Image, the Stage1 initramfs, and the
+  `fb-bochs.dtb` (`simple-framebuffer` at 0x40000000, 1280x1024). The U-Boot
+  binary is the cached one from the old tree's
+  `target/qemu-uboot/cache/u-boot-build/u-boot`.
+
 ## Explicitly out of scope
 
 The paused PowerVR/GPU acceleration line and its physical GPU probes are not
