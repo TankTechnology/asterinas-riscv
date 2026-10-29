@@ -13,10 +13,13 @@ pub(super) struct VirtioNetHdr {
     gso_size: u16,
     csum_start: u16,
     csum_offset: u16,
-    num_buffers: u16, // Only if PCI is modern or VIRTIO_NET_F_MRG_RXBUF negotiated
-                      // hash_value: u32,        // Only if VIRTIO_NET_F_HASH_REPORT negotiated
-                      // hash_report: u16,       // Only if VIRTIO_NET_F_HASH_REPORT negotiated
-                      // padding_reserved: u16,  // Only if VIRTIO_NET_F_HASH_REPORT negotiated
+    // `num_buffers` is present only when VIRTIO_NET_F_MRG_RXBUF is negotiated.
+    // The driver does not advertise that feature, so the wire header is the
+    // 10-byte base header.  Keeping a 12-byte header here makes QEMU strip
+    // only ten bytes and deliver a two-byte-shifted Ethernet frame.
+    // hash_value: u32,        // Only if VIRTIO_NET_F_HASH_REPORT negotiated
+    // hash_report: u16,       // Only if VIRTIO_NET_F_HASH_REPORT negotiated
+    // padding_reserved: u16,  // Only if VIRTIO_NET_F_HASH_REPORT negotiated
 }
 
 bitflags! {
