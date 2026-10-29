@@ -142,6 +142,16 @@ impl ProcDirOps for NsDirOps {
     }
 
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
+        if name == "net" {
+            if self.dir.thread().is_none() {
+                return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
+            }
+            return Ok(NetNsSymOps::new_inode(
+                self.dir.clone(),
+                this_dir.this_weak().clone(),
+            ));
+        }
+
         if name == "user" {
             let Some(process) = self.dir.process() else {
                 return_errno_with_message!(Errno::ESRCH, "the process does not exist");
@@ -194,9 +204,14 @@ impl ProcDirOps for NsDirOps {
                     .map(|entry| ListedEntry::new(entry.as_str(), InodeType::SymLink))
             });
 
+        let net_entry = Some(ListedEntry::new("net", InodeType::SymLink)).into_iter();
         let user_entry = Some(ListedEntry::new("user", InodeType::SymLink)).into_iter();
 
-        visit_listed_entries(offset, ns_proxy_entries.chain(user_entry), visit_fn)
+        visit_listed_entries(
+            offset,
+            ns_proxy_entries.chain(net_entry).chain(user_entry),
+            visit_fn,
+        )
     }
 
     fn revalidation_policy(&self) -> RevalidationPolicy {
@@ -206,6 +221,10 @@ impl ProcDirOps for NsDirOps {
     }
 
     fn revalidate_exists(&self, _name: &str, child: &dyn Inode) -> bool {
+        if child.downcast_ref::<ProcSym<NetNsSymOps>>().is_some() {
+            return self.dir.thread().is_some();
+        }
+
         let Some(cached_path) = cached_ns_path(child) else {
             return false;
         };
@@ -279,5 +298,31 @@ impl<T: NsCommonOps> ProcSymOps for NsSymOps<T> {
 
     fn read_link(&self) -> Result<SymbolicLink> {
         Ok(SymbolicLink::Path(self.ns_path.clone()))
+    }
+}
+
+/// The single kernel network namespace exposed as `/proc/[pid]/ns/net`.
+///
+/// Asterinas currently has one global network namespace. Linux represents a
+/// namespace symlink as `net:[inode]`; use a stable synthetic inode so
+/// namespace-equality checks (including the Firefox gate) can compare the
+/// readlink result while network namespaces remain unimplemented.
+struct NetNsSymOps {
+    dir: TidDirOps,
+}
+
+impl NetNsSymOps {
+    fn new_inode(dir: TidDirOps, parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+        ProcSym::new(Self { dir }, parent, mkmod!(a+rwx))
+    }
+}
+
+impl ProcSymOps for NetNsSymOps {
+    fn owner_thread(&self) -> Option<Arc<Thread>> {
+        self.dir.thread()
+    }
+
+    fn read_link(&self) -> Result<SymbolicLink> {
+        Ok(SymbolicLink::Plain("net:[4026532000]".into()))
     }
 }
