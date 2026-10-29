@@ -3,6 +3,7 @@
 //! The RISC-V boot module defines the entrypoints of Asterinas.
 
 pub(crate) mod smp;
+mod simple_framebuffer;
 
 use core::arch::global_asm;
 
@@ -49,8 +50,7 @@ fn parse_acpi_arg() -> BootloaderAcpiArg {
 }
 
 fn parse_framebuffer_info() -> Option<BootloaderFramebufferArg> {
-    // TODO: Parse framebuffer info from device tree.
-    None
+    simple_framebuffer::parse(DEVICE_TREE.get().unwrap())
 }
 
 fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {
@@ -97,6 +97,13 @@ fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {
                 }
             }
         }
+    }
+
+    // Keep the firmware scanout buffer out of the physical frame allocator.
+    if let Some(framebuffer) = parse_framebuffer_info() {
+        regions
+            .push(MemoryRegion::framebuffer(&framebuffer))
+            .unwrap();
     }
 
     // Add the kernel region.

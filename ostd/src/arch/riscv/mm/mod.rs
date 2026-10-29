@@ -231,6 +231,11 @@ impl PageTableEntry {
 
         let cache = if self.0 & PteFlags::PBMT_IO.bits() != 0 {
             CachePolicy::Uncacheable
+        } else if self.0 & PteFlags::PBMT_NC.bits() != 0 {
+            // PBMT_NC is the RISC-V approximation of x86 write-combining:
+            // non-cacheable, idempotent, weakly-ordered main memory. The
+            // reverse mapping keeps the PTE round-trip lossless.
+            CachePolicy::WriteCombining
         } else {
             CachePolicy::Writeback
         };
@@ -276,6 +281,15 @@ impl PageTableEntry {
                 // PBMT should be set to `PBMT_NC`.
                 if has_extensions(IsaExtensions::SVPBMT) {
                     flags |= PteFlags::PBMT_IO.bits()
+                }
+            }
+            CachePolicy::WriteCombining => {
+                // RISC-V has no direct write-combining memory type. PBMT_NC
+                // (non-cacheable, idempotent, weakly-ordered main memory) is
+                // the closest Svpbmt equivalent of x86 PAT write-combining
+                // and is what the framebuffer component requests.
+                if has_extensions(IsaExtensions::SVPBMT) {
+                    flags |= PteFlags::PBMT_NC.bits()
                 }
             }
             _ => panic!("unsupported cache policy"),
