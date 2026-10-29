@@ -38,6 +38,20 @@ is green.
   Under the Stage1 systemd handoff, systemd-journald reaches
   `active (running)`, and both `multi-user.target` and `graphical.target`
   are reached.
+- The RISC-V kernel parses a DT `simple-framebuffer` node, reserves it, and
+  maps it write-combining (`PBMT_NC`). The framebuffer is exposed through the
+  graphics class (`/sys/class/graphics/fb0/device/subsystem`) with
+  `FB_VISUAL_TRUECOLOR`, which is what Xorg's fbdev driver requires.
+- Manual U-Boot boot with a bochs display and the `fb-bochs.dtb` reaches the
+  full desktop: Xorg accepts `/dev/fb0` at 1280x1024, then openbox, pcmanfm,
+  and lxpanel start. Both the desktop wallpaper/icons/panel and a Firefox
+  `about:blank` window were captured from the QEMU display. The browser unit
+  intentionally exits 64 when no network mode is configured; with
+  `systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct` (and the basic-only
+  profile) Firefox launches and maps its window. Evidence is under
+  `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-29-upstream-baseline/`
+  (`uboot-desktop-firefox-late.png`, `uboot-firefox-diag.log`,
+  `uboot-xorg-probe.log`).
 
 ## Preserved feature areas and status
 
@@ -48,9 +62,9 @@ is green.
 | Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target` | Add getty and full desktop gates |
 | systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present | procfs/net extras, cgroup events, reboot sync |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
-| RISC-V board boot | Image header and raw Image sidecar implemented; QEMU raw gate passes and U-Boot `booti` reaches userspace | DTB/framebuffer parsing, EIC7700 cache/PCIe glue, a green U-Boot scenario |
+| RISC-V board boot | Image header, raw Image sidecar, and DT `simple-framebuffer` parsing are implemented; QEMU raw gate passes, U-Boot `booti` reaches userspace, and the manual bochs-display boot reaches the desktop | EIC7700 cache/PCIe glue, a repository-level U-Boot desktop scenario with networking |
 | Megrez drivers | Not ported | DW APB UART, SDHCI/MMC, DWMAC, USB xHCI/HID, watchdog |
-| Desktop/Firefox | Rootfs guest assets ported; browser unit referenced a missing device-access path | Rebuild with the corrected path, then run Firefox/desktop gates |
+| Desktop/Firefox | Xorg fbdev accepts the framebuffer; openbox/pcmanfm/lxpanel render, and Firefox maps its New Tab window. The browser helper path and trust contract are fixed | Online navigation workload, input/keyboard gate, repository-level desktop gate |
 | dsh | Headless non-root and C build verified | dsh web non-root, launcher PATH/service, reproducible asset provenance |
 | Host tests/gates | Not ported | Runner, expected baseline, rootfs/board/browser unit gates |
 
@@ -66,8 +80,9 @@ non-GPU display/fbdev code is in scope only for the current desktop surface.
 2. Full Stage1 + systemd (journald) on the upstream kernel. **Done.**
 3. Remaining Debian-compatibility packages: procfs `/proc/net`, cgroup
    events, PTY/reboot durability.
-4. Browser/desktop startup on the rebased kernel (device-access path fixed,
-   then Xorg/Firefox gates).
+4. Browser/desktop startup on the rebased kernel. The offline desktop and
+   Firefox window are **done**; online navigation, input, and the repository
+   gate remain.
 5. ext4 extents/JBD2 and the ext2 durability fixes.
 6. DT framebuffer, EIC7700/PCIe glue, and a green U-Boot `booti` scenario.
 7. Megrez storage, serial, network, USB and watchdog drivers.
