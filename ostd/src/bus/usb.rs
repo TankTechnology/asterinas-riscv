@@ -38,7 +38,8 @@ const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
 /// The boot mouse report: buttons, X displacement, Y displacement.
 const BOOT_MOUSE_REPORT_LEN: usize = 3;
 /// The mouse transfer buffer. A parsed layout is refused above this length, so
-/// the buffer always covers the report the device describes.
+/// the buffer always covers the report the device describes, and the transfer
+/// itself asks for one packet of the endpoint rather than the whole buffer.
 const MOUSE_REPORT_LEN: usize = 8;
 const XHCI_MIN_CAPLENGTH: usize = 0x20;
 const XHCI_CAPABILITY_ACCESSORS_LEN: usize = 0x24;
@@ -76,6 +77,8 @@ pub enum UsbKeyboardError {
     ClaimInterface,
     /// The device rejected HID boot protocol.
     SetBootProtocol,
+    /// The device rejected the HID idle reporting rate.
+    SetIdle,
     /// The interrupt-IN endpoint could not be opened.
     EndpointOpen,
     /// Submitting or completing the interrupt-IN transfer failed.
@@ -97,6 +100,8 @@ pub enum UsbKeyboardStage {
     ClaimInterface,
     /// Select HID boot protocol for the device.
     SetBootProtocol,
+    /// Set the device's HID idle reporting rate.
+    SetIdle,
 }
 
 /// Identity of a selected USB HID boot device.
@@ -139,6 +144,11 @@ struct BootHidInterface {
     number: u8,
     alternate: u8,
     endpoint: u8,
+    /// The endpoint descriptor's declared maximum packet size, which is also
+    /// the length every transfer asks for.
+    max_packet_size: u16,
+    /// The endpoint descriptor's polling interval, in frames.
+    interval: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,8 +159,6 @@ enum BootHidKind {
 
 /// The `wValue` of a HID `SET_PROTOCOL` request selecting the boot report.
 const SET_BOOT_PROTOCOL: u16 = 0;
-/// The `wValue` selecting the format the device's report descriptor defines.
-const SET_REPORT_PROTOCOL: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DiscoveryDecision {
@@ -234,6 +242,8 @@ fn find_boot_hid_interface(
             number: alternate.interface_number,
             alternate: alternate.alternate_setting,
             endpoint: endpoint.address,
+            max_packet_size: endpoint.max_packet_size,
+            interval: endpoint.interval,
         });
     }
     Ok(selected)
@@ -617,14 +627,14 @@ struct PollingUsbHidHostInner {
 
 struct BootKeyboardSession {
     _device: Device,
-    endpoint: Endpoint,
+    endpoint: HidEndpoint,
     reports: BootKeyboardReportQueue,
     info: UsbDeviceInfo,
 }
 
 struct BootMouseSession {
     _device: Device,
-    endpoint: Endpoint,
+    endpoint: HidEndpoint,
     reports: BootReportQueue<MOUSE_REPORT_LEN>,
     info: UsbDeviceInfo,
     layout: Option<MouseReportLayout>,
@@ -642,14 +652,37 @@ const MOUSE_FAILURE_RETIREMENT_THRESHOLD: u32 = 32;
 
 struct OpenedHidDevice {
     device: Device,
-    endpoint: Endpoint,
+    endpoint: HidEndpoint,
     info: UsbDeviceInfo,
     mouse_layout: Option<MouseReportLayout>,
 }
 
-impl<const N: usize> ReportEndpoint<N> for Endpoint {
+/// A HID interrupt-IN endpoint whose transfers ask for exactly one packet.
+struct HidEndpoint {
+    endpoint: Endpoint,
+    /// The endpoint descriptor's maximum packet size, which is also the length
+    /// every transfer asks for.
+    max_packet_size: u16,
+}
+
+/// The length one interrupt-IN transfer must ask for, given the endpoint's
+/// maximum packet size and the buffer the caller has.
+///
+/// xHCI completes an interrupt transfer when the transfer is full or when a
+/// short packet arrives, and a device sends at most one packet per polling
+/// interval. A transfer longer than one packet therefore leaves the transfer
+/// open forever for a device that always sends full packets, and a transfer
+/// shorter than the packet turns the rest of it into a babble error that
+/// discards the report.
+fn interrupt_transfer_len(max_packet_size: u16, buffer_len: usize) -> usize {
+    usize::from(max_packet_size).clamp(1, buffer_len)
+}
+
+impl<const N: usize> ReportEndpoint<N> for HidEndpoint {
     fn submit_report(&mut self, report: &mut [u8; N]) -> Result<RequestId, UsbKeyboardError> {
-        self.submit(TransferRequest::interrupt_in(report))
+        let len = interrupt_transfer_len(self.max_packet_size, N);
+        self.endpoint
+            .submit(TransferRequest::interrupt_in(&mut report[..len]))
             .map_err(|_| UsbKeyboardError::Transfer)
     }
 
@@ -658,7 +691,7 @@ impl<const N: usize> ReportEndpoint<N> for Endpoint {
         request: RequestId,
         context: &mut Context<'_>,
     ) -> Poll<Result<TransferCompletion, UsbKeyboardError>> {
-        match self.poll_request(request, context) {
+        match self.endpoint.poll_request(request, context) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(Ok(completion)) => Poll::Ready(Ok(completion)),
             Poll::Ready(Err(_)) => Poll::Ready(Err(UsbKeyboardError::Transfer)),
@@ -929,6 +962,43 @@ fn set_hid_protocol(
     }
 }
 
+/// The `SET_IDLE` duration, in four-millisecond units: 500 ms.
+///
+/// Zero means "report only on change", which is what Linux asks for, but a
+/// bounded period additionally re-sends an unchanged report twice a second, so
+/// the host recovers from a report it lost without waiting for the next motion.
+const SET_IDLE_DURATION: u16 = 0x7d00;
+
+/// Tells one HID interface how often to repeat its report when nothing changed.
+///
+/// This is not optional for every device: the Megrez mouse stays completely
+/// silent until it receives `SET_IDLE` -- not one interrupt transfer completes,
+/// and even a control `GET_REPORT` times out -- and reports normally as soon as
+/// the request arrives. HID boot devices are allowed to demand it, so send it
+/// instead of assuming the power-on idle rate applies.
+fn set_hid_idle(
+    xhci: &XhciHost,
+    device: &mut Device,
+    events: &EventHandler,
+    interface: BootHidInterface,
+) -> Result<(), UsbKeyboardError> {
+    let setup = ControlSetup {
+        request_type: RequestType::Class,
+        recipient: Recipient::Interface,
+        request: Request::Other(0x0a),
+        value: SET_IDLE_DURATION << 8,
+        index: u16::from(interface.number),
+    };
+    match drive(device.control_out(setup, &[]), events) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(_)) => Err(UsbKeyboardError::SetIdle),
+        Err(DriveError::Timeout) => Err(timeout_at(
+            UsbKeyboardStage::SetIdle,
+            xhci.kernel_op.as_ref(),
+        )),
+    }
+}
+
 fn open_hid_device(
     xhci: &mut XhciHost,
     events: &EventHandler,
@@ -966,13 +1036,16 @@ fn open_hid_device(
         }
     }
 
-    let mut mouse_layout = fetch_mouse_layout(&mut device, events, interface);
-    // The boot report has no wheel field, so a mouse only reaches its wheel in
-    // the report protocol, and only once its descriptor says how to read it.
-    let protocol = match (interface.kind, mouse_layout) {
-        (BootHidKind::Mouse, Some(_)) => SET_REPORT_PROTOCOL,
-        _ => SET_BOOT_PROTOCOL,
-    };
+    let mouse_layout = fetch_mouse_layout(&mut device, events, interface);
+    // Always ask for the boot report.
+    //
+    // The report protocol was only ever wanted for the mouse wheel, and it is
+    // part of what broke the pointer: this mouse's reports are five-byte full
+    // packets over a five-byte packet size, so the eight-byte transfer the old
+    // code used turned every one of them into a babble error that crab-usb
+    // discards. The boot report is three bytes, shorter than one packet, so the
+    // controller ends the transfer on it at any reasonable buffer length.
+    let protocol = SET_BOOT_PROTOCOL;
 
     match set_hid_protocol(xhci, &mut device, events, interface, protocol) {
         Ok(()) => crate::info!(
@@ -981,39 +1054,29 @@ fn open_hid_device(
             interface.number,
             protocol,
         ),
-        // Only a mouse asks for the report protocol, and it asks solely to
-        // reach its wheel. A device that stalls or times out on that one
-        // control transfer is still a mouse the user can move and click with,
-        // so keep it and stay in the boot report instead of refusing the whole
-        // device. Refusing it is what left the keyboard working and the mouse
-        // gone: the keyboard never asks for the report protocol, so it never
-        // took this path.
-        Err(error) if protocol == SET_REPORT_PROTOCOL => {
-            crate::warn!(
-                "USB HID {:?} on interface {} refused the report protocol ({:?}); \
-                 keeping the boot report, so this mouse reports no wheel",
-                interface.kind,
-                interface.number,
-                error,
-            );
-            if let Err(fallback) =
-                set_hid_protocol(xhci, &mut device, events, interface, SET_BOOT_PROTOCOL)
-            {
-                mem::forget(device);
-                return Err(fallback);
-            }
-            // The boot report is not the report the descriptor described, so
-            // the layout derived from that descriptor no longer applies.
-            mouse_layout = None;
-        }
         Err(error) => {
             mem::forget(device);
             return Err(error);
         }
     }
 
+    // A device that refuses SET_IDLE may still work with its power-on idle
+    // rate. Failing the whole device here would cost the pointer for a request
+    // that is only about how often repeated reports arrive.
+    if let Err(error) = set_hid_idle(xhci, &mut device, events, interface) {
+        crate::warn!(
+            "USB HID {:?} on interface {} refused SET_IDLE: {:?}",
+            interface.kind,
+            interface.number,
+            error,
+        );
+    }
+
     let endpoint = match device.endpoint(interface.endpoint) {
-        Ok(endpoint) => endpoint,
+        Ok(endpoint) => HidEndpoint {
+            endpoint,
+            max_packet_size: interface.max_packet_size,
+        },
         Err(_) => {
             mem::forget(device);
             return Err(UsbKeyboardError::EndpointOpen);
@@ -1127,6 +1190,13 @@ impl PollingUsbHidHost {
                         return None;
                     }
                 };
+            crate::info!(
+                "USB HID {:?} endpoint {:#04x}: max_packet_size={} interval={}",
+                keyboard_interface.kind,
+                keyboard_interface.endpoint,
+                keyboard_interface.max_packet_size,
+                keyboard_interface.interval,
+            );
             let mut session = BootKeyboardSession {
                 _device: opened_keyboard.device,
                 endpoint: opened_keyboard.endpoint,
@@ -1149,6 +1219,13 @@ impl PollingUsbHidHost {
                     return None;
                 }
             };
+            crate::info!(
+                "USB HID {:?} endpoint {:#04x}: max_packet_size={} interval={}",
+                mouse_interface.kind,
+                mouse_interface.endpoint,
+                mouse_interface.max_packet_size,
+                mouse_interface.interval,
+            );
             let mut session = BootMouseSession {
                 _device: opened.device,
                 endpoint: opened.endpoint,
@@ -1328,6 +1405,25 @@ mod tests {
             VALID_RUNTIME_OFFSET,
             extended_registers,
         )
+    }
+
+    /// A device that sends exactly one full packet per polling interval never
+    /// completes a transfer that asks for more than that packet, and a transfer
+    /// that asks for less turns the rest of the packet into a babble error. Both
+    /// cost every report, so the transfer length must be one packet.
+    #[ktest]
+    fn hid_transfers_ask_for_exactly_one_packet() {
+        // The Megrez mouse: five-byte reports over a five-byte packet size.
+        assert_eq!(interrupt_transfer_len(5, MOUSE_REPORT_LEN), 5);
+        // The boot keyboard, and QEMU's four-byte short-packet mouse.
+        assert_eq!(interrupt_transfer_len(8, MOUSE_REPORT_LEN), 8);
+        // A descriptor that declares nothing still has to ask for something,
+        // and a packet size larger than the buffer is bounded by the buffer.
+        assert_eq!(interrupt_transfer_len(0, MOUSE_REPORT_LEN), 1);
+        assert_eq!(
+            interrupt_transfer_len(4096, MOUSE_REPORT_LEN),
+            MOUSE_REPORT_LEN
+        );
     }
 
     #[ktest]
