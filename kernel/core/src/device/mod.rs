@@ -6,7 +6,7 @@ pub(crate) mod kmsg;
 mod mem;
 pub(crate) mod misc;
 mod model;
-mod pty;
+pub(crate) mod pty;
 pub mod registry;
 pub(crate) mod tty;
 

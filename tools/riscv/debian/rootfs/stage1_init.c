@@ -1226,6 +1226,20 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             return -1;
         }
         result = mount("/dev", "/newroot/dev", NULL, MS_BIND, NULL);
+        if (result != 0) {
+            break;
+        }
+        /* Devtmpfs does not publish the conventional ptmx alias.  Create the
+         * devpts mount and symlink in the bind-mounted /dev so systemd and
+         * non-systemd hands both have a usable PTY path. */
+        if (ensure_directory("/newroot/dev/pts") != 0 ||
+            (mount("devpts", "/newroot/dev/pts", "devpts", 0, NULL) != 0 &&
+             errno != EBUSY) ||
+            (symlink("pts/ptmx", "/newroot/dev/ptmx") != 0 &&
+             errno != EEXIST)) {
+            return -1;
+        }
+        result = 0;
         break;
     case HANDOFF_MOUNT_PROC:
         if (ensure_directory("/newroot/proc") != 0) {

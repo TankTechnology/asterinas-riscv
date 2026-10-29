@@ -25,7 +25,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{Gid, Uid},
+    process::{Gid, Uid, posix_thread::AsPosixThread},
 };
 
 mod ptmx;
@@ -80,7 +80,17 @@ impl DevPts {
 
         let (master, slave) = crate::device::new_pty_pair(index as u32, self.root.ptmx.clone())?;
 
-        let slave_inode = PtySlaveInode::new(slave, self.this.clone());
+        let current_thread = current_thread!();
+        let posix_thread = current_thread.as_posix_thread().ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "the PTY opener is not a POSIX thread")
+        })?;
+        let credentials = posix_thread.credentials();
+        let slave_inode = PtySlaveInode::new(
+            slave,
+            self.this.clone(),
+            credentials.fsuid(),
+            credentials.fsgid(),
+        );
         self.root
             .slaves
             .write()
