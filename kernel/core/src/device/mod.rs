@@ -2,6 +2,7 @@
 
 mod evdev;
 mod fb;
+mod kmsg;
 mod mem;
 pub(crate) mod misc;
 mod model;
@@ -55,6 +56,7 @@ pub enum DeviceType {
 pub(crate) fn init_in_first_kthread() {
     model::init_in_first_kthread();
     registry::init_in_first_kthread();
+    kmsg::init_in_first_kthread();
     mem::init_in_first_kthread();
     misc::init_in_first_kthread();
     evdev::init_in_first_kthread();

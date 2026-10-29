@@ -52,6 +52,7 @@ pub(super) fn init_in_first_kthread() {
     MEM_CLASS.call_once(|| class::register(MemClass).unwrap());
 
     add_device(MemFile::Full).unwrap();
+    add_device(MemFile::Kmsg).unwrap();
     add_device(MemFile::Null).unwrap();
     add_device(MemFile::Random).unwrap();
     add_device(MemFile::Urandom).unwrap();
@@ -105,6 +106,9 @@ impl Device for MemDevice {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
+        if matches!(self.payload(), MemFile::Kmsg) {
+            return Ok(Box::new(super::kmsg::KmsgFile::new()));
+        }
         Ok(Box::new(*self.payload()))
     }
 }

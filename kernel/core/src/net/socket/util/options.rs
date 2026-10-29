@@ -17,7 +17,7 @@ use crate::{
         options::{
             AcceptConn, Broadcast, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
             RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-            SendTimeout, SocketOption, SocketType,
+            SendTimeout, SocketOption, SocketType, Timestamp,
             macros::{sock_option_mut, sock_option_ref},
         },
         unix::{CUserCred, UNIX_DATAGRAM_DEFAULT_BUF_SIZE, UNIX_STREAM_DEFAULT_BUF_SIZE},
@@ -273,6 +273,14 @@ impl SocketOptionSet {
                 } else {
                     self.set_recv_buf(*recv_buf);
                 }
+            }
+            socket_timestamp @ Timestamp => {
+                // SO_TIMESTAMP is accepted but currently has no observable
+                // effect: recvmsg() does not attach SCM_TIMESTAMP control
+                // messages. systemd-journald sets this option and falls back
+                // to its own clock when the cmsg is absent; returning
+                // ENOPROTOOPT here aborts it at startup.
+                let _ = socket_timestamp.get().unwrap();
             }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,

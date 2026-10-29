@@ -15,6 +15,7 @@ static LOGGER: AsterLogger = AsterLogger;
 impl ostd::log::Log for AsterLogger {
     fn log(&self, record: &Record) {
         let timestamp = Jiffies::elapsed().as_duration();
+        super::klog::klog().append(record, &timestamp);
         print_logs(record, &timestamp);
     }
 }
