@@ -1347,7 +1347,9 @@ class BrowserWebContractTests(unittest.TestCase):
 
         self.assertIn('"$script_directory/desktop_display_provider.sh"', builder)
         self.assertIn('"$stage/usr/lib/asterinas/desktop-display-provider"', builder)
-        self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev", builder)
+        # The service takes the provider from the profile rather than hard-coding
+        # fbdev; the default is resolved inside the device-access helper.
+        self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider", builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
                 "publish_artifacts()"
@@ -1879,11 +1881,21 @@ class BrowserWebContractTests(unittest.TestCase):
             device_access.index('/usr/bin/chown root:root "$XKB_CACHE_DIR"'),
         )
         self.assertIn("BROWSER_WEB_DESKTOP_STAGE=xkb-cache-ready", device_access)
-        self.assertIn("while [[ ! -c /dev/fb0 ]]", device_access)
+        # The helper waits on the node the selected provider needs, which is
+        # /dev/fb0 for fbdev and /dev/dri/card0 for the DRM provider.
+        self.assertIn('while [[ ! -c "$DISPLAY_DEVICE" ]]', device_access)
         self.assertIn("input-devices-absent", device_access)
-        self.assertIn("device-access-failed reason=fb0-timeout", device_access)
-        self.assertIn("device-access-failed reason=fb0-permissions", device_access)
-        self.assertIn("BROWSER_WEB_DESKTOP_STAGE=fb0-ready", device_access)
+        # The reason names the provider's node, expanded at run time, so the
+        # assertion follows the parameterised form rather than a literal fb0.
+        self.assertIn(
+            'device-access-failed reason=${DISPLAY_DEVICE##*/}-timeout', device_access
+        )
+        self.assertIn(
+            'device-access-failed reason=${DISPLAY_DEVICE##*/}-permissions', device_access
+        )
+        self.assertIn(
+            'BROWSER_WEB_DESKTOP_STAGE=${DISPLAY_DEVICE##*/}-ready', device_access
+        )
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
         self.assertIn(

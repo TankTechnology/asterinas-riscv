@@ -399,7 +399,11 @@ _PROFILES["desktop-m9-software"] = RootfsProfile(
     ),
 )
 
-BROWSER_WEB_DESKTOP_PACKAGES = (
+# The package set schema 7 introduced. It is kept separately from the set the
+# profile installs today so that a manifest written by an older build stays
+# admissible: the contract uses this tuple to recognise "this image predates
+# the packages added afterwards".
+BROWSER_WEB_SCHEMA_SEVEN_PACKAGES = (
     "mousepad",
     "ristretto",
     "atril",
@@ -407,6 +411,9 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     "zip",
     "unzip",
     "dbus-x11",
+)
+
+BROWSER_WEB_DESKTOP_PACKAGES = BROWSER_WEB_SCHEMA_SEVEN_PACKAGES + (
     # The online desktop is the board's daily-use environment, so it has to be
     # able to write and build a program without a package download first:
     # gcc/make were present but there was no editor and no C++ front end.

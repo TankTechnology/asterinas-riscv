@@ -21,7 +21,7 @@ from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 from tools.riscv.debian.rootfs.profiles import (
-    BROWSER_WEB_DESKTOP_PACKAGES,
+    BROWSER_WEB_SCHEMA_SEVEN_PACKAGES,
     RootfsProfile,
     get_profile,
 )
@@ -759,7 +759,7 @@ def _profile_for_manifest(
         # Earlier signed browser-web roots use the same manifest schema and
         # filesystem identity, but predate the desktop application additions.
         # Admit only their complete historical gate set, never a partial set.
-        desktop_packages = set(BROWSER_WEB_DESKTOP_PACKAGES)
+        desktop_packages = set(BROWSER_WEB_SCHEMA_SEVEN_PACKAGES)
         previous_identity = tuple(
             package
             for package in profile.identity_packages
