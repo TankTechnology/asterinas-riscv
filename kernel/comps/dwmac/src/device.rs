@@ -579,7 +579,6 @@ impl DwmacDevice {
         }
         aster_network::raise_send_softirq();
     }
-
 }
 
 impl AnyNetworkDevice for DwmacDevice {

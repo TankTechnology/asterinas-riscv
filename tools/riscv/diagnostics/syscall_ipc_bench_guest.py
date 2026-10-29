@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
 """Measure syscall and IPC cost on the Megrez guest, self-timed.
 
 Each family is timed in the guest so the only thing crossing the serial line is

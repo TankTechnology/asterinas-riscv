@@ -5,7 +5,29 @@
 > [证据索引](evidence/megrez-history-index.md)及其日期页中。任何“当前通过”
 > 结论仍须绑定完整 commit、日期、镜像身份和保留的 result/evidence 路径。
 
+## 2026-10-29 板级更新
+
+这一天的内容记在三份文档里，这里只放结论：
+
+- [桌面与网络打通](2026-10-29-megrez-desktop-network-bringup.md)：浏览器三个故障
+  （DNS 死、时钟差半年、端口未认证）、壁纸取不到图的真因（缺
+  `/usr/share/mime/mime.cache`）、开机报「Firefox profile 无法加载」的两个原因
+  （根分区只读；缺 `~/.mozilla/firefox/profiles.ini`）、引导参数固化到 U-Boot
+  `bootcmd`、串口长命令被截断的教训、以及"跑一阵就发不出包"的取证。
+- [release 内核与性能基线](2026-10-29-megrez-release-kernel-baseline.md)：dev 对
+  release 的 15–22 倍差距；两轮优化在**真机** `rdcycle` 上的结果——第一轮
+  `getpid` 5309→3071 周期（−42%），第二轮在板上落在噪声里（QEMU 里那 30% 是
+  TCG 放大原子指令的假象）。
+- [桌面可视化证据](evidence/2026-10-29-desktop-visual/)：QEMU 与真机截图。
+
+这一天的代码改动：USB HID 输入修复、系统调用信号快路径、唤醒计数改 acquire load、
+GMAC datapath 日志降级、镜像六处修复（镜像构建 SIGPIPE 静默退出、陈旧 firefox-esr
+包审计、profiles.ini、mime.cache、壁纸/面板、时钟同步）、机器身份
+（hostname/os-release/`asterinas-fetch`）、`vim`+`g++`、中文输入法、网络看门狗、
+引导看门狗。
+
 ## 当前状态
+
 
 | 项目 | 当前值 |
 |---|---|
