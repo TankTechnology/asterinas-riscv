@@ -339,6 +339,25 @@ build_riscv_debian_stage1:
 	STAGE1_TOOLS_DIR="$(DEBIAN_STAGE1_TOOLS_DIR)" \
 	tools/riscv/debian/rootfs/build_stage1_minimal.sh "$(DEBIAN_STAGE1_OUT)"
 
+# The full downstream rootfs/Stage1 builders.  They are kept separate from the
+# minimal upstream-rebase checkpoint above so the reproducible Debian image
+# path can be ported and validated without changing the direct-boot gate.
+DEBIAN_ROOTFS_PROFILE ?= browser-web
+DEBIAN_ROOTFS_OUTPUT_DIR ?= target/debian-riscv/$(DEBIAN_ROOTFS_PROFILE)/rootfs
+DEBIAN_ROOTFS_ARGS ?=
+.PHONY: build_riscv_debian_rootfs
+build_riscv_debian_rootfs:
+	tools/riscv/debian/rootfs/build_rootfs.sh \
+		--profile "$(DEBIAN_ROOTFS_PROFILE)" \
+		--output-dir "$(DEBIAN_ROOTFS_OUTPUT_DIR)" \
+		$(DEBIAN_ROOTFS_ARGS)
+
+DEBIAN_STAGE1_FULL_OUT ?= target/debian-riscv/stage1/initramfs.cpio
+.PHONY: build_riscv_debian_stage1_full
+build_riscv_debian_stage1_full:
+	RISC_V_CC="$(RISC_V_CC)" \
+	tools/riscv/debian/rootfs/build_stage1.sh "$(DEBIAN_STAGE1_FULL_OUT)"
+
 .PHONY: check_vdso
 check_vdso:
 	@# Checking `VDSO_LIBRARY_DIR` environment variable

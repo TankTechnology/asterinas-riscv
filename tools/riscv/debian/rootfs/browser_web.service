@@ -1,0 +1,30 @@
+[Unit]
+Description=Asterinas Debian online Firefox workload
+# Starting the Xorg session can remain in the activating state on a minimal
+# Asterinas device even after it has spawned Xorg.  Launch the browser in
+# parallel and let wait-x provide the real readiness barrier; tying browser
+# activation to the desktop unit otherwise causes an unbounded dependency
+# wait and Firefox never starts.
+Requires=asterinas-browser-web-timeline-basic.service
+After=asterinas-browser-web-timeline-basic.service
+
+[Service]
+Type=exec
+User=asterinas
+PrivateTmp=no
+AmbientCapabilities=
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+Environment=HOME=/home/asterinas
+Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/
+SupplementaryGroups=video input
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStartPre=+/usr/lib/asterinas/desktop-network-device-access
+ExecStart=/usr/lib/asterinas/browser-web-firefox
+Restart=on-failure
+RestartPreventExitStatus=64
+RestartSec=2s
+
+[Install]
+WantedBy=graphical.target
