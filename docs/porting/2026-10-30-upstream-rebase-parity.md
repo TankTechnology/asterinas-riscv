@@ -24,6 +24,21 @@ is green.
   static DTB. The final Image reports `eth0` at `10.0.2.15`, downloads the
   64 KiB owned fixture with the exact SHA-256, resolves `www.baidu.com`, and
   obtains HTTP 200 from both direct slirp and the host proxy.
+- `/proc/[pid]/ns/net` is exposed as a stable synthetic `net:[4026532000]`
+  symlink. Asterinas still has one global network namespace; the link makes
+  the single-namespace contract readable and lets namespace-equality checks
+  (including the Firefox gate) proceed.
+- `/dev/shm` is created and mounted on both the rootfs first-process path and
+  the Stage1 handoff, with sticky 1777 permissions in the Stage1 path. This
+  is a prerequisite for Firefox content processes and POSIX shared memory.
+- Firefox's Marionette transport, WebDriver session, and window discovery now
+  work under the U-Boot desktop boot, but `WebDriver:Navigate` still fails
+  because every Gecko child process (`-contentproc`, socket, and utility)
+  exits before the IPC handshake. `/dev/shm` is writable and the gate passes
+  the network-namespace check, so this is a remaining multi-process/sandbox
+  or IPC kernel gap, not a framebuffer or network failure. Evidence:
+  `uboot-baidu-probe.log`, `uboot-baidu.ppm`, and the Firefox stderr tail in
+  that log.
 - PTY userspace wiring is restored. The kernel exposes `/dev/ptmx` as a
   symlink to `pts/ptmx`, mounts devpts at `/dev/pts` on both the rootfs
   first-process path and the Stage1 handoff, and assigns each new slave the
@@ -82,14 +97,14 @@ is green.
 |---|---|---|
 | Debian rootfs build | Full builder sources ported; minimal and browser-web profiles built and contract-verified; Stage1 full build succeeds | Validate remaining profiles and manifests; rebuild after the browser service path fix |
 | QEMU Debian boot | Direct-kernel gate passes for ELF and raw Image | Port bootargs/artifact contracts and a Stage1/systemd gate |
-| Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target`; the handoff publishes `/dev/ptmx` and mounts devpts | Add getty and full desktop gates |
+| Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target`; the handoff publishes `/dev/ptmx`, mounts devpts, and provides writable `/dev/shm` | Add getty and full desktop gates |
 | systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present | procfs/net extras, cgroup events, reboot sync |
 | Kernel networking | virtio-net `eth0` at 10.0.2.15, slirp fixture/DNS/HTTPS, and rtnetlink link/address setters work | Dynamic route insertion, `/proc/net`, broader netlink dumps |
 | PTY | devpts is mounted, `/dev/ptmx` is published, and slave ownership follows the opener; non-root `pty.spawn` and node-pty work | No remaining kernel blocker found |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
 | RISC-V board boot | Image header, raw Image sidecar, and DT `simple-framebuffer` parsing are implemented; QEMU raw gate passes, U-Boot `booti` reaches userspace, and the manual bochs-display boot reaches the desktop with working virtio-net | EIC7700 cache/PCIe glue, a repository-level U-Boot desktop/network scenario |
 | Megrez drivers | Not ported | DW APB UART, SDHCI/MMC, DWMAC, USB xHCI/HID, watchdog |
-| Desktop/Firefox | Xorg fbdev accepts the framebuffer; openbox/pcmanfm/lxpanel render, and Firefox maps its New Tab window. The browser helper path and trust contract are fixed. The guest network path needed by the online workload is verified | Full online browser workload and screenshot, input/keyboard gate, repository-level desktop gate |
+| Desktop/Firefox | Xorg fbdev accepts the framebuffer; openbox/pcmanfm/lxpanel render, and Firefox maps its New Tab window. The browser helper path and trust contract are fixed. The guest network path needed by the online workload is verified. Marionette reaches and sessions with Firefox | Firefox content/socket/utility child processes fail their IPC launch, so online navigation still fails; investigate the Gecko child-process handshake (sandbox/user-namespace/SCM_RIGHTS), then add input and a repository-level gate |
 | dsh | Non-root headless turn, C compile/run, and non-root web UI (UID 1000, HTTP 200) are verified | Launcher PATH/service integration and reproducible asset provenance |
 | Host tests/gates | Kernel ktests run on the rebased line (aster-core: 147 passed); the downstream host suite is not ported | Runner, expected baseline, rootfs/board/browser unit gates |
 
@@ -107,8 +122,9 @@ non-GPU display/fbdev code is in scope only for the current desktop surface.
    events, reboot durability. PTY and rtnetlink link/address setup are
    **done**.
 4. Browser/desktop startup on the rebased kernel. The offline desktop,
-   Firefox window, and guest network path are **done**; the full online
-   browser workload, input, and the repository gate remain.
+   Firefox window, guest network path, and Marionette session are **done**;
+   Gecko content/socket/utility child-process launch, online navigation,
+   input, and the repository gate remain.
 5. ext4 extents/JBD2 and the ext2 durability fixes.
 6. DT framebuffer and the manual U-Boot `booti` desktop/network scenario are
    **done**; EIC7700/PCIe glue and the repository-level scenario remain.
