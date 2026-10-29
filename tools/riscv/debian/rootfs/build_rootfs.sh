@@ -1115,16 +1115,20 @@ configure_and_normalize_rootfs() {
     if ! grep -q '^127\.0\.1\.1' "$stage/etc/hosts" 2>/dev/null; then
         printf '127.0.1.1\tasterinas\n' >>"$stage/etc/hosts"
     fi
-    if [[ -f "$stage/etc/os-release" ]]; then
-        grep -q '^ASTERINAS_KERNEL=' "$stage/etc/os-release" || {
-            local pretty_name
-            pretty_name="$(sed -n 's/^PRETTY_NAME="\{0,1\}\(.*\)"\{0,1\}$/\1/p' "$stage/etc/os-release" | head -n 1)"
-            sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Asterinas ('"${pretty_name:-Linux}"' userspace)"/' \
-                "$stage/etc/os-release"
-            sed -i 's/^NAME=.*/NAME="Asterinas"/' "$stage/etc/os-release"
-            printf 'ASTERINAS_KERNEL=1\nASTERINAS_ABI="Linux 5.13 compatible"\n' \
-                >>"$stage/etc/os-release"
-        }
+    if [[ -f "$stage/etc/os-release" ]] && \
+        ! grep -q '^ASTERINAS_KERNEL=' "$stage/etc/os-release"; then
+        # Rewritten rather than sed-substituted: the Debian pretty name is
+        # "Debian GNU/Linux 13 (trixie)", and the slash in it terminates an
+        # s/// expression.
+        local pretty_name
+        pretty_name="$(sed -n 's/^PRETTY_NAME=//p' "$stage/etc/os-release" | head -n 1 | tr -d '"')"
+        cp -- "$stage/etc/os-release" "$stage/etc/os-release.distrib"
+        {
+            printf 'PRETTY_NAME="Asterinas on %s"\n' "${pretty_name:-Linux}"
+            printf 'NAME="Asterinas"\n'
+            grep -vE '^(PRETTY_NAME|NAME)=' "$stage/etc/os-release.distrib"
+            printf 'ASTERINAS_KERNEL=1\nASTERINAS_ABI="Linux 5.13 compatible"\n'
+        } >"$stage/etc/os-release"
     fi
     # No stock fetch tool can name the kernel for the reason above, so the
     # image ships one that reads the ASTERINAS_* fields.
