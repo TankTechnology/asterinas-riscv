@@ -358,6 +358,10 @@ build_riscv_debian_stage1_full:
 	RISC_V_CC="$(RISC_V_CC)" \
 	tools/riscv/debian/rootfs/build_stage1.sh "$(DEBIAN_STAGE1_FULL_OUT)"
 
+.PHONY: update_upstream
+update_upstream:
+	tools/riscv/update_upstream.sh
+
 .PHONY: check_vdso
 check_vdso:
 	@# Checking `VDSO_LIBRARY_DIR` environment variable
