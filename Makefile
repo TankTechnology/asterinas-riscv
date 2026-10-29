@@ -307,6 +307,38 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
+# Downstream Debian direct-boot gate.  This is intentionally independent of
+# the upstream Nix initramfs: it boots an existing Debian rootfs as /dev/vda
+# and checks the toolchain and optional dsh image over the serial console.
+DEBIAN_DIRECT_KERNEL ?= target/osdk/asterinas/asterinas-osdk-bin.elf
+DEBIAN_DIRECT_ROOTFS ?=
+DEBIAN_DIRECT_DSH_IMAGE ?=
+DEBIAN_DIRECT_LOG ?= target/riscv-debian-direct.log
+.PHONY: test_riscv_debian_direct
+test_riscv_debian_direct:
+	@if [ -z "$(DEBIAN_DIRECT_ROOTFS)" ]; then \
+		echo "Error: set DEBIAN_DIRECT_ROOTFS to a Debian ext2/ext4 image"; \
+		exit 2; \
+	fi
+	@set -e; \
+	args=""; \
+	if [ -n "$(DEBIAN_DIRECT_DSH_IMAGE)" ]; then \
+		args="--dsh-image $(DEBIAN_DIRECT_DSH_IMAGE)"; \
+	fi; \
+	python3 tools/riscv/debian/direct_boot_gate.py \
+		--kernel "$(DEBIAN_DIRECT_KERNEL)" \
+		--rootfs "$(DEBIAN_DIRECT_ROOTFS)" \
+		--log "$(DEBIAN_DIRECT_LOG)" $$args
+
+DEBIAN_STAGE1_OUT ?= target/riscv-debian/stage1/initramfs.cpio
+DEBIAN_STAGE1_TOOLS_DIR ?=
+RISC_V_CC ?=
+.PHONY: build_riscv_debian_stage1
+build_riscv_debian_stage1:
+	RISC_V_CC="$(RISC_V_CC)" \
+	STAGE1_TOOLS_DIR="$(DEBIAN_STAGE1_TOOLS_DIR)" \
+	tools/riscv/debian/rootfs/build_stage1_minimal.sh "$(DEBIAN_STAGE1_OUT)"
+
 .PHONY: check_vdso
 check_vdso:
 	@# Checking `VDSO_LIBRARY_DIR` environment variable
