@@ -4,7 +4,10 @@
 
 use core::num::NonZero;
 
-use aster_bigtcp::{iface::InterfaceType, wire::EthernetAddress};
+use aster_bigtcp::{
+    iface::{InterfaceFlags, InterfaceType},
+    wire::EthernetAddress,
+};
 
 use super::util::finish_response;
 use crate::{
@@ -45,6 +48,52 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
     finish_response(request_segment.header(), dump_all, &mut response_segments);
 
     Ok(response_segments)
+}
+
+/// Handles an `RTM_SETLINK` request.
+///
+/// `RTM_NEWLINK` and `RTM_SETLINK` only differ in that the latter cannot
+/// create interfaces, which is unsupported anyway.
+pub(super) fn do_set_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+    do_new_link(request_segment)
+}
+
+/// Handles an `RTM_NEWLINK` request that changes interface flags.
+///
+/// Only flag changes via `ifi_flags`/`ifi_change` are supported; this is what
+/// `ip link set <dev> up|down` uses. Creating, deleting, or reconfiguring an
+/// interface is not supported.
+pub(super) fn do_new_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
+    };
+
+    let iface = iter_all_ifaces()
+        .find(|iface| iface.index() == index.get())
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
+
+    let new_flags = updated_link_flags(iface.flags(), body.flags, body.change);
+    iface.set_flags(new_flags);
+
+    Ok(Vec::new())
+}
+
+/// Computes `new = (old & !change) | (flags & change)` as Linux does.
+///
+/// Some tools send an empty change mask and expect the well-known
+/// administrative bits in `flags` to be applied directly.
+fn updated_link_flags(
+    old_flags: InterfaceFlags,
+    requested_flags: InterfaceFlags,
+    change: InterfaceFlags,
+) -> InterfaceFlags {
+    let administrative = InterfaceFlags::UP | InterfaceFlags::RUNNING;
+    if change.is_empty() {
+        (old_flags & !administrative) | (requested_flags & administrative)
+    } else {
+        (old_flags & !change) | (requested_flags & change)
+    }
 }
 
 enum FilterBy<'a> {
@@ -137,6 +186,7 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
         type_: iface.type_(),
         index: NonZero::new(iface.index()),
         flags: iface.flags(),
+        change: InterfaceFlags::empty(),
     };
 
     // Linux may report dozens of attributes in a fixed order.
@@ -160,4 +210,25 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
     ]);
 
     LinkSegment::new(header, link_message, attrs)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn link_flag_update_honors_the_change_mask() {
+        let old = InterfaceFlags::UP | InterfaceFlags::RUNNING;
+        let new = updated_link_flags(old, InterfaceFlags::empty(), InterfaceFlags::UP);
+        assert_eq!(new, InterfaceFlags::RUNNING);
+    }
+
+    #[ktest]
+    fn link_flag_update_with_empty_change_uses_administrative_bits() {
+        let old = InterfaceFlags::BROADCAST;
+        let new = updated_link_flags(old, InterfaceFlags::UP, InterfaceFlags::empty());
+        assert_eq!(new, InterfaceFlags::BROADCAST | InterfaceFlags::UP);
+    }
 }

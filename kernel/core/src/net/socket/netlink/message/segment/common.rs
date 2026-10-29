@@ -29,6 +29,10 @@ impl<Body, Attr> SegmentCommon<Body, Attr> {
         &self.body
     }
 
+    pub(crate) fn body_mut(&mut self) -> &mut Body {
+        &mut self.body
+    }
+
     pub(crate) fn attrs(&self) -> &Vec<Attr> {
         &self.attrs
     }

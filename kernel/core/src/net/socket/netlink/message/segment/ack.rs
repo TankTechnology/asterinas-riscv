@@ -79,6 +79,18 @@ impl ErrorSegment {
 
         Self::new(header, body, Vec::new())
     }
+
+    /// Sets the destination port on both the error header and the embedded
+    /// request header.
+    ///
+    /// Requests may leave `nlmsg_pid` zero. The route socket fills in the
+    /// sender's port before dispatching parsed requests, but parse errors are
+    /// built while reading the segment. User space matches the reply by
+    /// `nlmsg_pid`, so normalize both copies before sending.
+    pub(crate) fn set_reply_pid(&mut self, pid: u32) {
+        self.header_mut().pid = pid;
+        self.body_mut().request_header.pid = pid;
+    }
 }
 
 const fn error_to_error_code(error: Option<Error>) -> i32 {

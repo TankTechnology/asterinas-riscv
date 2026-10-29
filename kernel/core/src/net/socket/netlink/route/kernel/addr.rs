@@ -51,6 +51,49 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     Ok(response_segments)
 }
 
+/// Handles an `RTM_NEWADDR` request.
+///
+/// The interface address set is currently fixed, so adding an address that is
+/// already configured reports `EEXIST` like Linux, and any other address
+/// reports `EOPNOTSUPP`.
+pub(super) fn do_new_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
+    };
+
+    let iface = iter_all_ifaces()
+        .find(|iface| iface.index() == index.get())
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
+
+    let Some(requested) = request_segment.attrs().iter().find_map(|attr| match attr {
+        AddrAttr::Local(address) | AddrAttr::Address(address) => Some(*address),
+        _ => None,
+    }) else {
+        return_errno_with_message!(Errno::EINVAL, "no address attribute specified");
+    };
+
+    let exists = match requested {
+        IpAddr::V4(_) => iface.ipv4_cidr().is_some_and(|cidr| {
+            let existing: IpAddr = cidr.address().into();
+            existing == requested && cidr.prefix_len() == body.prefix_len
+        }),
+        IpAddr::V6(_) => iface.ipv6_cidr().is_some_and(|cidr| {
+            let existing: IpAddr = cidr.address().into();
+            existing == requested && cidr.prefix_len() == body.prefix_len
+        }),
+    };
+    if exists {
+        return_errno_with_message!(Errno::EEXIST, "the address already exists");
+    }
+
+    return_errno_with_message!(
+        Errno::EOPNOTSUPP,
+        "adding addresses to an interface is not supported"
+    );
+}
+
 fn iface_to_new_addrs(
     request_header: &CMsgSegHdr,
     requested_family: i32,

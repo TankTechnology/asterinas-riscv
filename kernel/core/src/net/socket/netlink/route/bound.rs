@@ -67,7 +67,8 @@ impl datagram_common::Bound for BoundNetlinkRoute {
                 Ok(ContinueRead::Skipped) => continue,
                 // There is at least a valid segment header, so we can create an error segment to
                 // report any errors found while parsing the segment body or attributes.
-                Ok(ContinueRead::SkippedErr(err_segment)) => {
+                Ok(ContinueRead::SkippedErr(mut err_segment)) => {
+                    err_segment.set_reply_pid(local_port);
                     rtnl_kernel.report_error(err_segment, local_port);
                     continue;
                 }
