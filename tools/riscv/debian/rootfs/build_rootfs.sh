@@ -2087,7 +2087,17 @@ EOF
                 >"$stage/usr/share/asterinas/browser-web-trust-static.log"
             [[ "$(wc -l <"$stage/usr/share/asterinas/browser-web-trust-static.log")" == 1 ]] ||
                 die "Firefox trust checker emitted an ambiguous result"
-            if ! grep -Eq "^FIREFOX_TRUST_PASS mode=$firefox_trust_mode ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
+            # A Debian firefox-esr install keeps its trust anchors in libnss3's
+            # own libnssckbi.so and the checker reports that as
+            # `external:<path>`; only the JIT overlay profile answers
+            # `embedded-xul`. Both are the same firefox-owned anchor set, and the
+            # checker has already required exactly one such module, a RISC-V ELF
+            # that exports C_GetFunctionList, plus at least a hundred roots.
+            local trust_mode_pattern="embedded-xul|external:usr/lib/(firefox-esr/|riscv64-linux-gnu/)libnssckbi\.so"
+            if [[ "$firefox_trust_mode" != "embedded-xul" ]]; then
+                trust_mode_pattern="$firefox_trust_mode"
+            fi
+            if ! grep -Eq "^FIREFOX_TRUST_PASS mode=($trust_mode_pattern) ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log"; then
                 # The stage is removed on the way out, so without this the
                 # checker's own answer would be lost with it and the build
