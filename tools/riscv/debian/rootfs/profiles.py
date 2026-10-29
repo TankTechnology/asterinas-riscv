@@ -407,6 +407,11 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     "zip",
     "unzip",
     "dbus-x11",
+    # The online desktop is the board's daily-use environment, so it has to be
+    # able to write and build a program without a package download first:
+    # gcc/make were present but there was no editor and no C++ front end.
+    "vim",
+    "g++",
 )
 
 

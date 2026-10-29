@@ -898,6 +898,17 @@ admit_downloaded_packages() {
         admitted_row="$(resolve_downloaded_package_row \
             "$archive_sha256" "${archive##*/}" \
             "$WORK_DIR/package-index-checksums")"
+        if [[ -z "$admitted_row" ]]; then
+            local stale_name stale_version stale_architecture
+            IFS=_ read -r stale_name stale_version stale_architecture <<<"${archive##*/}"
+            stale_architecture="${stale_architecture%.deb}"
+            if package_row_is_installed \
+                "$stale_name" "$stale_architecture" "$stale_version" \
+                "$WORK_DIR/packages.lock"; then
+                die "installed package is absent from the verified package index: ${archive##*/}"
+            fi
+            continue
+        fi
         IFS=$'\t' read -r admitted_name admitted_architecture \
             admitted_version _ _ <<<"$admitted_row"
         if ! package_row_is_installed \
@@ -942,8 +953,12 @@ resolve_downloaded_package_row() {
         awk -F '\t' -v expected_sha256="$archive_sha256" \
             '$4 == expected_sha256' "$package_checksums"
     )
-    ((${#matching_rows[@]} > 0)) ||
-        die "downloaded package hash is absent from the verified package index: $archive_name"
+    # No row means the archive is not owned by any retained index. That is not
+    # by itself an error: apt's cache can keep an archive the mirror has since
+    # superseded (a security update replaced firefox-esr while the previous
+    # download stayed on disk). The caller decides, because only an archive
+    # that belongs to the installed set is a provenance problem.
+    ((${#matching_rows[@]} > 0)) || return 0
 
     IFS=$'\t' read -r canonical_name canonical_architecture \
         canonical_version canonical_sha256 canonical_role <<<"${matching_rows[0]}"
@@ -1091,6 +1106,30 @@ configure_and_normalize_rootfs() {
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
     drop_unsupported_sysctl_files "$stage"
+
+    # Identity. debootstrap copies the build host's hostname into the image, so
+    # every board came up as the build machine's name; and nothing said which
+    # kernel is underneath, because `uname` deliberately reports Linux 5.13 for
+    # compatibility. Name the machine and give the userspace a way to say it.
+    printf 'asterinas\n' >"$stage/etc/hostname"
+    if ! grep -q '^127\.0\.1\.1' "$stage/etc/hosts" 2>/dev/null; then
+        printf '127.0.1.1\tasterinas\n' >>"$stage/etc/hosts"
+    fi
+    if [[ -f "$stage/etc/os-release" ]]; then
+        grep -q '^ASTERINAS_KERNEL=' "$stage/etc/os-release" || {
+            local pretty_name
+            pretty_name="$(sed -n 's/^PRETTY_NAME="\{0,1\}\(.*\)"\{0,1\}$/\1/p' "$stage/etc/os-release" | head -n 1)"
+            sed -i 's/^PRETTY_NAME=.*/PRETTY_NAME="Asterinas ('"${pretty_name:-Linux}"' userspace)"/' \
+                "$stage/etc/os-release"
+            sed -i 's/^NAME=.*/NAME="Asterinas"/' "$stage/etc/os-release"
+            printf 'ASTERINAS_KERNEL=1\nASTERINAS_ABI="Linux 5.13 compatible"\n' \
+                >>"$stage/etc/os-release"
+        }
+    fi
+    # No stock fetch tool can name the kernel for the reason above, so the
+    # image ships one that reads the ASTERINAS_* fields.
+    install -D -m 0755 -- "$script_directory/asterinas_fetch.sh" \
+        "$stage/usr/local/bin/asterinas-fetch"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
     printf '%s\n' '__DEBIAN_ROOTFS_SHELL_READY__'
@@ -1269,7 +1308,10 @@ finalize_browser_startup_caches() {
     # builder host's systemd tools here breaks as soon as Debian's target
     # systemd is newer (for example, systemd 257's `u!` sysusers modifier).
     run_chroot "$stage" /usr/bin/systemd-sysusers
-    dry_run="$(run_chroot "$stage" /usr/bin/systemd-sysusers --dry-run 2>&1)"
+    # Only stdout carries the planned changes. Merging stderr in would also
+    # capture the trace stream of the subshell (`set -x`) and any incidental
+    # warning from the chroot, and then every build would look unconverged.
+    dry_run="$(run_chroot "$stage" /usr/bin/systemd-sysusers --dry-run)"
     if [[ -n "$dry_run" ]]; then
         if [[ "$EXPLICIT_QEMU" == 1 ]]; then
             # proot without host /proc cannot provide systemd's usual
@@ -1299,10 +1341,14 @@ finalize_browser_startup_caches() {
         --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     generate_fontconfig_cache "$stage"
-    if is_firefox_profile; then
+    if is_desktop_profile; then
         # The minimal package installation can leave shared-mime-info's
         # triggers unapplied. Without this database libfm treats desktop
-        # launchers as plain files and cannot resolve SVG wallpaper/icons.
+        # launchers as plain files and cannot resolve SVG wallpaper/icons --
+        # and gdk-pixbuf cannot pick an image loader at all, which is what a
+        # board without /usr/share/mime/mime.cache showed: every PNG/BMP
+        # failed with "Couldn't recognize the image file format" even though
+        # the library, the loader modules and the files were all intact.
         (
             umask 022
             run_chroot "$stage" /usr/bin/update-mime-database /usr/share/mime
@@ -1704,6 +1750,18 @@ configure_desktop() {
         # only this narrow Xorg owner runs as root.
         desktop_user=root
     fi
+    # Every desktop profile needs the clock fixed before anything validates a
+    # certificate. The board powers up at 2026-04-13 every time, so Firefox
+    # reports "Your Computer Clock is Wrong" and curl rejects every HTTPS site
+    # until someone sets the date by hand.
+    install -D -m 0755 -- "$script_directory/asterinas_clock_sync.sh" \
+        "$stage/usr/lib/asterinas/clock-sync"
+    install -D -m 0644 -- "$script_directory/asterinas-clock-sync.service" \
+        "$stage/etc/systemd/system/asterinas-clock-sync.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sf -- ../asterinas-clock-sync.service \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-sync.service"
+
     configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
@@ -1933,7 +1991,29 @@ EOF
                 "$stage/home/asterinas/browser-web-timeline.log"
             install -d -m 0700 -o 1000 -g 1000 \
                 "$stage/home/asterinas/.mozilla" \
-                "$stage/home/asterinas/.mozilla/asterinas-browser-web"
+                "$stage/home/asterinas/.mozilla/asterinas-browser-web" \
+                "$stage/home/asterinas/.mozilla/firefox"
+            # Firefox resolves the profile through this registry even when
+            # `--profile <dir>` names the directory explicitly. Without it the
+            # browser starts and immediately shows "Your Firefox profile
+            # cannot be loaded. It may be missing or inaccessible." — which is
+            # exactly what a board booted after the corrupted profile was
+            # removed did. The path is absolute so the directory can live
+            # outside `~/.mozilla/firefox/`.
+            install -m 0644 -o 1000 -g 1000 /dev/null \
+                "$stage/home/asterinas/.mozilla/firefox/profiles.ini"
+            cat >"$stage/home/asterinas/.mozilla/firefox/profiles.ini" <<'EOF'
+[General]
+StartWithLastProfile=1
+Version=2
+
+[Profile0]
+Name=default
+IsRelative=0
+Path=/home/asterinas/.mozilla/asterinas-browser-web
+Default=1
+EOF
+            chmod 0644 -- "$stage/home/asterinas/.mozilla/firefox/profiles.ini"
             install -m 0600 -o 1000 -g 1000 /dev/null \
                 "$stage/home/asterinas/firefox-web-stderr.log"
             install -m 0600 -o 1000 -g 1000 /dev/null \
@@ -2416,9 +2496,15 @@ write_rootfs_manifest() {
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     build_timestamp="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
-    debootstrap_version="$(debootstrap --version 2>&1 | head -n 1)"
-    mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
-    qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
+    # `sed -n 1p`, not `head -n 1`: under `set -o pipefail` a `head` that exits
+    # after the first line sends SIGPIPE to the tool still writing, the pipeline
+    # reports 141, and `set -e` ends the build right after the phase-8 banner
+    # with no message at all. `mke2fs -V` prints several lines, so this used to
+    # kill every desktop image build silently after the filesystem was already
+    # written.
+    debootstrap_version="$(debootstrap --version 2>&1 | sed -n 1p)"
+    mke2fs_version="$(mke2fs -V 2>&1 | sed -n 1p)"
+    qemu_version="$(qemu-riscv64-static --version 2>&1 | sed -n 1p)"
 
     if [[ "$PROFILE" == browser-web ]]; then
         browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
@@ -2547,6 +2633,16 @@ die() {
 
 is_firefox_profile() {
     [[ "$PROFILE" == browser-m5 || "$PROFILE" == browser-web ]]
+}
+
+# Every profile that ships a graphical session needs the shared MIME database:
+# gdk-pixbuf picks its image loader through it, so without it GTK cannot load
+# the wallpaper, panel icons or application icons at all.
+is_desktop_profile() {
+    case "$PROFILE" in
+        desktop-* | browser-*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

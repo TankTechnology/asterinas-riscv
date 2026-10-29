@@ -3099,7 +3099,11 @@ WantedBy=multi-user.target
         panel = stage / "home/asterinas/.config/lxpanel/Asterinas/panels/panel"
         self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
         self.assertEqual(anime_wallpaper.read_bytes(), DESKTOP_ANIME_WALLPAPER.read_bytes())
-        self.assertIn("wallpaper_mode=crop", pcmanfm.read_text())
+        # `center` keeps the wallpaper at its native size instead of scaling it.
+        # pcmanfm's scaling modes (crop/stretch) fail silently on the guest's
+        # fbdev X server: the desktop keeps `desktop_bg` and never paints the
+        # image, which is why the shipped wallpaper is screen-sized.
+        self.assertIn("wallpaper_mode=center", pcmanfm.read_text())
         self.assertIn("desktop-anime-wallpaper.png", pcmanfm.read_text())
         self.assertIn("edge=bottom", panel.read_text())
         for name in ("browser", "files", "terminal"):

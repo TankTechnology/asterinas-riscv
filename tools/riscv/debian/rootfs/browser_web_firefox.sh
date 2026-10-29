@@ -69,6 +69,25 @@ configure_network_profile() {
         return 64
     }
     /usr/bin/mkdir -p -- "$PROFILE"
+    # Firefox consults the profile registry even when `--profile` names a
+    # directory, and without it shows "Your Firefox profile cannot be loaded.
+    # It may be missing or inaccessible." instead of opening a window.  The
+    # image ships this file; rewriting it here keeps a deleted or damaged
+    # registry from turning into a browser that never starts.
+    /usr/bin/mkdir -p -- "$FIREFOX_HOME/.mozilla/firefox"
+    printf '%s\n' \
+        '[General]' \
+        'StartWithLastProfile=1' \
+        'Version=2' \
+        '' \
+        '[Profile0]' \
+        'Name=default' \
+        'IsRelative=0' \
+        "Path=$PROFILE" \
+        'Default=1' \
+        >"$FIREFOX_HOME/.mozilla/firefox/profiles.ini.tmp"
+    /usr/bin/mv -T -- "$FIREFOX_HOME/.mozilla/firefox/profiles.ini.tmp" \
+        "$FIREFOX_HOME/.mozilla/firefox/profiles.ini"
     temporary="$(/usr/bin/mktemp "$PROFILE/user.js.tmp.XXXXXX")"
     if ! {
         # Preseed the non-update subset of Firefox ESR 140's automation

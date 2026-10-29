@@ -1,0 +1,24 @@
+[Unit]
+Description=Asterinas clock sync from an HTTP Date header
+# The board powers up at a fixed date every time, and the guest cannot reach an
+# NTP server before the campus portal login. The gateway answers HTTP even
+# unauthenticated, so its Date header is used instead. This must finish before
+# anything validates a certificate: Firefox shows "Your Computer Clock is
+# Wrong" and curl rejects every HTTPS site until the clock is right.
+DefaultDependencies=no
+After=sysinit.target
+Before=asterinas-browser-web.service asterinas-desktop-m4.service asterinas-desktop-m5-network.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Run it through the shell explicitly: the file is pushed over the serial
+# console during bring-up and its shebang line is the first thing a dropped
+# character can eat.
+ExecStart=/bin/sh /usr/lib/asterinas/clock-sync
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=basic.target
