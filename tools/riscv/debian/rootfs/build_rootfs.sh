@@ -2081,9 +2081,15 @@ EOF
                 >"$stage/usr/share/asterinas/browser-web-trust-static.log"
             [[ "$(wc -l <"$stage/usr/share/asterinas/browser-web-trust-static.log")" == 1 ]] ||
                 die "Firefox trust checker emitted an ambiguous result"
-            grep -Eq "^FIREFOX_TRUST_PASS mode=$firefox_trust_mode ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
-                "$stage/usr/share/asterinas/browser-web-trust-static.log" ||
-                die "Firefox trust checker did not prove the selected trust mode"
+            if ! grep -Eq "^FIREFOX_TRUST_PASS mode=$firefox_trust_mode ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
+                "$stage/usr/share/asterinas/browser-web-trust-static.log"; then
+                # The stage is removed on the way out, so without this the
+                # checker's own answer would be lost with it and the build
+                # would only report that something did not match.
+                printf '%s: trust result: %s\n' "${BASH_SOURCE[0]##*/}" \
+                    "$(cat "$stage/usr/share/asterinas/browser-web-trust-static.log" 2>/dev/null)" >&2
+                die "Firefox trust checker did not prove the selected trust mode (expected mode=$firefox_trust_mode)"
+            fi
             chmod 0644 -- \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log"
         else
