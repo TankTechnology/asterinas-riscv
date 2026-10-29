@@ -24,6 +24,13 @@ is green.
   static DTB. The final Image reports `eth0` at `10.0.2.15`, downloads the
   64 KiB owned fixture with the exact SHA-256, resolves `www.baidu.com`, and
   obtains HTTP 200 from both direct slirp and the host proxy.
+- PTY userspace wiring is restored. The kernel exposes `/dev/ptmx` as a
+  symlink to `pts/ptmx`, mounts devpts at `/dev/pts` on both the rootfs
+  first-process path and the Stage1 handoff, and assigns each new slave the
+  opener's fsuid/fsgid. A normal U-Boot/Stage1 boot with the asterinas uid
+  reports `/dev/pts/0` and exits 0; node-pty from the dsh image also exits
+  cleanly. Evidence: `uboot-pty-probe.log`, `pty-proc-probe.log`,
+  `node-pty-probe.log`, and `ktest-pty-serial.log`.
 - rtnetlink link and address requests are implemented. `RTM_NEWLINK` and
   `RTM_SETLINK` apply the `ifi_flags`/`ifi_change` mask, `RTM_NEWADDR` reports
   `EEXIST` for an address that is already configured, and successful requests
@@ -75,9 +82,10 @@ is green.
 |---|---|---|
 | Debian rootfs build | Full builder sources ported; minimal and browser-web profiles built and contract-verified; Stage1 full build succeeds | Validate remaining profiles and manifests; rebuild after the browser service path fix |
 | QEMU Debian boot | Direct-kernel gate passes for ELF and raw Image | Port bootargs/artifact contracts and a Stage1/systemd gate |
-| Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target` | Add getty and full desktop gates |
+| Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target`; the handoff publishes `/dev/ptmx` and mounts devpts | Add getty and full desktop gates |
 | systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present | procfs/net extras, cgroup events, reboot sync |
-| Kernel networking | virtio-net `eth0` at 10.0.2.15, slirp fixture/DNS/HTTPS, and rtnetlink link/address setters work | Dynamic route insertion, `/proc/net`, broader netlink dumps, PTY |
+| Kernel networking | virtio-net `eth0` at 10.0.2.15, slirp fixture/DNS/HTTPS, and rtnetlink link/address setters work | Dynamic route insertion, `/proc/net`, broader netlink dumps |
+| PTY | devpts is mounted, `/dev/ptmx` is published, and slave ownership follows the opener; non-root `pty.spawn` and node-pty work | No remaining kernel blocker found |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
 | RISC-V board boot | Image header, raw Image sidecar, and DT `simple-framebuffer` parsing are implemented; QEMU raw gate passes, U-Boot `booti` reaches userspace, and the manual bochs-display boot reaches the desktop with working virtio-net | EIC7700 cache/PCIe glue, a repository-level U-Boot desktop/network scenario |
 | Megrez drivers | Not ported | DW APB UART, SDHCI/MMC, DWMAC, USB xHCI/HID, watchdog |
@@ -96,7 +104,8 @@ non-GPU display/fbdev code is in scope only for the current desktop surface.
 1. Rootfs builder reproducibility and browser-web profile.
 2. Full Stage1 + systemd (journald) on the upstream kernel. **Done.**
 3. Remaining Debian-compatibility packages: procfs `/proc/net`, cgroup
-   events, PTY/reboot durability. rtnetlink link/address setup is **done**.
+   events, reboot durability. PTY and rtnetlink link/address setup are
+   **done**.
 4. Browser/desktop startup on the rebased kernel. The offline desktop,
    Firefox window, and guest network path are **done**; the full online
    browser workload, input, and the repository gate remain.
