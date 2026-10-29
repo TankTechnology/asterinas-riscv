@@ -1108,12 +1108,14 @@ configure_and_normalize_rootfs() {
     drop_unsupported_sysctl_files "$stage"
 
     # Identity. debootstrap copies the build host's hostname into the image, so
-    # every board came up as the build machine's name; and nothing said which
-    # kernel is underneath, because `uname` deliberately reports Linux 5.13 for
-    # compatibility. Name the machine and give the userspace a way to say it.
-    printf 'asterinas\n' >"$stage/etc/hostname"
-    if ! grep -q '^127\.0\.1\.1' "$stage/etc/hosts" 2>/dev/null; then
-        printf '127.0.1.1\tasterinas\n' >>"$stage/etc/hosts"
+    # every board came up as the build machine's name. Replace only that one:
+    # a stage that already carries a name of its own keeps it, and the
+    # /etc/hosts loopback entry for whatever name survives is written further
+    # down with the other host normalisation.
+    local stage_hostname
+    stage_hostname="$(tr -d '[:space:]' <"$stage/etc/hostname" 2>/dev/null || true)"
+    if [[ -z "$stage_hostname" || "$stage_hostname" == "$(hostname)" ]]; then
+        printf 'asterinas\n' >"$stage/etc/hostname"
     fi
     if [[ -f "$stage/etc/os-release" ]] && \
         ! grep -q '^ASTERINAS_KERNEL=' "$stage/etc/os-release"; then

@@ -437,22 +437,24 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
             m5.requested_packages,
             tuple(
                 sorted(
-                    m4.requested_packages
-                    + (
+                    set(m4.requested_packages)
+                    | {
                         "curl",
                         "fonts-wqy-microhei",
                         "iproute2",
                         "iputils-ping",
                         "x11-apps",
                         "xdotool",
-                    )
+                    }
                 )
             ),
         )
+        # desktop-m4 gained xdotool after this profile was written, so compare
+        # the union rather than concatenating and hitting a duplicate.
         self.assertEqual(
-            m5.identity_packages,
-            m4.identity_packages
-            + ("curl", "iproute2", "iputils-ping", "xdotool", "x11-apps"),
+            set(m5.identity_packages),
+            set(m4.identity_packages)
+            | {"curl", "iproute2", "iputils-ping", "xdotool", "x11-apps"},
         )
         self.assertIn("fonts-wqy-microhei", m5.requested_packages)
         self.assertNotIn("fonts-wqy-microhei", m5.identity_packages)
@@ -3049,12 +3051,15 @@ printf '200\t10.0.2.15'
         self.assertNotIn("-nic", arguments)
         self.assertEqual(arguments.count("user,id=net0"), 1)
         self.assertEqual(arguments.count("virtio-net-device,netdev=net0"), 1)
+        # The display device carries its geometry as a property, so match on the
+        # device name rather than the whole argument.
+        devices = [argument.split(",", 1)[0] for argument in arguments if argument != "virtio-net-device,netdev=net0"]
         for device in (
             "bochs-display",
             "virtio-keyboard-device",
             "virtio-tablet-device",
         ):
-            self.assertIn(device, arguments)
+            self.assertEqual(devices.count(device), 1, device)
 
     def test_qemu_operations_owns_and_publishes_fixture_lifecycle(self) -> None:
         inputs = []
