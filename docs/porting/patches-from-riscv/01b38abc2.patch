@@ -1,0 +1,75 @@
+From 01b38abc29ef122964d5de3119efcf759210af3d Mon Sep 17 00:00:00 2001
+From: TankTechnology <2541826291@qq.com>
+Date: Sun, 20 Sep 2026 16:57:03 +0800
+Subject: [PATCH] fix(drm): let a DRM device descriptor be passed over a socket
+
+`DriHandle` did not override `is_scm_rights_proven_leaf`, so it took the
+conservative default of `false`, and a descriptor for the DRM node classified
+as `Unsupported` -- which makes `AuxiliaryData::has_unsupported_file` refuse the
+*whole* `sendmsg` with `EPERM`. A DRM dma-buf was given this treatment already;
+the device node itself was missed.
+
+The default is conservative for a reason and is overridden here only because
+the audit the doc comment asks for was done. Every field of `DriHandle` and of
+`DriInner` was checked: `DriNode` (an enum), `Arc<GpuDevice>`, two `Mutex<()>`,
+a `Pollee`, and inside the lock two `BTreeMap`s whose value types are `u32`,
+`Framebuffer` (three `u32`s) and `CursorState` -- `Option<u32>`, `Option<u32>`,
+`CursorPosition`, and the type is `Copy`. Nothing can hold a file description,
+so a receiver holds exactly what it was handed.
+
+**This is not verified as a fix.** It was written to test the hypothesis that
+DRI3's fd hand-off was being refused by the kernel, and the run afterwards
+showed no descriptor crossing in either direction -- the same as before it. The
+change is kept because it is correct on the merits and the alternative is a
+kernel that refuses something Linux permits, but nothing has yet been observed
+to depend on it.
+
+`DEBIAN_DESKTOP_DRM_GL renderer=` is still `unavailable`.
+---
+ kernel/src/device/dri.rs | 30 ++++++++++++++++++++++++++++++
+ 1 file changed, 30 insertions(+)
+
+diff --git a/kernel/src/device/dri.rs b/kernel/src/device/dri.rs
+index 45655af62..49fb85f81 100644
+--- a/kernel/src/device/dri.rs
++++ b/kernel/src/device/dri.rs
+@@ -1880,6 +1880,36 @@ impl FileOps for DriHandle {
+ }
+ 
+ impl PerOpenFileOps for DriHandle {
++    /// Declares that this per-open object is an audited SCM_RIGHTS leaf.
++    ///
++    /// The default is `false` and must stay that way: a per-open device object
++    /// may retain another [`FileLike`], and passing its descriptor to another
++    /// process would then keep a file description alive behind the sender's
++    /// back. So the default is overridden only where the fields have been
++    /// checked, and here they have:
++    ///
++    /// - `node`, `DriNode` -- an enum, no ownership
++    /// - `gpu`, `Arc<GpuDevice>` -- the device, not a file
++    /// - `context_operation`, `cursor_operation`, `Mutex<()>`
++    /// - `events`, `Pollee`
++    /// - `inner`, `SpinLock<DriInner>`, whose fields are `BTreeMap<u32, u32>`,
++    ///   `BTreeMap<u32, Framebuffer>` (`Framebuffer` is three `u32`s), two
++    ///   `Option<u32>` and a `CursorState` (`Option<u32>`, `Option<u32>`,
++    ///   `CursorPosition` -- the type is `Copy`).
++    ///
++    /// Nothing can hold a file description, so a client that receives this
++    /// descriptor holds exactly what it was handed.
++    ///
++    /// This matters because it is how a GL client is given the DRM device at
++    /// all: `glamor_dri3_open_client` opens the node and the reply carries the
++    /// descriptor over the X socket. A DRM *dma-buf* was given the same
++    /// treatment for the same reason; the device node itself was not, so a
++    /// descriptor for it classified as `Unsupported` and the whole `sendmsg`
++    /// was refused.
++    fn is_scm_rights_proven_leaf(&self) -> bool {
++        true
++    }
++
+     fn check_seekable(&self) -> Result<()> {
+         Ok(())
+     }
+-- 
+2.34.1
+

@@ -1,0 +1,398 @@
+From 1e53ca63ba3d31bcdb9d294a81dff0e4e9d1a983 Mon Sep 17 00:00:00 2001
+From: TankTechnology <2541826291@qq.com>
+Date: Tue, 20 Oct 2026 19:43:36 +0800
+Subject: [PATCH] feat(procfs): support systemd sysctl writes and stable boot
+ identity
+
+---
+ kernel/src/fs/fs_impls/procfs/mod.rs          |  5 ++
+ .../procfs/sys/kernel/core_pattern.rs         | 54 +++++++++++++++++++
+ .../src/fs/fs_impls/procfs/sys/kernel/mod.rs  | 31 +++++++++++
+ .../fs/fs_impls/procfs/sys/kernel/pid_max.rs  | 30 +++++++----
+ .../fs/fs_impls/procfs/sys/kernel/random.rs   | 19 +++++--
+ kernel/src/fs/fs_impls/procfs/sys/mod.rs      |  4 ++
+ kernel/src/init.rs                            | 15 ++++++
+ kernel/src/process/posix_thread/mod.rs        | 24 +++++++--
+ 8 files changed, 166 insertions(+), 16 deletions(-)
+ create mode 100644 kernel/src/fs/fs_impls/procfs/sys/kernel/core_pattern.rs
+
+diff --git a/kernel/src/fs/fs_impls/procfs/mod.rs b/kernel/src/fs/fs_impls/procfs/mod.rs
+index ddc98a89f..6a3f55466 100644
+--- a/kernel/src/fs/fs_impls/procfs/mod.rs
++++ b/kernel/src/fs/fs_impls/procfs/mod.rs
+@@ -64,6 +64,11 @@ pub(super) fn init_on_each_cpu() {
+     cpuinfo::init_on_each_cpu();
+ }
+ 
++/// Return the process-visible boot identity for early handoff evidence.
++pub(crate) fn boot_id_text() -> &'static str {
++    sys::boot_id_text()
++}
++
+ /// Magic number.
+ const PROC_MAGIC: u64 = 0x9fa0;
+ /// Root Inode ID.
+diff --git a/kernel/src/fs/fs_impls/procfs/sys/kernel/core_pattern.rs b/kernel/src/fs/fs_impls/procfs/sys/kernel/core_pattern.rs
+new file mode 100644
+index 000000000..fdc16635b
+--- /dev/null
++++ b/kernel/src/fs/fs_impls/procfs/sys/kernel/core_pattern.rs
+@@ -0,0 +1,54 @@
++// SPDX-License-Identifier: MPL-2.0
++
++use alloc::borrow::ToOwned;
++
++use aster_util::printer::VmPrinter;
++
++use crate::{
++    fs::{
++        file::mkmod,
++        procfs::template::{ProcFile, ProcFileOps},
++        vfs::inode::Inode,
++    },
++    prelude::*,
++};
++
++static CORE_PATTERN: spin::Mutex<String> = spin::Mutex::new(String::new());
++
++pub(super) fn validate_core_pattern(value: &str) -> Result<()> {
++    if value.is_empty() || value.as_bytes().contains(&0) {
++        return_errno_with_message!(Errno::EINVAL, "core_pattern must not be empty");
++    }
++    Ok(())
++}
++
++pub(super) struct CorePatternFileOps;
++
++impl CorePatternFileOps {
++    pub(super) fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
++        ProcFile::new(Self, parent, mkmod!(a+r, u+w))
++    }
++}
++
++impl ProcFileOps for CorePatternFileOps {
++    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
++        let pattern = CORE_PATTERN.lock();
++        let mut printer = VmPrinter::new_skip(writer, offset);
++        writeln!(printer, "{}", if pattern.is_empty() { "core" } else { &pattern })?;
++        Ok(printer.bytes_written())
++    }
++
++    fn write_at(&self, offset: usize, reader: &mut VmReader) -> Result<usize> {
++        if offset != 0 {
++            return_errno_with_message!(Errno::EINVAL, "sysctl writes must start at offset zero");
++        }
++        let (value, count) = reader.read_cstring_until_end(128)?;
++        let value = value
++            .to_str()
++            .map_err(|_| Error::with_message(Errno::EINVAL, "core_pattern is not UTF-8"))?
++            .trim();
++        validate_core_pattern(value)?;
++        *CORE_PATTERN.lock() = value.to_owned();
++        Ok(count)
++    }
++}
+diff --git a/kernel/src/fs/fs_impls/procfs/sys/kernel/mod.rs b/kernel/src/fs/fs_impls/procfs/sys/kernel/mod.rs
+index 427752f99..cd17bf278 100644
+--- a/kernel/src/fs/fs_impls/procfs/sys/kernel/mod.rs
++++ b/kernel/src/fs/fs_impls/procfs/sys/kernel/mod.rs
+@@ -8,6 +8,7 @@ use crate::{
+             sys::kernel::{
+                 asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps,
+                 cap_last_cap::CapLastCapFileOps,
++                core_pattern::CorePatternFileOps,
+                 dmesg_restrict::DmesgRestrictFileOps,
+                 pid_max::PidMaxFileOps,
+                 random::RandomDirOps,
+@@ -28,6 +29,7 @@ use crate::{
+ 
+ mod asterinas_reboot_watchdog;
+ mod cap_last_cap;
++mod core_pattern;
+ mod dmesg_restrict;
+ mod pid_max;
+ mod random;
+@@ -35,6 +37,10 @@ mod tainted;
+ mod uts;
+ mod yama;
+ 
++pub(crate) fn boot_id_text() -> &'static str {
++    random::boot_id_text()
++}
++
+ /// Represents the inode at `/proc/sys/kernel`.
+ pub struct KernelDirOps;
+ 
+@@ -57,6 +63,11 @@ impl KernelDirOps {
+             InodeType::File,
+             CapLastCapFileOps::new_inode,
+         ),
++        (
++            "core_pattern",
++            InodeType::File,
++            CorePatternFileOps::new_inode,
++        ),
+         (
+             "dmesg_restrict",
+             InodeType::File,
+@@ -77,6 +88,8 @@ mod tests {
+     use ostd::prelude::*;
+ 
+     use super::asterinas_reboot_watchdog::{validate_disarm_value, validate_write_offset};
++    use super::core_pattern::validate_core_pattern;
++    use super::pid_max::validate_pid_max;
+     use crate::prelude::Errno;
+ 
+     #[ktest]
+@@ -94,6 +107,24 @@ mod tests {
+             Errno::EINVAL
+         );
+     }
++
++    #[ktest]
++    fn pid_max_accepts_systemd_value_and_rejects_out_of_range_values() {
++        assert_eq!(validate_pid_max(4_194_304).unwrap(), 4_194_304);
++        assert_eq!(validate_pid_max(300).unwrap_err().error(), Errno::EINVAL);
++        assert_eq!(
++            validate_pid_max(u64::from(u32::MAX / 2) + 1)
++                .unwrap_err()
++                .error(),
++            Errno::EINVAL
++        );
++    }
++
++    #[ktest]
++    fn core_pattern_accepts_systemd_value() {
++        assert!(validate_core_pattern("core").is_ok());
++        assert!(validate_core_pattern("").is_err());
++    }
+ }
+ 
+ impl ProcDirOps for KernelDirOps {
+diff --git a/kernel/src/fs/fs_impls/procfs/sys/kernel/pid_max.rs b/kernel/src/fs/fs_impls/procfs/sys/kernel/pid_max.rs
+index 56018fb79..7f7247b99 100644
+--- a/kernel/src/fs/fs_impls/procfs/sys/kernel/pid_max.rs
++++ b/kernel/src/fs/fs_impls/procfs/sys/kernel/pid_max.rs
+@@ -5,16 +5,26 @@ use aster_util::printer::VmPrinter;
+ use crate::{
+     fs::{
+         file::mkmod,
+-        procfs::template::{ProcFile, ProcFileOps},
++        procfs::template::{self, ProcFile, ProcFileOps},
+         vfs::inode::Inode,
+     },
+     prelude::*,
+-    process::posix_thread::PID_MAX,
++    process::posix_thread::{current_pid_max, set_pid_max},
+ };
+ 
+ /// Represents the inode at `/proc/sys/kernel/pid_max`.
+ pub struct PidMaxFileOps;
+ 
++pub(super) fn validate_pid_max(value: u64) -> Result<u32> {
++    let value = u32::try_from(value)
++        .map_err(|_| Error::with_message(Errno::EINVAL, "pid_max is out of range"))?;
++    const MIN_PID_MAX: u32 = 301;
++    if !(MIN_PID_MAX..=crate::process::posix_thread::PID_MAX).contains(&value) {
++        return_errno_with_message!(Errno::EINVAL, "pid_max is out of range");
++    }
++    Ok(value)
++}
++
+ impl PidMaxFileOps {
+     pub fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+         // Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/kernel/pid.c#L721>
+@@ -26,16 +36,18 @@ impl ProcFileOps for PidMaxFileOps {
+     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+         let mut printer = VmPrinter::new_skip(writer, offset);
+ 
+-        writeln!(printer, "{}", PID_MAX)?;
++        writeln!(printer, "{}", current_pid_max())?;
+ 
+         Ok(printer.bytes_written())
+     }
+ 
+-    fn write_at(&self, _offset: usize, _reader: &mut VmReader) -> Result<usize> {
+-        warn!("writing to `/proc/sys/kernel/pid_max` is not supported");
+-        return_errno_with_message!(
+-            Errno::EOPNOTSUPP,
+-            "writing to `/proc/sys/kernel/pid_max` is not supported"
+-        );
++    fn write_at(&self, offset: usize, reader: &mut VmReader) -> Result<usize> {
++        if offset != 0 {
++            return_errno_with_message!(Errno::EINVAL, "sysctl writes must start at offset zero");
++        }
++        let (value, count) = template::read_u64_from(reader)?;
++        let value = validate_pid_max(value)?;
++        set_pid_max(value)?;
++        Ok(count)
+     }
+ }
+diff --git a/kernel/src/fs/fs_impls/procfs/sys/kernel/random.rs b/kernel/src/fs/fs_impls/procfs/sys/kernel/random.rs
+index 325a09796..89ecfb173 100644
+--- a/kernel/src/fs/fs_impls/procfs/sys/kernel/random.rs
++++ b/kernel/src/fs/fs_impls/procfs/sys/kernel/random.rs
+@@ -55,6 +55,9 @@ impl ProcDirOps for RandomDirOps {
+ 
+ struct BootIdFileOps;
+ 
++static BOOT_ID: Once<[u8; 16]> = Once::new();
++static BOOT_ID_TEXT: Once<[u8; 37]> = Once::new();
++
+ fn new_uuid() -> [u8; 16] {
+     let mut value = [0; 16];
+     getrandom(&mut value);
+@@ -81,6 +84,16 @@ fn uuid_text(value: &[u8; 16]) -> [u8; 37] {
+     output
+ }
+ 
++/// Return the stable boot identity in the same UUID form exposed by procfs.
++///
++/// The value is initialized lazily so the procfs implementation and the early
++/// serial handoff marker share exactly one identity for the whole boot.
++pub(crate) fn boot_id_text() -> &'static str {
++    let text = BOOT_ID_TEXT.call_once(|| uuid_text(BOOT_ID.call_once(new_uuid)));
++    // `uuid_text` only writes ASCII hexadecimal digits, dashes, and a newline.
++    core::str::from_utf8(&text[..36]).expect("boot id text is ASCII")
++}
++
+ impl BootIdFileOps {
+     fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+         ProcFile::new(Self, parent, mkmod!(a+r))
+@@ -89,11 +102,9 @@ impl BootIdFileOps {
+ 
+ impl ProcFileOps for BootIdFileOps {
+     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+-        static BOOT_ID: Once<[u8; 16]> = Once::new();
+-
+-        let boot_id = BOOT_ID.call_once(new_uuid);
+         let mut printer = VmPrinter::new_skip(writer, offset);
+-        printer.write_bytes(&uuid_text(boot_id))?;
++        printer.write_bytes(boot_id_text().as_bytes())?;
++        printer.write_bytes(b"\n")?;
+         Ok(printer.bytes_written())
+     }
+ }
+diff --git a/kernel/src/fs/fs_impls/procfs/sys/mod.rs b/kernel/src/fs/fs_impls/procfs/sys/mod.rs
+index 9233307ab..78cf9b634 100644
+--- a/kernel/src/fs/fs_impls/procfs/sys/mod.rs
++++ b/kernel/src/fs/fs_impls/procfs/sys/mod.rs
+@@ -22,6 +22,10 @@ mod kernel;
+ mod net;
+ mod vm;
+ 
++pub(crate) fn boot_id_text() -> &'static str {
++    kernel::boot_id_text()
++}
++
+ /// Represents the inode at `/proc/sys`.
+ pub struct SysDirOps;
+ 
+diff --git a/kernel/src/init.rs b/kernel/src/init.rs
+index 48b827c6b..501b2bc49 100644
+--- a/kernel/src/init.rs
++++ b/kernel/src/init.rs
+@@ -145,13 +145,21 @@ fn ap_idle_loop() {
+ 
+ // The main function of the first (non-idle) kernel thread
+ fn first_kthread() {
++    #[cfg(target_arch = "riscv64")]
++    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=first-kthread-enter");
+     println!("Spawn the first kernel thread");
+ 
+     let init_mnt_ns = MountNamespace::get_init_singleton();
+     let fs_resolver = init_mnt_ns.new_path_resolver();
+     init_in_first_kthread(&fs_resolver);
++    #[cfg(target_arch = "riscv64")]
++    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=kthread-init-done");
+ 
++    #[cfg(target_arch = "riscv64")]
++    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=banner-begin");
+     print_banner();
++    #[cfg(target_arch = "riscv64")]
++    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=banner-done");
+ 
+     INIT_PROCESS.call_once(|| {
+         let karg = INIT_PROC_ARGS.get().unwrap();
+@@ -159,6 +167,8 @@ fn first_kthread() {
+         spawn_init_process(init_path, karg.argv().to_vec(), karg.envp().to_vec())
+             .expect("Failed to run the init process")
+     });
++    #[cfg(target_arch = "riscv64")]
++    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=init-spawned");
+ }
+ 
+ static INIT_PROCESS: Once<Arc<Process>> = Once::new();
+@@ -200,6 +210,11 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
+     #[cfg(target_arch = "riscv64")]
+     crate::first_process_diag::on_stdio_init_ready();
+     info!("ASTERINAS_USERMODE_STARTUP step=stdio-ready");
++    #[cfg(target_arch = "riscv64")]
++    ostd::early_println!(
++        "ASTERINAS_BOOT_ID boot_id={}",
++        crate::fs::procfs::boot_id_text()
++    );
+ }
+ 
+ static INIT_PATH: Once<String> = Once::new();
+diff --git a/kernel/src/process/posix_thread/mod.rs b/kernel/src/process/posix_thread/mod.rs
+index 5f36c26e5..767c4a1dd 100644
+--- a/kernel/src/process/posix_thread/mod.rs
++++ b/kernel/src/process/posix_thread/mod.rs
+@@ -730,9 +730,10 @@ impl Drop for PosixTidReservation {
+ /// Reserves an automatically selected or explicitly requested TID.
+ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<PosixTidReservation> {
+     let mut allocator = POSIX_TID_ALLOCATOR.lock();
++    let pid_max = current_pid_max();
+ 
+     let tid = if let Some(requested) = requested {
+-        if requested < FIRST_POSIX_TID || requested >= PID_MAX {
++        if requested < FIRST_POSIX_TID || requested >= pid_max {
+             return_errno_with_message!(Errno::EINVAL, "the requested PID is out of range");
+         }
+         if !allocator.allocated.insert(requested) {
+@@ -744,7 +745,7 @@ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<Po
+         let mut candidate = start;
+         loop {
+             if allocator.allocated.insert(candidate) {
+-                allocator.next = if candidate + 1 < PID_MAX {
++                allocator.next = if candidate + 1 < pid_max {
+                     candidate + 1
+                 } else {
+                     FIRST_POSIX_TID
+@@ -752,7 +753,7 @@ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<Po
+                 break candidate;
+             }
+ 
+-            candidate = if candidate + 1 < PID_MAX {
++            candidate = if candidate + 1 < pid_max {
+                 candidate + 1
+             } else {
+                 FIRST_POSIX_TID
+@@ -790,6 +791,23 @@ pub fn last_tid() -> Tid {
+ // This value can be modified by the user by writing to `/proc/sys/kernel/pid_max`.
+ pub const PID_MAX: u32 = u32::MAX / 2;
+ 
++static PID_MAX_VALUE: AtomicU32 = AtomicU32::new(PID_MAX);
++
++/// Returns the current maximum process ID accepted by the allocator.
++pub fn current_pid_max() -> u32 {
++    PID_MAX_VALUE.load(Ordering::Relaxed)
++}
++
++/// Updates the maximum process ID exposed through `/proc/sys/kernel/pid_max`.
++pub fn set_pid_max(value: u32) -> Result<()> {
++    const MIN_PID_MAX: u32 = 301;
++    if !(MIN_PID_MAX..=PID_MAX).contains(&value) {
++        return_errno_with_message!(Errno::EINVAL, "pid_max is out of range");
++    }
++    PID_MAX_VALUE.store(value, Ordering::Relaxed);
++    Ok(())
++}
++
+ /// The sleeping state of a thread.
+ #[derive(Clone, Copy, Debug)]
+ pub enum SleepingState {
+-- 
+2.34.1
+

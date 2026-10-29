@@ -1,0 +1,347 @@
+From 28a15360dcfa81354f75322a4296d9f7716e78e8 Mon Sep 17 00:00:00 2001
+From: TankTechnology <2541826291@qq.com>
+Date: Wed, 21 Oct 2026 09:26:36 +0800
+Subject: [PATCH] fix(riscv): unblock DRM dma-buf passing and add frame-pointer
+ diagnostics
+
+- treat DmaBufFile and FenceFile as SCM_RIGHTS leaves: X11 DRI3 must pass
+  dma-buf descriptors over the X socket, and the ownership classifier
+  previously refused every send with EPERM
+- copy the previous scanout resource id out of the spinlock before
+  resource_unref: the if-let temporary lived across a sleeping virtio
+  command and panicked on the second present
+- make the GEM pool size a boot parameter (asterinas.dri_pool_mb) because
+  the bump allocator cannot reclaim and WebRender needs more than 64 MiB
+- expose the user frame pointer at syscall entry for stack diagnostics
+---
+ kernel/comps/virtio/src/device/gpu/device.rs |  6 ++++-
+ kernel/src/device/dri.rs                     | 24 ++++++++++++++++----
+ kernel/src/device/dri/fence.rs               |  5 ++++
+ kernel/src/device/dri/prime.rs               |  4 ++++
+ kernel/src/fs/file/file_handle.rs            | 10 ++++++++
+ kernel/src/net/socket/unix/ctrl_msg.rs       |  3 ++-
+ kernel/src/syscall/diagnostics.rs            | 12 ++++++++--
+ kernel/src/syscall/diagnostics/state.rs      | 17 ++++++++++++--
+ kernel/src/syscall/mod.rs                    |  8 ++++++-
+ ostd/src/arch/loongarch/cpu/context.rs       |  4 ++++
+ ostd/src/arch/riscv/cpu/context.rs           |  4 ++++
+ ostd/src/arch/x86/cpu/context/mod.rs         |  4 ++++
+ ostd/src/user.rs                             |  6 +++++
+ 13 files changed, 96 insertions(+), 11 deletions(-)
+
+diff --git a/kernel/comps/virtio/src/device/gpu/device.rs b/kernel/comps/virtio/src/device/gpu/device.rs
+index dcd64bd26..a9cdc55fe 100644
+--- a/kernel/comps/virtio/src/device/gpu/device.rs
++++ b/kernel/comps/virtio/src/device/gpu/device.rs
+@@ -549,7 +549,11 @@ impl GpuDevice {
+         width: u32,
+         height: u32,
+     ) -> Result<(), VirtioDeviceError> {
+-        if let Some(prev) = *self.present_resource.lock() {
++        // Copy the previous id out before dropping the spinlock: the control
++        // command below waits for the device and must not run with an atomic
++        // guard held (r167 panicked with MIGHT_SLEEP_VIOLATION here).
++        let previous_resource = *self.present_resource.lock();
++        if let Some(prev) = previous_resource {
+             // Best-effort cleanup: a stale resource id must not wedge a later present.
+             let _ = self.resource_unref(prev);
+         }
+diff --git a/kernel/src/device/dri.rs b/kernel/src/device/dri.rs
+index e1d56b515..306e2cab0 100644
+--- a/kernel/src/device/dri.rs
++++ b/kernel/src/device/dri.rs
+@@ -169,6 +169,21 @@ const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
+ /// buffers exhaust it whether or not their handles were closed.
+ const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
+ 
++/// Pool size in MiB, overrideable with `asterinas.dri_pool_mb` for diagnostics.
++///
++/// The bump allocator makes the ceiling cumulative, and a WebRender client can
++/// exhaust the default before its first frame on a slow TCG guest. The board
++/// keeps the default; a QEMU probe can raise it without rebuilding.
++static DUMB_POOL_MB: AtomicU32 = AtomicU32::new((DUMB_POOL_SIZE / (1024 * 1024)) as u32);
++aster_cmdline::define_kv_param!("asterinas.dri_pool_mb", DUMB_POOL_MB);
++
++fn dumb_pool_size() -> usize {
++    // Keep the request inside what a 2 GiB guest can plausibly back; an
++    // impossible value still fails cleanly at VMO allocation.
++    let mb = DUMB_POOL_MB.load(Ordering::Relaxed).clamp(16, 1024);
++    mb as usize * 1024 * 1024
++}
++
+ /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
+ const MAX_RESOLUTION: u32 = 8192;
+ 
+@@ -459,7 +474,8 @@ fn prepare_native_pool() -> Result<()> {
+ 
+     // Display selection precedes DRM-node registration, so no client can have
+     // created a pool yet. Keep the expensive zeroing outside the spin lock.
+-    let pool = VmoOptions::new(DUMB_POOL_SIZE)
++    let pool_size = dumb_pool_size();
++    let pool = VmoOptions::new(pool_size)
+         .flags(VmoFlags::CONTIGUOUS)
+         .alloc()?;
+     let address = pool
+@@ -472,7 +488,7 @@ fn prepare_native_pool() -> Result<()> {
+     ostd::info!(
+         "ASTERINAS_DC_NATIVE pool_addr={:#x} pool_size={:#x}",
+         address,
+-        DUMB_POOL_SIZE,
++        pool_size,
+     );
+     Ok(())
+ }
+@@ -1330,7 +1346,7 @@ fn ensure_pool(objects: &mut GemObjects) -> Result<Arc<Vmo>> {
+     if let Some(pool) = objects.pool.as_ref() {
+         return Ok(pool.clone());
+     }
+-    let pool = VmoOptions::new(DUMB_POOL_SIZE)
++    let pool = VmoOptions::new(dumb_pool_size())
+         .flags(VmoFlags::CONTIGUOUS)
+         .alloc()?;
+     #[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
+@@ -1491,7 +1507,7 @@ fn reserve_span(objects: &mut GemObjects, size: usize) -> Result<usize> {
+     let end = offset
+         .checked_add(size)
+         .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
+-    if end > DUMB_POOL_SIZE {
++    if end > dumb_pool_size() {
+         return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
+     }
+     objects.next_offset = end.align_up(PAGE_SIZE);
+diff --git a/kernel/src/device/dri/fence.rs b/kernel/src/device/dri/fence.rs
+index 6264ee9fa..2c14902f7 100644
+--- a/kernel/src/device/dri/fence.rs
++++ b/kernel/src/device/dri/fence.rs
+@@ -63,6 +63,11 @@ impl Pollable for FenceFile {
+ }
+ 
+ impl FileLike for FenceFile {
++    /// A fence describes one completed submission and retains no other file.
++    fn is_scm_rights_leaf(&self) -> bool {
++        true
++    }
++
+     /// Reading a completed fence succeeds without producing bytes: the
+     /// completion is the whole of what it has to report.
+     fn read(&self, _writer: &mut VmWriter) -> Result<usize> {
+diff --git a/kernel/src/device/dri/prime.rs b/kernel/src/device/dri/prime.rs
+index af229c8f9..52e0a1dbe 100644
+--- a/kernel/src/device/dri/prime.rs
++++ b/kernel/src/device/dri/prime.rs
+@@ -96,6 +96,10 @@ impl Pollable for DmaBufFile {
+ }
+ 
+ impl FileLike for DmaBufFile {
++    fn is_scm_rights_leaf(&self) -> bool {
++        true
++    }
++
+     fn access_mode(&self) -> AccessMode {
+         self.access_mode
+     }
+diff --git a/kernel/src/fs/file/file_handle.rs b/kernel/src/fs/file/file_handle.rs
+index ae706ac3e..823f9dfe9 100644
+--- a/kernel/src/fs/file/file_handle.rs
++++ b/kernel/src/fs/file/file_handle.rs
+@@ -93,6 +93,16 @@ pub trait FileLike: Pollable + Send + Sync + Any {
+         return_errno_with_message!(Errno::ESPIPE, "write_at is not supported");
+     }
+ 
++    /// Whether this file is a leaf for `SCM_RIGHTS` ownership analysis.
++    ///
++    /// A leaf may own memory or device state, but it cannot strongly retain
++    /// another file description.  Device files that only describe a buffer
++    /// or a completed submission belong here: passing them to another
++    /// process cannot create a cross-protocol ownership cycle.
++    fn is_scm_rights_leaf(&self) -> bool {
++        false
++    }
++
+     fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
+         // `ENOTTY` means that "The specified operation does not apply to the kind of object that
+         // the file descriptor references".
+diff --git a/kernel/src/net/socket/unix/ctrl_msg.rs b/kernel/src/net/socket/unix/ctrl_msg.rs
+index cff3ae570..5ea84cc70 100644
+--- a/kernel/src/net/socket/unix/ctrl_msg.rs
++++ b/kernel/src/net/socket/unix/ctrl_msg.rs
+@@ -490,7 +490,8 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
+         file.downcast_ref::<EpollFile>().is_some(),
+         file.as_socket().is_some(),
+         file.downcast_ref::<PidFile>().is_some(),
+-    ) {
++    ) || file.is_scm_rights_leaf()
++    {
+         return ScmFileClass::ProvenLeaf;
+     }
+ 
+diff --git a/kernel/src/syscall/diagnostics.rs b/kernel/src/syscall/diagnostics.rs
+index f8b63e065..205c33a9c 100644
+--- a/kernel/src/syscall/diagnostics.rs
++++ b/kernel/src/syscall/diagnostics.rs
+@@ -59,7 +59,13 @@ impl ThreadDiagnostics {
+ }
+ 
+ /// Records entry before seccomp or dispatch, without touching user memory.
+-pub(super) fn enter(ctx: &Context, number: u64, args: [u64; 6]) {
++pub(super) fn enter(
++    ctx: &Context,
++    number: u64,
++    args: [u64; 6],
++    user_sp: u64,
++    user_fp: u64,
++) {
+     if !ENABLED.load(Ordering::Relaxed) {
+         return;
+     }
+@@ -86,7 +92,9 @@ pub(super) fn enter(ctx: &Context, number: u64, args: [u64; 6]) {
+             None
+         };
+         state.entered_tid = ctx.posix_thread.tid();
+-        state.calls.enter(number, args, entered_jiffies);
++        state
++            .calls
++            .enter(number, args, entered_jiffies, user_sp, user_fp);
+         old_vm
+     };
+     // Dropping the final weak reference can free memory.
+diff --git a/kernel/src/syscall/diagnostics/state.rs b/kernel/src/syscall/diagnostics/state.rs
+index 9623ec682..2d3aaa6fa 100644
+--- a/kernel/src/syscall/diagnostics/state.rs
++++ b/kernel/src/syscall/diagnostics/state.rs
+@@ -13,6 +13,8 @@ pub(crate) struct Call {
+     pub number: u64,
+     pub args: [u64; 6],
+     pub entered_jiffies: u64,
++    pub user_sp: u64,
++    pub user_fp: u64,
+ }
+ 
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+@@ -75,7 +77,14 @@ pub(crate) struct State {
+ }
+ 
+ impl State {
+-    pub fn enter(&mut self, number: u64, args: [u64; 6], entered_jiffies: u64) {
++    pub fn enter(
++        &mut self,
++        number: u64,
++        args: [u64; 6],
++        entered_jiffies: u64,
++        user_sp: u64,
++        user_fp: u64,
++    ) {
+         // Stop assigning records if the sequence space is ever exhausted,
+         // rather than aliasing a previous call's sequence number.
+         let Some(sequence) = self.sequence.checked_add(1) else {
+@@ -88,6 +97,8 @@ impl State {
+             number,
+             args,
+             entered_jiffies,
++            user_sp,
++            user_fp,
+         });
+     }
+ 
+@@ -183,7 +194,7 @@ impl Call {
+     fn fmt_fields(self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         write!(
+             f,
+-            "\"sequence\":{},\"number\":{},\"args\":[{},{},{},{},{},{}],\"entered_jiffies\":{}",
++            "\"sequence\":{},\"number\":{},\"args\":[{},{},{},{},{},{}],\"entered_jiffies\":{},\"sp\":{},\"fp\":{}",
+             self.sequence,
+             self.number,
+             self.args[0],
+@@ -193,6 +204,8 @@ impl Call {
+             self.args[4],
+             self.args[5],
+             self.entered_jiffies,
++            self.user_sp,
++            self.user_fp,
+         )
+     }
+ }
+diff --git a/kernel/src/syscall/mod.rs b/kernel/src/syscall/mod.rs
+index 33ccddaa2..dce3be37b 100644
+--- a/kernel/src/syscall/mod.rs
++++ b/kernel/src/syscall/mod.rs
+@@ -652,7 +652,13 @@ impl SyscallArgument {
+ 
+ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
+     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+-    diagnostics::enter(ctx, syscall_frame.syscall_number, syscall_frame.args);
++    diagnostics::enter(
++        ctx,
++        syscall_frame.syscall_number,
++        syscall_frame.args,
++        user_ctx.stack_pointer() as u64,
++        user_ctx.frame_pointer() as u64,
++    );
+     let profile_start = syscall_profile_begin(syscall_frame.syscall_number, ctx);
+     syscall_profile_log_process_boundary(syscall_frame.syscall_number, &syscall_frame.args, ctx);
+ 
+diff --git a/ostd/src/arch/loongarch/cpu/context.rs b/ostd/src/arch/loongarch/cpu/context.rs
+index a6d875527..bcd621ab1 100644
+--- a/ostd/src/arch/loongarch/cpu/context.rs
++++ b/ostd/src/arch/loongarch/cpu/context.rs
+@@ -271,6 +271,10 @@ impl UserContextApi for UserContext {
+         self.user_context.era = ip;
+     }
+ 
++    fn frame_pointer(&self) -> usize {
++        self.fp()
++    }
++
+     fn stack_pointer(&self) -> usize {
+         self.sp()
+     }
+diff --git a/ostd/src/arch/riscv/cpu/context.rs b/ostd/src/arch/riscv/cpu/context.rs
+index 95285cc0c..a914886cb 100644
+--- a/ostd/src/arch/riscv/cpu/context.rs
++++ b/ostd/src/arch/riscv/cpu/context.rs
+@@ -253,6 +253,10 @@ impl UserContextApi for UserContext {
+     fn set_stack_pointer(&mut self, sp: usize) {
+         self.set_sp(sp);
+     }
++
++    fn frame_pointer(&self) -> usize {
++        self.s0()
++    }
+ }
+ 
+ macro_rules! cpu_context_impl_getter_setter {
+diff --git a/ostd/src/arch/x86/cpu/context/mod.rs b/ostd/src/arch/x86/cpu/context/mod.rs
+index e3b50426f..5e4fb494e 100644
+--- a/ostd/src/arch/x86/cpu/context/mod.rs
++++ b/ostd/src/arch/x86/cpu/context/mod.rs
+@@ -484,6 +484,10 @@ impl UserContextApi for UserContext {
+         self.set_rsp(sp)
+     }
+ 
++    fn frame_pointer(&self) -> usize {
++        self.rbp()
++    }
++
+     fn stack_pointer(&self) -> usize {
+         self.rsp()
+     }
+diff --git a/ostd/src/user.rs b/ostd/src/user.rs
+index 3b810dea4..f98aba36a 100644
+--- a/ostd/src/user.rs
++++ b/ostd/src/user.rs
+@@ -36,6 +36,12 @@ pub trait UserContextApi {
+ 
+     /// Gets the stack pointer
+     fn stack_pointer(&self) -> usize;
++
++    /// Gets the frame pointer.
++    ///
++    /// Diagnostics use it to walk the user-space frame record chain while a
++    /// thread is blocked inside a syscall.
++    fn frame_pointer(&self) -> usize;
+ }
+ 
+ /// Code execution in the user mode.
+-- 
+2.34.1
+

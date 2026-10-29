@@ -1,0 +1,3450 @@
+From 9bace68177a2ea02395096c73115545f21116683 Mon Sep 17 00:00:00 2001
+From: TankTechnology <2541826291@qq.com>
+Date: Tue, 20 Oct 2026 19:44:00 +0800
+Subject: [PATCH] feat(riscv): add USB input and scheduler/IPC fixes
+
+---
+ kernel/comps/usb/Cargo.toml                   |   1 +
+ kernel/comps/usb/src/arch/riscv/capability.rs |  16 +-
+ .../src/arch/riscv/fixtures/soc-disabled.dtb  | Bin 0 -> 1177 bytes
+ .../src/arch/riscv/fixtures/soc-disabled.dts  |   4 +
+ .../arch/riscv/fixtures/wrapper-missing.dtb   | Bin 0 -> 981 bytes
+ .../arch/riscv/fixtures/wrapper-missing.dts   |   4 +
+ .../arch/riscv/fixtures/wrappers-absent.dtb   | Bin 0 -> 526 bytes
+ .../arch/riscv/fixtures/wrappers-absent.dts   |   5 +
+ .../arch/riscv/fixtures/wrappers-disabled.dtb | Bin 0 -> 1181 bytes
+ .../arch/riscv/fixtures/wrappers-disabled.dts |   5 +
+ .../arch/riscv/fixtures/wrappers-enabled.dtb  | Bin 0 -> 1173 bytes
+ .../arch/riscv/fixtures/wrappers-enabled.dts  |  53 ++
+ kernel/comps/usb/src/arch/riscv/mod.rs        | 379 +++++++-
+ kernel/comps/usb/src/mouse.rs                 | 208 ++++-
+ .../fs/fs_impls/cgroupfs/controller/pids.rs   |   4 +-
+ kernel/src/hardware_watchdog.rs               |   1 +
+ kernel/src/process/clone.rs                   |   2 +-
+ kernel/src/process/posix_thread/futex.rs      |  98 ++-
+ kernel/src/syscall/epoll.rs                   |  16 +-
+ kernel/src/syscall/mmap.rs                    |  47 +
+ kernel/src/syscall/ppoll.rs                   | 132 ++-
+ kernel/src/thread/oops.rs                     |  20 +
+ kernel/src/time/softirq.rs                    |  10 +
+ ostd/src/arch/riscv/trap/trap.S               |   7 +-
+ ostd/src/bus/usb.rs                           | 808 +++++++++++++++++-
+ ostd/src/bus/usb/report_queue.rs              |  71 +-
+ ostd/src/irq/bottom_half.rs                   |  23 +
+ ostd/src/irq/level.rs                         |  47 +-
+ ostd/src/irq/mod.rs                           |  76 +-
+ ostd/src/sync/guard.rs                        |  12 +-
+ ostd/src/task/atomic_mode.rs                  |  44 +-
+ ostd/src/task/mod.rs                          |  31 +-
+ ostd/src/task/preempt/cpu_local.rs            |  32 +
+ ostd/src/task/preempt/guard.rs                |   2 +
+ ostd/src/task/preempt/mod.rs                  |   8 +
+ .../process/cpu_affinity/migrate_fault.c      | 125 +++
+ .../process/cpu_affinity/run_test.sh          |   1 +
+ .../src/regression/process/run_test.sh        |   1 +
+ .../scripts/run_group_stop_ppoll_test.sh      |   8 +
+ 39 files changed, 2171 insertions(+), 130 deletions(-)
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dtb
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dts
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dtb
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dts
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dtb
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dts
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dtb
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dts
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dtb
+ create mode 100644 kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dts
+ create mode 100644 test/initramfs/src/regression/process/cpu_affinity/migrate_fault.c
+ create mode 100755 test/initramfs/src/regression/scripts/run_group_stop_ppoll_test.sh
+
+diff --git a/kernel/comps/usb/Cargo.toml b/kernel/comps/usb/Cargo.toml
+index e35fe489e..a2ec720db 100644
+--- a/kernel/comps/usb/Cargo.toml
++++ b/kernel/comps/usb/Cargo.toml
+@@ -4,6 +4,7 @@ version = "0.1.0"
+ edition.workspace = true
+ 
+ [dependencies]
++aster-cmdline.workspace = true
+ aster-input.workspace = true
+ aster-logger.workspace = true
+ component.workspace = true
+diff --git a/kernel/comps/usb/src/arch/riscv/capability.rs b/kernel/comps/usb/src/arch/riscv/capability.rs
+index 6cfa13290..808c580c0 100644
+--- a/kernel/comps/usb/src/arch/riscv/capability.rs
++++ b/kernel/comps/usb/src/arch/riscv/capability.rs
+@@ -7,7 +7,7 @@ use ostd::{
+ 
+ const CAPLENGTH_HCIVERSION: usize = 0x00;
+ const HCSPARAMS1: usize = 0x04;
+-const HCCPARAMS1: usize = 0x10;
++pub(super) const HCCPARAMS1: usize = 0x10;
+ const DBOFF: usize = 0x14;
+ const RTSOFF: usize = 0x18;
+ const MIN_CAPABILITY_LENGTH: usize = 0x20;
+@@ -88,7 +88,7 @@ fn decode(raw: RawCapabilities, mmio_size: usize) -> Result<XhciCapabilities, Ca
+             mmio_size,
+         )
+         || extended_capabilities_offset.is_some_and(|offset| {
+-            offset < operational_offset || !region_fits(offset, size_of::<u32>(), mmio_size)
++            offset < MIN_CAPABILITY_LENGTH || !region_fits(offset, size_of::<u32>(), mmio_size)
+         })
+     {
+         return Err(CapabilityError::InvalidRegisterOffset);
+@@ -193,6 +193,18 @@ mod tests {
+         assert_eq!(capabilities.extended_capabilities_offset, Some(0x100));
+     }
+ 
++    #[ktest]
++    fn accepts_extended_capabilities_inside_capability_register_space() {
++        let mut raw = valid_raw();
++        raw.caplength_hciversion = 0x0100_0040;
++        raw.hccparams1 = 0x0008_0001;
++
++        let capabilities = decode(raw, 0x1_0000).unwrap();
++
++        assert_eq!(capabilities.operational_offset, 0x40);
++        assert_eq!(capabilities.extended_capabilities_offset, Some(0x20));
++    }
++
+     #[ktest]
+     fn rejects_offsets_outside_selected_mmio_window() {
+         let mut raw = valid_raw();
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dtb b/kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dtb
+new file mode 100644
+index 0000000000000000000000000000000000000000..d5485f75f7e14c0416eec64d759952006f7e53da
+GIT binary patch
+literal 1177
+zcmb7D%}N6?5Ke7HDu{X$yePeR=+a6R>dk`(y?GKmNxF&M#cZ-<wul})`U>Jzd;;%+
+zkKhCN3ci9klTG?Z>(9U>-~44Jlgaza*C%7ON5)u}vFZozJIL$EYsf^esDCcu#9HxE
+z75AFQ3%Cb)6*0*bu2K#X$c1d%$eS%Naccm*-NXI%-a#9wC9dPnP$Fj}7au1Eq;@jJ
+zFCuSIsMC0#R2S0PL0&|$(S<ciN$c&Qo({@XbCA8+$%K!_Z0CrVkX?Q(72!nOtb5YA
+zL>!rL9XSyx@Sc(aF;NBUZqp^ZbmdYvUeCO9=`9SopB|S%?j~g(QiPn;o5Wo4o8T3i
+zI+br3?EpH5COMSORL8tLRF~_;#FLHUetQ4Ob5F{k|JLtD<nQ_B-H-ZnhvQWEDt@bt
+z?sbn$vk>0t0r8oaabr&&Z{Yqyia>7;P}_!J*vBvzQJkczoDMpF*37uRXIxzxn@JHt
+z!HWS*#ZjH%-9wIgg9~9Lps!R4SOd~q>9PAh9PrPinnM%C$aSSL_K#f9m^}JddBU|&
+yl3A|%_^-=~n3a7Nn=I!=iWAR-y~vD^Y;;1-t<=Rx0Ze2((niN7k<LW2KlB@G52I)R
+
+literal 0
+HcmV?d00001
+
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dts b/kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dts
+new file mode 100644
+index 000000000..64dead4c7
+--- /dev/null
++++ b/kernel/comps/usb/src/arch/riscv/fixtures/soc-disabled.dts
+@@ -0,0 +1,4 @@
++// SPDX-License-Identifier: MPL-2.0
++/include/ "wrappers-enabled.dts"
++
++&{/soc} { status = "disabled"; };
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dtb b/kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dtb
+new file mode 100644
+index 0000000000000000000000000000000000000000..32a16fcc997479263c2d4c1ac455477718592d1a
+GIT binary patch
+literal 981
+zcma)5y-EW?5Z+4^i6Ckx*eGc%5)z4mb`~~vR)UpmZr9x5-tMupLA0>+73_Tkd%;Jr
+zvG)ah1#xC?H@Qe64oqgg`JcVX``Y&xW6cl7*b&MtlzYgV$Q#H+uZ%T5y*B%k1lUBm
+z6!Zqlh}TgkoN$$MkU$~i+eO~)fk}H~81A1O_79HxNIh|z4kn0#k$ird8Iamz%3ns_
+zp;T`PF}Zfq+HvW+snO0FrKAo1IL`nv%^Y!XdrbOi&3B3V3bOByqoO*KH*Zg>OT>{$
+zr#Ulo!|zZMB{S<*w)!lKYSMQw6n=hICHXC?9%NY9Z_b1Mr{5~p1kfdPs6f>+?(=}3
+z!c``}<6pDUO*|sgJI20Gs9yw(f;|VF?(T&Qk>0#QPcl&m5GNuBK2%b4(=1oQ`>B2l
+zIg37T4e<q6*Txo@0FJvc{K}&_<9CWZT5T?bm4LBQDPV2L?`6>a>2bh&%Qc4%!mfXn
+zcI^gzQVmaUvdp*^N;1p!2>%n+M9j(&OHEO7m*Zwk*sH<_$)*)bZl!ip129qWt~NR~
+Kne;Bgq392$j*>qB
+
+literal 0
+HcmV?d00001
+
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dts b/kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dts
+new file mode 100644
+index 000000000..7021f4aa1
+--- /dev/null
++++ b/kernel/comps/usb/src/arch/riscv/fixtures/wrapper-missing.dts
+@@ -0,0 +1,4 @@
++// SPDX-License-Identifier: MPL-2.0
++/include/ "wrappers-enabled.dts"
++
++&{/soc} { /delete-node/ usb0@50480000; };
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dtb b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dtb
+new file mode 100644
+index 0000000000000000000000000000000000000000..7f791caa039541fcdee6f570955ed3698f0f12d8
+GIT binary patch
+literal 526
+zcmZuuyG{f#4D=o#bOo=P@)`;jiH?q+prr97feqx6Q=Bc}d-x!JgkM06b6K&6h&1aN
+zd*WE$&y(*jqQxl@-4S&kh*!V`a1Q8sK|bv0-nVP&0P(Q#1>&U7z*Tn~Jc|>xRBeVN
+zE~>2FBgD&5*0(j&JU$ke^SCX&NwMS<g3GNw^}m7E87AGzRV%-r)gHi)f%?8A1G;zb
+zzqz%qo<~5r&S}yszai?Wy{s2r2WNXT_+V>Zy-UDMwVG}I4Tq<cH@F~$%P4>D=^m#y
+zw7+7xVr#P#cwGoWEAj8HaTct}N0w_Wu*Y5tt!AsM{+a$=<#ym`gQLvx8NX&X4E+Gs
+Co>X4|
+
+literal 0
+HcmV?d00001
+
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dts b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dts
+new file mode 100644
+index 000000000..be088157f
+--- /dev/null
++++ b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-absent.dts
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: MPL-2.0
++/include/ "wrappers-enabled.dts"
++
++&{/aliases} { /delete-property/ usb1; };
++&{/soc} { /delete-node/ usb0@50480000; /delete-node/ usb1@50490000; };
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dtb b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dtb
+new file mode 100644
+index 0000000000000000000000000000000000000000..9549fcac6bad26f6a9a7129a3ed1fca5448f075c
+GIT binary patch
+literal 1181
+zcmbVLy-Gtd6i#hLDu}uXE=m`NURtR_-5eZra}t~+y@|aSbCXNXEuw>?ui)h3<m@i^
+z2tI-@;46sd<R<;2RWWdq@BHQbCGRU=pN!QW8Dm|>svmgnAgv><A<=q8`Ev;;_KN4K
+zc-A~#z%%fxh>5Rom2!|kCZyX&+H8S|TLb9r9`3jI4%)a{;yUgOIWorO{Nu!c)Q%_r
+zMWiiqbrNrr>OxvO$crd8y0AtmX}vz=(?Onc4!l=8p77C_?i}$Fl8cY2BAoD>RVUp`
+ziz5-HJQH)pZ}6m5!JOMvV3*1*W#hTbyOZW%$o%xUbaGXcF-Q>N)e$Em1>RFq1k2FW
+zshG>C2hce*$)Gf*T;|21+*~gvMmF;MY5tS<o|I1islh#yzsH<cBhBRwpH$&9`7J-H
+z?H-BVLzveC;xo_V!Ja(c!1IL!VZAv(ts8=2FT<>&I7wAGF}i=&99{1-t}czuq==y4
+z#Q>)KD9`ZTLX3KY3t=UotyBtF1JYaRvHL<C@ZY4GLlfD^b)_-(mz>iWKl)pF!nIJ6
+xS+4u|x66!}m3<bQEaydvuaF6Qkr^S`=!TqIsf&>Sn8<jfjgCzsor-vW={FQlr2GH?
+
+literal 0
+HcmV?d00001
+
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dts b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dts
+new file mode 100644
+index 000000000..4845c4075
+--- /dev/null
++++ b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-disabled.dts
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: MPL-2.0
++/include/ "wrappers-enabled.dts"
++
++&{/soc/usb0@50480000} { status = "disabled"; };
++&{/soc/usb1@50490000} { status = "disabled"; };
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dtb b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dtb
+new file mode 100644
+index 0000000000000000000000000000000000000000..de18ffb6692524789713e66b5a45888e2d1f2e8a
+GIT binary patch
+literal 1173
+zcmb7Dy>1gh5MIYdks~3XL!u#aL*bK+43g7PP(Vi&DHU4ZZgMB~c27HJAyQEC28cG|
+z5z<HE5h!_yyh4<3_IB;F6$e;pZvJP!nZ5n}@a9^G!FM6VT!{W3@E4#bpvNFSSFm3M
+zY4g*IY9D+M<vsAEKZ4A9PnuGaCJtfWA?VqJTs~RS;^mvy(^p4RoQe9J&sG`-<AnUY
+zaHMU}IsXCZIj06oj45rSy<gT%mOI;cXN>mIpYY6}Gv=g6chFgW+wq-1-Uo&LfC_OV
+z@2)wyE*}YEnQ<2Gll%hCrw7ba9&pa%wze*oT{Zb09EX2+*CvH2+8%7!*)J`0tKR`~
+zh-^(`4rog<j$M5iSJ=bGb*=O6yZg<$@7tvR#UFl;fA6<zKE98y_?4Q7;&0e^u5Tdz
+z57IsTfP5TvF!3|WPr)zQkj}3l@Y+_wYLBWUxiDH~c~Ke_{9JzsDv~c)<K8Q2PMxoi
+zK#gpcw3Wv=(|?wF3`bHauL-f*7!o5Y&vlf;(~*StQd&u4s9D&`sPl$GQb%9Esk)F>
+y87;iDXL!>sBH{I!$X!*-ro?1I`Hz)TTC6M7(reqS4J1@0GwW>b3LRXm$D+5v38B;g
+
+literal 0
+HcmV?d00001
+
+diff --git a/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dts b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dts
+new file mode 100644
+index 000000000..38be5ddb3
+--- /dev/null
++++ b/kernel/comps/usb/src/arch/riscv/fixtures/wrappers-enabled.dts
+@@ -0,0 +1,53 @@
++// SPDX-License-Identifier: MPL-2.0
++// Regenerate: dtc -I dts -O dtb -o <name>.dtb <name>.dts
++/dts-v1/;
++
++/ {
++    #address-cells = <2>;
++    #size-cells = <2>;
++    aliases { usb1 = "/soc/usb1@50490000/dwc3@50490000"; };
++    chosen { asterinas,usb-host = "usb1"; };
++    interrupt-controller {
++        #interrupt-cells = <1>;
++        #address-cells = <0>;
++        interrupt-controller;
++        phandle = <7>;
++    };
++    soc {
++        #address-cells = <2>;
++        #size-cells = <2>;
++        ranges;
++        status = "okay";
++        usb0@50480000 {
++            #address-cells = <2>;
++            #size-cells = <2>;
++            reg = <0 0x50480000 0 0x10000>;
++            ranges;
++            status = "okay";
++            dwc3@50480000 {
++                compatible = "snps,dwc3";
++                reg = <0 0x50480000 0 0x10000>;
++            };
++        };
++        usb1@50490000 {
++            #address-cells = <2>;
++            #size-cells = <2>;
++            reg = <0 0x50490000 0 0x10000>;
++            ranges;
++            status = "okay";
++            dwc3@50490000 {
++                #address-cells = <2>;
++                #size-cells = <2>;
++                compatible = "snps,dwc3";
++                dr_mode = "host";
++                reg = <0 0x50490000 0 0x10000>;
++                interrupt-parent = <7>;
++                interrupts = <86>;
++                dma-noncoherent;
++                dma-ranges = <0 0 0 0xc0000000 0x200 0>;
++            };
++        };
++    };
++    disabled-child { status = "disabled"; };
++    malformed-status-child { status = [6f 6b 61 79]; };
++};
+diff --git a/kernel/comps/usb/src/arch/riscv/mod.rs b/kernel/comps/usb/src/arch/riscv/mod.rs
+index a7a73328c..396d4e406 100644
+--- a/kernel/comps/usb/src/arch/riscv/mod.rs
++++ b/kernel/comps/usb/src/arch/riscv/mod.rs
+@@ -1,6 +1,10 @@
+ // SPDX-License-Identifier: MPL-2.0
+ 
+-use core::{ops::Range, str};
++use core::{
++    ops::Range,
++    str,
++    sync::atomic::{AtomicBool, Ordering},
++};
+ 
+ use aster_input::input_dev::RegisteredInputDevice;
+ use aster_pci::PciDeviceLocation;
+@@ -10,7 +14,10 @@ use ostd::{
+         boot::DEVICE_TREE,
+         irq::{self as arch_irq, InterruptSourceInFdt},
+     },
+-    bus::usb::{PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport, UsbKeyboardError},
++    bus::usb::{
++        MouseReportLayout, PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport,
++        UsbKeyboardError, run_bulk_loopback_self_test,
++    },
+     io::IoMem,
+     irq::IrqLine,
+     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
+@@ -29,13 +36,21 @@ mod pci;
+ const EIC7700_DWC3_MMIO_SIZE: usize = 0x1_0000;
+ const EIC7700_USB0_MMIO_START: usize = 0x5048_0000;
+ const EIC7700_USB1_MMIO_START: usize = 0x5049_0000;
++const EIC7700_USB_WRAPPER_PATHS: [&str; 2] = ["/soc/usb0@50480000", "/soc/usb1@50490000"];
+ const EIC7700_DRAM_START: usize = 0x8000_0000;
+ const EIC7700_DRAM_SIZE: usize = 0x4_0000_0000;
+ const PAGE_SIZE: usize = 0x1000;
+ const USB_HOST_SELECTOR: &str = "asterinas,usb-host";
+ const DWC3_GCTL: usize = 0xc110;
++const DWC3_GSNPSID: usize = 0xc120;
++const DWC3_PROBE_OFFSETS: [usize; 3] = [capability::HCCPARAMS1, DWC3_GCTL, DWC3_GSNPSID];
+ const DWC3_GCTL_PRTCAPDIR_MASK: u32 = 0x3 << 12;
+ const DWC3_GCTL_PRTCAP_HOST: u32 = 0x1 << 12;
++const BULK_TEST_PAYLOAD_SHA256: &str =
++    "c30b5b3bb192d370a1f07db31d6a39d186b0fbd24caa5e3187e60f85be8573ff";
++
++static USB_BULK_SELFTEST: AtomicBool = AtomicBool::new(false);
++aster_cmdline::define_flag_param!("asterinas.usb_bulk_selftest", USB_BULK_SELFTEST);
+ 
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ struct Dwc3HostConfig {
+@@ -75,6 +90,93 @@ fn prepare_dwc3_host(mmio: &IoMem) -> Result<(), ()> {
+     Ok(())
+ }
+ 
++fn parse_hardware_probe(value: &str) -> Option<(usize, &'static str)> {
++    match value {
++        "dwc3-0" => Some((0, "dwc3-0")),
++        "dwc3-1" => Some((1, "dwc3-1")),
++        _ => None,
++    }
++}
++
++fn hardware_probe_target() -> Option<(usize, &'static str)> {
++    aster_cmdline::HARDWARE_PROBE
++        .get()
++        .and_then(|value| parse_hardware_probe(value))
++}
++
++fn hardware_probe_fail(device: &str, reason: &str) {
++    ostd::early_println!("ASTERINAS_PROBE_FAIL device={} reason={}", device, reason);
++    ostd::early_println!("ASTERINAS_PROBE_DONE device={} status=fail", device);
++}
++
++fn probe_read_only(index: usize, device: &'static str) {
++    let path = match index {
++        0 => "/soc/usb0@50480000/dwc3@50480000",
++        1 => "/soc/usb1@50490000/dwc3@50490000",
++        _ => unreachable!(),
++    };
++    ostd::early_println!("ASTERINAS_PROBE_BEGIN device={}", device);
++    let Some(device_tree) = DEVICE_TREE.get() else {
++        hardware_probe_fail(device, "missing-device-tree");
++        return;
++    };
++    let Some(node) = device_tree.find_node(path) else {
++        hardware_probe_fail(device, "missing-device-tree-node");
++        return;
++    };
++    if !ancestors_status_enabled(device_tree, path) {
++        hardware_probe_fail(device, "disabled-device-tree");
++        return;
++    }
++    let config = match config_from_node(node) {
++        Ok(config) => config,
++        Err(_) => {
++            hardware_probe_fail(device, "invalid-device-tree-resource");
++            return;
++        }
++    };
++    let expected_base = if index == 0 {
++        EIC7700_USB0_MMIO_START
++    } else {
++        EIC7700_USB1_MMIO_START
++    };
++    if config.mmio_range != (expected_base..expected_base + EIC7700_DWC3_MMIO_SIZE) {
++        hardware_probe_fail(device, "unexpected-mmio-resource");
++        return;
++    }
++    ostd::early_println!(
++        "ASTERINAS_PROBE_RESOURCE device={} base={:#010x} size={:#x} irq={}",
++        device,
++        expected_base,
++        EIC7700_DWC3_MMIO_SIZE,
++        config.interrupt,
++    );
++    let mmio = match IoMem::acquire(config.mmio_range) {
++        Ok(mmio) => mmio,
++        Err(_) => {
++            hardware_probe_fail(device, "mmio-unavailable");
++            return;
++        }
++    };
++    for offset in DWC3_PROBE_OFFSETS {
++        let value = match mmio.read_once::<u32>(offset) {
++            Ok(value) => value,
++            Err(_) => {
++                hardware_probe_fail(device, "mmio-read-failed");
++                return;
++            }
++        };
++        ostd::early_println!(
++            "ASTERINAS_PROBE_READ device={} offset={:#06x} value={:#010x}",
++            device,
++            offset,
++            value,
++        );
++    }
++    ostd::early_println!("ASTERINAS_PROBE_PASS device={}", device);
++    ostd::early_println!("ASTERINAS_PROBE_DONE device={} status=pass", device);
++}
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ enum ConfigError {
+     Disabled,
+@@ -202,16 +304,85 @@ fn selected_host_paths(value: &[u8]) -> Option<[Option<&str>; MAX_SELECTED_DWC3_
+         if bytes.is_empty() || count == MAX_SELECTED_DWC3_HOSTS {
+             return None;
+         }
+-        paths[count] = Some(str::from_utf8(bytes).ok()?);
++        let path = str::from_utf8(bytes).ok()?;
++        // Do not let libfdt alias resolution turn a selector such as
++        // `usb1` into a node below a disabled wrapper. The handoff contract
++        // carries absolute node paths only.
++        if !path.starts_with('/')
++            || path.contains("//")
++            || path
++                .split('/')
++                .any(|component| component == "." || component == "..")
++        {
++            return None;
++        }
++        paths[count] = Some(path);
+     }
+     Some(paths)
+ }
+ 
++fn status_enabled(status: Option<&[u8]>) -> bool {
++    match status {
++        None => true,
++        Some(value) => value == b"ok\0" || value == b"okay\0",
++    }
++}
++
++/// A selected DWC3 child is not usable when an EIC7700 wrapper above it is
++/// disabled.  U-Boot normally gates the wrapper node, while the child may not
++/// carry its own `status` property.  Check every named ancestor before any
++/// MMIO acquisition so a disabled wrapper cannot reach xHCI setup.
++fn ancestors_status_enabled(tree: &fdt::Fdt<'_>, path: &str) -> bool {
++    if !path.starts_with('/') {
++        return false;
++    }
++    let mut current = path;
++    while let Some((parent, _)) = current.rsplit_once('/') {
++        if parent.is_empty() {
++            return true;
++        }
++        let Some(node) = tree.find_node(parent) else {
++            // A partial DT must not make a selected child look reachable.
++            return false;
++        };
++        if !status_enabled(node.property("status").map(|property| property.value)) {
++            return false;
++        }
++        current = parent;
++    }
++    true
++}
++
++fn eic7700_usb_wrappers_disabled(tree: &fdt::Fdt<'_>) -> bool {
++    let wrappers = EIC7700_USB_WRAPPER_PATHS.map(|path| tree.find_node(path));
++    match wrappers {
++        // No EIC7700 wrapper nodes means a QEMU virt-style DT. Keep the PCI
++        // fallback in that case.
++        [None, None] => false,
++        // A partial EIC7700 DT is unsafe to probe: fail closed before PCI/XHCI
++        // registration instead of treating the missing wrapper as enabled.
++        [None, Some(_)] | [Some(_), None] => true,
++        [Some(first), Some(second)] => {
++            if EIC7700_USB_WRAPPER_PATHS
++                .iter()
++                .any(|path| !ancestors_status_enabled(tree, path))
++            {
++                return true;
++            }
++            [first, second]
++                .iter()
++                .all(|node| !status_enabled(node.property("status").map(|property| property.value)))
++        }
++    }
++}
++
+ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError> {
+-    let status = match node.property("status") {
+-        Some(property) => Some(property.as_str().ok_or(ConfigError::Disabled)?),
+-        None => None,
+-    };
++    // Apply the raw DT status contract before parsing any textual properties.
++    // In particular, a non-NUL-terminated `okay` must not be accepted here
++    // while the ancestor gate treats it as disabled.
++    if !status_enabled(node.property("status").map(|property| property.value)) {
++        return Err(ConfigError::Disabled);
++    }
+     let is_dwc3 = node
+         .compatible()
+         .is_some_and(|compatibles| compatibles.all().any(|value| value == "snps,dwc3"));
+@@ -235,7 +406,7 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
+     let dma_ranges = node.property("dma-ranges");
+ 
+     validate_config(ConfigFields {
+-        status,
++        status: None,
+         is_dwc3,
+         dr_mode,
+         mmio,
+@@ -247,9 +418,29 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
+ }
+ 
+ pub(super) fn init() {
+-    pci::init();
++    if let Some((index, device)) = hardware_probe_target() {
++        // Diagnostic mode deliberately bypasses PCI/xHCI setup.  The only
++        // permitted accesses are the three fixed read-only registers above.
++        probe_read_only(index, device);
++        return;
++    }
++    if aster_cmdline::HARDWARE_PROBE.get().is_some() {
++        // A GMAC probe owns this boot.  Do not enter PCI/xHCI setup merely
++        // because this component does not own the selected device.
++        return;
++    }
+ 
+     let device_tree = DEVICE_TREE.get().unwrap();
++    if eic7700_usb_wrappers_disabled(device_tree) {
++        // The physical EIC7700 minimal profile disables both wrapper nodes.
++        // Return before registering the PCI xHCI driver so no PCI BAR or IRQ
++        // side effect can bypass the DT gate. QEMU's virt machine has no
++        // EIC7700 wrapper nodes and therefore retains its PCI fallback.
++        ostd::info!("EIC7700 USB wrappers disabled; skipping USB host setup");
++        return;
++    }
++    pci::init();
++
+     let selector = device_tree
+         .find_node("/chosen")
+         .and_then(|chosen| chosen.property(USB_HOST_SELECTOR));
+@@ -271,6 +462,10 @@ pub(super) fn init() {
+             );
+             continue;
+         };
++        if !ancestors_status_enabled(device_tree, selector) {
++            ostd::info!("skipping disabled USB host {} and its wrapper", selector);
++            continue;
++        }
+         let config = match config_from_node(node) {
+             Ok(config) => config,
+             Err(error) => {
+@@ -362,29 +557,42 @@ struct DeferredMouseState {
+ }
+ 
+ impl DeferredMouseState {
+-    fn new(info: UsbDeviceInfo) -> Self {
++    fn new(info: UsbDeviceInfo, layout: Option<MouseReportLayout>) -> Self {
++        let layout = layout.unwrap_or(crate::mouse::BOOT_MOUSE_LAYOUT);
+         ostd::info!(
+             "USB boot mouse registered: {:04x}:{:04x} bus=usb name=usb_boot_mouse",
+             info.vendor_id,
+             info.product_id,
+         );
+         Self {
+-            decoder: HidBootMouse::new(),
+-            registered: register_mouse(info.vendor_id, info.product_id),
++            decoder: HidBootMouse::new(layout),
++            registered: register_mouse(info.vendor_id, info.product_id, layout),
+         }
+     }
+ }
+ 
++/// Failed transfers in a row before the HID task gives up for good.
++///
++/// A failed transfer leaves the report queue re-armed, so a device that
++/// recovers delivers its next report on its own and the run resets to zero.
++/// This threshold is only for a controller that is really gone.
++const HID_FAILURE_RETIREMENT_THRESHOLD: u32 = 32;
++
+ struct DeferredHidState {
+     keyboard: Option<DeferredKeyboardState>,
+     mouse: Option<DeferredMouseState>,
++    /// Failed transfers in a row since the last delivered report.
++    consecutive_failures: u32,
+ }
+ 
+ impl DeferredHidState {
+     fn new(info: UsbHidInfo) -> Self {
+         Self {
+             keyboard: info.keyboard.map(DeferredKeyboardState::new),
+-            mouse: info.mouse.map(DeferredMouseState::new),
++            mouse: info
++                .mouse
++                .map(|mouse| DeferredMouseState::new(mouse, info.mouse_layout)),
++            consecutive_failures: 0,
+         }
+     }
+ }
+@@ -432,10 +640,33 @@ fn process_deferred_hid(host: &Mutex<PollingUsbHidHost>, state: &mut DeferredHid
+         let report = {
+             let mut host = host.lock();
+             match host.poll_report() {
+-                Ok(Some(report)) => report,
++                Ok(Some(report)) => {
++                    state.consecutive_failures = 0;
++                    report
++                }
+                 Ok(None) => return true,
+                 Err(error) => {
+-                    ostd::warn!("USB HID transfer stopped: {:?}", error);
++                    state.consecutive_failures += 1;
++                    if state.consecutive_failures < HID_FAILURE_RETIREMENT_THRESHOLD {
++                        // Only the keyboard reports its transfer errors up to
++                        // here, but the mouse lives in this same task. Ending
++                        // the task over one of them takes the other device
++                        // down too, and the report queue has already re-armed
++                        // the failed transfer, so stay up and let the next
++                        // interrupt try again.
++                        ostd::warn!(
++                            "USB HID transfer failed, retrying ({}/{}): {:?}",
++                            state.consecutive_failures,
++                            HID_FAILURE_RETIREMENT_THRESHOLD,
++                            error,
++                        );
++                        return true;
++                    }
++                    ostd::warn!(
++                        "USB HID retired after {} consecutive transfer failures: {:?}",
++                        state.consecutive_failures,
++                        error,
++                    );
+                     return false;
+                 }
+             }
+@@ -474,6 +705,9 @@ fn process_deferred_hid(host: &Mutex<PollingUsbHidHost>, state: &mut DeferredHid
+ /// the event ring and emits evdev events. No polling loop runs while the
+ /// keyboard is idle.
+ pub fn run_polling() {
++    if aster_cmdline::HARDWARE_PROBE.get().is_some() {
++        return;
++    }
+     if let Some(host) = pci::take_selected_host() {
+         let location = host.location;
+         ostd::info!(
+@@ -502,10 +736,17 @@ pub fn run_polling() {
+ 
+ /// Runs the second firmware-selected DWC3/xHCI HID worker, when present.
+ pub fn run_polling_secondary() {
++    if aster_cmdline::HARDWARE_PROBE.get().is_some() {
++        return;
++    }
+     run_dwc3_hid_worker(1);
+ }
+ 
+ fn run_dwc3_hid_worker(index: usize) {
++    let bulk_selftest = USB_BULK_SELFTEST.load(Ordering::Relaxed);
++    if bulk_selftest && index != 0 {
++        return;
++    }
+     let Some(resources) = DWC3_HOST_RESOURCES.lock()[index].take() else {
+         return;
+     };
+@@ -520,6 +761,30 @@ fn run_dwc3_hid_worker(index: usize) {
+         resources.interrupt_source.interrupt_parent,
+         resources.interrupt_source.interrupt,
+     );
++    if bulk_selftest {
++        match run_bulk_loopback_self_test(resources.mmio, resources.dma_window) {
++            Ok(result) => ostd::info!(
++                "ASTERINAS_USB_BULK_SELFTEST result=pass controller={} payload_bytes={} \
++                 requested_in_bytes={} sha256={} resets={} out_transfers={} in_transfers={} \
++                 out_bytes={} in_bytes={}",
++                index,
++                result.payload_bytes,
++                result.requested_in_bytes,
++                BULK_TEST_PAYLOAD_SHA256,
++                result.resets,
++                result.out_transfers,
++                result.in_transfers,
++                result.out_bytes,
++                result.in_bytes,
++            ),
++            Err(error) => ostd::error!(
++                "ASTERINAS_USB_BULK_SELFTEST result=fail controller={} error={:?}",
++                index,
++                error,
++            ),
++        }
++        return;
++    }
+     run_hid_interrupt_driven(resources, None, &HID_HOSTS[index]);
+ }
+ 
+@@ -718,6 +983,8 @@ mod tests {
+             selected_host_paths(b"/soc/usb0/dwc3\0/soc/usb1/dwc3\0"),
+             Some([Some("/soc/usb0/dwc3"), Some("/soc/usb1/dwc3")])
+         );
++        assert_eq!(selected_host_paths(b"usb1\0"), None);
++        assert_eq!(selected_host_paths(b"/soc/usb1/../dwc3\0"), None);
+         assert_eq!(selected_host_paths(b""), None);
+         assert_eq!(selected_host_paths(b"/soc/usb0/dwc3"), None);
+         assert_eq!(selected_host_paths(b"/soc/usb0/dwc3\0\0"), None);
+@@ -727,6 +994,74 @@ mod tests {
+         );
+     }
+ 
++    #[ktest]
++    fn follows_standard_devicetree_status_defaults() {
++        assert!(status_enabled(None));
++        assert!(status_enabled(Some(b"ok\0")));
++        assert!(status_enabled(Some(b"okay\0")));
++        assert!(!status_enabled(Some(b"disabled\0")));
++        assert!(!status_enabled(Some(b"broken")));
++    }
++
++    #[ktest]
++    fn skips_disabled_wrappers_in_real_device_trees() {
++        for bytes in [
++            include_bytes!("fixtures/wrappers-disabled.dtb").as_slice(),
++            include_bytes!("fixtures/soc-disabled.dtb").as_slice(),
++        ] {
++            let tree = fdt::Fdt::new(bytes).unwrap();
++            assert!(eic7700_usb_wrappers_disabled(&tree));
++            for path in [
++                "/soc/usb0@50480000/dwc3@50480000",
++                "/soc/usb1@50490000/dwc3@50490000",
++            ] {
++                assert!(tree.find_node(path).is_some());
++                assert!(!ancestors_status_enabled(&tree, path));
++            }
++        }
++    }
++
++    #[ktest]
++    fn rejects_partial_wrappers_but_retains_virt_pci_fallback() {
++        let partial = fdt::Fdt::new(include_bytes!("fixtures/wrapper-missing.dtb")).unwrap();
++        assert!(eic7700_usb_wrappers_disabled(&partial));
++        let absent = fdt::Fdt::new(include_bytes!("fixtures/wrappers-absent.dtb")).unwrap();
++        assert!(!eic7700_usb_wrappers_disabled(&absent));
++    }
++
++    #[ktest]
++    fn resolves_enabled_children_and_rejects_disabled_children() {
++        let tree = fdt::Fdt::new(include_bytes!("fixtures/wrappers-enabled.dtb")).unwrap();
++        assert!(!eic7700_usb_wrappers_disabled(&tree));
++        let path = "/soc/usb1@50490000/dwc3@50490000";
++        assert!(ancestors_status_enabled(&tree, path));
++        let config = config_from_node(tree.find_node(path).unwrap()).unwrap();
++        assert_eq!(config.mmio_range, 0x5049_0000..0x504a_0000);
++        assert_eq!(config.interrupt, 86);
++
++        for path in ["/disabled-child", "/malformed-status-child"] {
++            assert_eq!(
++                config_from_node(tree.find_node(path).unwrap()),
++                Err(ConfigError::Disabled)
++            );
++        }
++    }
++
++    #[ktest]
++    fn rejects_alias_selector_that_resolves_below_disabled_wrapper() {
++        let tree = fdt::Fdt::new(include_bytes!("fixtures/wrappers-disabled.dtb")).unwrap();
++        let selector = tree
++            .find_node("/chosen")
++            .unwrap()
++            .property(USB_HOST_SELECTOR)
++            .unwrap();
++        // libfdt can resolve the alias, so selector validation must reject it
++        // before path-based ancestor checks can be bypassed.
++        assert!(tree.find_node("usb1").is_some());
++        assert_eq!(selected_host_paths(selector.value), None);
++        assert!(!ancestors_status_enabled(&tree, "usb1"));
++    }
++
+     #[ktest]
+     fn selects_dwc3_host_role_without_changing_other_controls() {
+         let firmware_device_mode = 0x0019_2004;
+@@ -738,6 +1073,19 @@ mod tests {
+         );
+     }
+ 
++    #[ktest]
++    fn hardware_probe_selector_accepts_only_one_fixed_dwc3_target() {
++        assert_eq!(parse_hardware_probe("dwc3-0"), Some((0, "dwc3-0")));
++        assert_eq!(parse_hardware_probe("dwc3-1"), Some((1, "dwc3-1")));
++        assert_eq!(parse_hardware_probe("gmac-0"), None);
++        assert_eq!(parse_hardware_probe("dwc3-0,dwc3-1"), None);
++    }
++
++    #[ktest]
++    fn hardware_probe_reads_only_the_fixed_register_whitelist() {
++        assert_eq!(DWC3_PROBE_OFFSETS, [0x10, 0xc110, 0xc120]);
++    }
++
+     #[ktest]
+     fn usb_keyboard_and_mouse_are_registered_before_the_first_report() {
+         component::init_all(
+@@ -755,6 +1103,7 @@ mod tests {
+                 vendor_id: 0x0627,
+                 product_id: 0x0002,
+             }),
++            mouse_layout: None,
+         });
+ 
+         assert_eq!(aster_input::count_devices(), before + 2);
+diff --git a/kernel/comps/usb/src/mouse.rs b/kernel/comps/usb/src/mouse.rs
+index 9d63b3b74..4bf8fa09f 100644
+--- a/kernel/comps/usb/src/mouse.rs
++++ b/kernel/comps/usb/src/mouse.rs
+@@ -1,6 +1,11 @@
+ // SPDX-License-Identifier: MPL-2.0
+ 
+-//! USB HID boot-mouse report decoding and input-device integration.
++//! USB HID mouse report decoding and input-device integration.
++//!
++//! Every report is read through a [`MouseReportLayout`]: the descriptor-derived
++//! one when the device described a report this kernel understands, and the
++//! fixed boot layout otherwise. The boot report has no wheel field, so a device
++//! that only ever sends it cannot report one.
+ 
+ use alloc::{sync::Arc, vec::Vec};
+ 
+@@ -8,14 +13,55 @@ use aster_input::{
+     event_type_codes::{EventTypes, KeyCode, KeyStatus, RelCode, SynEvent},
+     input_dev::{InputCapability, InputDevice, InputEvent, InputId, RegisteredInputDevice},
+ };
++use ostd::bus::usb::MouseReportLayout;
++
++/// The boot mouse report: three button bits, then two eight-bit displacements.
++pub(super) const BOOT_MOUSE_LAYOUT: MouseReportLayout = MouseReportLayout {
++    buttons_offset: 0,
++    buttons_bits: 3,
++    x_offset: 8,
++    x_bits: 8,
++    y_offset: 16,
++    y_bits: 8,
++    wheel_offset: None,
++    wheel_bits: 0,
++    report_bytes: 3,
++};
+ 
+-const BUTTON_MASK: u8 = 0b111;
+ const BUTTONS: [(u8, KeyCode); 3] = [
+     (1 << 0, KeyCode::BtnLeft),
+     (1 << 1, KeyCode::BtnRight),
+     (1 << 2, KeyCode::BtnMiddle),
+ ];
+ 
++/// Reads one little-endian bit field out of a report without interpreting it.
++fn raw_field(bytes: &[u8], offset: u8, bits: u8) -> Option<u32> {
++    if bits == 0 || bits >= 32 {
++        return None;
++    }
++    if usize::from(offset) + usize::from(bits) > bytes.len() * 8 {
++        return None;
++    }
++    let mut raw = 0u32;
++    for bit in 0..usize::from(bits) {
++        let index = usize::from(offset) + bit;
++        let value = (bytes[index / 8] >> (index % 8)) & 1;
++        raw |= u32::from(value) << bit;
++    }
++    Some(raw)
++}
++
++/// Reads one signed two's-complement bit field out of a report.
++fn signed_field(bytes: &[u8], offset: u8, bits: u8) -> Option<i32> {
++    let raw = raw_field(bytes, offset, bits)?;
++    let sign = 1u32 << (bits - 1);
++    Some(if raw & sign != 0 {
++        raw as i32 - (1i32 << bits)
++    } else {
++        raw as i32
++    })
++}
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub(super) enum MouseReportError {
+     InvalidLength,
+@@ -28,14 +74,18 @@ struct UsbBootMouseDevice {
+ }
+ 
+ impl UsbBootMouseDevice {
+-    fn new(vendor_id: u16, product_id: u16) -> Self {
++    fn new(vendor_id: u16, product_id: u16, layout: MouseReportLayout) -> Self {
+         let mut capability = InputCapability::new();
+         capability.set_supported_event_type(EventTypes::SYN);
+         for (_, button) in BUTTONS {
+             capability.set_supported_key(button);
+         }
+-        for axis in [RelCode::X, RelCode::Y, RelCode::Wheel] {
+-            capability.set_supported_relative_axis(axis);
++        capability.set_supported_relative_axis(RelCode::X);
++        capability.set_supported_relative_axis(RelCode::Y);
++        // Advertising a wheel a device never sends is what made a boot-protocol
++        // mouse look like it had one, so the axis follows the layout.
++        if layout.wheel_offset.is_some() {
++            capability.set_supported_relative_axis(RelCode::Wheel);
+         }
+         Self {
+             id: InputId::new(InputId::BUS_USB, vendor_id, product_id, 0x0001),
+@@ -66,31 +116,59 @@ impl InputDevice for UsbBootMouseDevice {
+     }
+ }
+ 
+-pub(super) fn register(vendor_id: u16, product_id: u16) -> RegisteredInputDevice {
+-    aster_input::register_device(Arc::new(UsbBootMouseDevice::new(vendor_id, product_id)))
++pub(super) fn register(
++    vendor_id: u16,
++    product_id: u16,
++    layout: MouseReportLayout,
++) -> RegisteredInputDevice {
++    aster_input::register_device(Arc::new(UsbBootMouseDevice::new(
++        vendor_id, product_id, layout,
++    )))
+ }
+ 
+ pub(super) struct HidBootMouse {
+     previous_buttons: u8,
++    layout: MouseReportLayout,
+ }
+ 
+ impl HidBootMouse {
+-    pub(super) const fn new() -> Self {
++    pub(super) const fn new(layout: MouseReportLayout) -> Self {
+         Self {
+             previous_buttons: 0,
++            layout,
+         }
+     }
+ 
++    /// Decodes one report through the layout the device reported.
++    ///
++    /// A report too short for that layout is read as the boot report instead,
++    /// because a three-byte report is the boot report by definition: a device
++    /// that keeps sending one after being asked for the report protocol must
++    /// not be mistaken for one that moved. Only a report short for both layouts
++    /// is rejected.
+     pub(super) fn decode(
+         &mut self,
+-        report: [u8; 4],
++        report: [u8; 8],
+         actual_length: usize,
+     ) -> Result<Vec<InputEvent>, MouseReportError> {
+-        if !(3..=4).contains(&actual_length) {
++        let bytes = report
++            .get(..actual_length)
++            .ok_or(MouseReportError::InvalidLength)?;
++        let layout = if actual_length >= usize::from(self.layout.report_bytes) {
++            self.layout
++        } else {
++            BOOT_MOUSE_LAYOUT
++        };
++        if actual_length < usize::from(layout.report_bytes) {
+             return Err(MouseReportError::InvalidLength);
+         }
+ 
+-        let buttons = report[0] & BUTTON_MASK;
++        let buttons = u8::try_from(
++            raw_field(bytes, layout.buttons_offset, layout.buttons_bits)
++                .ok_or(MouseReportError::InvalidLength)?,
++        )
++        .map_err(|_| MouseReportError::InvalidLength)?;
++
+         let mut events = Vec::new();
+         for (mask, button) in BUTTONS {
+             let was_pressed = self.previous_buttons & mask != 0;
+@@ -108,16 +186,18 @@ impl HidBootMouse {
+         }
+         self.previous_buttons = buttons;
+ 
+-        let x = i32::from(report[1] as i8);
+-        let y = i32::from(report[2] as i8);
+-        if x != 0 {
+-            events.push(InputEvent::from_relative_move(RelCode::X, x));
+-        }
+-        if y != 0 {
+-            events.push(InputEvent::from_relative_move(RelCode::Y, y));
++        for (offset, bits, code) in [
++            (layout.x_offset, layout.x_bits, RelCode::X),
++            (layout.y_offset, layout.y_bits, RelCode::Y),
++        ] {
++            let value = signed_field(bytes, offset, bits).ok_or(MouseReportError::InvalidLength)?;
++            if value != 0 {
++                events.push(InputEvent::from_relative_move(code, value));
++            }
+         }
+-        if actual_length == 4 {
+-            let wheel = i32::from(report[3] as i8);
++        if let Some(offset) = layout.wheel_offset {
++            let wheel = signed_field(bytes, offset, layout.wheel_bits)
++                .ok_or(MouseReportError::InvalidLength)?;
+             if wheel != 0 {
+                 events.push(InputEvent::from_relative_move(RelCode::Wheel, wheel));
+             }
+@@ -137,16 +217,36 @@ mod tests {
+         event_type_codes::{EventTypes, KeyCode, KeyStatus, RelCode, SynEvent},
+         input_dev::{InputDevice, InputEvent, InputId},
+     };
+-    use ostd::prelude::ktest;
++    use ostd::{bus::usb::MouseReportLayout, prelude::ktest};
+ 
+-    use super::{HidBootMouse, MouseReportError, UsbBootMouseDevice};
++    use super::{BOOT_MOUSE_LAYOUT, HidBootMouse, MouseReportError, UsbBootMouseDevice};
++
++    /// The layout the attached Megrez mouse describes: three button bits, two
++    /// twelve-bit displacements, then an eight-bit wheel.
++    const TWELVE_BIT_MOUSE_LAYOUT: MouseReportLayout = MouseReportLayout {
++        buttons_offset: 0,
++        buttons_bits: 3,
++        x_offset: 8,
++        x_bits: 12,
++        y_offset: 20,
++        y_bits: 12,
++        wheel_offset: Some(32),
++        wheel_bits: 8,
++        report_bytes: 5,
++    };
++
++    fn fill(prefix: &[u8]) -> [u8; 8] {
++        let mut report = [0u8; 8];
++        report[..prefix.len()].copy_from_slice(prefix);
++        report
++    }
+ 
+     #[ktest]
+     fn decodes_movement_button_transitions_and_sync() {
+-        let mut mouse = HidBootMouse::new();
++        let mut mouse = HidBootMouse::new(BOOT_MOUSE_LAYOUT);
+ 
+         assert_eq!(
+-            mouse.decode([0b001, 5, (-3_i8) as u8, 0], 3),
++            mouse.decode(fill(&[0b001, 5, (-3_i8) as u8]), 3),
+             Ok(vec![
+                 InputEvent::from_key_and_status(KeyCode::BtnLeft, KeyStatus::Pressed),
+                 InputEvent::from_relative_move(RelCode::X, 5),
+@@ -155,46 +255,63 @@ mod tests {
+             ])
+         );
+         assert_eq!(
+-            mouse.decode([0, 0, 0, 0], 3),
++            mouse.decode(fill(&[0]), 3),
+             Ok(vec![
+                 InputEvent::from_key_and_status(KeyCode::BtnLeft, KeyStatus::Released),
+                 InputEvent::from_sync_event(SynEvent::Report),
+             ])
+         );
+-        assert_eq!(mouse.decode([0, 0, 0, 0], 3), Ok(vec![]));
++        assert_eq!(mouse.decode(fill(&[0]), 3), Ok(vec![]));
+     }
+ 
+     #[ktest]
+-    fn decodes_three_buttons_signed_limits_and_optional_wheel() {
+-        let mut mouse = HidBootMouse::new();
++    fn reads_the_twelve_bit_axes_and_wheel_the_descriptor_defines() {
++        let mut mouse = HidBootMouse::new(TWELVE_BIT_MOUSE_LAYOUT);
+ 
++        // X=5 sits in bits 8..19 and Y=-3 in bits 20..31, so the middle byte
++        // carries X's high nibble below Y's low nibble.
+         assert_eq!(
+-            mouse.decode([0b110, i8::MIN as u8, i8::MAX as u8, (-1_i8) as u8], 4),
++            mouse.decode(fill(&[0b001, 0x05, 0xd0, 0xff, 0x01]), 5),
+             Ok(vec![
+-                InputEvent::from_key_and_status(KeyCode::BtnRight, KeyStatus::Pressed),
+-                InputEvent::from_key_and_status(KeyCode::BtnMiddle, KeyStatus::Pressed),
+-                InputEvent::from_relative_move(RelCode::X, i32::from(i8::MIN)),
+-                InputEvent::from_relative_move(RelCode::Y, i32::from(i8::MAX)),
+-                InputEvent::from_relative_move(RelCode::Wheel, -1),
++                InputEvent::from_key_and_status(KeyCode::BtnLeft, KeyStatus::Pressed),
++                InputEvent::from_relative_move(RelCode::X, 5),
++                InputEvent::from_relative_move(RelCode::Y, -3),
++                InputEvent::from_relative_move(RelCode::Wheel, 1),
++                InputEvent::from_sync_event(SynEvent::Report),
++            ])
++        );
++    }
++
++    #[ktest]
++    fn falls_back_to_the_boot_report_a_device_keeps_sending() {
++        // A device that ignored SET_PROTOCOL still sends three-byte reports,
++        // which must keep moving the pointer rather than be rejected.
++        let mut mouse = HidBootMouse::new(TWELVE_BIT_MOUSE_LAYOUT);
++
++        assert_eq!(
++            mouse.decode(fill(&[0, 7, (-2_i8) as u8]), 3),
++            Ok(vec![
++                InputEvent::from_relative_move(RelCode::X, 7),
++                InputEvent::from_relative_move(RelCode::Y, -2),
+                 InputEvent::from_sync_event(SynEvent::Report),
+             ])
+         );
+     }
+ 
+     #[ktest]
+-    fn rejects_reports_outside_boot_mouse_lengths_without_changing_state() {
+-        let mut mouse = HidBootMouse::new();
++    fn rejects_reports_short_for_every_layout_without_changing_state() {
++        let mut mouse = HidBootMouse::new(TWELVE_BIT_MOUSE_LAYOUT);
+ 
+         assert_eq!(
+-            mouse.decode([1, 0, 0, 0], 2),
++            mouse.decode(fill(&[1]), 2),
+             Err(MouseReportError::InvalidLength)
+         );
+         assert_eq!(
+-            mouse.decode([1, 0, 0, 0], 5),
++            mouse.decode([1, 0, 0, 0, 0, 0, 0, 0], 9),
+             Err(MouseReportError::InvalidLength)
+         );
+         assert_eq!(
+-            mouse.decode([1, 0, 0, 0], 3),
++            mouse.decode(fill(&[1]), 3),
+             Ok(vec![
+                 InputEvent::from_key_and_status(KeyCode::BtnLeft, KeyStatus::Pressed),
+                 InputEvent::from_sync_event(SynEvent::Report),
+@@ -202,9 +319,20 @@ mod tests {
+         );
+     }
+ 
++    #[ktest]
++    fn advertises_a_wheel_only_when_the_layout_has_one() {
++        let without = UsbBootMouseDevice::new(0x1234, 0xabcd, BOOT_MOUSE_LAYOUT);
++        assert!(without.capability().support_relative_axis(RelCode::X));
++        assert!(without.capability().support_relative_axis(RelCode::Y));
++        assert!(!without.capability().support_relative_axis(RelCode::Wheel));
++
++        let with = UsbBootMouseDevice::new(0x1234, 0xabcd, TWELVE_BIT_MOUSE_LAYOUT);
++        assert!(with.capability().support_relative_axis(RelCode::Wheel));
++    }
++
+     #[ktest]
+     fn advertises_exact_boot_mouse_identity_and_capabilities() {
+-        let device = UsbBootMouseDevice::new(0x1234, 0xabcd);
++        let device = UsbBootMouseDevice::new(0x1234, 0xabcd, TWELVE_BIT_MOUSE_LAYOUT);
+         let capability = device.capability();
+ 
+         assert_eq!(device.name(), "usb_boot_mouse");
+diff --git a/kernel/src/fs/fs_impls/cgroupfs/controller/pids.rs b/kernel/src/fs/fs_impls/cgroupfs/controller/pids.rs
+index d2fa9b170..bef419187 100644
+--- a/kernel/src/fs/fs_impls/cgroupfs/controller/pids.rs
++++ b/kernel/src/fs/fs_impls/cgroupfs/controller/pids.rs
+@@ -8,7 +8,7 @@ use aster_util::printer::VmPrinter;
+ use ostd::mm::{VmReader, VmWriter};
+ 
+ use super::TryChargeError;
+-use crate::{process::posix_thread::PID_MAX, util::ReadCString};
++use crate::{process::posix_thread::current_pid_max, util::ReadCString};
+ 
+ /// A sub-controller responsible for PID resource management in the cgroup subsystem.
+ ///
+@@ -111,7 +111,7 @@ impl super::SubControl for PidsController {
+                 let value = if value == "max" {
+                     u32::MAX
+                 } else if let Ok(value) = value.parse::<u32>() {
+-                    if value >= PID_MAX {
++                    if value >= current_pid_max() {
+                         return Err(Error::InvalidOperation);
+                     }
+                     value
+diff --git a/kernel/src/hardware_watchdog.rs b/kernel/src/hardware_watchdog.rs
+index 0c2731c9a..240c8141f 100644
+--- a/kernel/src/hardware_watchdog.rs
++++ b/kernel/src/hardware_watchdog.rs
+@@ -98,6 +98,7 @@ pub(super) fn handoff_if_requested() {
+ #[cfg(ktest)]
+ mod tests {
+     use super::*;
++    use ostd::prelude::ktest;
+ 
+     #[ktest]
+     fn fixed_register_contract_matches_uboot() {
+diff --git a/kernel/src/process/clone.rs b/kernel/src/process/clone.rs
+index a8658ef4e..d611e049e 100644
+--- a/kernel/src/process/clone.rs
++++ b/kernel/src/process/clone.rs
+@@ -308,7 +308,7 @@ impl CloneArgs {
+ 
+         while index < self.set_tid.len() {
+             let requested_pid = self.set_tid[index];
+-            if requested_pid >= super::posix_thread::PID_MAX {
++            if requested_pid >= super::posix_thread::current_pid_max() {
+                 return_errno_with_message!(Errno::EINVAL, "requested PID is out of range");
+             }
+             if requested_pid != 1 && pid_ns.process_of_vpid(1).is_none() {
+diff --git a/kernel/src/process/posix_thread/futex.rs b/kernel/src/process/posix_thread/futex.rs
+index d402b924a..f1fc3ccfb 100644
+--- a/kernel/src/process/posix_thread/futex.rs
++++ b/kernel/src/process/posix_thread/futex.rs
+@@ -13,7 +13,7 @@ use spin::Once;
+ use crate::{
+     context::current_userspace,
+     prelude::*,
+-    process::VmarSnapshot,
++    process::{VmarSnapshot, posix_thread::AsPosixThread},
+     time::wait::ManagedTimeout,
+     vm::{page_cache::Vmo, perms::VmPerms, vmar::PageFaultInfo},
+ };
+@@ -27,11 +27,27 @@ static FUTEX_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+ static FUTEX_WAIT_JIFFIES: AtomicU64 = AtomicU64::new(0);
+ static FUTEX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
+ static FUTEX_WAIT_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
++static FUTEX_WAKE_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
++static FUTEX_WAKE_DETAIL_ZERO_LOGGED: AtomicU64 = AtomicU64::new(0);
++static FUTEX_WAKE_DETAIL_POSITIVE_LOGGED: AtomicU64 = AtomicU64::new(0);
++static FUTEX_DETAIL_MIN_PID: Once<u32> = Once::new();
+ 
+ const FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES: u64 = 64;
+-const FUTEX_WAIT_DETAIL_LOG_LIMIT: u64 = 128;
++// The detail stream is opt-in and used only by bounded diagnostics. Keep
++// enough headroom to get past early userspace daemons and observe Firefox's
++// later IPC threads in the same boot.
++const FUTEX_WAIT_DETAIL_LOG_LIMIT: u64 = 256;
++const FUTEX_WAKE_DETAIL_ZERO_LOG_LIMIT: u64 = 64;
++const FUTEX_WAKE_DETAIL_POSITIVE_LOG_LIMIT: u64 = 128;
+ 
+ aster_cmdline::define_flag_param!("asterinas.futex_profile", FUTEX_PROFILE);
++aster_cmdline::define_kv_param!("asterinas.futex_detail_min_pid", FUTEX_DETAIL_MIN_PID);
++
++fn futex_detail_enabled(pid: u32) -> bool {
++    FUTEX_DETAIL_MIN_PID
++        .get()
++        .is_none_or(|minimum| pid >= *minimum)
++}
+ 
+ /// Specifies whether a futex is scoped to the current process or shared through
+ /// its backing mapping.
+@@ -128,27 +144,30 @@ pub fn futex_wait_bitset(
+     let was_woken = item.is_none();
+     if let (Some(elapsed), true) = (elapsed, FUTEX_PROFILE.load(Ordering::Relaxed)) {
+         if elapsed >= FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES {
+-            let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+-            if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
+-                let outcome = if was_woken {
+-                    "woken"
+-                } else if result.is_err() {
+-                    "timeout_or_error"
+-                } else {
+-                    "spurious"
+-                };
+-                ostd::early_println!(
+-                    "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
+-                    event,
+-                    ctx.process.pid(),
+-                    ctx.posix_thread.tid(),
+-                    futex_addr,
+-                    futex_val,
+-                    bitset,
+-                    has_timeout,
+-                    elapsed,
+-                    outcome,
+-                );
++            let pid = ctx.process.pid();
++            if futex_detail_enabled(pid) {
++                let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
++                if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
++                    let outcome = if was_woken {
++                        "woken"
++                    } else if result.is_err() {
++                        "timeout_or_error"
++                    } else {
++                        "spurious"
++                    };
++                    ostd::error!(
++                        "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
++                        event,
++                        ctx.process.pid(),
++                        ctx.posix_thread.tid(),
++                        futex_addr,
++                        futex_val,
++                        bitset,
++                        has_timeout,
++                        elapsed,
++                        outcome,
++                    );
++                }
+             }
+         }
+     }
+@@ -216,6 +235,39 @@ pub fn futex_wake_bitset(
+     let res = futex_bucket.remove_and_wake_items(&futex_key, max_count);
+     if FUTEX_PROFILE.load(Ordering::Relaxed) {
+         FUTEX_WAKE_COUNT.fetch_add(res as u64, Ordering::Relaxed);
++        let pid = current!().pid();
++        if futex_detail_enabled(pid) {
++            let event = FUTEX_WAKE_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
++            // Keep zero-result wake attempts in a separate bounded stream.
++            // Without them, an empty stream cannot distinguish "no matching
++            // waiter" from "the wake path was never reached".  Separate
++            // budgets keep early zero-result calls from hiding later positive
++            // wakes during a Firefox startup diagnosis.
++            let (logged, limit) = if res == 0 {
++                (
++                    FUTEX_WAKE_DETAIL_ZERO_LOGGED.fetch_add(1, Ordering::Relaxed) + 1,
++                    FUTEX_WAKE_DETAIL_ZERO_LOG_LIMIT,
++                )
++            } else {
++                (
++                    FUTEX_WAKE_DETAIL_POSITIVE_LOGGED.fetch_add(1, Ordering::Relaxed) + 1,
++                    FUTEX_WAKE_DETAIL_POSITIVE_LOG_LIMIT,
++                )
++            };
++            if logged <= limit {
++                ostd::error!(
++                    "ASTERINAS_FUTEX_WAKE_DETAIL event={} pid={} tid={} addr=0x{:x} bitset=0x{:x} max_count={} woken={} visibility={:?}",
++                    event,
++                    current!().pid(),
++                    current_thread!().as_posix_thread().unwrap().tid(),
++                    futex_addr,
++                    bitset,
++                    max_count,
++                    res,
++                    visibility,
++                );
++            }
++        }
+     }
+ 
+     Ok(res)
+diff --git a/kernel/src/syscall/epoll.rs b/kernel/src/syscall/epoll.rs
+index f6f67ad8b..776e62a93 100644
+--- a/kernel/src/syscall/epoll.rs
++++ b/kernel/src/syscall/epoll.rs
+@@ -34,9 +34,17 @@ static EPOLL_RET_ZERO: AtomicU64 = AtomicU64::new(0);
+ static EPOLL_RET_NONZERO: AtomicU64 = AtomicU64::new(0);
+ static EPOLL_RET_ETIME: AtomicU64 = AtomicU64::new(0);
+ static EPOLL_RET_ERROR: AtomicU64 = AtomicU64::new(0);
++static EPOLL_DETAIL_MIN_PID: spin::Once<u32> = spin::Once::new();
+ const EPOLL_PROFILE_LOG_INTERVAL: u64 = 8_192;
+ 
+ aster_cmdline::define_flag_param_early!("asterinas.epoll_profile", EPOLL_PROFILE);
++aster_cmdline::define_kv_param!("asterinas.epoll_detail_min_pid", EPOLL_DETAIL_MIN_PID);
++
++fn epoll_detail_enabled(pid: u32) -> bool {
++    EPOLL_DETAIL_MIN_PID
++        .get()
++        .is_none_or(|minimum| pid >= *minimum)
++}
+ 
+ fn epoll_profile_snapshot(
+     call: u64,
+@@ -45,7 +53,7 @@ fn epoll_profile_snapshot(
+     events_len: usize,
+     ctx: &Context,
+ ) {
+-    ostd::early_println!(
++    ostd::error!(
+         "ASTERINAS_EPOLL_PROFILE calls={} phase={} pid={} tid={} epfd={} events_len={} none_timeout={} zero_timeout={} positive_timeout={} ret_zero={} ret_nonzero={} ret_etime={} ret_error={}",
+         call,
+         phase,
+@@ -155,7 +163,9 @@ fn do_epoll_pwait2(
+         max_events as usize
+     };
+ 
+-    let profile_call = if EPOLL_PROFILE.load(Ordering::Relaxed) {
++    let profile_call = if EPOLL_PROFILE.load(Ordering::Relaxed)
++        && epoll_detail_enabled(ctx.process.pid())
++    {
+         let call = EPOLL_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+         if timeout.is_none() {
+             EPOLL_NONE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+@@ -165,7 +175,7 @@ fn do_epoll_pwait2(
+             EPOLL_POSITIVE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
+         }
+         if call <= 16 {
+-            ostd::early_println!(
++            ostd::error!(
+                 "ASTERINAS_EPOLL_PROFILE call={} pid={} tid={} epfd={} max_events={} timeout={:?}",
+                 call,
+                 ctx.process.pid(),
+diff --git a/kernel/src/syscall/mmap.rs b/kernel/src/syscall/mmap.rs
+index 758ecdbfd..0e7df872c 100644
+--- a/kernel/src/syscall/mmap.rs
++++ b/kernel/src/syscall/mmap.rs
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: MPL-2.0
+ 
++use core::sync::atomic::{AtomicU64, Ordering};
++
+ use align_ext::AlignExt;
++use spin::Once;
+ 
+ use super::{SyscallReturn, mlock::locked_memory_limit};
+ use crate::{
+@@ -13,6 +16,14 @@ use crate::{
+     },
+ };
+ 
++static MMAP_PROFILE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
++static MMAP_DETAIL_MIN_PID: Once<u32> = Once::new();
++static MMAP_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
++const MMAP_DETAIL_LIMIT: u64 = 128;
++
++aster_cmdline::define_flag_param_early!("asterinas.mmap_profile", MMAP_PROFILE);
++aster_cmdline::define_kv_param!("asterinas.mmap_detail_min_pid", MMAP_DETAIL_MIN_PID);
++
+ pub fn sys_mmap(
+     addr: u64,
+     len: u64,
+@@ -44,6 +55,25 @@ fn do_sys_mmap(
+     offset: usize,
+     ctx: &Context,
+ ) -> Result<Vaddr> {
++    let detail = MMAP_PROFILE.load(Ordering::Relaxed)
++        && MMAP_DETAIL_MIN_PID
++            .get()
++            .is_none_or(|minimum| ctx.process.pid() >= *minimum);
++    let detail_event = detail.then(|| MMAP_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1);
++    let detail_start = detail.then(|| ostd::timer::Jiffies::elapsed().as_u64());
++    if detail_event.is_some_and(|event| event <= MMAP_DETAIL_LIMIT) {
++        ostd::error!(
++            "ASTERINAS_MMAP_DETAIL phase=enter event={} pid={} tid={} addr=0x{:x} len=0x{:x} flags=0x{:x} fd={} offset=0x{:x}",
++            detail_event.unwrap(),
++            ctx.process.pid(),
++            ctx.posix_thread.tid(),
++            addr,
++            len,
++            raw_flags,
++            raw_fd,
++            offset,
++        );
++    }
+     debug!(
+         "addr = 0x{:x}, len = 0x{:x}, perms = {:?}, flags = 0x{:x}, raw_fd = {}, offset = 0x{:x}",
+         addr, len, vm_perms, raw_flags, raw_fd, offset
+@@ -162,6 +192,23 @@ fn do_sys_mmap(
+     };
+ 
+     let map_addr = vm_map_options.build()?;
++    if detail_event.is_some_and(|event| event <= MMAP_DETAIL_LIMIT) {
++        let elapsed = detail_start
++            .map(|start| {
++                ostd::timer::Jiffies::elapsed()
++                    .as_u64()
++                    .saturating_sub(start)
++            })
++            .unwrap_or(0);
++        ostd::error!(
++            "ASTERINAS_MMAP_DETAIL phase=build-done event={} pid={} tid={} map_addr=0x{:x} elapsed_jiffies={}",
++            detail_event.unwrap(),
++            ctx.process.pid(),
++            ctx.posix_thread.tid(),
++            map_addr,
++            elapsed,
++        );
++    }
+ 
+     if (option.flags().contains(MMapFlags::MAP_POPULATE)
+         || option.flags().contains(MMapFlags::MAP_LOCKED))
+diff --git a/kernel/src/syscall/ppoll.rs b/kernel/src/syscall/ppoll.rs
+index 166e25709..8ccdf8098 100644
+--- a/kernel/src/syscall/ppoll.rs
++++ b/kernel/src/syscall/ppoll.rs
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: MPL-2.0
+ 
+-use core::time::Duration;
++use core::{
++    sync::atomic::{AtomicBool, AtomicU64, Ordering},
++    time::Duration,
++};
+ 
+ use ostd::mm::VmIo;
+ 
+@@ -11,6 +14,113 @@ use crate::{
+     time::{clocks::MonotonicClock, timer::Timeout, timespec_t},
+ };
+ 
++// Opt-in boundary tracing for the short Firefox probe.  This deliberately
++// records only syscall entry/return and never changes ppoll's wait semantics.
++// It lets a bounded run distinguish a thread stuck inside Poller::wait from a
++// userspace path that returned from ppoll but failed to process the socket.
++static PPOLL_PROFILE: AtomicBool = AtomicBool::new(false);
++static PPOLL_CALLS: AtomicU64 = AtomicU64::new(0);
++static PPOLL_RET_ZERO: AtomicU64 = AtomicU64::new(0);
++static PPOLL_RET_READY: AtomicU64 = AtomicU64::new(0);
++static PPOLL_RET_ERROR: AtomicU64 = AtomicU64::new(0);
++static PPOLL_DETAIL_MIN_PID: spin::Once<u32> = spin::Once::new();
++const PPOLL_PROFILE_LOG_INTERVAL: u64 = 8_192;
++
++aster_cmdline::define_flag_param_early!("asterinas.ppoll_profile", PPOLL_PROFILE);
++aster_cmdline::define_kv_param!("asterinas.ppoll_detail_min_pid", PPOLL_DETAIL_MIN_PID);
++
++fn ppoll_detail_enabled(pid: u32) -> bool {
++    PPOLL_DETAIL_MIN_PID
++        .get()
++        .is_none_or(|minimum| pid >= *minimum)
++}
++
++fn ppoll_profile_record_result(result: &Result<SyscallReturn>) {
++    match result {
++        Ok(SyscallReturn::Return(value)) if *value == 0 => {
++            PPOLL_RET_ZERO.fetch_add(1, Ordering::Relaxed);
++        }
++        Ok(SyscallReturn::Return(_)) => {
++            PPOLL_RET_READY.fetch_add(1, Ordering::Relaxed);
++        }
++        Ok(_) => {}
++        Err(_) => {
++            PPOLL_RET_ERROR.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++}
++
++fn ppoll_profile_log(
++    call: u64,
++    phase: &str,
++    nfds: u32,
++    timeout: Option<Duration>,
++    result: Option<&Result<SyscallReturn>>,
++    ctx: &Context,
++) {
++    let (zero, ready, error_count) = if result.is_some() {
++        (
++            PPOLL_RET_ZERO.load(Ordering::Relaxed),
++            PPOLL_RET_READY.load(Ordering::Relaxed),
++            PPOLL_RET_ERROR.load(Ordering::Relaxed),
++        )
++    } else {
++        (0, 0, 0)
++    };
++    if let Some(result) = result {
++        match result {
++            Ok(SyscallReturn::Return(value)) => ostd::error!(
++                "ASTERINAS_PPOLL_PROFILE call={} phase={} pid={} tid={} nfds={} timeout={:?} return={} ret_zero={} ret_ready={} ret_error={}",
++                call,
++                phase,
++                ctx.process.pid(),
++                ctx.posix_thread.tid(),
++                nfds,
++                timeout,
++                value,
++                zero,
++                ready,
++                error_count,
++            ),
++            Ok(_) => ostd::error!(
++                "ASTERINAS_PPOLL_PROFILE call={} phase={} pid={} tid={} nfds={} timeout={:?} return=non-value ret_zero={} ret_ready={} ret_error={}",
++                call,
++                phase,
++                ctx.process.pid(),
++                ctx.posix_thread.tid(),
++                nfds,
++                timeout,
++                zero,
++                ready,
++                error_count,
++            ),
++            Err(errno) => ostd::error!(
++                "ASTERINAS_PPOLL_PROFILE call={} phase={} pid={} tid={} nfds={} timeout={:?} errno={:?} ret_zero={} ret_ready={} ret_error={}",
++                call,
++                phase,
++                ctx.process.pid(),
++                ctx.posix_thread.tid(),
++                nfds,
++                timeout,
++                errno.error(),
++                zero,
++                ready,
++                error_count,
++            ),
++        }
++    } else {
++        ostd::error!(
++            "ASTERINAS_PPOLL_PROFILE call={} phase={} pid={} tid={} nfds={} timeout={:?}",
++            call,
++            phase,
++            ctx.process.pid(),
++            ctx.posix_thread.tid(),
++            nfds,
++            timeout,
++        );
++    }
++}
++
+ pub fn sys_ppoll(
+     fds: Vaddr,
+     nfds: u32,
+@@ -27,6 +137,16 @@ pub fn sys_ppoll(
+     } else {
+         None
+     };
++    let profile_call =
++        if PPOLL_PROFILE.load(Ordering::Relaxed) && ppoll_detail_enabled(ctx.process.pid()) {
++            let call = PPOLL_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
++            if call <= 16 || call.is_multiple_of(PPOLL_PROFILE_LOG_INTERVAL) {
++                ppoll_profile_log(call, "enter", nfds, timeout, None, ctx);
++            }
++            Some(call)
++        } else {
++            None
++        };
+     let clock = MonotonicClock::timer_manager().clock();
+     let started = timeout.map(|_| clock.read_time());
+ 
+@@ -41,6 +161,16 @@ pub fn sys_ppoll(
+ 
+     let result = do_sys_poll(fds, nfds, timeout.map(Timeout::After), ctx);
+ 
++    if profile_call.is_some() {
++        ppoll_profile_record_result(&result);
++    }
++
++    if let Some(call) = profile_call
++        && (call <= 16 || call.is_multiple_of(PPOLL_PROFILE_LOG_INTERVAL))
++    {
++        ppoll_profile_log(call, "return", nfds, timeout, Some(&result), ctx);
++    }
++
+     // Unlike poll's restart block, ppoll replays the user arguments. Write back
+     // its remaining duration before signal delivery; libc hides this ABI update
+     // by passing a copy. STOP/CONT without a caught handler can then restart.
+diff --git a/kernel/src/thread/oops.rs b/kernel/src/thread/oops.rs
+index 30e16887d..ff3b611d4 100644
+--- a/kernel/src/thread/oops.rs
++++ b/kernel/src/thread/oops.rs
+@@ -73,10 +73,30 @@ const MAX_OOPS_COUNT: usize = 10_000;
+ 
+ static OOPS_COUNT: AtomicUsize = AtomicUsize::new(0);
+ 
++/// How many times the panic handler has run on this kernel.
++static PANIC_HANDLER_ENTRIES: AtomicUsize = AtomicUsize::new(0);
++
+ #[ostd::panic_handler]
+ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+     let message = info.message();
+ 
++    // Written to the serial port directly, and before anything else in the
++    // handler can fail. A guard taken further down this function is the one the
++    // atomic-mode check reports as outstanding when a later panic names it, so
++    // the ordinal says whether the panic being printed is the first event or a
++    // consequence of an earlier one that never got its report out.
++    let entry = PANIC_HANDLER_ENTRIES.fetch_add(1, Ordering::Relaxed);
++    ostd::early_println!(
++        "PANIC_ENTRY seq={} cpu={} raw_level={:#010b} irq_enabled={} unwind={} nested_irqs={} last_nested={:#018x}",
++        entry,
++        ostd::cpu::CpuId::current_racy().as_usize(),
++        ostd::irq::level_raw_for_diagnosis(),
++        ostd::irq::is_local_enabled_for_diagnosis(),
++        info.can_unwind(),
++        ostd::irq::nested_irq_count_for_diagnosis(),
++        ostd::irq::last_nested_irq_for_diagnosis(),
++    );
++
+     if let Some(thread) = Thread::current() {
+         let panic_on_oops = PANIC_ON_OOPS.load(Ordering::Relaxed);
+         if !panic_on_oops && info.can_unwind() {
+diff --git a/kernel/src/time/softirq.rs b/kernel/src/time/softirq.rs
+index aa6dfda82..1d6d19bde 100644
+--- a/kernel/src/time/softirq.rs
++++ b/kernel/src/time/softirq.rs
+@@ -54,7 +54,17 @@ fn timer_softirq_handler() {
+     let callbacks = TIMER_SOFTIRQ_CALLBACKS.read();
+     if let Some(callbacks) = callbacks.get() {
+         for callback in callbacks.iter() {
++            // This handler holds an RCU read guard across every callback while
++            // the interrupt path holds a preemption guard and has local IRQs
++            // re-enabled, so name the callback that changes the count.
++            let before = ostd::task::preempt_guard_count_for_diagnosis();
+             (callback)();
++            let after = ostd::task::preempt_guard_count_for_diagnosis();
++            if after != before {
++                ostd::warn!(
++                    "timer softirq callback changed the preempt guard count: {before} -> {after}",
++                );
++            }
+         }
+     }
+ }
+diff --git a/ostd/src/arch/riscv/trap/trap.S b/ostd/src/arch/riscv/trap/trap.S
+index 9b9b80f33..4f6d5ee16 100644
+--- a/ostd/src/arch/riscv/trap/trap.S
++++ b/ostd/src/arch/riscv/trap/trap.S
+@@ -92,7 +92,12 @@ _end_trap_from_kernel:
+     mv a0, sp                                # first arg is TrapFrame
+     lla ra, _trap_return                     # set return address
+ .extern trap_handler
+-    j trap_handler
++    # Tail-call through a register instead of `j`: `j` emits a `jal`, whose
++    # +-1 MiB reach is too short to keep `trap_handler` in range once the
++    # unoptimized text grows past it. `lla` is PC-relative over +-2 GiB, and
++    # t0 is dead here because its sscratch value was stored above.
++    lla t0, trap_handler
++    jr t0
+ 
+ _end_trap_from_user:
+     # load callee-saved registers
+diff --git a/ostd/src/bus/usb.rs b/ostd/src/bus/usb.rs
+index 253c2b09f..20f224186 100644
+--- a/ostd/src/bus/usb.rs
++++ b/ostd/src/bus/usb.rs
+@@ -16,7 +16,7 @@ use core::{
+ use crab_usb::{Device, DeviceInfo, Endpoint, EventHandler, KernelOp, USBHost};
+ use usb_if::{
+     descriptor::{ConfigurationDescriptor, EndpointType},
+-    endpoint::{RequestId, TransferCompletion, TransferRequest},
++    endpoint::{RequestId, TransferCompletion, TransferRequest, TransferStatus},
+     host::ControlSetup,
+     transfer::{Direction, Recipient, Request, RequestType},
+ };
+@@ -35,7 +35,11 @@ use crate::{
+ const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+ const KEYBOARD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+ const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
+-const BOOT_MOUSE_REPORT_LEN: usize = 4;
++/// The boot mouse report: buttons, X displacement, Y displacement.
++const BOOT_MOUSE_REPORT_LEN: usize = 3;
++/// The mouse transfer buffer. A parsed layout is refused above this length, so
++/// the buffer always covers the report the device describes.
++const MOUSE_REPORT_LEN: usize = 8;
+ const XHCI_MIN_CAPLENGTH: usize = 0x20;
+ const XHCI_CAPABILITY_ACCESSORS_LEN: usize = 0x24;
+ const XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET: usize = 0x400;
+@@ -70,7 +74,7 @@ pub enum UsbKeyboardError {
+     DeviceOpen,
+     /// The boot-keyboard interface could not be claimed.
+     ClaimInterface,
+-    /// The keyboard rejected HID boot protocol.
++    /// The device rejected HID boot protocol.
+     SetBootProtocol,
+     /// The interrupt-IN endpoint could not be opened.
+     EndpointOpen,
+@@ -78,6 +82,16 @@ pub enum UsbKeyboardError {
+     Transfer,
+     /// A completed boot-keyboard report did not contain exactly eight bytes.
+     InvalidReportLength,
++    /// The deterministic QEMU bulk-loopback device was not enumerated.
++    BulkTestNotFound,
++    /// The deterministic QEMU device did not expose the required endpoint pair.
++    BulkTestInterface,
++    /// A deterministic control or bulk transaction failed.
++    BulkTestTransfer,
++    /// The looped-back payload did not match the submitted payload.
++    BulkTestMismatch,
++    /// The deterministic device returned malformed transfer counters.
++    BulkTestStats,
+ }
+ 
+ /// The USB keyboard startup stage that owns a bounded controller operation.
+@@ -91,7 +105,7 @@ pub enum UsbKeyboardStage {
+     DeviceOpen,
+     /// Claim the keyboard's HID interface.
+     ClaimInterface,
+-    /// Select HID boot protocol for the keyboard.
++    /// Select HID boot protocol for the device.
+     SetBootProtocol,
+ }
+ 
+@@ -111,6 +125,8 @@ pub struct UsbHidInfo {
+     pub keyboard: Option<UsbDeviceInfo>,
+     /// The optional boot mouse discovered beside the keyboard.
+     pub mouse: Option<UsbDeviceInfo>,
++    /// The layout the mouse reports in, once its descriptor has been parsed.
++    pub mouse_layout: Option<MouseReportLayout>,
+ }
+ 
+ /// One completed HID boot report from the shared xHCI host.
+@@ -118,15 +134,34 @@ pub struct UsbHidInfo {
+ pub enum UsbHidReport {
+     /// An exact eight-byte boot-keyboard report.
+     Keyboard([u8; BOOT_KEYBOARD_REPORT_LEN]),
+-    /// A three- or four-byte boot-mouse report held in a fixed-size buffer.
++    /// A mouse report of at most `MOUSE_REPORT_LEN` bytes in a fixed buffer.
+     Mouse {
+         /// Report bytes; bytes after `actual_length` are zero.
+-        bytes: [u8; BOOT_MOUSE_REPORT_LEN],
++        bytes: [u8; MOUSE_REPORT_LEN],
+         /// Number of bytes completed by the interrupt transfer.
+         actual_length: usize,
+     },
+ }
+ 
++/// Result of one deterministic QEMU USB bulk-loopback run.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct UsbBulkTestResult {
++    /// Fixed payload length sent by bulk OUT and returned by bulk IN.
++    pub payload_bytes: usize,
++    /// Larger bulk-IN request length used to require a short packet.
++    pub requested_in_bytes: usize,
++    /// USB reset count reported by the deterministic device.
++    pub resets: u32,
++    /// Completed bulk-OUT transfers reported by the device.
++    pub out_transfers: u32,
++    /// Completed bulk-IN transfers reported by the device.
++    pub in_transfers: u32,
++    /// Bulk-OUT byte count reported by the device.
++    pub out_bytes: u64,
++    /// Bulk-IN byte count reported by the device.
++    pub in_bytes: u64,
++}
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ struct BootHidInterface {
+     kind: BootHidKind,
+@@ -141,6 +176,68 @@ enum BootHidKind {
+     Mouse,
+ }
+ 
++const BULK_TEST_VENDOR_ID: u16 = 0x0627;
++const BULK_TEST_PRODUCT_ID: u16 = 0x7700;
++const BULK_TEST_INTERFACE_CLASS: u8 = 0xff;
++const BULK_TEST_INTERFACE_SUBCLASS: u8 = 0x77;
++const BULK_TEST_INTERFACE_PROTOCOL: u8 = 0x01;
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++struct BulkTestInterface {
++    number: u8,
++    alternate: u8,
++    bulk_out: u8,
++    bulk_in: u8,
++}
++
++fn find_bulk_test_interface(
++    configurations: &[ConfigurationDescriptor],
++) -> Option<BulkTestInterface> {
++    let mut selected = None;
++    for alternate in configurations
++        .iter()
++        .flat_map(|configuration| &configuration.interfaces)
++        .flat_map(|interface| &interface.alt_settings)
++    {
++        if (alternate.class, alternate.subclass, alternate.protocol)
++            != (
++                BULK_TEST_INTERFACE_CLASS,
++                BULK_TEST_INTERFACE_SUBCLASS,
++                BULK_TEST_INTERFACE_PROTOCOL,
++            )
++            || alternate.endpoints.len() != 2
++        {
++            continue;
++        }
++
++        let endpoint = |direction| {
++            let mut endpoints = alternate.endpoints.iter().filter(|endpoint| {
++                endpoint.transfer_type == EndpointType::Bulk
++                    && endpoint.direction == direction
++                    && endpoint.address & 0x0f != 0
++                    && endpoint.max_packet_size != 0
++            });
++            let endpoint = endpoints.next()?;
++            endpoints.next().is_none().then_some(endpoint.address)
++        };
++        let candidate = BulkTestInterface {
++            number: alternate.interface_number,
++            alternate: alternate.alternate_setting,
++            bulk_out: endpoint(Direction::Out)?,
++            bulk_in: endpoint(Direction::In)?,
++        };
++        if selected.replace(candidate).is_some() {
++            return None;
++        }
++    }
++    selected
++}
++
++/// The `wValue` of a HID `SET_PROTOCOL` request selecting the boot report.
++const SET_BOOT_PROTOCOL: u16 = 0;
++/// The `wValue` selecting the format the device's report descriptor defines.
++const SET_REPORT_PROTOCOL: u16 = 1;
++
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ enum DiscoveryDecision {
+     Continue,
+@@ -211,7 +308,7 @@ fn find_boot_hid_interface(
+                     && endpoint.max_packet_size
+                         >= match kind {
+                             BootHidKind::Keyboard => BOOT_KEYBOARD_REPORT_LEN as u16,
+-                            BootHidKind::Mouse => 3,
++                            BootHidKind::Mouse => BOOT_MOUSE_REPORT_LEN as u16,
+                         }
+             })
+             .ok_or(BootHidInterfaceError::InvalidEndpoint)?;
+@@ -590,6 +687,205 @@ fn abandon_host(xhci: XhciHost, events: EventHandler) {
+     mem::forget((xhci, events));
+ }
+ 
++const BULK_TEST_PAYLOAD_LEN: usize = 1021;
++const BULK_TEST_IN_REQUEST_LEN: usize = 1088;
++const BULK_TEST_STATS_LEN: usize = 32;
++const BULK_TEST_GET_STATS: u8 = 0x5a;
++
++fn bulk_test_payload() -> [u8; BULK_TEST_PAYLOAD_LEN] {
++    let mut payload = [0u8; BULK_TEST_PAYLOAD_LEN];
++    for (index, byte) in payload.iter_mut().enumerate() {
++        *byte = (index.wrapping_mul(37).wrapping_add(11) & 0xff) as u8;
++    }
++    payload
++}
++
++fn parse_bulk_test_stats(stats: &[u8]) -> Option<UsbBulkTestResult> {
++    let read_u32 = |offset| -> Option<u32> {
++        Some(u32::from_le_bytes(
++            stats.get(offset..offset + 4)?.try_into().ok()?,
++        ))
++    };
++    let read_u64 = |offset| -> Option<u64> {
++        Some(u64::from_le_bytes(
++            stats.get(offset..offset + 8)?.try_into().ok()?,
++        ))
++    };
++    if stats.len() != BULK_TEST_STATS_LEN || stats.get(..4)? != b"E7BT" {
++        return None;
++    }
++    Some(UsbBulkTestResult {
++        payload_bytes: BULK_TEST_PAYLOAD_LEN,
++        requested_in_bytes: BULK_TEST_IN_REQUEST_LEN,
++        resets: read_u32(4)?,
++        out_transfers: read_u32(8)?,
++        in_transfers: read_u32(12)?,
++        out_bytes: read_u64(16)?,
++        in_bytes: read_u64(24)?,
++    })
++}
++
++fn completed_length(
++    result: Result<Result<TransferCompletion, usb_if::err::TransferError>, DriveError>,
++) -> Result<usize, UsbKeyboardError> {
++    match result {
++        Ok(Ok(completion)) if completion.status == TransferStatus::Completed => {
++            Ok(completion.actual_length)
++        }
++        _ => Err(UsbKeyboardError::BulkTestTransfer),
++    }
++}
++
++fn open_bulk_test_device(
++    xhci: &mut XhciHost,
++    events: &EventHandler,
++) -> Result<(Device, BulkTestInterface), UsbKeyboardError> {
++    let deadline = Deadline::after(KEYBOARD_DISCOVERY_TIMEOUT);
++    loop {
++        let devices = match drive(xhci.host.probe_devices(), events) {
++            Ok(Ok(devices)) => devices,
++            _ => return Err(UsbKeyboardError::Enumeration),
++        };
++        for device in devices {
++            if device.vendor_id() != BULK_TEST_VENDOR_ID
++                || device.product_id() != BULK_TEST_PRODUCT_ID
++            {
++                continue;
++            }
++            for configuration in device.configurations() {
++                for alternate in configuration
++                    .interfaces
++                    .iter()
++                    .flat_map(|interface| &interface.alt_settings)
++                {
++                    crate::info!(
++                        "USB bulk self-test descriptor: interface={} alternate={} class={:#04x} subclass={:#04x} protocol={:#04x} endpoints={:?}",
++                        alternate.interface_number,
++                        alternate.alternate_setting,
++                        alternate.class,
++                        alternate.subclass,
++                        alternate.protocol,
++                        alternate.endpoints,
++                    );
++                }
++            }
++            let interface = find_bulk_test_interface(device.configurations())
++                .ok_or(UsbKeyboardError::BulkTestInterface)?;
++            let device_info = device
++                .into_device_info()
++                .ok_or(UsbKeyboardError::BulkTestInterface)?;
++            return match drive(xhci.host.open_device(&device_info), events) {
++                Ok(Ok(device)) => Ok((device, interface)),
++                _ => Err(UsbKeyboardError::DeviceOpen),
++            };
++        }
++        if deadline.expired() {
++            return Err(UsbKeyboardError::BulkTestNotFound);
++        }
++        Task::yield_now();
++    }
++}
++
++fn perform_bulk_test(
++    xhci: &mut XhciHost,
++    events: &EventHandler,
++) -> Result<UsbBulkTestResult, UsbKeyboardError> {
++    let (mut device, interface) = open_bulk_test_device(xhci, events)?;
++    if !matches!(
++        drive(
++            device.claim_interface(interface.number, interface.alternate),
++            events,
++        ),
++        Ok(Ok(()))
++    ) {
++        mem::forget(device);
++        return Err(UsbKeyboardError::ClaimInterface);
++    }
++
++    let mut bulk_out = match device.endpoint(interface.bulk_out) {
++        Ok(endpoint) => endpoint,
++        Err(_) => {
++            mem::forget(device);
++            return Err(UsbKeyboardError::BulkTestInterface);
++        }
++    };
++    let mut bulk_in = match device.endpoint(interface.bulk_in) {
++        Ok(endpoint) => endpoint,
++        Err(_) => {
++            mem::forget((device, bulk_out));
++            return Err(UsbKeyboardError::BulkTestInterface);
++        }
++    };
++
++    let result = (|| {
++        let payload = bulk_test_payload();
++        let out_length = completed_length(drive(
++            bulk_out.wait(TransferRequest::bulk_out(&payload)),
++            events,
++        ))?;
++        if out_length != payload.len() {
++            return Err(UsbKeyboardError::BulkTestTransfer);
++        }
++
++        let mut echo = [0u8; BULK_TEST_IN_REQUEST_LEN];
++        let in_length = completed_length(drive(
++            bulk_in.wait(TransferRequest::bulk_in(&mut echo)),
++            events,
++        ))?;
++        if in_length != payload.len() || echo[..in_length] != payload {
++            return Err(UsbKeyboardError::BulkTestMismatch);
++        }
++
++        let setup = ControlSetup {
++            request_type: RequestType::Vendor,
++            recipient: Recipient::Device,
++            request: Request::Other(BULK_TEST_GET_STATS),
++            value: 0,
++            index: 0,
++        };
++        let mut stats = [0u8; BULK_TEST_STATS_LEN];
++        let stats_length = match drive(device.control_in(setup, &mut stats), events) {
++            Ok(Ok(length)) => length,
++            _ => return Err(UsbKeyboardError::BulkTestTransfer),
++        };
++        if stats_length != stats.len() {
++            return Err(UsbKeyboardError::BulkTestStats);
++        }
++        let result = parse_bulk_test_stats(&stats).ok_or(UsbKeyboardError::BulkTestStats)?;
++        if result.resets == 0
++            || result.out_transfers != 1
++            || result.in_transfers != 1
++            || result.out_bytes != payload.len() as u64
++            || result.in_bytes != payload.len() as u64
++        {
++            return Err(UsbKeyboardError::BulkTestStats);
++        }
++        Ok(result)
++    })();
++
++    // CrabUSB has no endpoint or device shutdown operation. Keep all DMA-visible
++    // rings alive until the controller itself is reset at QEMU exit.
++    mem::forget((device, bulk_out, bulk_in));
++    result
++}
++
++/// Runs one bounded control/bulk/short-packet check against QEMU's deterministic device.
++pub fn run_bulk_loopback_self_test(
++    mmio: IoMem,
++    dma_window: DmaWindow,
++) -> Result<UsbBulkTestResult, UsbKeyboardError> {
++    let mut xhci = XhciHost::new(mmio, dma_window)?;
++    let events = xhci.host.create_event_handler();
++    if !matches!(drive(xhci.host.init(), &events), Ok(Ok(()))) || xhci.host.disable_irq().is_err() {
++        abandon_host(xhci, events);
++        return Err(UsbKeyboardError::HostInit);
++    }
++
++    let result = perform_bulk_test(&mut xhci, &events);
++    abandon_host(xhci, events);
++    result
++}
++
+ /// A polling USB HID boot host backed by one CrabUSB xHCI controller.
+ pub struct PollingUsbHidHost {
+     // CrabUSB has no controller shutdown API. Keep DMA-visible state alive even if the polling
+@@ -614,14 +910,26 @@ struct BootKeyboardSession {
+ struct BootMouseSession {
+     _device: Device,
+     endpoint: Endpoint,
+-    reports: BootReportQueue<BOOT_MOUSE_REPORT_LEN>,
++    reports: BootReportQueue<MOUSE_REPORT_LEN>,
+     info: UsbDeviceInfo,
++    layout: Option<MouseReportLayout>,
++    /// Failed transfers in a row since the last delivered report.
++    consecutive_failures: u32,
+ }
+ 
++/// How many consecutive failed transfers retire a mouse.
++///
++/// The report queue re-arms itself after every failed transfer, so a device
++/// that recovers starts delivering reports again on its own and the run resets
++/// to zero. This threshold is only for a device that has genuinely gone away,
++/// where retrying forever would ask a dead endpoint for the rest of the boot.
++const MOUSE_FAILURE_RETIREMENT_THRESHOLD: u32 = 32;
++
+ struct OpenedHidDevice {
+     device: Device,
+     endpoint: Endpoint,
+     info: UsbDeviceInfo,
++    mouse_layout: Option<MouseReportLayout>,
+ }
+ 
+ impl<const N: usize> ReportEndpoint<N> for Endpoint {
+@@ -643,6 +951,269 @@ impl<const N: usize> ReportEndpoint<N> for Endpoint {
+     }
+ }
+ 
++/// The largest HID report descriptor reported here, covering the boot devices.
++const HID_REPORT_DESCRIPTOR_LEN: usize = 128;
++
++/// The number of usages one HID main item may carry before parsing gives up.
++const HID_LOCAL_USAGE_CAPACITY: usize = 8;
++
++const HID_ITEM_LONG: u8 = 0xfe;
++const HID_ITEM_SIZE_MASK: u8 = 0x03;
++const HID_ITEM_TYPE_MASK: u8 = 0x03;
++const HID_ITEM_TYPE_MAIN: u8 = 0x00;
++const HID_ITEM_TYPE_GLOBAL: u8 = 0x01;
++const HID_ITEM_TYPE_LOCAL: u8 = 0x02;
++const HID_ITEM_TAG_MASK: u8 = 0xf0;
++const HID_GLOBAL_USAGE_PAGE: u8 = 0x00;
++const HID_GLOBAL_REPORT_ID: u8 = 0x80;
++const HID_GLOBAL_REPORT_SIZE: u8 = 0x70;
++const HID_GLOBAL_REPORT_COUNT: u8 = 0x90;
++const HID_LOCAL_USAGE: u8 = 0x00;
++const HID_MAIN_INPUT: u8 = 0x80;
++const HID_USAGE_PAGE_GENERIC_DESKTOP: u16 = 0x01;
++const HID_USAGE_PAGE_BUTTON: u16 = 0x09;
++const HID_USAGE_X: u16 = 0x30;
++const HID_USAGE_Y: u16 = 0x31;
++const HID_USAGE_WHEEL: u16 = 0x38;
++
++/// Where every field the mouse decoder reads sits in one report.
++///
++/// The offsets come from the device's own report descriptor, so a device that
++/// describes twelve-bit axes, a wheel, or neither is read exactly as it
++/// describes itself. No field position is inferred from the report length.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct MouseReportLayout {
++    /// Bit offset of the button mask.
++    pub buttons_offset: u8,
++    /// Width of the whole button mask, which is every button bit together.
++    pub buttons_bits: u8,
++    /// Bit offset of the horizontal displacement.
++    pub x_offset: u8,
++    /// Width of the horizontal displacement.
++    pub x_bits: u8,
++    /// Bit offset of the vertical displacement.
++    pub y_offset: u8,
++    /// Width of the vertical displacement.
++    pub y_bits: u8,
++    /// Bit offset of the wheel, when the device describes one.
++    pub wheel_offset: Option<u8>,
++    /// Width of the wheel.
++    pub wheel_bits: u8,
++    /// Total report length in bytes, which the transfer buffer must cover.
++    pub report_bytes: u8,
++}
++
++/// Reads one little-endian HID short item value of at most four bytes.
++fn item_value(bytes: &[u8]) -> u32 {
++    bytes.iter().enumerate().fold(0u32, |value, (shift, byte)| {
++        value | (u32::from(*byte) << (8 * shift))
++    })
++}
++
++/// Derives a mouse layout from one HID report descriptor.
++///
++/// Returns `None` for any descriptor this parser does not fully understand,
++/// including one that uses report IDs. Its caller then leaves the device in the
++/// boot protocol rather than reading a report whose shape is unknown.
++fn parse_mouse_report_descriptor(descriptor: &[u8]) -> Option<MouseReportLayout> {
++    let mut layout = MouseReportLayout {
++        buttons_offset: 0,
++        buttons_bits: 0,
++        x_offset: 0,
++        x_bits: 0,
++        y_offset: 0,
++        y_bits: 0,
++        wheel_offset: None,
++        wheel_bits: 0,
++        report_bytes: 0,
++    };
++    let mut offset_bits: u16 = 0;
++    let mut usage_page: u16 = 0;
++    let mut report_size: u16 = 0;
++    let mut report_count: u16 = 0;
++    let mut usages = [0u16; HID_LOCAL_USAGE_CAPACITY];
++    let mut usage_count = 0usize;
++    let mut index = 0usize;
++
++    while index < descriptor.len() {
++        let prefix = descriptor[index];
++        index += 1;
++        if prefix == HID_ITEM_LONG {
++            let size = usize::from(*descriptor.get(index)?);
++            index = index.checked_add(2 + size)?;
++            continue;
++        }
++        let size = match prefix & HID_ITEM_SIZE_MASK {
++            0 => 0,
++            1 => 1,
++            2 => 2,
++            _ => 4,
++        };
++        let value = item_value(descriptor.get(index..index.checked_add(size)?)?);
++        index += size;
++
++        match (prefix >> 2) & HID_ITEM_TYPE_MASK {
++            HID_ITEM_TYPE_GLOBAL => match prefix & HID_ITEM_TAG_MASK {
++                HID_GLOBAL_USAGE_PAGE => usage_page = value as u16,
++                // A report ID prefixes every report with a byte this parser
++                // does not model, so the layout would be wrong.
++                HID_GLOBAL_REPORT_ID => return None,
++                HID_GLOBAL_REPORT_SIZE => report_size = u16::try_from(value).ok()?,
++                HID_GLOBAL_REPORT_COUNT => report_count = u16::try_from(value).ok()?,
++                _ => {}
++            },
++            HID_ITEM_TYPE_LOCAL => {
++                if prefix & HID_ITEM_TAG_MASK == HID_LOCAL_USAGE
++                    && usage_count < HID_LOCAL_USAGE_CAPACITY
++                {
++                    usages[usage_count] = value as u16;
++                    usage_count += 1;
++                }
++            }
++            HID_ITEM_TYPE_MAIN => {
++                if prefix & HID_ITEM_TAG_MASK == HID_MAIN_INPUT {
++                    let bits = report_size.checked_mul(report_count)?;
++                    // Bit 0 of an input item's data is clear for a data field
++                    // and set for the constant padding between them.
++                    if value & 0x01 == 0 {
++                        for field in 0..usize::from(report_count) {
++                            let start = offset_bits + report_size * field as u16;
++                            let usage = usages.get(field).copied().filter(|_| field < usage_count);
++                            match (usage_page, usage) {
++                                // The button bits form one mask of
++                                // `report_count` one-bit fields, not one field.
++                                (HID_USAGE_PAGE_BUTTON, _) if field == 0 => {
++                                    layout.buttons_offset = start as u8;
++                                    layout.buttons_bits = bits as u8;
++                                }
++                                (HID_USAGE_PAGE_GENERIC_DESKTOP, Some(HID_USAGE_X)) => {
++                                    layout.x_offset = start as u8;
++                                    layout.x_bits = report_size as u8;
++                                }
++                                (HID_USAGE_PAGE_GENERIC_DESKTOP, Some(HID_USAGE_Y)) => {
++                                    layout.y_offset = start as u8;
++                                    layout.y_bits = report_size as u8;
++                                }
++                                (HID_USAGE_PAGE_GENERIC_DESKTOP, Some(HID_USAGE_WHEEL)) => {
++                                    layout.wheel_offset = Some(start as u8);
++                                    layout.wheel_bits = report_size as u8;
++                                }
++                                _ => {}
++                            }
++                        }
++                    }
++                    offset_bits = offset_bits.checked_add(bits)?;
++                }
++                // Every main item clears the local items.
++                usage_count = 0;
++            }
++            _ => {}
++        }
++        if offset_bits > 64 {
++            return None;
++        }
++    }
++
++    if offset_bits == 0 || offset_bits % 8 != 0 || offset_bits > 64 {
++        return None;
++    }
++    if layout.buttons_bits == 0 || layout.x_bits == 0 || layout.y_bits == 0 {
++        return None;
++    }
++    layout.report_bytes = (offset_bits / 8) as u8;
++    Some(layout)
++}
++
++/// Reads one interface's HID report descriptor and derives its mouse layout.
++///
++/// A boot device still describes the report it sends under the report protocol,
++/// which is where a mouse wheel lives; the boot report the decoder otherwise
++/// reads has no such field. The request is advisory: a device that refuses it
++/// still opens, and its caller then keeps the boot protocol.
++fn fetch_mouse_layout(
++    device: &mut Device,
++    events: &EventHandler,
++    interface: BootHidInterface,
++) -> Option<MouseReportLayout> {
++    let setup = ControlSetup {
++        request_type: RequestType::Standard,
++        recipient: Recipient::Interface,
++        request: Request::GetDescriptor,
++        value: 0x2200,
++        index: u16::from(interface.number),
++    };
++    let mut descriptor = [0u8; HID_REPORT_DESCRIPTOR_LEN];
++    let length = match drive(device.control_in(setup, &mut descriptor), events) {
++        Ok(Ok(length)) => length.min(descriptor.len()),
++        Ok(Err(error)) => {
++            crate::info!(
++                "USB HID {:?} on interface {} report descriptor refused: {:?}",
++                interface.kind,
++                interface.number,
++                error,
++            );
++            return None;
++        }
++        Err(DriveError::Timeout) => {
++            crate::warn!(
++                "USB HID {:?} on interface {} report descriptor request timed out",
++                interface.kind,
++                interface.number,
++            );
++            return None;
++        }
++    };
++
++    match parse_mouse_report_descriptor(&descriptor[..length]) {
++        Some(layout) => {
++            crate::info!(
++                "USB HID {:?} on interface {} report layout: {:?}",
++                interface.kind,
++                interface.number,
++                layout,
++            );
++            Some(layout)
++        }
++        None => {
++            crate::info!(
++                "USB HID {:?} on interface {} report descriptor: {:02x?}",
++                interface.kind,
++                interface.number,
++                &descriptor[..length],
++            );
++            None
++        }
++    }
++}
++
++/// Asks one HID interface to report in `protocol`, or reports why it refused.
++///
++/// A refusal is not necessarily fatal: the boot protocol is the one report every
++/// HID boot device implements, so callers can fall back to it.
++fn set_hid_protocol(
++    xhci: &XhciHost,
++    device: &mut Device,
++    events: &EventHandler,
++    interface: BootHidInterface,
++    protocol: u16,
++) -> Result<(), UsbKeyboardError> {
++    let setup = ControlSetup {
++        request_type: RequestType::Class,
++        recipient: Recipient::Interface,
++        request: Request::Other(0x0b),
++        value: protocol,
++        index: u16::from(interface.number),
++    };
++    match drive(device.control_out(setup, &[]), events) {
++        Ok(Ok(_)) => Ok(()),
++        Ok(Err(_)) => Err(UsbKeyboardError::SetBootProtocol),
++        Err(DriveError::Timeout) => Err(timeout_at(
++            UsbKeyboardStage::SetBootProtocol,
++            xhci.kernel_op.as_ref(),
++        )),
++    }
++}
++
+ fn open_hid_device(
+     xhci: &mut XhciHost,
+     events: &EventHandler,
+@@ -680,21 +1251,47 @@ fn open_hid_device(
+         }
+     }
+ 
+-    let set_protocol = ControlSetup {
+-        request_type: RequestType::Class,
+-        recipient: Recipient::Interface,
+-        request: Request::Other(0x0b),
+-        value: 0,
+-        index: u16::from(interface.number),
++    let mut mouse_layout = fetch_mouse_layout(&mut device, events, interface);
++    // The boot report has no wheel field, so a mouse only reaches its wheel in
++    // the report protocol, and only once its descriptor says how to read it.
++    let protocol = match (interface.kind, mouse_layout) {
++        (BootHidKind::Mouse, Some(_)) => SET_REPORT_PROTOCOL,
++        _ => SET_BOOT_PROTOCOL,
+     };
+-    match drive(device.control_out(set_protocol, &[]), events) {
+-        Ok(Ok(_)) => {}
+-        Ok(Err(_)) => {
+-            mem::forget(device);
+-            return Err(UsbKeyboardError::SetBootProtocol);
++
++    match set_hid_protocol(xhci, &mut device, events, interface, protocol) {
++        Ok(()) => crate::info!(
++            "USB HID {:?} on interface {} selected protocol wValue={}",
++            interface.kind,
++            interface.number,
++            protocol,
++        ),
++        // Only a mouse asks for the report protocol, and it asks solely to
++        // reach its wheel. A device that stalls or times out on that one
++        // control transfer is still a mouse the user can move and click with,
++        // so keep it and stay in the boot report instead of refusing the whole
++        // device. Refusing it is what left the keyboard working and the mouse
++        // gone: the keyboard never asks for the report protocol, so it never
++        // took this path.
++        Err(error) if protocol == SET_REPORT_PROTOCOL => {
++            crate::warn!(
++                "USB HID {:?} on interface {} refused the report protocol ({:?}); \
++                 keeping the boot report, so this mouse reports no wheel",
++                interface.kind,
++                interface.number,
++                error,
++            );
++            if let Err(fallback) =
++                set_hid_protocol(xhci, &mut device, events, interface, SET_BOOT_PROTOCOL)
++            {
++                mem::forget(device);
++                return Err(fallback);
++            }
++            // The boot report is not the report the descriptor described, so
++            // the layout derived from that descriptor no longer applies.
++            mouse_layout = None;
+         }
+-        Err(DriveError::Timeout) => {
+-            let error = timeout_at(UsbKeyboardStage::SetBootProtocol, xhci.kernel_op.as_ref());
++        Err(error) => {
+             mem::forget(device);
+             return Err(error);
+         }
+@@ -711,6 +1308,10 @@ fn open_hid_device(
+         device,
+         endpoint,
+         info,
++        mouse_layout: match interface.kind {
++            BootHidKind::Mouse => mouse_layout,
++            BootHidKind::Keyboard => None,
++        },
+     })
+ }
+ 
+@@ -838,6 +1439,8 @@ impl PollingUsbHidHost {
+                 endpoint: opened.endpoint,
+                 reports: BootReportQueue::empty(),
+                 info: opened.info,
++                layout: opened.mouse_layout,
++                consecutive_failures: 0,
+             };
+             if let Err(error) = session.reports.fill(&mut session.endpoint) {
+                 crate::warn!("USB boot mouse report queue unavailable: {:?}", error);
+@@ -867,6 +1470,7 @@ impl PollingUsbHidHost {
+         UsbHidInfo {
+             keyboard: self.inner.keyboard.as_ref().map(|keyboard| keyboard.info),
+             mouse: self.inner.mouse.as_ref().map(|mouse| mouse.info),
++            mouse_layout: self.inner.mouse.as_ref().and_then(|mouse| mouse.layout),
+         }
+     }
+ 
+@@ -904,12 +1508,34 @@ impl PollingUsbHidHost {
+             return Ok(None);
+         };
+         match mouse.reports.poll(&mut mouse.endpoint, &mut context) {
+-            Ok(report) => Ok(report.map(|report| UsbHidReport::Mouse {
+-                bytes: *report.bytes(),
+-                actual_length: report.actual_length(),
+-            })),
++            Ok(report) => {
++                mouse.consecutive_failures = 0;
++                Ok(report.map(|report| UsbHidReport::Mouse {
++                    bytes: *report.bytes(),
++                    actual_length: report.actual_length(),
++                }))
++            }
+             Err(error) => {
+-                crate::warn!("USB boot mouse transfer stopped: {:?}", error);
++                mouse.consecutive_failures += 1;
++                let failures = mouse.consecutive_failures;
++                if failures < MOUSE_FAILURE_RETIREMENT_THRESHOLD {
++                    // The queue re-armed the slot, so the next poll asks the
++                    // device again. Keeping the session is the point: removing
++                    // it here is what left a working keyboard next to a cursor
++                    // that could never come back until the next boot.
++                    crate::warn!(
++                        "USB boot mouse transfer failed, retrying ({}/{}): {:?}",
++                        failures,
++                        MOUSE_FAILURE_RETIREMENT_THRESHOLD,
++                        error,
++                    );
++                    return Ok(None);
++                }
++                crate::warn!(
++                    "USB boot mouse retired after {} consecutive transfer failures: {:?}",
++                    failures,
++                    error,
++                );
+                 let failed_mouse = inner.mouse.take().unwrap();
+                 mem::forget(failed_mouse);
+                 Ok(None)
+@@ -932,10 +1558,11 @@ mod tests {
+     };
+ 
+     use super::{
+-        BootHidInterfaceError, BootHidKind, DriveError, UsbKeyboardError, UsbKeyboardStage,
+-        XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH, XhciMmioError, classify_boot_interface,
+-        drive_with, find_boot_hid_interface, new_usb_kernel_op, validate_xhci_mapping_properties,
+-        validate_xhci_mmio_with,
++        BootHidInterfaceError, BootHidKind, BulkTestInterface, DriveError, MouseReportLayout,
++        UsbKeyboardError, UsbKeyboardStage, XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH,
++        XhciMmioError, classify_boot_interface, drive_with, find_boot_hid_interface,
++        find_bulk_test_interface, new_usb_kernel_op, parse_bulk_test_stats,
++        parse_mouse_report_descriptor, validate_xhci_mapping_properties, validate_xhci_mmio_with,
+     };
+     use crate::{
+         mm::{CachePolicy, dma::DmaWindow},
+@@ -1286,6 +1913,50 @@ mod tests {
+         }
+     }
+ 
++    /// The report descriptor the attached Megrez mouse returned.
++    const MEGREZ_MOUSE_DESCRIPTOR: [u8; 64] = [
++        0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29,
++        0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x05,
++        0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x16, 0x00, 0xf8, 0x26, 0xff, 0x07, 0x75,
++        0x0c, 0x95, 0x02, 0x81, 0x06, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01,
++        0x81, 0x06, 0xc0, 0xc0,
++    ];
++
++    #[ktest]
++    fn derives_every_mouse_field_offset_from_the_descriptor() {
++        // The device describes three button bits, five constant padding bits,
++        // two twelve-bit displacements and an eight-bit wheel, so X starts at
++        // bit 8, Y at bit 20, the wheel at bit 32 and the report is five bytes.
++        assert_eq!(
++            parse_mouse_report_descriptor(&MEGREZ_MOUSE_DESCRIPTOR),
++            Some(MouseReportLayout {
++                buttons_offset: 0,
++                buttons_bits: 3,
++                x_offset: 8,
++                x_bits: 12,
++                y_offset: 20,
++                y_bits: 12,
++                wheel_offset: Some(32),
++                wheel_bits: 8,
++                report_bytes: 5,
++            })
++        );
++    }
++
++    #[ktest]
++    fn refuses_descriptors_it_cannot_read_in_full() {
++        // A report ID prefixes every report with a byte the layout omits.
++        let mut with_report_id = [0u8; 8];
++        with_report_id[..4].copy_from_slice(&[0x85, 0x01, 0x09, 0x01]);
++        assert_eq!(parse_mouse_report_descriptor(&with_report_id), None);
++        // A truncated descriptor never reaches the axes.
++        assert_eq!(
++            parse_mouse_report_descriptor(&MEGREZ_MOUSE_DESCRIPTOR[..20]),
++            None
++        );
++        assert_eq!(parse_mouse_report_descriptor(&[]), None);
++    }
++
+     #[ktest]
+     fn completes_discovery_with_either_hid_kind_at_the_deadline() {
+         use super::DiscoveryDecision::{Complete, Continue, Missing};
+@@ -1365,4 +2036,81 @@ mod tests {
+             Err(BootHidInterfaceError::InvalidEndpoint)
+         );
+     }
++
++    fn bulk_test_configuration() -> ConfigurationDescriptor {
++        let mut configuration = boot_configuration(0, 64);
++        let alternate = &mut configuration.interfaces[0].alt_settings[0];
++        alternate.class = 0xff;
++        alternate.subclass = 0x77;
++        alternate.protocol = 0x01;
++        alternate.num_endpoints = 2;
++        alternate.endpoints = vec![
++            EndpointDescriptor {
++                address: 0x01,
++                max_packet_size: 512,
++                transfer_type: EndpointType::Bulk,
++                direction: Direction::Out,
++                packets_per_microframe: 1,
++                interval: 0,
++            },
++            EndpointDescriptor {
++                address: 0x81,
++                max_packet_size: 512,
++                transfer_type: EndpointType::Bulk,
++                direction: Direction::In,
++                packets_per_microframe: 1,
++                interval: 0,
++            },
++        ];
++        configuration
++    }
++
++    #[ktest]
++    fn selects_exact_vendor_bulk_loopback_interface() {
++        assert_eq!(
++            find_bulk_test_interface(&[bulk_test_configuration()]),
++            Some(BulkTestInterface {
++                number: 0,
++                alternate: 0,
++                bulk_out: 0x01,
++                bulk_in: 0x81,
++            })
++        );
++    }
++
++    #[ktest]
++    fn rejects_incomplete_or_ambiguous_bulk_loopback_interfaces() {
++        let mut incomplete = bulk_test_configuration();
++        incomplete.interfaces[0].alt_settings[0].endpoints.pop();
++        assert_eq!(find_bulk_test_interface(&[incomplete]), None);
++
++        let mut ambiguous = bulk_test_configuration();
++        let duplicate = ambiguous.interfaces[0].alt_settings[0].clone();
++        ambiguous.interfaces[0].alt_settings.push(duplicate);
++        assert_eq!(find_bulk_test_interface(&[ambiguous]), None);
++    }
++
++    #[ktest]
++    fn parses_exact_bulk_loopback_statistics() {
++        let mut stats = [0u8; 32];
++        stats[..4].copy_from_slice(b"E7BT");
++        stats[4..8].copy_from_slice(&2u32.to_le_bytes());
++        stats[8..12].copy_from_slice(&1u32.to_le_bytes());
++        stats[12..16].copy_from_slice(&1u32.to_le_bytes());
++        stats[16..24].copy_from_slice(&1021u64.to_le_bytes());
++        stats[24..32].copy_from_slice(&1021u64.to_le_bytes());
++
++        let result = parse_bulk_test_stats(&stats).unwrap();
++        assert_eq!(result.payload_bytes, 1021);
++        assert_eq!(result.requested_in_bytes, 1088);
++        assert_eq!(result.resets, 2);
++        assert_eq!(result.out_transfers, 1);
++        assert_eq!(result.in_transfers, 1);
++        assert_eq!(result.out_bytes, 1021);
++        assert_eq!(result.in_bytes, 1021);
++
++        stats[0] = b'X';
++        assert!(parse_bulk_test_stats(&stats).is_none());
++        assert!(parse_bulk_test_stats(&stats[..31]).is_none());
++    }
+ }
+diff --git a/ostd/src/bus/usb/report_queue.rs b/ostd/src/bus/usb/report_queue.rs
+index c19e3f4f3..3ed1bb4fb 100644
+--- a/ostd/src/bus/usb/report_queue.rs
++++ b/ostd/src/bus/usb/report_queue.rs
+@@ -46,6 +46,16 @@ impl<const N: usize> CompletedReport<N> {
+     }
+ }
+ 
++/// Puts a fresh transfer back into a slot whose previous one did not deliver.
++fn rearm<const N: usize>(
++    slot: &mut ReportSlot<N>,
++    endpoint: &mut impl ReportEndpoint<N>,
++) -> Result<(), UsbKeyboardError> {
++    slot.report.fill(0);
++    slot.request = Some(endpoint.submit_report(slot.report.as_mut())?);
++    Ok(())
++}
++
+ pub(super) struct BootReportQueue<const N: usize> {
+     slots: [ReportSlot<N>; REPORT_QUEUE_DEPTH],
+     next_completion: usize,
+@@ -74,6 +84,15 @@ impl<const N: usize> BootReportQueue<N> {
+         Ok(())
+     }
+ 
++    /// Delivers the report the queue head holds, if one has arrived.
++    ///
++    /// Whenever this returns, the head of the queue holds a live transfer
++    /// again, or the error says why one could not be submitted. That
++    /// invariant matters more than it looks: `next_completion` only advances
++    /// past a slot that delivered a report, so a slot left without a request
++    /// is not idle but wedged. Every later poll would read that same empty
++    /// slot and report the same error forever, which turns one stalled
++    /// transfer into a device that is gone for the rest of the boot.
+     pub(super) fn poll(
+         &mut self,
+         endpoint: &mut impl ReportEndpoint<N>,
+@@ -85,6 +104,7 @@ impl<const N: usize> BootReportQueue<N> {
+             Poll::Pending => return Ok(None),
+             Poll::Ready(Err(error)) => {
+                 slot.request = None;
++                rearm(slot, endpoint)?;
+                 return Err(error);
+             }
+             Poll::Ready(Ok(completion)) => {
+@@ -94,9 +114,11 @@ impl<const N: usize> BootReportQueue<N> {
+         };
+ 
+         if completion.status != TransferStatus::Completed {
++            rearm(slot, endpoint)?;
+             return Err(UsbKeyboardError::Transfer);
+         }
+         if completion.actual_length > N {
++            rearm(slot, endpoint)?;
+             return Err(UsbKeyboardError::InvalidReportLength);
+         }
+ 
+@@ -104,8 +126,7 @@ impl<const N: usize> BootReportQueue<N> {
+             bytes: *slot.report,
+             actual_length: completion.actual_length,
+         };
+-        slot.report.fill(0);
+-        slot.request = Some(endpoint.submit_report(slot.report.as_mut())?);
++        rearm(slot, endpoint)?;
+         self.next_completion = if self.next_completion + 1 == REPORT_QUEUE_DEPTH {
+             0
+         } else {
+@@ -146,7 +167,7 @@ impl BootKeyboardReportQueue {
+ 
+ #[cfg(ktest)]
+ mod tests {
+-    use alloc::vec::Vec;
++    use alloc::{vec, vec::Vec};
+     use core::task::{Context, Poll};
+ 
+     use usb_if::endpoint::{RequestId, TransferCompletion, TransferStatus};
+@@ -408,8 +429,48 @@ mod tests {
+             queue.poll(&mut endpoint, &mut context),
+             Err(UsbKeyboardError::Enumeration)
+         );
+-        assert_eq!(endpoint.pending.len(), super::REPORT_QUEUE_DEPTH - 1);
+-        assert_eq!(endpoint.operations.last(), Some(&Operation::Poll(1)));
++        // The failed slot is refilled before the error travels, so the queue
++        // stays whole and the caller can poll again.
++        assert_eq!(endpoint.pending.len(), super::REPORT_QUEUE_DEPTH);
++        assert_eq!(
++            &endpoint.operations[endpoint.operations.len() - 2..],
++            &[Operation::Poll(1), Operation::Submit(9)]
++        );
++    }
++
++    /// One failed transfer must not end the device.
++    ///
++    /// The head slot only advances after it delivers a report, so a failed
++    /// transfer that left the slot empty would make every later poll re-read
++    /// that same slot and report that same error forever. Both failure shapes
++    /// are exercised because they leave through different branches.
++    #[ktest]
++    fn keeps_the_queue_head_alive_after_a_failed_transfer() {
++        for (status, actual_length) in [
++            (TransferStatus::Stalled, super::BOOT_KEYBOARD_REPORT_LEN),
++            (
++                TransferStatus::Completed,
++                super::BOOT_KEYBOARD_REPORT_LEN + 1,
++            ),
++        ] {
++            let reports = vec![REPORT_ONE; super::REPORT_QUEUE_DEPTH + 8];
++            let mut queue = BootKeyboardReportQueue::empty();
++            let mut endpoint = FakeEndpoint::with_reports(&reports);
++            queue.fill(&mut endpoint).unwrap();
++            endpoint.complete(1, status, actual_length);
++
++            let mut context = Context::from_waker(core::task::Waker::noop());
++            assert!(queue.poll(&mut endpoint, &mut context).is_err());
++
++            // The refilled slot carries the next report, so the same queue
++            // delivers again as soon as the device sends one.
++            endpoint.mark_ready(9);
++            assert_eq!(
++                queue.poll(&mut endpoint, &mut context),
++                Ok(Some(REPORT_ONE))
++            );
++            assert_eq!(endpoint.pending.len(), super::REPORT_QUEUE_DEPTH);
++        }
+     }
+ 
+     #[ktest]
+diff --git a/ostd/src/irq/bottom_half.rs b/ostd/src/irq/bottom_half.rs
+index 70f7d9c8d..b86b5cdbc 100644
+--- a/ostd/src/irq/bottom_half.rs
++++ b/ostd/src/irq/bottom_half.rs
+@@ -63,7 +63,30 @@ fn process_l1(irq_num: u8) {
+     // when the handler returns to prevent race conditions.
+     // See <https://github.com/asterinas/asterinas/pull/1623#discussion_r1964709636> for more details.
+     let irq_guard = disable_local();
++    let before = crate::task::preempt::guard_count_for_diagnosis();
++    let cpu_before = crate::cpu::CpuId::current_racy();
+     let irq_guard = handler(irq_guard, irq_num);
++    // The bottom half runs softirq callbacks with local IRQs re-enabled while
++    // this guard is held, so it is the one place a guard can be carried out of
++    // the interrupt path on a scheduling decision. A count that differs here
++    // is that happening, caught at the interrupt that did it rather than at the
++    // next assertion the CPU trips over.
++    let after = crate::task::preempt::guard_count_for_diagnosis();
++    let cpu_after = crate::cpu::CpuId::current_racy();
++    if after != before || cpu_after != cpu_before {
++        crate::warn!(
++            "preempt guard count across the bottom half: {before} -> {after}, cpu {cpu_before:?} -> {cpu_after:?}, base={:#x}",
++            crate::arch::cpu::local::get_base(),
++        );
++    }
++    // Checked on every bottom half, so a page that something else is writing
++    // is named at the next interrupt rather than at the next assertion.
++    if !super::level::canary_intact() {
++        crate::warn!(
++            "the CPU-local page's sentinel was overwritten, so something other than the \
++             cpu_local_cell accesses is writing this page"
++        );
++    }
+ 
+     // Interrupts should remain disabled when `process_bottom_half` returns,
+     // so we simply forget the guard.
+diff --git a/ostd/src/irq/level.rs b/ostd/src/irq/level.rs
+index 275aa4270..2b61ffe26 100644
+--- a/ostd/src/irq/level.rs
++++ b/ostd/src/irq/level.rs
+@@ -51,7 +51,11 @@ impl InterruptLevel {
+                 Self::L1(cpu_priv_at_irq)
+             }
+             2 => Self::L2,
+-            _ => unreachable!("level must between 0 and 2 (inclusive)"),
++            // Report the raw byte as well. `enter` adds 0b010 for every
++            // interrupt taken from the kernel, so a level of 3 cannot come
++            // from nesting alone once the increment is known to be atomic
++            // against interrupts --- the value says which of the two it is.
++            _ => unreachable!("level must between 0 and 2 (inclusive), raw={raw_level:#010b}"),
+         }
+     }
+ 
+@@ -89,14 +93,55 @@ pub(super) fn enter<F: FnOnce()>(f: F, cpu_priv_at_irq: PrivilegeLevel) {
+         let bit_1 = 0b10;
+         bit_1 | bit_0
+     };
++    // Record where this handler started. A level that ends up one layer too
++    // high means a handler entered and did not unwind, and only the CPU and
++    // the task identity say whether it was abandoned rather than merely slow.
++    let cpu_entered = crate::cpu::CpuId::current_racy();
++    let task_entered = crate::task::current_task_ptr_for_diagnosis();
+     INTERRUPT_LEVEL.add_assign(increment);
+ 
+     f();
+ 
++    let cpu_left = crate::cpu::CpuId::current_racy();
++    let task_left = crate::task::current_task_ptr_for_diagnosis();
++    if cpu_entered != cpu_left || task_entered != task_left {
++        crate::warn!(
++            "IRQ handler did not return to where it started: cpu {cpu_entered:?} -> {cpu_left:?}, \
++             task {task_entered:#x} -> {task_left:#x}, raw={:#010b}",
++            INTERRUPT_LEVEL.load(),
++        );
++    }
++
+     INTERRUPT_LEVEL.sub_assign(increment);
+ }
+ 
++/// A value nothing should ever write, sitting in the same CPU-local page as
++/// the cells that have been observed going wrong.
++///
++/// The level, the preemption guard count and the current-task pointer are
++/// three independent cells that have each been caught holding impossible
++/// values while the base, the allocation and the access atomicity all checked
++/// out. A sentinel in the same page separates "one cell's arithmetic is wrong"
++/// from "something else is writing this page".
++pub(crate) fn canary_intact() -> bool {
++    CANARY.load() == CANARY_VALUE
++}
++
++/// The interrupt level cell exactly as stored, without decoding it.
++///
++/// `current()` cannot be used from a diagnostic that runs while the level is
++/// already out of range: the decode is what panics. The raw byte can always be
++/// read, so a report taken at a failure names the state instead of recursing
++/// into the same failure.
++pub(crate) fn raw_for_diagnosis() -> u8 {
++    INTERRUPT_LEVEL.load()
++}
++
++const CANARY_VALUE: u32 = 0x5A5A_5A5A;
++
+ cpu_local_cell! {
++    static CANARY: u32 = CANARY_VALUE;
++
+     /// The interrupt level of the current IRQ.
+     ///
+     /// We pack two pieces of information into a single byte:
+diff --git a/ostd/src/irq/mod.rs b/ostd/src/irq/mod.rs
+index 4ae748d10..2fa3bcf87 100644
+--- a/ostd/src/irq/mod.rs
++++ b/ostd/src/irq/mod.rs
+@@ -87,18 +87,92 @@ pub use top_half::{IrqCallbackFunction, IrqLine};
+ use crate::{
+     arch::{irq::HwIrqLine, trap::TrapFrame},
+     cpu::PrivilegeLevel,
++    util::id_set::Id,
+ };
+ 
++/// The interrupt level cell exactly as stored, without decoding it.
++pub fn level_raw_for_diagnosis() -> u8 {
++    level::raw_for_diagnosis()
++}
++
++/// Whether local interrupts are enabled on this CPU right now.
++pub fn is_local_enabled_for_diagnosis() -> bool {
++    crate::arch::irq::is_local_enabled()
++}
++
++/// Records the most recent interrupt that was taken while the CPU was already
++/// handling one, together with the level it was taken at.
++///
++/// The encoding admits two levels only, so any interrupt that arrives at level
++/// one is the one that spends the last of it. Naming it at the moment it
++/// happens is what separates "a callback re-enabled interrupts" from "a level
++/// was never given back", and neither can be read off the state left behind.
++static LAST_NESTED_IRQ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
++static NESTED_IRQ_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
++
++/// The last interrupt taken while already handling one, if any.
++///
++/// Packed as `cpu << 32 | irq_num << 16 | raw_level_before`.
++pub fn last_nested_irq_for_diagnosis() -> u64 {
++    LAST_NESTED_IRQ.load(core::sync::atomic::Ordering::Relaxed)
++}
++
++/// How many interrupts have been taken while the CPU was already handling one.
++pub fn nested_irq_count_for_diagnosis() -> usize {
++    NESTED_IRQ_COUNT.load(core::sync::atomic::Ordering::Relaxed)
++}
++
+ pub(crate) fn call_irq_callback_functions(
+     trap_frame: &TrapFrame,
+     hw_irq_line: &HwIrqLine,
+     cpu_priv_at_irq: PrivilegeLevel,
+ ) {
++    // Name the interrupt that would push the level to three. The encoding
++    // models at most two levels, and the value observed at the panic is
++    // always exactly three, so the third one is not an overflow but a path
++    // that re-enables local IRQs while already at level two.
++    if InterruptLevel::current().as_u8() >= 2 {
++        crate::warn!(
++            "IRQ {} entered while already at level 2, which the encoding cannot represent",
++            hw_irq_line.irq_num(),
++        );
++    }
++    // Recorded undecoded and via `early_println!`: this is the report that has
++    // to survive the failure it describes. Printing on every entry is far too
++    // loud to be usable --- this path runs hundreds of thousands of times a
++    // minute --- so the loud report is saved for the one event that matters:
++    // an interrupt that gives its level back wrong, or does not give it back.
++    let raw_level = level::raw_for_diagnosis();
++    if raw_level >> 1 != 0 {
++        NESTED_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++        LAST_NESTED_IRQ.store(
++            (crate::cpu::CpuId::current_racy().as_usize() as u64) << 32
++                | (hw_irq_line.irq_num() as u64) << 16
++                | raw_level as u64,
++            core::sync::atomic::Ordering::Relaxed,
++        );
++    }
++    let cpu = crate::cpu::CpuId::current_racy().as_usize();
++    let irq_num = hw_irq_line.irq_num();
+     level::enter(
+         move || {
+             top_half::process(trap_frame, hw_irq_line);
+-            bottom_half::process(hw_irq_line.irq_num());
++            bottom_half::process(irq_num);
+         },
+         cpu_priv_at_irq,
+     );
++    // The level is per-CPU and is only ever undoed by the same stack that set
++    // it, so a handler that ends somewhere other than where it started leaves
++    // the value one increment high for good. That is the state every later
++    // report of this defect has shown, and this is the moment it is created.
++    let raw_after = level::raw_for_diagnosis();
++    if raw_after != raw_level {
++        crate::early_println!(
++            "IRQ_LEVEL_IMBALANCE cpu={} irq={} raw_before={:#010b} raw_after={:#010b}",
++            cpu,
++            irq_num,
++            raw_level,
++            raw_after,
++        );
++    }
+ }
+diff --git a/ostd/src/sync/guard.rs b/ostd/src/sync/guard.rs
+index b0a90fd00..a7e3e3e34 100644
+--- a/ostd/src/sync/guard.rs
++++ b/ostd/src/sync/guard.rs
+@@ -1,8 +1,8 @@
+ // SPDX-License-Identifier: MPL-2.0
+ 
+ use crate::{
+-    irq::{DisabledLocalIrqGuard, disable_local},
+-    task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
++    irq::{disable_local, DisabledLocalIrqGuard},
++    task::{atomic_mode::AsAtomicModeGuard, disable_preempt, DisabledPreemptGuard},
+ };
+ 
+ /// A guardian that denotes the guard behavior for holding a spin-based lock.
+@@ -15,8 +15,10 @@ pub trait SpinGuardian {
+     type ReadGuard: AsAtomicModeGuard + GuardTransfer;
+ 
+     /// Creates a new guard.
++    #[track_caller]
+     fn guard() -> Self::Guard;
+     /// Creates a new read guard.
++    #[track_caller]
+     fn read_guard() -> Self::ReadGuard;
+ }
+ 
+@@ -38,9 +40,11 @@ impl SpinGuardian for PreemptDisabled {
+     type Guard = DisabledPreemptGuard;
+     type ReadGuard = DisabledPreemptGuard;
+ 
++    #[track_caller]
+     fn guard() -> Self::Guard {
+         disable_preempt()
+     }
++    #[track_caller]
+     fn read_guard() -> Self::Guard {
+         disable_preempt()
+     }
+@@ -59,9 +63,11 @@ impl SpinGuardian for LocalIrqDisabled {
+     type Guard = DisabledLocalIrqGuard;
+     type ReadGuard = DisabledLocalIrqGuard;
+ 
++    #[track_caller]
+     fn guard() -> Self::Guard {
+         disable_local()
+     }
++    #[track_caller]
+     fn read_guard() -> Self::Guard {
+         disable_local()
+     }
+@@ -85,9 +91,11 @@ impl SpinGuardian for WriteIrqDisabled {
+     type Guard = DisabledLocalIrqGuard;
+     type ReadGuard = DisabledPreemptGuard;
+ 
++    #[track_caller]
+     fn guard() -> Self::Guard {
+         disable_local()
+     }
++    #[track_caller]
+     fn read_guard() -> Self::ReadGuard {
+         disable_preempt()
+     }
+diff --git a/ostd/src/task/atomic_mode.rs b/ostd/src/task/atomic_mode.rs
+index fe3847e06..03701628e 100644
+--- a/ostd/src/task/atomic_mode.rs
++++ b/ostd/src/task/atomic_mode.rs
+@@ -29,6 +29,8 @@
+ 
+ use core::sync::atomic::Ordering;
+ 
++use crate::util::id_set::Id;
++
+ /// Marks a function as one that might sleep.
+ ///
+ /// This function will panic if it is executed in atomic mode.
+@@ -39,9 +41,47 @@ pub fn might_sleep() {
+     if (preempt_count != 0 || !is_local_irq_enabled)
+         && !crate::IN_BOOTSTRAP_CONTEXT.load(Ordering::Relaxed)
+     {
++        let caller = core::panic::Location::caller();
++        // Written straight to the serial port rather than through the logger.
++        // The state that makes this panic happen also stops the panic path
++        // from finishing, and the logger is the first thing to be lost when it
++        // does, which is why earlier attempts got no report out of the boot at
++        // all. The raw level byte is read undecoded for the same reason: a
++        // level that is already out of range would panic the diagnostic.
++        crate::early_println!(
++            "MIGHT_SLEEP_VIOLATION cpu={} raw_level={:#010b} irq_enabled={} preempt_count={} base={:#x} caller={}:{}:{} taker_task={:#x} current_task={:#x}",
++            crate::cpu::CpuId::current_racy().as_usize(),
++            crate::irq::level_raw_for_diagnosis(),
++            is_local_irq_enabled,
++            preempt_count,
++            crate::task::cpu_local_base_for_diagnosis(),
++            caller.file(),
++            caller.line(),
++            caller.column(),
++            super::preempt::cpu_local::outstanding_taker_task(),
++            super::processor::current_task()
++                .map(|task| task.as_ptr() as usize)
++                .unwrap_or(0),
++        );
++        if let Some(location) = super::preempt::cpu_local::outstanding_taker() {
++            crate::early_println!(
++                "ATOMIC_GUARD_TAKEN file={} line={} column={}",
++                location.file(),
++                location.line(),
++                location.column(),
++            );
++        } else {
++            crate::early_println!("ATOMIC_GUARD_TAKEN file=<unknown>");
++        }
+         panic!(
+-            "This function might break atomic mode (preempt_count = {}, is_local_irq_enabled = {})",
+-            preempt_count, is_local_irq_enabled
++            "This function might break atomic mode (preempt_count = {}, is_local_irq_enabled = {}, \
++             taken while task {:#x}, now task {:#x})",
++            preempt_count,
++            is_local_irq_enabled,
++            super::preempt::cpu_local::outstanding_taker_task(),
++            super::processor::current_task()
++                .map(|task| task.as_ptr() as usize)
++                .unwrap_or(0),
+         );
+     }
+ }
+diff --git a/ostd/src/task/mod.rs b/ostd/src/task/mod.rs
+index 331a6ee96..b80b36ef1 100644
+--- a/ostd/src/task/mod.rs
++++ b/ostd/src/task/mod.rs
+@@ -4,7 +4,36 @@
+ 
+ pub mod atomic_mode;
+ mod kernel_stack;
+-mod preempt;
++pub(crate) mod preempt;
++
++/// The number of preemption guards currently held on this CPU.
++///
++/// Exposed for diagnostics in the kernel crate: the interrupt path runs
++/// callbacks with local IRQs re-enabled while holding one, so a caller can
++/// check that a callback it invokes leaves the count as it found it.
++pub fn preempt_guard_count_for_diagnosis() -> u32 {
++    preempt::guard_count_for_diagnosis()
++}
++
++/// The CPU-local base this CPU is resolving every CPU-local cell through.
++///
++/// Every `cpu_local_cell!` access computes its address as this base plus a
++/// fixed offset, so a base that does not point at this CPU's own region makes
++/// all of them read and write another CPU's memory at once.
++pub fn cpu_local_base_for_diagnosis() -> usize {
++    crate::arch::cpu::local::get_base() as usize
++}
++
++/// The address of the current task, or zero in the bootstrap context.
++///
++/// The interrupt path records this before it runs code that may schedule, so
++/// a stack that was abandoned mid-way can be told apart from one that ran to
++/// completion on the same task.
++pub(crate) fn current_task_ptr_for_diagnosis() -> usize {
++    processor::current_task()
++        .map(|task| task.as_ptr() as usize)
++        .unwrap_or(0)
++}
+ mod processor;
+ pub mod scheduler;
+ mod utils;
+diff --git a/ostd/src/task/preempt/cpu_local.rs b/ostd/src/task/preempt/cpu_local.rs
+index a3bf55c01..3781b1bc9 100644
+--- a/ostd/src/task/preempt/cpu_local.rs
++++ b/ostd/src/task/preempt/cpu_local.rs
+@@ -43,7 +43,23 @@ pub(in crate::task) fn get_guard_count() -> u32 {
+     PREEMPT_INFO.load() & GUARD_COUNT_MASK
+ }
+ 
++#[track_caller]
+ pub(in crate::task) fn inc_guard_count() {
++    // Record only the guard that lifts the count off zero. That is the guard
++    // which is still outstanding; recording every take would usually name the
++    // most recent one, which has already been dropped by the time a count is
++    // read somewhere it cannot be alive.
++    if get_guard_count() == 0 {
++        LAST_TAKER.store(Some(core::panic::Location::caller()));
++        // Record who was running too. A guard that outlives its task and a
++        // guard whose task identity was read wrong produce the same count, and
++        // only the pointer distinguishes them.
++        TAKER_TASK.store(
++            crate::task::processor::current_task()
++                .map(|task| task.as_ptr() as usize)
++                .unwrap_or(0),
++        );
++    }
+     PREEMPT_INFO.add_assign(1);
+ }
+ 
+@@ -52,8 +68,24 @@ pub(in crate::task) fn dec_guard_count() {
+     PREEMPT_INFO.sub_assign(1);
+ }
+ 
++/// The task that was current when the outstanding guard was taken.
++pub(in crate::task) fn outstanding_taker_task() -> usize {
++    TAKER_TASK.load()
++}
++
++/// Where the guard that is currently outstanding was taken.
++pub(in crate::task) fn outstanding_taker() -> Option<&'static core::panic::Location<'static>> {
++    LAST_TAKER.load()
++}
++
++pub(in crate::task) fn get_guard_count_for_diagnosis() -> u32 {
++    get_guard_count()
++}
++
+ cpu_local_cell! {
+     static PREEMPT_INFO: u32 = NEED_PREEMPT_MASK;
++    static LAST_TAKER: Option<&'static core::panic::Location<'static>> = None;
++    static TAKER_TASK: usize = 0;
+ }
+ 
+ const NEED_PREEMPT_MASK: u32 = 1 << 31;
+diff --git a/ostd/src/task/preempt/guard.rs b/ostd/src/task/preempt/guard.rs
+index a951e5f98..b80178084 100644
+--- a/ostd/src/task/preempt/guard.rs
++++ b/ostd/src/task/preempt/guard.rs
+@@ -18,6 +18,7 @@ impl !Send for DisabledPreemptGuard {}
+ unsafe impl InAtomicMode for DisabledPreemptGuard {}
+ 
+ impl DisabledPreemptGuard {
++    #[track_caller]
+     fn new() -> Self {
+         super::cpu_local::inc_guard_count();
+         Self { _private: () }
+@@ -37,6 +38,7 @@ impl Drop for DisabledPreemptGuard {
+ }
+ 
+ /// Disables preemption.
++#[track_caller]
+ pub fn disable_preempt() -> DisabledPreemptGuard {
+     DisabledPreemptGuard::new()
+ }
+diff --git a/ostd/src/task/preempt/mod.rs b/ostd/src/task/preempt/mod.rs
+index 84bbf13b0..e8d30b941 100644
+--- a/ostd/src/task/preempt/mod.rs
++++ b/ostd/src/task/preempt/mod.rs
+@@ -5,6 +5,14 @@ mod guard;
+ 
+ pub use self::guard::{DisabledPreemptGuard, disable_preempt};
+ 
++/// The number of preemption guards currently held on this CPU.
++///
++/// Exposed so the interrupt path can check that a guard it took is still the
++/// only one outstanding after it has run code with local IRQs re-enabled.
++pub(crate) fn guard_count_for_diagnosis() -> u32 {
++    cpu_local::get_guard_count_for_diagnosis()
++}
++
+ /// Halts the CPU until interrupts if no preemption is required.
+ ///
+ /// This function will return if:
+diff --git a/test/initramfs/src/regression/process/cpu_affinity/migrate_fault.c b/test/initramfs/src/regression/process/cpu_affinity/migrate_fault.c
+new file mode 100644
+index 000000000..e8bc68bd7
+--- /dev/null
++++ b/test/initramfs/src/regression/process/cpu_affinity/migrate_fault.c
+@@ -0,0 +1,125 @@
++// SPDX-License-Identifier: MPL-2.0
++
++// Combine forced CPU migration with kernel copies into untouched user pages.
++// This exercises trap return and CPU-local state under concurrent allocation;
++// it does not guarantee that a particular page-fault handler itself migrates.
++#define _GNU_SOURCE
++#include <errno.h>
++#include <pthread.h>
++#include <sched.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++enum { WORKERS = 4, ROUNDS = 512, PAYLOAD_SIZE = 64 };
++static int cpus[CPU_SETSIZE];
++static int cpu_count;
++static size_t page_size;
++// Force real TLS loads across syscalls rather than constant-folding the check.
++static _Thread_local volatile uintptr_t tls_cookie;
++
++static void *worker(void *argument)
++{
++	uintptr_t id = (uintptr_t)argument;
++	tls_cookie = id + 0x123400;
++	int pipefd[2];
++	if (pipe(pipefd))
++		return (void *)1;
++	int passed = 1;
++	for (int round = 0; round < ROUNDS; ++round) {
++		cpu_set_t mask;
++		int cpu = cpus[(id + round) % cpu_count];
++		CPU_ZERO(&mask);
++		CPU_SET(cpu, &mask);
++		if (sched_setaffinity(0, sizeof(mask), &mask) ||
++		    sched_getcpu() != cpu) {
++			passed = 0;
++			break;
++		}
++		unsigned char expected[PAYLOAD_SIZE];
++		for (int index = 0; index < PAYLOAD_SIZE; ++index)
++			expected[index] = (unsigned char)(id ^ round ^ index);
++		if (write(pipefd[1], expected, sizeof(expected)) !=
++		    sizeof(expected)) {
++			passed = 0;
++			break;
++		}
++		void *mapping = mmap(NULL, page_size * 2,
++				     PROT_READ | PROT_WRITE,
++				     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++		if (mapping == MAP_FAILED) {
++			passed = 0;
++			break;
++		}
++		// Neither destination page has been touched in user mode.
++		unsigned char *destination =
++			(unsigned char *)mapping + page_size - PAYLOAD_SIZE / 2;
++		if (read(pipefd[0], destination, sizeof(expected)) !=
++			    sizeof(expected) ||
++		    memcmp(destination, expected, sizeof(expected)) ||
++		    tls_cookie != id + 0x123400 || sched_getcpu() != cpu)
++			passed = 0;
++		if (munmap(mapping, page_size * 2))
++			passed = 0;
++		if (!passed)
++			break;
++		if (sched_yield()) {
++			passed = 0;
++			break;
++		}
++	}
++	int close_read = close(pipefd[0]);
++	int close_write = close(pipefd[1]);
++	if (close_read || close_write)
++		passed = 0;
++	printf("MIGRATE_FAULT worker=%lu pass=%d\n", (unsigned long)id, passed);
++	return (void *)(uintptr_t)!passed;
++}
++
++int main(void)
++{
++	setbuf(stdout, NULL);
++	alarm(90);
++	cpu_set_t allowed;
++	if (sched_getaffinity(0, sizeof(allowed), &allowed)) {
++		perror("sched_getaffinity");
++		return 1;
++	}
++	for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu)
++		if (CPU_ISSET(cpu, &allowed))
++			cpus[cpu_count++] = cpu;
++	if (cpu_count < 2) {
++		puts("MIGRATE_FAULT skip=requires-multiple-cpus");
++		return 77;
++	}
++	long size = sysconf(_SC_PAGESIZE);
++	if (size < PAYLOAD_SIZE)
++		return 1;
++	page_size = (size_t)size;
++	pthread_t threads[WORKERS];
++	int started = 0, passed = 1;
++	for (uintptr_t id = 0; id < WORKERS; ++id) {
++		int error =
++			pthread_create(&threads[id], NULL, worker, (void *)id);
++		if (error) {
++			errno = error;
++			perror("pthread_create");
++			passed = 0;
++			break;
++		}
++		++started;
++	}
++	for (int id = 0; id < started; ++id) {
++		void *result;
++		int error = pthread_join(threads[id], &result);
++		if (error || result)
++			passed = 0;
++	}
++	alarm(0);
++	printf("MIGRATE_FAULT workers=%d rounds=%d cpus=%d pass=%d\n", started,
++	       ROUNDS, cpu_count, passed);
++	return passed ? 0 : 1;
++}
+diff --git a/test/initramfs/src/regression/process/cpu_affinity/run_test.sh b/test/initramfs/src/regression/process/cpu_affinity/run_test.sh
+index 12cd1c265..4ae14be70 100755
+--- a/test/initramfs/src/regression/process/cpu_affinity/run_test.sh
++++ b/test/initramfs/src/regression/process/cpu_affinity/run_test.sh
+@@ -6,4 +6,5 @@ set -e
+ 
+ /test/process/cpu_affinity/cpu_affinity
+ /test/process/cpu_affinity/inheritance || [ "$?" -eq 77 ]
++/test/process/cpu_affinity/migrate_fault || [ "$?" -eq 77 ]
+ echo "CPU affinity migration test passed."
+diff --git a/test/initramfs/src/regression/process/run_test.sh b/test/initramfs/src/regression/process/run_test.sh
+index 3689b44b8..8e3af3059 100755
+--- a/test/initramfs/src/regression/process/run_test.sh
++++ b/test/initramfs/src/regression/process/run_test.sh
+@@ -18,6 +18,7 @@ fi
+ 
+ ./cpu_affinity/cpu_affinity
+ ./cpu_affinity/inheritance || [ "$?" -eq 77 ]
++./cpu_affinity/migrate_fault || [ "$?" -eq 77 ]
+ 
+ if [ "$(uname -m)" = "riscv64" ]; then
+     if grep -qw 'RISCV_ICACHE_REQUIRE_SMP4=1' /proc/cmdline; then
+diff --git a/test/initramfs/src/regression/scripts/run_group_stop_ppoll_test.sh b/test/initramfs/src/regression/scripts/run_group_stop_ppoll_test.sh
+new file mode 100755
+index 000000000..92b8c6f74
+--- /dev/null
++++ b/test/initramfs/src/regression/scripts/run_group_stop_ppoll_test.sh
+@@ -0,0 +1,8 @@
++#!/bin/sh
++
++# SPDX-License-Identifier: MPL-2.0
++
++set -e
++
++/test/process/signal/group_stop_ppoll
++echo "Focused group-stop ppoll regression passed."
+-- 
+2.34.1
+
