@@ -1,0 +1,16 @@
+[Unit]
+Description=Asterinas wired-port watchdog
+After=basic.target asterinas-clock-sync.service
+Wants=asterinas-clock-sync.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /usr/lib/asterinas/net-watchdog
+Restart=always
+RestartSec=10
+EnvironmentFile=-/etc/asterinas/net-watchdog.conf
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

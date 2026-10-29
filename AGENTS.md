@@ -10,6 +10,9 @@ the kernel (`kernel/`) is entirely safe Rust.
 | Directory    | Purpose                                                  |
 |--------------|----------------------------------------------------------|
 | `kernel/`    | Safe-Rust OS kernel (syscalls, VFS, networking, etc.)    |
+| `kernel/src/` | The kernel crate that is actually built (`aster-kernel`) |
+| `kernel/comps/` | Device and subsystem components linked into the kernel |
+| `tools/riscv/` | Megrez board bring-up: image builder, console, gates  |
 | `ostd/`      | OS framework — the only crate permitted to use `unsafe`  |
 | `osdk/`      | `cargo-osdk` CLI tool for building/running/testing       |
 | `test/`      | Regression and syscall tests (C user-space programs)     |

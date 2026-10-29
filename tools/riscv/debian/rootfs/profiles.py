@@ -412,6 +412,9 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     # gcc/make were present but there was no editor and no C++ front end.
     "vim",
     "g++",
+    # Remote access replaces the serial console for day-to-day checks; the
+    # console drops characters on long lines and has no flow control.
+    "openssh-server",
 )
 
 

@@ -1762,6 +1762,18 @@ configure_desktop() {
     ln -sf -- ../asterinas-clock-sync.service \
         "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-sync.service"
 
+    # The campus switch stops answering this port after a while (ARP and DHCP
+    # both go silent while broadcast traffic still arrives); the watchdog makes
+    # that a timestamped log line instead of an unexplained outage, and can
+    # reboot unattended when configured to.
+    install -D -m 0755 -- "$script_directory/asterinas_net_watchdog.sh" \
+        "$stage/usr/lib/asterinas/net-watchdog"
+    install -D -m 0644 -- "$script_directory/asterinas-net-watchdog.service" \
+        "$stage/etc/systemd/system/asterinas-net-watchdog.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/multi-user.target.wants"
+    ln -sf -- ../asterinas-net-watchdog.service \
+        "$stage/etc/systemd/system/multi-user.target.wants/asterinas-net-watchdog.service"
+
     configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
