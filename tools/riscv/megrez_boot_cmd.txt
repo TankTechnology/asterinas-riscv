@@ -1,0 +1,25 @@
+# NOTE: U-Boot's `source` only accepts an mkimage-wrapped script image. Wrap
+# this file with
+#   mkimage -A riscv -O linux -T script -C none -d megrez_boot_cmd.txt boot.scr
+# and point bootcmd at `boot.scr`. A plain text file loaded with ext4load and
+# passed to `source` fails with: Wrong image format for "source" command.
+# The board currently uses the equivalent sequence directly in the U-Boot
+# `bootcmd` variable instead (see docs/porting/2026-10-29-megrez-desktop-network-bringup.md §6).
+#
+# Boot script kept on the writable root partition (mmc 1:2).
+#
+# The vendor extlinux.conf on mmc 1:1 still carries the lab network address and
+# omits `asterinas.mmc_write_partition2`, which leaves the root filesystem
+# read-only: Firefox then cannot create its profile ("Your Firefox profile
+# cannot be loaded") and everything that needs to write fails. U-Boot's bootcmd
+# loads this file instead, so the boot arguments live where we can edit them.
+echo "ASTERINAS_BOOTCMD start"
+ext4load mmc 1:1 0x88300000 stage1-daily.cpio
+if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=stage1"; exit 1; fi
+setenv initrd_size ${filesize}
+ext4load mmc 1:1 0x88000000 megrez-daily.dtb
+if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=dtb"; exit 1; fi
+ext4load mmc 1:2 0x80200000 /root/kernel-rel.img
+if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=kernel"; exit 1; fi
+setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd --debug-console=isolated-root
+booti 0x80200000 0x88300000:${initrd_size} 0x88000000
