@@ -3,6 +3,7 @@
 mod bin;
 mod grub;
 mod qcow2;
+mod riscv;
 
 use std::{
     ffi::OsString,
@@ -149,9 +150,20 @@ pub fn do_cached_build(
         &rustflags,
     );
 
+    let needs_riscv_image = matches!(action, ActionChoice::Run)
+        && config.target_arch == Arch::RiscV64
+        && matches!(boot.method, BootMethod::VmmDirect);
+    let boot_elf_path = {
+        let elf_name = aster_elf.path().file_name().unwrap().to_str().unwrap();
+        osdk_output_directory
+            .as_ref()
+            .join(format!("{elf_name}.elf"))
+    };
+
     // Check the existing bundle's reusability
     if let Some(existing_bundle) = get_reusable_existing_bundle(&bundle_path, config, action)
         && aster_elf.modified_time() < &existing_bundle.last_modified_time()
+        && (!needs_riscv_image || boot_elf_path.with_extension("Image").is_file())
     {
         info!("Reusing existing bundle: aster_elf is unchanged");
         return existing_bundle;
@@ -165,6 +177,9 @@ pub fn do_cached_build(
     let mut bundle = Bundle::new(&bundle_path, config, action);
 
     let boot_elf = make_stripped_boot_elf(&osdk_output_directory, &aster_elf, build.strip_elf);
+    if needs_riscv_image {
+        emit_riscv_image(boot_elf.path());
+    }
 
     match boot.method {
         BootMethod::GrubRescueIso | BootMethod::GrubQcow2 => {
@@ -203,6 +218,16 @@ pub fn do_cached_build(
     }
 
     bundle
+}
+
+fn emit_riscv_image(boot_elf_path: &Path) {
+    match riscv::make_riscv_image(boot_elf_path) {
+        Ok(image_path) => info!("Built RISC-V Image: {}", image_path.display()),
+        Err(error) => {
+            error_msg!("failed to build RISC-V Image: {error}");
+            process::exit(Errno::BuildCrate as _);
+        }
+    }
 }
 
 fn build_kernel_elf(
