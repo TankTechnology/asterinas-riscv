@@ -22,16 +22,17 @@ is green.
 - cgroupfs `memory.max` / `memory.high` writable/readable (values stored, not
   enforced yet).
 - Full downstream rootfs and Stage1 builder sources and rootfs builder image
-  are present on the rebased line. A minimal rootfs build is the first
-  reproducibility check for this port.
+  are present on the rebased line. A fresh minimal Debian rootfs was built
+  from the signed Debian Trixie indexes, verified by the rootfs contract, and
+  booted under the rebased kernel. The full Stage1 initramfs also builds.
 
 ## Preserved feature areas and status
 
 | Area | Current state on rebased line | Required next work |
 |---|---|---|
-| Debian rootfs build | Full builder sources ported; minimal build under validation | Validate browser-web build, profiles, manifests, dev overlay |
+| Debian rootfs build | Full builder sources ported; minimal profile built, contract-verified and booted; Stage1 full build succeeds | Validate browser-web build, profiles, manifests, dev overlay |
 | QEMU Debian boot | Direct-kernel gate passes | Port bootargs/artifact contracts and Stage1/systemd gate |
-| Stage1 | Minimal builder and upstream kernel handoff | Merge full builder with upstream devtmpfs; getty/journald gate |
+| Stage1 | Full builder compiles; minimal/upstream handoff already reaches systemd | Boot the full initramfs and add getty/journald gate |
 | systemd/journald | Handoff reaches systemd, journald still failing | `/dev/kmsg`+syslog, procfs sysctl/net, cgroup events, reboot sync |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
 | RISC-V board boot | No Image header/U-Boot `booti` path on upstream | Image header, DTB/framebuffer parsing, EIC7700 cache/PCIe glue |
