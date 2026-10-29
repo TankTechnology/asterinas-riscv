@@ -98,7 +98,7 @@ is green.
 | Debian rootfs build | Full builder sources ported; minimal and browser-web profiles built and contract-verified; Stage1 full build succeeds | Validate remaining profiles and manifests; rebuild after the browser service path fix |
 | QEMU Debian boot | Direct-kernel gate passes for ELF and raw Image | Port bootargs/artifact contracts and a Stage1/systemd gate |
 | Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target`; the handoff publishes `/dev/ptmx`, mounts devpts, and provides writable `/dev/shm` | Add getty and full desktop gates |
-| systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present | procfs/net extras, cgroup events, reboot sync |
+| systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present; cgroupfs exposes `cgroup.events` and `memory.events` | procfs `/proc/net`, reboot sync, memory limit enforcement |
 | Kernel networking | virtio-net `eth0` at 10.0.2.15, slirp fixture/DNS/HTTPS, and rtnetlink link/address setters work | Dynamic route insertion, `/proc/net`, broader netlink dumps |
 | PTY | devpts is mounted, `/dev/ptmx` is published, and slave ownership follows the opener; non-root `pty.spawn` and node-pty work | No remaining kernel blocker found |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
