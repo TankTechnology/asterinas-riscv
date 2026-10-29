@@ -20,6 +20,20 @@ is green.
   and serves the authenticated UI with HTTP 200.
 - Guest networking through QEMU slirp: virtio-net 10-byte header fix, port-0
   privilege fix, non-root HTTP and API access.
+- The manual U-Boot framebuffer boot carries a virtio-net device in the same
+  static DTB. The final Image reports `eth0` at `10.0.2.15`, downloads the
+  64 KiB owned fixture with the exact SHA-256, resolves `www.baidu.com`, and
+  obtains HTTP 200 from both direct slirp and the host proxy.
+- rtnetlink link and address requests are implemented. `RTM_NEWLINK` and
+  `RTM_SETLINK` apply the `ifi_flags`/`ifi_change` mask, `RTM_NEWADDR` reports
+  `EEXIST` for an address that is already configured, and successful requests
+  without response segments are ACKed. Parse-error replies now carry the
+  sender's port, so iproute2 no longer blocks on unsupported requests.
+  `ip link set eth0 up` returns 0, a duplicate `ip addr add` returns `EEXIST`,
+  and an unsupported `ip route add` returns `EOPNOTSUPP` promptly. The
+  aster-core ktest run passes 147 tests, including the two new flag-update
+  tests. Evidence: `uboot-net-probe.log`, `netlink-set-probe.log`,
+  `ktest-netlink-core.log`, and `ktest-netlink-serial.log`.
 - Minimal Stage1 devtmpfs/cgroup2 handoff.
 - cgroupfs `memory.max` / `memory.high` writable/readable (values stored, not
   enforced yet).
@@ -63,12 +77,13 @@ is green.
 | QEMU Debian boot | Direct-kernel gate passes for ELF and raw Image | Port bootargs/artifact contracts and a Stage1/systemd gate |
 | Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target` | Add getty and full desktop gates |
 | systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present | procfs/net extras, cgroup events, reboot sync |
+| Kernel networking | virtio-net `eth0` at 10.0.2.15, slirp fixture/DNS/HTTPS, and rtnetlink link/address setters work | Dynamic route insertion, `/proc/net`, broader netlink dumps, PTY |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
-| RISC-V board boot | Image header, raw Image sidecar, and DT `simple-framebuffer` parsing are implemented; QEMU raw gate passes, U-Boot `booti` reaches userspace, and the manual bochs-display boot reaches the desktop | EIC7700 cache/PCIe glue, a repository-level U-Boot desktop scenario with networking |
+| RISC-V board boot | Image header, raw Image sidecar, and DT `simple-framebuffer` parsing are implemented; QEMU raw gate passes, U-Boot `booti` reaches userspace, and the manual bochs-display boot reaches the desktop with working virtio-net | EIC7700 cache/PCIe glue, a repository-level U-Boot desktop/network scenario |
 | Megrez drivers | Not ported | DW APB UART, SDHCI/MMC, DWMAC, USB xHCI/HID, watchdog |
-| Desktop/Firefox | Xorg fbdev accepts the framebuffer; openbox/pcmanfm/lxpanel render, and Firefox maps its New Tab window. The browser helper path and trust contract are fixed | Online navigation workload, input/keyboard gate, repository-level desktop gate |
+| Desktop/Firefox | Xorg fbdev accepts the framebuffer; openbox/pcmanfm/lxpanel render, and Firefox maps its New Tab window. The browser helper path and trust contract are fixed. The guest network path needed by the online workload is verified | Full online browser workload and screenshot, input/keyboard gate, repository-level desktop gate |
 | dsh | Non-root headless turn, C compile/run, and non-root web UI (UID 1000, HTTP 200) are verified | Launcher PATH/service integration and reproducible asset provenance |
-| Host tests/gates | Not ported | Runner, expected baseline, rootfs/board/browser unit gates |
+| Host tests/gates | Kernel ktests run on the rebased line (aster-core: 147 passed); the downstream host suite is not ported | Runner, expected baseline, rootfs/board/browser unit gates |
 
 ## Explicitly out of scope
 
@@ -81,12 +96,13 @@ non-GPU display/fbdev code is in scope only for the current desktop surface.
 1. Rootfs builder reproducibility and browser-web profile.
 2. Full Stage1 + systemd (journald) on the upstream kernel. **Done.**
 3. Remaining Debian-compatibility packages: procfs `/proc/net`, cgroup
-   events, PTY/reboot durability.
-4. Browser/desktop startup on the rebased kernel. The offline desktop and
-   Firefox window are **done**; online navigation, input, and the repository
-   gate remain.
+   events, PTY/reboot durability. rtnetlink link/address setup is **done**.
+4. Browser/desktop startup on the rebased kernel. The offline desktop,
+   Firefox window, and guest network path are **done**; the full online
+   browser workload, input, and the repository gate remain.
 5. ext4 extents/JBD2 and the ext2 durability fixes.
-6. DT framebuffer, EIC7700/PCIe glue, and a green U-Boot `booti` scenario.
+6. DT framebuffer and the manual U-Boot `booti` desktop/network scenario are
+   **done**; EIC7700/PCIe glue and the repository-level scenario remain.
 7. Megrez storage, serial, network, USB and watchdog drivers.
 8. Host test suite, expected baseline, and repository guards.
 
