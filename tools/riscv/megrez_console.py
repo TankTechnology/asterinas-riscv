@@ -19,6 +19,9 @@ The board's console has no flow control, which produces two failure modes:
 * The closing carriage return of a typed line is occasionally swallowed, so the
   command echoes but never runs. Every line is followed by a blank line, which
   the bridge sends as an extra CR.
+* The USB adapter can be re-enumerated (unplugged, or reset along with the
+  board). The path stays the same but the held descriptor goes silent, which
+  looks like a dead board, so the bridge watches for that and reopens.
 
 Usage:
 
@@ -94,12 +97,46 @@ class Bridge:
         termios.tcflush(fd, termios.TCIOFLUSH)
         return fd
 
+    def _reopen_if_replaced(self) -> None:
+        """Reopens the port when the adapter has been re-enumerated.
+
+        A USB serial adapter that is unplugged, power-cycled or reset comes
+        back as the same path but a different device. The old descriptor stays
+        readable but never returns a byte again, which looks exactly like a
+        board that stopped talking; it cost an afternoon of "the board is hung"
+        before the kernel log showed the disconnect.
+        """
+        try:
+            current = os.stat(self.device)
+        except OSError:
+            return
+        try:
+            held = os.fstat(self.fd)
+        except OSError:
+            held = None
+        if held is not None and (held.st_rdev, held.st_ino) == (current.st_rdev, current.st_ino):
+            return
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        try:
+            self.fd = self._open(self.baud)
+            self._note("[bridge] reopened " + self.device + " after re-enumeration")
+        except OSError as error:
+            self._note(f"[bridge] reopen failed: {error}")
+            time.sleep(1.0)
+
     def _note(self, text: str) -> None:
         with open(self.log_path, "ab", buffering=0) as log:
             log.write(text.encode() + b"\n")
 
     def reader(self) -> None:
+        checks = 0
         while True:
+            checks += 1
+            if checks % 50 == 0:
+                self._reopen_if_replaced()
             try:
                 ready, _, _ = select.select([self.fd], [], [], 0.2)
             except (OSError, ValueError):
