@@ -134,10 +134,12 @@ impl WaitQueue {
     }
 
     fn is_empty(&self) -> bool {
-        // On x86-64, this generates `mfence; mov`, which is exactly the right way to implement
-        // atomic loading with `Ordering::Release`. It performs much better than naively
-        // translating `fetch_add(0)` to `lock; xadd`.
-        self.num_wakers.fetch_add(0, Ordering::Release) == 0
+        // An acquire load, not `fetch_add(0)`. The counter is only read here; a read-modify-write
+        // would take the cache line exclusively on every wake attempt, and an `amoadd` with both
+        // orderings is one of the most expensive instructions on RISC-V. Acquire is still enough
+        // to publish the `push_back` in `enqueue`, which happens under the queue lock before the
+        // counter is bumped.
+        self.num_wakers.load(Ordering::Acquire) == 0
     }
 
     /// Enqueues the input [`Waker`] to the wait queue.

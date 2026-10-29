@@ -126,10 +126,12 @@ impl<E: Events, F: EventsFilter<E>> SyncSubject<E, F> {
     pub(crate) fn notify_observers(&self, events: &E) {
         // Fast path.
         //
-        // Note: This must use `Release`, which pairs with `Acquire` in `register_observer`, to
-        // ensure that even if this fast path is used, a concurrently registered observer will see
-        // the event we want to notify.
-        if self.num_observers.fetch_add(0, Ordering::Release) == 0 {
+        // Note: This must be an `Acquire` load, to ensure that even if this fast path is used, a
+        // concurrently registered observer will see the event we want to notify. It must not be a
+        // read-modify-write: `notify_observers` runs on every readiness event (pipe writes, wake
+        // ups, epoll), and taking the cache line exclusively there costs more than the whole
+        // check on an in-order RISC-V core.
+        if self.num_observers.load(Ordering::Acquire) == 0 {
             return;
         }
 
