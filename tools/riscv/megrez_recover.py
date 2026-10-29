@@ -66,9 +66,9 @@ def main() -> int:
         f"-- --root-init=systemd --debug-console=isolated-root"
     )
 
-    # The board now carries its own boot script on the writable root partition
-    # (`/root/boot.cmd`, see `megrez_boot_cmd.txt`) and U-Boot's `bootcmd`
-    # sources it, so a plain power-on already boots with the right arguments.
+    # The board's U-Boot environment now carries the whole boot sequence and
+    # the arguments that go with it (see `megrez_boot_cmd.txt`), so a plain
+    # power-on already boots into a writable root with the campus address.
     # This script therefore only has to get a kernel running when someone has
     # interrupted that path: at the prompt it types `boot`, during the
     # countdown it stops the countdown first, and only when neither appears

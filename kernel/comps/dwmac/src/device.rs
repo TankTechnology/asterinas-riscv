@@ -391,7 +391,7 @@ fn ethernet_capabilities() -> DeviceCapabilities {
 struct TxStallWatch {
     last_reclaimed: u64,
     since: Option<Jiffies>,
-    reported: bool,
+    attempts: u32,
 }
 
 impl TxStallWatch {
@@ -399,11 +399,17 @@ impl TxStallWatch {
     /// before it counts as a stall. `Jiffies` runs at 1000 Hz, so this is 2 s.
     const STALL_JIFFIES: u64 = 2_000;
 
+    /// How many times one stall episode may try to kick the ring. Re-arming
+    /// schedules another poll, which lands back here, so an unbounded number of
+    /// attempts would spin; after this many the episode is left to the network
+    /// watchdog and to the report it already emitted.
+    const MAX_ATTEMPTS: u32 = 4;
+
     const fn new() -> Self {
         Self {
             last_reclaimed: 0,
             since: None,
-            reported: false,
+            attempts: 0,
         }
     }
 }
@@ -546,12 +552,12 @@ impl DwmacDevice {
         if progress.tx_reclaimed != self.tx_stall.last_reclaimed {
             self.tx_stall.last_reclaimed = progress.tx_reclaimed;
             self.tx_stall.since = None;
-            self.tx_stall.reported = false;
+            self.tx_stall.attempts = 0;
             return;
         }
         if progress.tx_outstanding == 0 {
             self.tx_stall.since = None;
-            self.tx_stall.reported = false;
+            self.tx_stall.attempts = 0;
             return;
         }
 
@@ -559,8 +565,10 @@ impl DwmacDevice {
         if now.as_u64().saturating_sub(since.as_u64()) < TxStallWatch::STALL_JIFFIES {
             return;
         }
-        if !self.tx_stall.reported {
-            self.tx_stall.reported = true;
+        if self.tx_stall.attempts >= TxStallWatch::MAX_ATTEMPTS {
+            return;
+        }
+        if self.tx_stall.attempts == 0 {
             let dma_status = self.read(DMA_CHANNEL0_STATUS.offset()).unwrap_or(u32::MAX);
             ostd::warn!(
                 "ASTERINAS_GMAC_TX_STALL submitted={} reclaimed={} outstanding={} dma_status={:#010x} fatal={}",
@@ -573,7 +581,8 @@ impl DwmacDevice {
         }
         // Re-arming is the recovery that matches the state above: if the line
         // was left masked, the next receive interrupt schedules the poll that
-        // reclaims the ring. If it was not the mask, the next report says so.
+        // reclaims the ring.
+        self.tx_stall.attempts += 1;
         if self.irq.rearm().is_err() {
             self.fatal = true;
         }
