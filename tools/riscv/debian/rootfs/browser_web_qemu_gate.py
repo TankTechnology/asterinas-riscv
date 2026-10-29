@@ -189,7 +189,7 @@ WEB_EVIDENCE_EXTRACT_TIMEOUT = 120.0
 WEB_EVIDENCE_FILE_TIMEOUT = 15.0
 MAX_TIMELINE_PHASE_DELTA_NS = 7200 * 1_000_000_000
 _TRUST_LINE = re.compile(
-    r"FIREFOX_TRUST_PASS mode=(embedded-xul|system-nss-jit-overlay) "
+    r"FIREFOX_TRUST_PASS mode=(embedded-xul|system-nss-jit-overlay|external:\S+) "
     r"ca_certificates=([1-9][0-9]{2,}) "
     r"firefox=installed ca_package=installed riscv_elf=1 nss_loader=1"
 )

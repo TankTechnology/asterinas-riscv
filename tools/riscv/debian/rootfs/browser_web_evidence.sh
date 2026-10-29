@@ -345,7 +345,7 @@ validate_firefox_logs() {
 }
 
 [[ -s "$SYSTEM_CA" ]] || fail system-ca-bundle
-grep -Eq '^FIREFOX_TRUST_PASS mode=(embedded-xul|system-nss-jit-overlay) ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' "$TRUST_STATIC_LOG" ||
+grep -Eq '^FIREFOX_TRUST_PASS mode=(embedded-xul|system-nss-jit-overlay|external:[^ ]+) ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' "$TRUST_STATIC_LOG" ||
     fail firefox-trust-static
 : >"$CURL_LOG"
 : >"$SECURITY_LOG"

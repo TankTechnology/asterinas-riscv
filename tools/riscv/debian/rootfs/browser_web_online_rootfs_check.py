@@ -108,16 +108,27 @@ def check_root(root: Path, trust_checker: Path) -> str:
         text=True,
     )
     require(trust.returncode == 0, f"Firefox trust preflight failed: {trust.stderr.strip()}")
-    expected_trust = (
-        "mode=system-nss-jit-overlay"
-        if launcher_relative == "usr/bin/firefox"
-        else "mode=embedded-xul"
-    )
+    trust_passes = [
+        line
+        for line in trust.stdout.splitlines()
+        if line.startswith("FIREFOX_TRUST_PASS ")
+    ]
     require(
-        trust.stdout.count("FIREFOX_TRUST_PASS ") == 1
-        and expected_trust in trust.stdout,
+        len(trust_passes) == 1,
         "trust checker did not emit exactly one expected PASS",
     )
+    if launcher_relative == "usr/bin/firefox":
+        expected_trust = "mode=system-nss-jit-overlay"
+        require(
+            expected_trust in trust_passes[0],
+            "trust checker did not prove the system NSS JIT overlay",
+        )
+    else:
+        require(
+            re.search(r"mode=(?:embedded-xul|external:\S+)", trust_passes[0])
+            is not None,
+            "trust checker did not prove the firefox-esr trust anchors",
+        )
     return (
         "FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns "
         "curl=riscv64 getent=riscv64 firefox=riscv64 trust_static=pass "

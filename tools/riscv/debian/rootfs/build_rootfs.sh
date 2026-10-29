@@ -1766,9 +1766,18 @@ EOF
                 >"$stage/usr/share/asterinas/browser-web-trust-static.log"
             [[ "$(wc -l <"$stage/usr/share/asterinas/browser-web-trust-static.log")" == 1 ]] ||
                 die "Firefox trust checker emitted an ambiguous result"
-            grep -Eq "^FIREFOX_TRUST_PASS mode=$firefox_trust_mode ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
-                "$stage/usr/share/asterinas/browser-web-trust-static.log" ||
+            # The trust checker reports either embedded XUL roots or one
+            # validated external NSS CKBI module.  Newer firefox-esr packages
+            # ship the latter; both are explicitly validated by the checker.
+            trust_mode_pattern="$firefox_trust_mode"
+            if [[ "$firefox_trust_mode" == "embedded-xul" ]]; then
+                trust_mode_pattern='(embedded-xul|external:[^ ]+)'
+            fi
+            if ! grep -Eq "^FIREFOX_TRUST_PASS mode=$trust_mode_pattern ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
+                "$stage/usr/share/asterinas/browser-web-trust-static.log"; then
+                cat "$stage/usr/share/asterinas/browser-web-trust-static.log" >&2
                 die "Firefox trust checker did not prove the selected trust mode"
+            fi
             chmod 0644 -- \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log"
         fi
