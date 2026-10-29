@@ -1785,6 +1785,14 @@ configure_desktop() {
     ln -sf -- ../asterinas-net-watchdog.service \
         "$stage/etc/systemd/system/multi-user.target.wants/asterinas-net-watchdog.service"
 
+    # Pairs with `asterinas.reboot_after=` on the kernel command line: a boot
+    # that hangs in early unit startup reboots itself instead of waiting for
+    # somebody to press reset.
+    install -D -m 0644 -- "$script_directory/asterinas-watchdog-disarm.service" \
+        "$stage/etc/systemd/system/asterinas-watchdog-disarm.service"
+    ln -sf -- ../asterinas-watchdog-disarm.service \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-watchdog-disarm.service"
+
     configure_logind_namespace_compatibility "$stage"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \

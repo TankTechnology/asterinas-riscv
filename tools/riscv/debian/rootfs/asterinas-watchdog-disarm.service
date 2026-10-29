@@ -1,0 +1,23 @@
+[Unit]
+Description=Disarm the kernel boot watchdog once basic.target is reached
+# Paired with `asterinas.reboot_after=` on the kernel command line: the kernel
+# reboots the board if boot has not reached this point within the deadline, so
+# a hang inside early unit startup recovers on its own instead of waiting for
+# someone to press the reset button. Reaching basic.target is the evidence that
+# the system is making progress; the deadline is generous (15 minutes) so a
+# slow cold boot is never mistaken for a hang.
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+Wants=sysinit.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo 0 > /proc/sys/kernel/asterinas_reboot_watchdog 2>/dev/null || true'
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=basic.target
