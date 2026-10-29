@@ -8,7 +8,10 @@ use crate::{
     security::lsm::hooks as lsm_hooks,
 };
 
-const PRIVILEGED_PORTS: Range<u16> = 0..1024;
+// Port 0 requests an ephemeral port, including the implicit bind that
+// `connect()` performs for an unbound socket. It is not a privileged bind and
+// must not require `CAP_NET_BIND_SERVICE`.
+const PRIVILEGED_PORTS: Range<u16> = 1..1024;
 
 /// Checks if the port is privileged and, if so, whether the thread is allowed to bind to it.
 pub(crate) fn check_port_privilege(port: u16) -> Result<()> {
@@ -34,4 +37,20 @@ pub(crate) fn check_port_privilege(port: u16) -> Result<()> {
         Errno::EACCES,
         "only threads with CAP_NET_BIND_SERVICE can bind to privileged ports"
     );
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn port_zero_is_not_privileged() {
+        assert!(check_port_privilege(0).is_ok());
+        assert!(check_port_privilege(1024).is_ok());
+        assert!(!PRIVILEGED_PORTS.contains(&0));
+        assert!(PRIVILEGED_PORTS.contains(&1));
+        assert!(!PRIVILEGED_PORTS.contains(&1024));
+    }
 }
