@@ -8,7 +8,7 @@
 //! syscall readers drain the pending flag to notify waiters out of band.
 
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::Duration,
 };
 
@@ -25,10 +25,15 @@ mod store;
 /// Maximum retained records; storage is static and no allocation is lazy.
 pub const RECORD_CAPACITY: usize = 512;
 
+const CONSOLE_MAX_LEVEL: u8 = 8;
+const CONSOLE_MIN_LEVEL: u8 = 1;
+
 static KLOG: KernelLog = KernelLog {
     records: SpinLock::new(store::RecordRing::new()),
     pending: AtomicBool::new(false),
     restricted: AtomicBool::new(true),
+    console_level: AtomicU8::new(CONSOLE_MAX_LEVEL),
+    console_saved: AtomicU8::new(0),
 };
 
 /// Returns the shared kernel log.
@@ -41,6 +46,8 @@ pub struct KernelLog {
     records: SpinLock<store::RecordRing<RECORD_CAPACITY>, LocalIrqDisabled>,
     pending: AtomicBool,
     restricted: AtomicBool,
+    console_level: AtomicU8,
+    console_saved: AtomicU8,
 }
 
 impl KernelLog {
@@ -101,6 +108,38 @@ impl KernelLog {
     /// Sets the privileged-read policy.
     pub fn set_dmesg_restrict(&self, restricted: bool) {
         self.restricted.store(restricted, Ordering::Relaxed);
+    }
+
+    /// Returns whether a record at `level` should be printed to the console.
+    pub fn should_print(&self, level: ostd::log::Level) -> bool {
+        (level as u8) < self.console_level.load(Ordering::Relaxed)
+    }
+
+    /// Changes console verbosity without changing capture verbosity.
+    pub fn set_console_level(&self, level: u8) {
+        self.console_level.store(
+            level.min(CONSOLE_MAX_LEVEL).max(CONSOLE_MIN_LEVEL),
+            Ordering::Relaxed,
+        );
+        self.console_saved.store(0, Ordering::Relaxed);
+    }
+
+    /// Saves console verbosity and enables only emergency console messages.
+    pub fn disable_console(&self) {
+        let current = self.console_level.load(Ordering::Relaxed);
+        if self.console_saved.load(Ordering::Relaxed) == 0 {
+            self.console_saved.store(current, Ordering::Relaxed);
+        }
+        self.console_level
+            .store(CONSOLE_MIN_LEVEL, Ordering::Relaxed);
+    }
+
+    /// Restores the previously saved console verbosity, if any.
+    pub fn enable_console(&self) {
+        let saved = self.console_saved.swap(0, Ordering::Relaxed);
+        if saved != 0 {
+            self.console_level.store(saved, Ordering::Relaxed);
+        }
     }
 }
 

@@ -2,7 +2,7 @@
 
 mod evdev;
 mod fb;
-mod kmsg;
+pub(crate) mod kmsg;
 mod mem;
 pub(crate) mod misc;
 mod model;

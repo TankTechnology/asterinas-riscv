@@ -162,6 +162,7 @@ macro_rules! import_generic_syscall_entries {
             symlink::sys_symlinkat,
             sync::{sys_sync, sys_syncfs},
             sysinfo::sys_sysinfo,
+            syslog::sys_syslog,
             tgkill::{sys_tgkill, sys_tkill},
             timer_create::{sys_timer_create, sys_timer_delete},
             timer_settime::{sys_timer_gettime, sys_timer_settime},
@@ -325,6 +326,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SET_PRIORITY = 140           => sys_set_priority(args[..3]);
             SYS_GET_PRIORITY = 141           => sys_get_priority(args[..2]);
             SYS_REBOOT = 142                 => sys_reboot(args[..4]);
+            SYS_SYSLOG = 116                 => sys_syslog(args[..3]);
             SYS_SETREGID = 143               => sys_setregid(args[..2]);
             SYS_SETGID = 144                 => sys_setgid(args[..1]);
             SYS_SETREUID = 145               => sys_setreuid(args[..2]);
