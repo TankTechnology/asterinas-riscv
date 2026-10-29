@@ -25,19 +25,32 @@ is green.
   are present on the rebased line. A fresh minimal Debian rootfs was built
   from the signed Debian Trixie indexes, verified by the rootfs contract, and
   booted under the rebased kernel. The full Stage1 initramfs also builds.
+- The browser-web rootfs builds from the signed indexes. Its embedded trust
+  contract reports `FIREFOX_TRUST_PASS mode=external:...libnssckbi.so
+  ca_certificates=148` and `FIREFOX_ONLINE_ROOTFS_PASS`.
+- The Linux RISC-V Image header is at `_start`; OSDK emits a raw
+  `asterinas-osdk-bin.Image` sidecar with the image-size field patched from
+  the ELF `PT_LOAD` extent. QEMU boots that raw image through the full direct
+  Debian gate, and a U-Boot `booti` handoff reaches the userspace completion
+  line.
+- `/dev/kmsg`, a bounded kernel log ring, `SO_TIMESTAMP` negotiation,
+  `/proc/sys/kernel/random/boot_id`, and `syslog(2)`/`dmesg` are implemented.
+  Under the Stage1 systemd handoff, systemd-journald reaches
+  `active (running)`, and both `multi-user.target` and `graphical.target`
+  are reached.
 
 ## Preserved feature areas and status
 
 | Area | Current state on rebased line | Required next work |
 |---|---|---|
-| Debian rootfs build | Full builder sources ported; minimal profile built, contract-verified and booted; Stage1 full build succeeds | Validate browser-web build, profiles, manifests, dev overlay |
-| QEMU Debian boot | Direct-kernel gate passes | Port bootargs/artifact contracts and Stage1/systemd gate |
-| Stage1 | Full builder compiles; minimal/upstream handoff already reaches systemd | Boot the full initramfs and add getty/journald gate |
-| systemd/journald | Handoff reaches systemd, journald still failing | `/dev/kmsg`+syslog, procfs sysctl/net, cgroup events, reboot sync |
+| Debian rootfs build | Full builder sources ported; minimal and browser-web profiles built and contract-verified; Stage1 full build succeeds | Validate remaining profiles and manifests; rebuild after the browser service path fix |
+| QEMU Debian boot | Direct-kernel gate passes for ELF and raw Image | Port bootargs/artifact contracts and a Stage1/systemd gate |
+| Stage1 | Full initramfs reaches systemd, `multi-user.target`, and `graphical.target` | Add getty and full desktop gates |
+| systemd/journald | systemd-journald is `active (running)`; `/dev/kmsg`, `SO_TIMESTAMP`, boot_id, and `syslog(2)`/`dmesg` are present | procfs/net extras, cgroup events, reboot sync |
 | ext4/JBD2 | Not ported; upstream ext2 rejects normal ext4 root | Extent read/write, journal replay, durability tests |
-| RISC-V board boot | No Image header/U-Boot `booti` path on upstream | Image header, DTB/framebuffer parsing, EIC7700 cache/PCIe glue |
+| RISC-V board boot | Image header and raw Image sidecar implemented; QEMU raw gate passes and U-Boot `booti` reaches userspace | DTB/framebuffer parsing, EIC7700 cache/PCIe glue, a green U-Boot scenario |
 | Megrez drivers | Not ported | DW APB UART, SDHCI/MMC, DWMAC, USB xHCI/HID, watchdog |
-| Desktop/Firefox | Rootfs guest assets ported; kernel framebuffer/input gaps remain | RISC-V simple-framebuffer, desktop/browser gates |
+| Desktop/Firefox | Rootfs guest assets ported; browser unit referenced a missing device-access path | Rebuild with the corrected path, then run Firefox/desktop gates |
 | dsh | Headless non-root and C build verified | dsh web non-root, launcher PATH/service, reproducible asset provenance |
 | Host tests/gates | Not ported | Runner, expected baseline, rootfs/board/browser unit gates |
 
@@ -50,13 +63,14 @@ non-GPU display/fbdev code is in scope only for the current desktop surface.
 ## Port order
 
 1. Rootfs builder reproducibility and browser-web profile.
-2. Full Stage1 + systemd (journald) on the upstream kernel.
-3. Kernel Debian-compatibility packages: `/dev/kmsg`/syslog, procfs identity
-   and `/proc/net`, cgroup events, PTY/reboot durability.
-4. ext4 extents/JBD2 and the ext2 durability fixes.
-5. RISC-V Image header, DT framebuffer, EIC7700/PCIe glue.
-6. Megrez storage, serial, network, USB and watchdog drivers.
-7. Desktop/Firefox and Megrez deployment gates.
+2. Full Stage1 + systemd (journald) on the upstream kernel. **Done.**
+3. Remaining Debian-compatibility packages: procfs `/proc/net`, cgroup
+   events, PTY/reboot durability.
+4. Browser/desktop startup on the rebased kernel (device-access path fixed,
+   then Xorg/Firefox gates).
+5. ext4 extents/JBD2 and the ext2 durability fixes.
+6. DT framebuffer, EIC7700/PCIe glue, and a green U-Boot `booti` scenario.
+7. Megrez storage, serial, network, USB and watchdog drivers.
 8. Host test suite, expected baseline, and repository guards.
 
 Each step must land with its own gate. The old tree remains the fallback until
