@@ -15,6 +15,7 @@ use ostd::{
     irq::IrqLine,
     mm::VmWriter,
     sync::SpinLock,
+    timer::Jiffies,
 };
 
 use crate::{
@@ -109,6 +110,7 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         rx_diagnostics: RxDiagnostics::default(),
         mtl_rx_loss: MtlRxLossDiagnostics::default(),
         tx_diagnostics: TxDiagnostics::default(),
+        tx_stall: TxStallWatch::new(),
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
@@ -375,6 +377,37 @@ fn ethernet_capabilities() -> DeviceCapabilities {
     capabilities
 }
 
+/// Watches for a transmit path that has stopped making progress.
+///
+/// The receive interrupt is masked on every activation and only re-armed when a
+/// poll ends with no receive work left, so a stall that happens while receives
+/// are busy leaves the line masked with nothing scheduled to unmask it. That
+/// shows up as a ring full of descriptors the hardware never completes: `send`
+/// reports Busy, the stack stops handing packets to the device, and the board
+/// looks offline while received traffic keeps arriving.
+///
+/// Nothing else observes that state today, so it is recorded here and the line
+/// is re-armed, which is enough to resume a stalled ring.
+struct TxStallWatch {
+    last_reclaimed: u64,
+    since: Option<Jiffies>,
+    reported: bool,
+}
+
+impl TxStallWatch {
+    /// How long the ring may hold unreclaimed descriptors without progress
+    /// before it counts as a stall. `Jiffies` runs at 1000 Hz, so this is 2 s.
+    const STALL_JIFFIES: u64 = 2_000;
+
+    const fn new() -> Self {
+        Self {
+            last_reclaimed: 0,
+            since: None,
+            reported: false,
+        }
+    }
+}
+
 struct DwmacDevice {
     platform: MegrezPlatform,
     selected: SelectedPortInfo,
@@ -384,6 +417,7 @@ struct DwmacDevice {
     rx_diagnostics: RxDiagnostics,
     mtl_rx_loss: MtlRxLossDiagnostics,
     tx_diagnostics: TxDiagnostics,
+    tx_stall: TxStallWatch,
     fatal: bool,
     capabilities: DeviceCapabilities,
 }
@@ -500,6 +534,52 @@ impl DwmacDevice {
         };
         self.rx_diagnostics.record_descriptor_drop(drop);
     }
+    /// Records transmit progress and recovers a ring that stopped moving.
+    ///
+    /// Called once per poll cycle, which is also where the line is re-armed for
+    /// the next receive interrupt, so a stall is noticed on the same path that
+    /// can fix it.
+    fn watch_tx_progress(&mut self) {
+        let progress = self.queue.progress();
+        let now = Jiffies::elapsed();
+
+        if progress.tx_reclaimed != self.tx_stall.last_reclaimed {
+            self.tx_stall.last_reclaimed = progress.tx_reclaimed;
+            self.tx_stall.since = None;
+            self.tx_stall.reported = false;
+            return;
+        }
+        if progress.tx_outstanding == 0 {
+            self.tx_stall.since = None;
+            self.tx_stall.reported = false;
+            return;
+        }
+
+        let since = *self.tx_stall.since.get_or_insert(now);
+        if now.as_u64().saturating_sub(since.as_u64()) < TxStallWatch::STALL_JIFFIES {
+            return;
+        }
+        if !self.tx_stall.reported {
+            self.tx_stall.reported = true;
+            let dma_status = self.read(DMA_CHANNEL0_STATUS.offset()).unwrap_or(u32::MAX);
+            ostd::warn!(
+                "ASTERINAS_GMAC_TX_STALL submitted={} reclaimed={} outstanding={} dma_status={:#010x} fatal={}",
+                progress.tx_submitted,
+                progress.tx_reclaimed,
+                progress.tx_outstanding,
+                dma_status,
+                self.fatal,
+            );
+        }
+        // Re-arming is the recovery that matches the state above: if the line
+        // was left masked, the next receive interrupt schedules the poll that
+        // reclaims the ring. If it was not the mask, the next report says so.
+        if self.irq.rearm().is_err() {
+            self.fatal = true;
+        }
+        aster_network::raise_send_softirq();
+    }
+
 }
 
 impl AnyNetworkDevice for DwmacDevice {
@@ -569,6 +649,7 @@ impl AnyNetworkDevice for DwmacDevice {
     }
 
     fn notify_poll_end(&mut self) {
+        self.watch_tx_progress();
         let dma_status = self.service_status();
         let more_rx = !self.fatal && self.queue.can_receive();
         match self.rx_poll.finish(self.fatal, more_rx) {
