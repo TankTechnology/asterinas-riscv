@@ -1130,6 +1130,17 @@ configure_and_normalize_rootfs() {
     # image ships one that reads the ASTERINAS_* fields.
     install -D -m 0755 -- "$script_directory/asterinas_fetch.sh" \
         "$stage/usr/local/bin/asterinas-fetch"
+
+    # Chinese input, configured the way the x86 desktop already works. The
+    # script runs inside the chroot so it can rewrite the fcitx addon defaults
+    # in place.
+    if is_desktop_profile; then
+        install -D -m 0755 -- "$script_directory/desktop_input_method.sh" \
+            "$stage/usr/lib/asterinas/desktop-input-method"
+        if [ -x "$stage/usr/bin/fcitx5" ]; then
+            run_chroot "$stage" /bin/bash /usr/lib/asterinas/desktop-input-method
+        fi
+    fi
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
     printf '%s\n' '__DEBIAN_ROOTFS_SHELL_READY__'

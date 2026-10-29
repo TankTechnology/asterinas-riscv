@@ -415,6 +415,14 @@ BROWSER_WEB_DESKTOP_PACKAGES = (
     # Remote access replaces the serial console for day-to-day checks; the
     # console drops characters on long lines and has no flow control.
     "openssh-server",
+    # Chinese input. fonts-wqy-microhei already ships the glyphs, so without
+    # these the desktop can display Chinese but cannot type it.
+    "fcitx5",
+    "fcitx5-table",
+    "fcitx5-table-extra",
+    "fcitx5-chinese-addons",
+    "fcitx5-frontend-gtk3",
+    "fcitx5-frontend-gtk2",
 )
 
 
