@@ -9,7 +9,6 @@ use crate::{net::iface::Iface, prelude::*};
 #[derive(Clone)]
 pub(super) struct RouteEntry<A: RouteAddressFamily> {
     dst: A::Cidr,
-    #[expect(dead_code)]
     gateway: Option<A>,
     output_iface: Arc<Iface>,
     table_id: RouteTableId,
@@ -47,8 +46,7 @@ impl<A: RouteAddressFamily> RouteEntry<A> {
     }
 
     /// Returns the next-hop gateway.
-    #[expect(dead_code)]
-    const fn gateway(&self) -> Option<A> {
+    pub(super) const fn gateway(&self) -> Option<A> {
         self.gateway
     }
 
@@ -139,12 +137,31 @@ impl RouteTableId {
     /// The table ID of the local table,
     /// which manages routes for addresses assigned locally.
     pub(super) const LOCAL: Self = Self(255);
+
+    pub(super) const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            253 => Some(Self::DEFAULT),
+            254 => Some(Self::MAIN),
+            255 => Some(Self::LOCAL),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn get(self) -> u32 {
+        self.0
+    }
 }
 
 /// A route metric used to prefer routes with equal prefix lengths;
 /// lower values have higher priority.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct RouteMetric(u32);
+
+impl RouteMetric {
+    pub(super) const fn new(value: u32) -> Self {
+        Self(value)
+    }
+}
 
 /// The forwarding behavior of a route.
 ///
@@ -157,4 +174,23 @@ pub(super) enum RouteType {
     Local,
     /// Delivers IPv4 broadcasts.
     Broadcast,
+}
+
+impl RouteType {
+    pub(super) const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::Unicast),
+            2 => Some(Self::Local),
+            3 => Some(Self::Broadcast),
+            _ => None,
+        }
+    }
+
+    pub(super) const fn as_u8(self) -> u8 {
+        match self {
+            Self::Unicast => 1,
+            Self::Local => 2,
+            Self::Broadcast => 3,
+        }
+    }
 }

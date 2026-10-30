@@ -8,7 +8,5 @@ pub(crate) mod options;
 mod stream;
 
 pub(crate) use addr::IpAddressFamily;
-pub(crate) use datagram::DatagramSocket;
-pub(in crate::net) use datagram::observer::DatagramObserver;
-pub(in crate::net) use stream::observer::StreamObserver;
-pub(crate) use stream::{StreamSocket, options as stream_options};
+pub(crate) use datagram::{DatagramSocket, observer::DatagramObserver};
+pub(crate) use stream::{StreamSocket, observer::StreamObserver, options as stream_options};

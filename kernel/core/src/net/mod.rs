@@ -6,6 +6,11 @@ use aster_bigtcp::iface::IfaceStatsSnapshot;
 
 mod iface;
 mod route;
+
+pub(crate) use iface::{Iface, iter_all_ifaces};
+pub(crate) use route::{
+    Ipv4RouteSnapshot, add_ipv4_route, ipv4_route_snapshots, lookup_ipv4_route,
+};
 pub(crate) mod socket;
 pub(crate) mod uts_ns;
 
@@ -18,7 +23,7 @@ pub(crate) fn init() {
 
 /// Returns the current packet counters of every network interface.
 pub(crate) fn iface_stats() -> impl Iterator<Item = (String, IfaceStatsSnapshot)> {
-    iface::iter_all_ifaces().map(|iface| {
+    iter_all_ifaces().map(|iface| {
         let name = iface.name().as_str().unwrap_or("?").to_string();
         (name, iface.stats())
     })

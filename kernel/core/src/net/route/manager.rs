@@ -70,4 +70,21 @@ impl<A: RouteAddressFamily> RouteManager<A> {
     pub(super) fn lookup_in_local_table(&self, key: &RouteLookupKey<A>) -> Option<RouteEntry<A>> {
         self.tables.get(&RouteTableId::LOCAL)?.lookup(key)
     }
+
+    /// Inserts a route into an existing table.
+    pub(super) fn insert(&mut self, entry: RouteEntry<A>) -> Result<()> {
+        let table = self.tables.get_mut(&entry.table_id()).ok_or_else(|| {
+            Error::with_message(Errno::EOPNOTSUPP, "route table is not supported")
+        })?;
+        table.insert(entry);
+        Ok(())
+    }
+
+    /// Returns every route currently installed in this manager.
+    pub(super) fn snapshots(&self) -> Vec<RouteEntry<A>> {
+        self.tables
+            .values()
+            .flat_map(|table| table.entries().cloned())
+            .collect()
+    }
 }

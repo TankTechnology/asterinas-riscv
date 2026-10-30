@@ -10,7 +10,7 @@ use aster_bigtcp::{
     iface::InterfaceType,
     wire::{IpAddress, IpCidr, IpEndpoint, Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr},
 };
-use spin::Once;
+use spin::{Once, RwLock};
 
 use self::{manager::RouteManager, rule::Rule};
 use super::iface::{self, Iface};
@@ -23,7 +23,7 @@ mod table;
 
 use entry::{RouteAddressFamily, RouteEntry, RouteMetric, RouteTableId, RouteType};
 
-static IPV4_ROUTE_MANAGER: Once<RouteManager<Ipv4Address>> = Once::new();
+static IPV4_ROUTE_MANAGER: Once<RwLock<RouteManager<Ipv4Address>>> = Once::new();
 static IPV6_ROUTE_MANAGER: Once<RouteManager<Ipv6Address>> = Once::new();
 
 /// A route lookup key for one address family.
@@ -54,14 +54,14 @@ pub(super) fn init() {
         let routes = iface::iter_all_ifaces()
             .flat_map(iface_ipv4_routes)
             .collect();
-        RouteManager::new(
+        RwLock::new(RouteManager::new(
             &[
                 Rule::lookup(LOCAL_RULE_PRIORITY, RouteTableId::LOCAL),
                 Rule::lookup(MAIN_RULE_PRIORITY, RouteTableId::MAIN),
                 Rule::lookup(DEFAULT_RULE_PRIORITY, RouteTableId::DEFAULT),
             ],
             routes,
-        )
+        ))
     });
 
     IPV6_ROUTE_MANAGER.call_once(|| {
@@ -76,6 +76,73 @@ pub(super) fn init() {
             routes,
         )
     });
+}
+
+/// A read-only view of one installed IPv4 route.
+#[derive(Clone)]
+pub(crate) struct Ipv4RouteSnapshot {
+    pub table: u32,
+    pub dst: Ipv4Cidr,
+    pub gateway: Option<Ipv4Address>,
+    pub iface: Arc<Iface>,
+    pub type_: u8,
+}
+
+/// Returns all IPv4 routes currently installed in the main routing tables.
+pub(crate) fn ipv4_route_snapshots() -> Vec<Ipv4RouteSnapshot> {
+    IPV4_ROUTE_MANAGER
+        .get()
+        .unwrap()
+        .read()
+        .snapshots()
+        .into_iter()
+        .map(route_snapshot)
+        .collect()
+}
+
+/// Looks up the best IPv4 route for a destination.
+pub(crate) fn lookup_ipv4_route(dst: Ipv4Address) -> Option<Ipv4RouteSnapshot> {
+    IPV4_ROUTE_MANAGER
+        .get()
+        .unwrap()
+        .read()
+        .lookup_entry(&RouteLookupKey::new(dst))
+        .ok()
+        .map(route_snapshot)
+}
+
+/// Inserts one IPv4 route into a supported routing table.
+pub(crate) fn add_ipv4_route(
+    dst: Ipv4Cidr,
+    gateway: Option<Ipv4Address>,
+    iface: Arc<Iface>,
+    table: u32,
+    metric: u32,
+    type_: u8,
+) -> Result<()> {
+    let table_id = RouteTableId::from_u32(table)
+        .ok_or_else(|| Error::with_message(Errno::EOPNOTSUPP, "route table is not supported"))?;
+    let route_type = RouteType::from_u8(type_)
+        .ok_or_else(|| Error::with_message(Errno::EOPNOTSUPP, "route type is not supported"))?;
+    let entry = RouteEntry::new(
+        dst.network(),
+        gateway,
+        iface,
+        table_id,
+        RouteMetric::new(metric),
+        route_type,
+    )?;
+    IPV4_ROUTE_MANAGER.get().unwrap().write().insert(entry)
+}
+
+fn route_snapshot(entry: RouteEntry<Ipv4Address>) -> Ipv4RouteSnapshot {
+    Ipv4RouteSnapshot {
+        table: entry.table_id().get(),
+        dst: *entry.dst(),
+        gateway: entry.gateway(),
+        iface: entry.output_iface().clone(),
+        type_: entry.type_().as_u8(),
+    }
 }
 
 fn iface_ipv4_routes(iface: &Arc<Iface>) -> Vec<RouteEntry<Ipv4Address>> {
@@ -194,6 +261,7 @@ pub(super) fn lookup_iface(dst: IpAddress) -> Result<Arc<Iface>> {
         IpAddress::Ipv4(dst) => IPV4_ROUTE_MANAGER
             .get()
             .unwrap()
+            .read()
             .lookup_entry(&RouteLookupKey::new(dst))?
             .output_iface()
             .clone(),
@@ -214,6 +282,7 @@ pub(super) fn lookup_local_iface(address: IpAddress) -> Result<Arc<Iface>> {
             let entry = IPV4_ROUTE_MANAGER
                 .get()
                 .unwrap()
+                .read()
                 .lookup_in_local_table(&RouteLookupKey::new(address))
                 .ok_or_else(|| {
                     Error::with_message(
@@ -263,6 +332,7 @@ pub(super) fn is_broadcast_endpoint(endpoint: &IpEndpoint) -> bool {
         || IPV4_ROUTE_MANAGER
             .get()
             .unwrap()
+            .read()
             .lookup_entry(&RouteLookupKey::new(address))
             .is_ok_and(|entry| entry.type_() == RouteType::Broadcast)
 }
