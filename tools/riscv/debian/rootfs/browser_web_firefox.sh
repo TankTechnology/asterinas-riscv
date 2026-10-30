@@ -114,7 +114,7 @@ configure_network_profile() {
             printf '%s\n' 'user_pref("network.proxy.type", 0);' >>"$temporary"
         fi
         if [[ "$BASIC_ONLY" == 1 ]]; then
-            # The deterministic physical gate does not use public pages.
+            # The deterministic basic-only gate does not use public pages.
             # Disable background update, Safe Browsing, settings, and DoH
             # fetchers so they cannot starve Marionette on slow RISC-V CPUs.
             # Normal browser-web boots retain their existing Firefox defaults.

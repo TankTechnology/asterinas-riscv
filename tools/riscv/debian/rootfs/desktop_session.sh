@@ -7,7 +7,7 @@ export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
 readonly SESSION_LOG="$HOME/desktop-session.log"
-readonly DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
+readonly DISPLAY_PROVIDER=fbdev
 
 guest_monotonic_ns() {
     local raw="${EPOCHREALTIME-}"
@@ -31,84 +31,67 @@ emit_stage() {
 if provider_config_directory="$(/usr/lib/asterinas/desktop-display-provider)"; then
     readonly provider_config_directory
 else
-    readonly provider_status=$?
+    provider_status=$?
     emit_stage display-provider-failed 0 \
         "provider=$DISPLAY_PROVIDER status=$provider_status"
     exit "$provider_status"
 fi
 emit_stage display-provider-ready 0 "provider=$DISPLAY_PROVIDER"
 
-if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-    # The online browser image does not need xinit's nested session, xterm, or
-    # matchbox helper. Start Xorg directly and keep one lightweight WM so
-    # Firefox gets a stable root window without the extra process chain.
-    # Keep the marker on stderr as well as the console: systemd captures the
-    # service stderr in the journal, while some Asterinas console devices do
-    # not support direct writes from an unprivileged session process.
-    emit_stage xorg-start
-    # Mirror the online provider's Xorg logfile into the service stream.  Xorg
-    # expects a regular logfile (using /dev/stderr makes it exit immediately
-    # on this guest), while a failed gate may not persist the writable root.
-    # The bounded tail keeps the decisive fbdev/VT error observable in the
-    # journal+console stream without changing the Xorg invocation semantics.
-    : >"$HOME/Xorg.0.log"
-    # A failed Xorg can leave its Unix socket behind.  Never advertise that
-    # stale endpoint as a live display to Firefox.
-    /usr/bin/rm -f -- /tmp/.X11-unix/X0
-    /usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2 &
-    readonly xorg_log_tailer_pid=$!
-    /usr/bin/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX \
-        -configdir "$provider_config_directory" \
-        -logfile "$HOME/Xorg.0.log" vt1 &
-    readonly xorg_pid=$!
-    for _ in {1..120}; do
-        if [[ -S /tmp/.X11-unix/X0 ]] &&
-            /usr/bin/timeout 5 /usr/bin/xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-            break
-        fi
-        if ! kill -0 "$xorg_pid" 2>/dev/null; then
-            kill "$xorg_log_tailer_pid" 2>/dev/null || true
-            emit_stage xorg-failed "$xorg_pid" reason=process-exited
-            exit 1
-        fi
-        /usr/bin/sleep 1
-    done
-    if [[ ! -S /tmp/.X11-unix/X0 ]]; then
+# Start Xorg directly and keep one lightweight WM so Firefox gets a stable
+# root window without an xinit/matchbox/xterm process chain. Keep the marker on
+# stderr as well as the console: systemd captures the service stderr in the
+# journal, while some Asterinas console devices do not support direct writes
+# from an unprivileged session process.
+emit_stage xorg-start
+# Mirror the provider's Xorg logfile into the service stream. Xorg expects a
+# regular logfile, while a failed gate may not persist the writable root. The
+# bounded tail keeps the decisive fbdev/VT error observable in the
+# journal+console stream without changing the Xorg invocation semantics.
+: >"$HOME/Xorg.0.log"
+# A failed Xorg can leave its Unix socket behind. Never advertise that stale
+# endpoint as a live display to Firefox.
+/usr/bin/rm -f -- /tmp/.X11-unix/X0
+/usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2 &
+readonly xorg_log_tailer_pid=$!
+/usr/bin/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX \
+    -configdir "$provider_config_directory" \
+    -logfile "$HOME/Xorg.0.log" vt1 &
+readonly xorg_pid=$!
+for _ in {1..120}; do
+    if [[ -S /tmp/.X11-unix/X0 ]] &&
+        /usr/bin/timeout 5 /usr/bin/xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+        break
+    fi
+    if ! kill -0 "$xorg_pid" 2>/dev/null; then
         kill "$xorg_log_tailer_pid" 2>/dev/null || true
-        emit_stage xorg-failed "$xorg_pid" reason=socket-timeout
+        emit_stage xorg-failed "$xorg_pid" reason=process-exited
         exit 1
     fi
-    emit_stage x-socket-ready "$xorg_pid"
-    # Xorg owns the VT as the privileged display provider; keep the window
-    # manager and desktop shell unprivileged so they cannot grant Firefox extra
-    # capabilities through the session process.
-    /usr/sbin/runuser --user asterinas --preserve-environment -- \
-        /usr/bin/openbox --sm-disable >>"$SESSION_LOG" 2>&1 &
-    emit_stage window-manager-start "$!"
-    /usr/sbin/runuser --user asterinas --preserve-environment -- \
-        /usr/bin/pcmanfm --desktop --profile Asterinas >>"$SESSION_LOG" 2>&1 &
-    emit_stage desktop-start "$!"
-    /usr/sbin/runuser --user asterinas --preserve-environment -- \
-        /usr/bin/lxpanel --profile Asterinas >>"$SESSION_LOG" 2>&1 &
-    emit_stage panel-start "$!"
-    wait "$xorg_pid"
-    xorg_status=$?
-    kill "$xorg_log_tailer_pid" 2>/dev/null || true
-    wait "$xorg_log_tailer_pid" 2>/dev/null || true
-    exit "$xorg_status"
-fi
-
-if [[ "${1-}" == --xsession ]]; then
-    /usr/bin/matchbox-window-manager -use_titlebar yes &
-    readonly window_manager_pid=$!
     /usr/bin/sleep 1
-    /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Browser" &
-    wait "$window_manager_pid"
-    exit $?
+done
+if [[ ! -S /tmp/.X11-unix/X0 ]]; then
+    kill "$xorg_log_tailer_pid" 2>/dev/null || true
+    emit_stage xorg-failed "$xorg_pid" reason=socket-timeout
+    exit 1
 fi
-
-exec /usr/bin/xinit "$0" --xsession -- \
-    /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
-    -configdir "$provider_config_directory" \
-    -logfile "$HOME/Xorg.0.log" vt1 \
-    >>"$SESSION_LOG" 2>&1
+emit_stage x-socket-ready "$xorg_pid"
+# Xorg owns the VT as the privileged display provider; keep the window manager
+# and desktop shell unprivileged so they cannot grant Firefox extra capabilities
+# through the session process.
+/usr/sbin/runuser --user asterinas --preserve-environment -- \
+    /usr/bin/openbox --sm-disable >>"$SESSION_LOG" 2>&1 &
+emit_stage window-manager-start "$!"
+/usr/sbin/runuser --user asterinas --preserve-environment -- \
+    /usr/bin/pcmanfm --desktop --profile Asterinas >>"$SESSION_LOG" 2>&1 &
+emit_stage desktop-start "$!"
+/usr/sbin/runuser --user asterinas --preserve-environment -- \
+    /usr/bin/lxpanel --profile Asterinas >>"$SESSION_LOG" 2>&1 &
+emit_stage panel-start "$!"
+set +e
+wait "$xorg_pid"
+xorg_status=$?
+set -e
+kill "$xorg_log_tailer_pid" 2>/dev/null || true
+wait "$xorg_log_tailer_pid" 2>/dev/null || true
+exit "$xorg_status"

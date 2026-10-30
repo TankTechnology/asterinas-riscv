@@ -47,5 +47,9 @@ cachix.list
 # temporary configuration file for NixOS tests
 distro/etc_nixos/_config_for_test.nix
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # RustRover
 .idea

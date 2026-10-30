@@ -169,7 +169,7 @@ def build_runtime_provenance(
     """Builds the exact guest-observed browser performance identity."""
 
     root = Path(root)
-    if display_provider not in {"fbdev", "drm"}:
+    if display_provider != "fbdev":
         raise ProvenanceError("display provider is invalid")
     packages = _parse_package_versions(
         _read_regular(root / "var/lib/dpkg/status")
@@ -210,7 +210,7 @@ def validate_runtime_provenance(runtime: object) -> dict[str, object]:
     document = _exact_mapping(runtime, RUNTIME_FIELDS, "runtime provenance")
     if document["schema_version"] != 1 or type(document["schema_version"]) is not int:
         raise ProvenanceError("runtime provenance schema version is invalid")
-    if document["display_provider"] not in {"fbdev", "drm"}:
+    if document["display_provider"] != "fbdev":
         raise ProvenanceError("runtime provenance display provider is invalid")
     framebuffer = _exact_mapping(
         document["framebuffer"],
@@ -343,7 +343,7 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("/"))
     parser.add_argument(
         "--display-provider",
-        choices=("fbdev", "drm"),
+        choices=("fbdev",),
         default=os.environ.get("ASTERINAS_DISPLAY_PROVIDER", "fbdev"),
     )
     values = parser.parse_args(arguments)

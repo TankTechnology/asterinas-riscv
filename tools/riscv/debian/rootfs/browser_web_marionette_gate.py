@@ -83,7 +83,7 @@ class FramebufferLayout:
 def _parse_framebuffer_layout(
     variable: bytes, fixed: bytes
 ) -> FramebufferLayout:
-    """Validate the Linux fbdev ABI used by the Megrez firmware scanout."""
+    """Validate the Linux fbdev ABI used by the QEMU bochs scanout."""
 
     if len(variable) != 160 or len(fixed) != 80:
         raise GateError("framebuffer metadata size is invalid")

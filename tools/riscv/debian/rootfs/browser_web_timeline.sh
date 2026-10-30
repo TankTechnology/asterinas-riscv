@@ -35,13 +35,6 @@ marker() {
 }
 
 case "${1-}" in
-    reset-physical)
-        # The isolated debug-console target starts the desktop with
-        # ignore-dependencies, so sysinit.target's normal begin service never
-        # runs. Clear a persistent HOME just before this browser launch.
-        : >"$TIMELINE"
-        marker BOOT_PHYSICAL_BROWSER_BEGIN
-        ;;
     begin)
         # The immutable image provisions the timeline as uid 1000. A fresh
         # volatile home does not, so recreate the file with the browser owner
@@ -63,9 +56,8 @@ case "${1-}" in
         ;;
     wait-x)
         marker BOOT_NETWORK_READY
-        # The board may correct its wall clock while Xorg starts. Bash's
-        # SECONDS can jump with that correction and expire this wait early.
-        # Use the same monotonic clock as the boot timeline instead.
+        # Use the same monotonic clock as the boot timeline so a wall-clock
+        # correction cannot expire this wait early.
         deadline_ns=$(( $(guest_monotonic_ns) + 300000000000 ))
         # A stale X11 socket can survive a failed Xorg start.  Treat the
         # socket as a hint only; xdpyinfo must complete against the live

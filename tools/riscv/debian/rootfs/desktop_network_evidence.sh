@@ -14,21 +14,14 @@ readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_CO
 # cannot finish in that window is treated as an absent fixture (web_fail's
 # exit 75) instead of stretching the boot wait.
 readonly FIXTURE_MAX_TIME_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_MAX_TIME_SECONDS:-2}"
-readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_NETWORK_CMDLINE_PATH:-/proc/cmdline}"
 readonly UPTIME_PATH="${ASTERINAS_DESKTOP_NETWORK_UPTIME_PATH:-/proc/uptime}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF:-/etc/resolv.conf}"
 readonly URL_FILE="${ASTERINAS_DESKTOP_NETWORK_URL_FILE:-/run/asterinas-desktop-url}"
 readonly INTERFACE="eth0"
-readonly ADDRESS="10.100.19.200/21"
-readonly MEGREZ_BOOTARG='asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1'
-readonly MEGREZ_PROXY_URL='http://10.100.19.216:17893'
-readonly MEGREZ_PROXY_HOST='10.100.19.216'
-readonly MEGREZ_PROXY_PORT='17893'
-readonly MEGREZ_FIXTURE_URL='http://10.100.19.216:17894/asterinas-network-probe.bin'
 readonly QEMU_FIXTURE_URL='http://10.0.2.2:17894/asterinas-network-probe.bin'
-readonly MEGREZ_FIXTURE_SIZE='65536'
-readonly MEGREZ_FIXTURE_SHA256='7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2'
-readonly MEGREZ_FIXTURE_REQUESTS='20'
+readonly EXPECTED_FIXTURE_SIZE='65536'
+readonly EXPECTED_FIXTURE_SHA256='7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2'
+readonly EXPECTED_FIXTURE_REQUESTS='20'
 readonly PROXY_URL="${ASTERINAS_DESKTOP_PROXY_URL:-}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
@@ -36,19 +29,16 @@ readonly FIXTURE_URL="${ASTERINAS_DESKTOP_FIXTURE_URL:-}"
 readonly FIXTURE_SIZE="${ASTERINAS_DESKTOP_FIXTURE_SIZE:-}"
 readonly FIXTURE_SHA256="${ASTERINAS_DESKTOP_FIXTURE_SHA256:-}"
 readonly FIXTURE_REQUESTS="${ASTERINAS_DESKTOP_FIXTURE_REQUESTS:-}"
-readonly CLOCK_URL='http://www.baidu.com/'
 readonly BAIDU_URL="${ASTERINAS_WEB_NETWORK_HTTPS_URL:-https://www.baidu.com/}"
 readonly BAIDU_ASSET="${ASTERINAS_WEB_NETWORK_ASSET_URL:-https://www.baidu.com/img/flexible/logo/pc/result.png}"
 readonly WEB_NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
 readonly WEB_NETWORK_NEIGHBOR_QUERY="${ASTERINAS_WEB_NETWORK_NEIGHBOR_QUERY:-0}"
-readonly WEB_NETWORK_ADDRESS="${ASTERINAS_WEB_NETWORK_ADDRESS:-10.100.19.200/21}"
-readonly WEB_NETWORK_GATEWAY="${ASTERINAS_WEB_NETWORK_GATEWAY:-10.100.16.1}"
+readonly WEB_NETWORK_ADDRESS="${ASTERINAS_WEB_NETWORK_ADDRESS:-10.0.2.15/24}"
+readonly WEB_NETWORK_GATEWAY="${ASTERINAS_WEB_NETWORK_GATEWAY:-10.0.2.2}"
 readonly WEB_NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"
 readonly WEB_NETWORK_MEDIUM_URL="${ASTERINAS_WEB_NETWORK_MEDIUM_URL:-${FIXTURE_URL%/*}/browser-quality/download.bin}"
 readonly WEB_NETWORK_MEDIUM_SIZE="${ASTERINAS_WEB_NETWORK_MEDIUM_SIZE:-262144}"
 readonly WEB_NETWORK_MEDIUM_SHA256="${ASTERINAS_WEB_NETWORK_MEDIUM_SHA256:-2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9}"
-LAST_LINK_OUTPUT=''
-LAST_ADDRESS_OUTPUT=''
 WEB_TEMPORARY_DIRECTORY=''
 
 emit() {
@@ -68,9 +58,9 @@ web_fail() {
     # Exit 75 means the network fixture is not available here (no link,
     # address, neighbour, resolver, or a peer that does not answer). The unit
     # treats it as a clean run so the unit ends inactive instead of staying in
-    # `systemctl --failed` on a board with nothing plugged in. Configuration
-    # mistakes and answers that contradict the fixture are still failures
-    # (exit 1) and remain visible.
+    # `systemctl --failed` when no fixture is running. Configuration mistakes
+    # and answers that contradict the fixture are still failures (exit 1) and
+    # remain visible.
     case "$layer:$reason" in
         config:* | http:content | http:date-header | \
             https:http-status | https:local-address | \
@@ -377,7 +367,7 @@ web_network_evidence() {
     # The HTTP layer already verified the first deterministic fixture response.
     # Download 19 more so the complete mode contract records exactly 20. Keep
     # the transfers in one curl process so process startup does not dominate
-    # the physical-board deadline while Firefox is cold-starting.
+    # the boot deadline while Firefox is cold-starting.
     for ((attempt = 1; attempt < FIXTURE_REQUESTS; attempt++)); do
         repeat_files+=("$WEB_TEMPORARY_DIRECTORY/repeat-$attempt")
         repeat_curl+=(--output "${repeat_files[-1]}" "$FIXTURE_URL")
@@ -424,46 +414,7 @@ web_network_evidence() {
     emit "DEBIAN_WEB_NETWORK_READY mode=$WEB_NETWORK_MODE layers=10"
 }
 
-link_and_address_ready() {
-    local flags
 
-    if LAST_LINK_OUTPUT="$(ip -o link show dev "$INTERFACE" 2>/dev/null)"; then
-        :
-    else
-        return 1
-    fi
-    [[ "$LAST_LINK_OUTPUT" == *"<"*">"* ]] || return 1
-    flags="${LAST_LINK_OUTPUT#*<}"
-    flags="${flags%%>*}"
-    case ",$flags," in
-        *,UP,*) ;;
-        *) return 1 ;;
-    esac
-    case ",$flags," in
-        *,LOWER_UP,*) ;;
-        *) return 1 ;;
-    esac
-    if LAST_ADDRESS_OUTPUT="$(ip -o -4 addr show dev "$INTERFACE" scope global 2>/dev/null)"; then
-        :
-    else
-        return 1
-    fi
-    [[ "$LAST_ADDRESS_OUTPUT" =~ (^|[[:space:]])inet[[:space:]]$ADDRESS([[:space:]]|$) ]]
-}
-
-emit_link_diagnostic() {
-    local field="$1"
-    local output
-    local value_hex
-
-    case "$field" in
-        link) output="$LAST_LINK_OUTPUT" ;;
-        address) output="$LAST_ADDRESS_OUTPUT" ;;
-        *) output='' ;;
-    esac
-    value_hex="$(printf '%s' "$output" | od -An -v -tx1 | tr -d '[:space:]')"
-    emit "DEBIAN_NETWORK_DIAGNOSTIC phase=link-check field=$field status=0 value_hex=${value_hex:-none}"
-}
 
 publish_remote_url() {
     local temporary_url
@@ -538,114 +489,15 @@ request_qemu_https() {
     return 1
 }
 
-request_megrez_https() {
-    local deadline="$1"
-    local attempt
-    local attempt_start
-    local curl_error
-    local curl_result
-    local curl_status=1
-    local curl_trace
-    local stderr_hex
-    local trace_hex
 
-    curl_error="$(mktemp "${URL_FILE}.curl-error.XXXXXX")" ||
-        fail megrez-curl-temporary
-    curl_trace="$(mktemp "${URL_FILE}.curl-trace.XXXXXX")" || {
-        rm -f -- "$curl_error"
-        fail megrez-curl-temporary
-    }
-    for attempt in 1 2 3; do
-        if ((SECONDS >= deadline)); then
-            emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=deadline"
-            rm -f -- "$curl_error" "$curl_trace"
-            return 1
-        fi
-        emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=begin"
-        : >"$curl_error" || fail megrez-curl-error-reset
-        : >"$curl_trace" || fail megrez-curl-trace-reset
-        attempt_start=$SECONDS
-        if curl_result="$(
-            timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
-                --fail \
-                --ipv4 \
-                --location \
-                --silent \
-                --show-error \
-                --max-time "$COMMAND_TIMEOUT_SECONDS" \
-                --connect-timeout 10 \
-                --proxy "$PROXY_URL" \
-                --output /dev/null \
-                --trace-ascii "$curl_trace" \
-                --write-out $'%{http_code}\t%{local_ip}' \
-                "$BAIDU_URL" 2>"$curl_error"
-        )"; then
-            rm -f -- "$curl_error" "$curl_trace"
-            printf '%s' "$curl_result"
-            return 0
-        else
-            curl_status=$?
-        fi
-        stderr_hex="$(
-            head -c 2048 -- "$curl_error" |
-                od -An -v -tx1 |
-                tr -d '[:space:]'
-        )"
-        trace_hex="$(
-            tail -c 512 -- "$curl_trace" |
-                od -An -v -tx1 |
-                tr -d '[:space:]'
-        )"
-        emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-https attempt=$attempt status=$curl_status elapsed=$((SECONDS - attempt_start)) stderr_hex=${stderr_hex:-none} trace_hex=${trace_hex:-none}"
-        if ((attempt != 3)); then
-            sleep 1
-        fi
-    done
-
-    rm -f -- "$curl_error" "$curl_trace"
-    return 1
-}
-
-synchronize_megrez_clock() {
-    local clock_date=''
-    local header
-    local headers
-
-    if ! headers="$(
-        timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
-            --fail \
-            --head \
-            --ipv4 \
-            --silent \
-            --show-error \
-            --max-time "$COMMAND_TIMEOUT_SECONDS" \
-            --connect-timeout 10 \
-            --proxy "$PROXY_URL" \
-            "$CLOCK_URL"
-    )"; then
-        fail megrez-clock
-    fi
-    while IFS= read -r header; do
-        header="${header%$'\r'}"
-        if [[ "${header,,}" == date:* ]]; then
-            clock_date="${header#*:}"
-            clock_date="${clock_date#${clock_date%%[![:space:]]*}}"
-            break
-        fi
-    done <<<"$headers"
-    [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
-        fail megrez-clock-date
-    date --utc --set "$clock_date" >/dev/null || fail megrez-clock-set
-    emit "DEBIAN_NETWORK_CLOCK source=http-date proxy=$PROXY_HOST:$PROXY_PORT"
-}
 
 validate_fixture_config() {
     local expected_url="$1"
 
     [[ "$FIXTURE_URL" == "$expected_url" ]] || return 1
-    [[ "$FIXTURE_SIZE" == "$MEGREZ_FIXTURE_SIZE" ]] || return 1
-    [[ "$FIXTURE_SHA256" == "$MEGREZ_FIXTURE_SHA256" ]] || return 1
-    [[ "$FIXTURE_REQUESTS" == "$MEGREZ_FIXTURE_REQUESTS" ]] ||
+    [[ "$FIXTURE_SIZE" == "$EXPECTED_FIXTURE_SIZE" ]] || return 1
+    [[ "$FIXTURE_SHA256" == "$EXPECTED_FIXTURE_SHA256" ]] || return 1
+    [[ "$FIXTURE_REQUESTS" == "$EXPECTED_FIXTURE_REQUESTS" ]] ||
         return 1
 }
 
@@ -777,70 +629,6 @@ qemu_network_evidence() {
     emit "DEBIAN_NETWORK_QEMU_READY mode=qemu-slirp"
 }
 
-megrez_network_evidence() {
-    local curl_result
-    local deadline
-    local http_status
-    local local_address
-    local temporary_asset
-
-    tr '[:space:]' '\n' <"$CMDLINE_PATH" | grep -Fxq "$MEGREZ_BOOTARG" ||
-        fail megrez-bootarg
-    [[ "$PROXY_URL" == "$MEGREZ_PROXY_URL" ]] || fail megrez-proxy-config
-    [[ "$PROXY_HOST" == "$MEGREZ_PROXY_HOST" ]] || fail megrez-proxy-config
-    [[ "$PROXY_PORT" == "$MEGREZ_PROXY_PORT" ]] || fail megrez-proxy-config
-    validate_fixture_config "$MEGREZ_FIXTURE_URL" || fail megrez-fixture-config
-
-    deadline=$((SECONDS + TIMEOUT_SECONDS))
-    while ! link_and_address_ready; do
-        if ((SECONDS >= deadline)); then
-            emit_link_diagnostic link
-            emit_link_diagnostic address
-            fail link-or-address-timeout
-        fi
-        sleep 1
-    done
-
-    emit "DEBIAN_NETWORK_LINK interface=$INTERFACE address=$ADDRESS state=lower-up"
-    emit "DEBIAN_NETWORK_MEGREZ_PROXY endpoint=$PROXY_HOST:$PROXY_PORT"
-    emit "DEBIAN_NETWORK_STRESS_START requests=$FIXTURE_REQUESTS endpoint=$PROXY_HOST:17894"
-    stress_fixture "$deadline" '10.100.19.216:17894' megrez
-    synchronize_megrez_clock
-
-    curl_result="$(request_megrez_https "$deadline")" || fail megrez-https
-    [[ "$curl_result" == *$'\t'* ]] || fail megrez-curl-output
-    http_status="${curl_result%%$'\t'*}"
-    local_address="${curl_result#*$'\t'}"
-    [[ "$http_status" == 200 ]] || fail megrez-http-status
-    [[ "$local_address" == "10.100.19.200" ]] || fail megrez-local-address
-    emit "DEBIAN_NETWORK_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address proxy=$PROXY_HOST:$PROXY_PORT"
-
-    emit "DEBIAN_NETWORK_DIAGNOSTIC phase=megrez-asset stage=begin"
-    temporary_asset="$(mktemp "${URL_FILE}.asset.XXXXXX")" || fail asset-temporary
-    if ! timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
-        --fail \
-        --ipv4 \
-        --location \
-        --silent \
-        --show-error \
-        --max-time "$COMMAND_TIMEOUT_SECONDS" \
-        --connect-timeout 10 \
-        --proxy "$PROXY_URL" \
-        --output "$temporary_asset" \
-        "$BAIDU_ASSET"; then
-        rm -f -- "$temporary_asset"
-        fail megrez-asset
-    fi
-    if [[ ! -s "$temporary_asset" ]]; then
-        rm -f -- "$temporary_asset"
-        fail megrez-asset
-    fi
-    rm -f -- "$temporary_asset" || fail asset-cleanup
-    emit "DEBIAN_NETWORK_MEGREZ_ASSET host=www.baidu.com resource=logo-png proxy=$PROXY_HOST:$PROXY_PORT"
-
-    publish_remote_url
-    emit "DEBIAN_NETWORK_MEGREZ_READY mode=static-rj45-host-proxy"
-}
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
 [[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-command-timeout
@@ -848,9 +636,4 @@ if [[ -n "$WEB_NETWORK_MODE" ]]; then
     web_network_evidence
     exit 0
 fi
-if grep -Eq '(^|[[:space:]])asterinas\.debian_network=qemu-slirp([[:space:]]|$)' \
-    "$CMDLINE_PATH"; then
-    qemu_network_evidence
-    exit 0
-fi
-megrez_network_evidence
+qemu_network_evidence

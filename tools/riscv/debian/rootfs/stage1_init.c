@@ -61,42 +61,18 @@ enum {
 };
 
 /*
- * An ext2 volume label is a fixed-width byte field, not a C string.  Spell
- * out the only full-width label so newer GCC versions do not diagnose the
- * intentionally absent NUL terminator under -Werror.
+ * An ext2 volume label is a fixed-width byte field, not a C string. Spell out
+ * the full-width labels so newer GCC versions do not diagnose the intentionally
+ * absent NUL terminator under -Werror.
  */
 static const unsigned char INTERACTIVE_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
     'A', 'S', 'T', 'E', 'R', '_', 'D', 'E',
     'B', 'I', 'A', 'N', 'R', 'O', 'O', 'T',
 };
-static const unsigned char SYSTEMD_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANM2";
-static const unsigned char SYSTEMD_EXT4_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANE4";
-static const unsigned char DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANM3";
-static const unsigned char APPLICATION_DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANM4";
-static const unsigned char NETWORK_DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANM5";
-static const unsigned char SOFTWARE_DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANM9";
-static const unsigned char BROWSER_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_BROWSERM5";
-/* The online browser profile has its own signed rootfs identity. */
 static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
     'A', 'S', 'T', 'E', 'R', '_', 'B', 'R',
     'O', 'W', 'S', 'E', 'R', 'W', 'E', 'B',
 };
-/*
- * The desktop-drm profile's identity, from profiles.py.  It is the one label
- * whose image is built by the desktop-drm gate rather than by the M-series
- * profiles above, and leaving it out does not fail loudly: the probe simply
- * reports no match on a root it was handed, and the boot ends in
- * root-device-timeout.
- */
-static const unsigned char DESKTOP_DRM_ROOT_LABEL[EXT2_LABEL_LENGTH] =
-    "ASTER_DEBIANDRM";
 
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
@@ -283,23 +259,15 @@ static int ext2_superblock_matches_mode(
     if (mode == ROOT_INIT_INTERACTIVE) {
         return ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL);
     }
-    return ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, SYSTEMD_EXT4_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, DESKTOP_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, APPLICATION_DESKTOP_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, NETWORK_DESKTOP_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, SOFTWARE_DESKTOP_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, DESKTOP_DRM_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
-           ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
+    return ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }
 
 static int root_needs_ephemeral_tools(
     const unsigned char superblock[EXT2_SUPERBLOCK_SIZE])
 {
-    /* The M2 evidence program lives on the rootfs.  Its extra initramfs bind
-     * mount otherwise delays normal systemd shutdown. */
-    return !ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL);
+    /* The browser gate and its transport live under /usr/lib/asterinas on the
+     * rootfs and are exposed through /run/asterinas-tools after handoff. */
+    return ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }
 
 static const char *discover_root(struct Stage1Ops *ops,
@@ -873,66 +841,28 @@ static int run_root_init_self_test(const char *case_name)
             return fail_self_test(case_name,
                                   "control character was accepted");
         }
-    } else if (strcmp(case_name, "systemd-root-label") == 0) {
+    } else if (strcmp(case_name, "systemd-browser-web-root-label") == 0) {
         unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, SYSTEMD_ROOT_LABEL);
-        if (!ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL) ||
-            ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL)) {
-            return fail_self_test(case_name, "M2 root label was not isolated");
-        }
-    } else if (strcmp(case_name, "systemd-tools-mount-policy") == 0) {
-        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, SYSTEMD_ROOT_LABEL);
-        if (root_needs_ephemeral_tools(superblock)) {
-            return fail_self_test(case_name, "M2 unexpectedly needs a tools bind mount");
-        }
-        make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
-        if (!root_needs_ephemeral_tools(superblock)) {
-            return fail_self_test(case_name, "desktop lost its tools bind mount");
-        }
-    } else if (strcmp(case_name, "systemd-desktop-root-label") == 0) {
-        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
-        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
-            ext2_superblock_matches_mode(superblock,
-                                         ROOT_INIT_INTERACTIVE)) {
-            return fail_self_test(case_name, "M3 root label was not isolated");
-        }
-    } else if (strcmp(case_name,
-                      "systemd-application-desktop-root-label") == 0) {
-        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, APPLICATION_DESKTOP_ROOT_LABEL);
-        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
-            ext2_superblock_matches_mode(superblock,
-                                         ROOT_INIT_INTERACTIVE)) {
-            return fail_self_test(case_name, "M4 root label was not isolated");
-        }
-    } else if (strcmp(case_name,
-                      "systemd-network-desktop-root-label") == 0) {
-        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, NETWORK_DESKTOP_ROOT_LABEL);
-        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
-            ext2_superblock_matches_mode(superblock,
-                                         ROOT_INIT_INTERACTIVE)) {
-            return fail_self_test(case_name, "M5 root label was not isolated");
-        }
-    } else if (strcmp(case_name,
-                      "systemd-software-desktop-root-label") == 0) {
-        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, SOFTWARE_DESKTOP_ROOT_LABEL);
-        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
-            ext2_superblock_matches_mode(superblock,
-                                         ROOT_INIT_INTERACTIVE)) {
-            return fail_self_test(case_name, "M9 root label was not isolated");
-        }
-    } else if (strcmp(case_name, "systemd-browser-root-label") == 0) {
-        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
-        make_valid_superblock(superblock, BROWSER_ROOT_LABEL);
-        if (!ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
+        make_valid_superblock(superblock, BROWSER_WEB_ROOT_LABEL);
+        if (!ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL) ||
+            ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL) ||
+            !ext2_superblock_matches_mode(superblock, ROOT_INIT_SYSTEMD) ||
             ext2_superblock_matches_mode(superblock,
                                          ROOT_INIT_INTERACTIVE)) {
             return fail_self_test(case_name,
-                                  "browser root label was not isolated");
+                                  "browser-web root label was not isolated");
+        }
+    } else if (strcmp(case_name, "systemd-tools-mount-policy") == 0) {
+        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
+        make_valid_superblock(superblock, BROWSER_WEB_ROOT_LABEL);
+        if (!root_needs_ephemeral_tools(superblock)) {
+            return fail_self_test(case_name,
+                                  "browser-web lost its tools bind mount");
+        }
+        make_valid_superblock(superblock, INTERACTIVE_ROOT_LABEL);
+        if (root_needs_ephemeral_tools(superblock)) {
+            return fail_self_test(case_name,
+                                  "interactive root unexpectedly needs a tools bind mount");
         }
     } else if (strcmp(case_name, "systemd-handoff-sequence") == 0) {
         struct MockContext context = {
@@ -1287,7 +1217,7 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         result = mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
         break;
     case HANDOFF_VOLATILE_HOME: {
-        /* Match the existing physical desktop's disposable HOME policy. */
+        /* Match the browser desktop's disposable HOME policy. */
         static const char *const directories[] = {
             "/newroot/run/asterinas-desktop-home",
             "/newroot/run/asterinas-desktop-home/.mozilla",

@@ -1,13 +1,13 @@
 # Debian direct-boot gate
 
-This directory starts the downstream Debian layer on the upstream-rebase
-line. The first gate is intentionally narrower than the existing U-Boot and
-Stage1 flows: QEMU direct-boots an upstream Asterinas RISC-V kernel with an
-existing Debian rootfs and checks the toolchain over the serial console.
+This directory starts the downstream Debian layer on the upstream-rebase line.
+QEMU direct-boots an upstream Asterinas RISC-V kernel with an existing Debian
+rootfs and checks the toolchain over the serial console.
 
-The gate does not replace the downstream Stage1/rootfs work. It is the
-repeatable checkpoint that keeps the Debian userspace usable while the rest of
-the upstream intake is ported.
+The gate does not replace the Stage1/rootfs work. It is the repeatable
+checkpoint that keeps the Debian userspace usable while the rest of the
+upstream intake is ported. The rootfs builder and its two current profiles are
+documented in [`rootfs/README.md`](rootfs/README.md).
 
 ## Run
 
@@ -50,16 +50,17 @@ make build_riscv_debian_stage1 \
   DEBIAN_STAGE1_OUT=/absolute/path/to/initramfs.cpio
 ```
 
-For a browser-web rootfs, pass the ephemeral helper tree from an existing
-initramfs (it must not contain an `init` entry):
+The full builder, including the current browser/input helpers, is:
 
 ```bash
-make build_riscv_debian_stage1 \
-  DEBIAN_STAGE1_TOOLS_DIR=/path/to/extracted/usr/lib/asterinas
+make build_riscv_debian_stage1_full \
+  RISC_V_CC=riscv64-linux-gnu-gcc \
+  DEBIAN_STAGE1_FULL_OUT=target/debian-riscv/stage1/initramfs.cpio
 ```
 
-The full browser/desktop helper packaging remains part of the larger rootfs
-port; this target is the root-handoff checkpoint.
+The handoff accepts `ASTER_DEBIANROOT` for an interactive root and
+`ASTER_BROWSERWEB` for the systemd/browser root. See `rootfs/README.md` for the
+root labels, self-tests, and desktop runtime details.
 
 ## dsh launch environment
 
@@ -79,8 +80,8 @@ compiles a real C program so this cannot regress silently.
 
 ## Current boundary
 
-The gate uses `init=/bin/bash` to keep the first migration checkpoint
-independent of Stage1. The next packages add the systemd/Stage1 handoff and the
-downstream QEMU/U-Boot tooling. Until then, a failure here means the upstream
-kernel cannot run the Debian tools, not that the full desktop or board flow has
-regressed.
+The direct gate uses `init=/bin/bash` to keep the checkpoint independent of
+Stage1. The full Stage1 browser root and the manual QEMU/U-Boot desktop boot
+are verified separately; the repository still has no automated U-Boot desktop
+scenario. A direct-gate failure means the upstream kernel cannot run the Debian
+tools, not that the full desktop flow has regressed.
