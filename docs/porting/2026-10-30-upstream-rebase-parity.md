@@ -94,8 +94,9 @@ Logs are under the evidence directory:
 `direct-gate-scm.log`, `scm-rights-probe.log`, `firefox-content-probe.log`,
 `firefox-scm-navigation.log`, `firefox-scm-diag.log`,
 `firefox-baidu-scm.log`, `firefox-bilibili-scm.log`,
-`debian-dsh-headless.log`, `dsh-web-nonroot.log`,
-`runtime-regression.log`, and `clean-network-script.log`.
+`scm-regression-test-http2.log`, `debian-dsh-headless.log`,
+`dsh-web-nonroot.log`, `runtime-regression.log`, and
+`clean-network-script.log`.
 
 ## Public Firefox evidence (2026-10-30)
 
@@ -118,6 +119,15 @@ The guest route table still has no explicit default route and
 public DNS answer and HTTPS traffic from the configured guest address. This is
 a working path, not Linux-complete routing. The evidence files above live
 inside the guest's snapshot rootfs; the serial logs remain on the host.
+
+### SCM_RIGHTS regression coverage
+
+`test/initramfs/src/regression/network/scm_rights_socket.c` creates two UNIX
+socketpairs, drops a forked child to UID 65534, passes one socket descriptor
+through `SCM_RIGHTS`, and verifies that the parent receives a usable socket.
+This is the permanent regression guard for the Firefox content-process IPC
+handoff. The test passes its 15 checks on Linux and on the rebased Asterinas
+kernel.
 
 ## Remaining blockers
 

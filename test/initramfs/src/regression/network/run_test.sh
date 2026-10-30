@@ -21,6 +21,7 @@ sleep 0.2
 ./msg_peek
 ./msg_trunc
 ./privileged_ports
+./scm_rights_socket
 ./send_buf_full
 ./sendmmsg
 ./socketpair
