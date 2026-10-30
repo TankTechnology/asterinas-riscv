@@ -270,6 +270,12 @@ fi
 # unit: an ordering unit that has to wait for this service never got its job
 # run on this image, while a child forked by the wrapper always runs, and it
 # dies with the service because the wrapper exec keeps Firefox as the MainPID.
+# The desktop service already tried to set the clock before starting the
+# session, but that attempt is early enough that the interface can still be
+# settling: when it loses, every certificate the page needs is rejected. Try
+# again here, right before the browser is started, where the network is known
+# to carry the profile download path. The synchronizer bounds itself.
+/usr/lib/asterinas/megrez-clock-sync >/dev/null 2>&1 || true
 (
     for _ in 1 2 3 4 5 6; do
         /usr/bin/timeout 180 /usr/lib/asterinas/browser-web-navigate && exit 0
