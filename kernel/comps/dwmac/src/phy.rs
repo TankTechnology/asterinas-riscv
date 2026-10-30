@@ -134,8 +134,12 @@ impl LinkState {
 /// by a strap, and then the port either never reports a link or reports a mode
 /// that does not match what the MAC was programmed with. U-Boot's `dhcp` hides
 /// this: it negotiates the PHY itself and the kernel inherits a working link,
-/// which is exactly why a board booted straight through `bootcmd` had no
-/// working network while one that ran `dhcp` in U-Boot first did.
+/// which is exactly why a board booted through `bootcmd` without `dhcp` had no
+/// working network.
+///
+/// A port that already reports a usable link is left alone. Restarting
+/// negotiation there would drop the link and cost the boot a few seconds for
+/// nothing, and it is the common case whenever U-Boot ran `dhcp` first.
 pub fn start_auto_negotiation(
     bus: &mut dyn MdioBus,
     phy_address: u8,
@@ -143,6 +147,9 @@ pub fn start_auto_negotiation(
 ) -> Result<(), MdioError> {
     if phy_address > 31 {
         return Err(MdioError::InvalidAddress);
+    }
+    if read_link_state(bus, phy_address, deadline)?.is_some() {
+        return Ok(());
     }
     let basic_control = bus.read(phy_address, MII_BMCR, deadline)?;
     let value = (basic_control | BMCR_AUTONEG_ENABLE | BMCR_AUTONEG_RESTART)

@@ -9,7 +9,14 @@ use crate::phy::{
 };
 
 pub const LINK_POLL_INTERVAL_NS: u64 = 50_000_000;
-pub const MAX_LINK_SELECTION_NS: u64 = 3_000_000_000;
+/// The largest window a single selection may take.
+///
+/// This used to be 3 s, which is shorter than a cold boot needs: the RTL8211F
+/// on the Megrez board has to leave power-down and run a full auto-negotiation
+/// before its link bit comes up, and a board whose U-Boot did not touch the PHY
+/// routinely takes a little over 3 s. Ten seconds leaves room for that first
+/// negotiation while still bounding the wait for an unplugged cable.
+pub const MAX_LINK_SELECTION_NS: u64 = 10_000_000_000;
 
 /// A monotonic clock used to bound port discovery.
 pub trait MonotonicClock {
@@ -158,60 +165,126 @@ pub fn select_linked_port(
 mod tests {
     extern crate alloc;
 
-    use alloc::{collections::VecDeque, vec::Vec};
+    use alloc::vec::Vec;
 
     use ostd::prelude::ktest;
 
     use super::*;
-    use crate::phy::{BMCR_FULL_DUPLEX, BMCR_SPEED1000, BMSR_LINK_STATUS, MII_BMSR};
+    use crate::phy::{
+        ADVERTISE_1000_FULL, BMCR_AUTONEG_ENABLE, BMCR_FULL_DUPLEX, BMCR_SPEED1000,
+        BMSR_AUTONEG_COMPLETE, BMSR_LINK_STATUS, MII_BMCR, MII_BMSR, MII_CONTROL1000,
+        MII_STATUS1000, PARTNER_1000_FULL,
+    };
 
-    struct FakeMdio {
-        reads: VecDeque<Result<u16, MdioError>>,
-        read_count: usize,
+    /// A PHY that answers from registers instead of from a scripted answer key.
+    ///
+    /// The selection path reads the same PHY registers a different number of
+    /// times depending on what it has already learned -- a pre-check, then the
+    /// poll loop -- so scripting one answer per read makes every test break
+    /// whenever the read order changes. Modelling the registers keeps each
+    /// test about the behaviour it is named for.
+    struct FakePhy {
+        link_up: bool,
+        /// Link comes up only after this many status reads, to model a PHY
+        /// that finishes auto-negotiation during the selection window.
+        link_after_reads: usize,
+        bmcr: u16,
+        reads: usize,
+        reads_by_register: Vec<(u8, usize)>,
+        writes: Vec<(u8, u16)>,
+        fails: bool,
     }
 
-    impl FakeMdio {
-        fn new(reads: impl IntoIterator<Item = Result<u16, MdioError>>) -> Self {
+    impl FakePhy {
+        fn linked() -> Self {
             Self {
-                reads: reads.into_iter().collect(),
-                read_count: 0,
+                link_up: true,
+                ..Self::down()
             }
         }
 
-        fn linked() -> Self {
-            Self::new([
-                Ok(BMSR_LINK_STATUS),
-                Ok(BMSR_LINK_STATUS),
-                Ok(BMCR_SPEED1000 | BMCR_FULL_DUPLEX),
-            ])
+        fn down() -> Self {
+            Self {
+                link_up: false,
+                link_after_reads: 0,
+                // A PHY that has never been told to negotiate.
+                bmcr: BMCR_SPEED1000 | BMCR_FULL_DUPLEX,
+                reads: 0,
+                reads_by_register: Vec::new(),
+                writes: Vec::new(),
+                fails: false,
+            }
         }
 
-        fn down(polls: usize) -> Self {
-            Self::new((0..polls * 2).map(|_| Ok(0)))
+        fn linked_after(read_count: usize) -> Self {
+            Self {
+                link_after_reads: read_count,
+                ..Self::down()
+            }
+        }
+
+        fn broken() -> Self {
+            Self {
+                fails: true,
+                ..Self::down()
+            }
+        }
+
+        fn reads_of(&self, register: u8) -> usize {
+            self.reads_by_register
+                .iter()
+                .filter(|(seen, _)| *seen == register)
+                .map(|(_, count)| count)
+                .sum()
         }
     }
 
-    impl MdioBus for FakeMdio {
+    impl MdioBus for FakePhy {
         fn read(
             &mut self,
             _phy_address: u8,
             register: u8,
             _deadline: Deadline,
         ) -> Result<u16, MdioError> {
-            if self.read_count % 2 < 2 {
-                assert!(register == MII_BMSR || self.read_count >= 2);
+            if self.fails {
+                return Err(MdioError::BusFault);
             }
-            self.read_count += 1;
-            self.reads.pop_front().unwrap()
+            self.reads += 1;
+            match self.reads_by_register.iter_mut().find(|(seen, _)| *seen == register) {
+                Some((_, count)) => *count += 1,
+                None => self.reads_by_register.push((register, 1)),
+            }
+            if self.link_after_reads > 0 && self.reads >= self.link_after_reads {
+                self.link_up = true;
+            }
+            Ok(match register {
+                MII_BMSR => {
+                    if !self.link_up {
+                        0
+                    } else if self.bmcr & BMCR_AUTONEG_ENABLE != 0 {
+                        BMSR_LINK_STATUS | BMSR_AUTONEG_COMPLETE
+                    } else {
+                        BMSR_LINK_STATUS
+                    }
+                }
+                MII_BMCR => self.bmcr,
+                MII_CONTROL1000 => ADVERTISE_1000_FULL,
+                MII_STATUS1000 => PARTNER_1000_FULL,
+                _ => 0,
+            })
         }
 
         fn write(
             &mut self,
             _phy_address: u8,
-            _register: u8,
-            _value: u16,
+            register: u8,
+            value: u16,
             _deadline: Deadline,
         ) -> Result<(), MdioError> {
+            if register == MII_BMCR {
+                self.bmcr = value;
+            }
+            self.writes.push((register, value));
             Ok(())
         }
     }
@@ -235,8 +308,8 @@ mod tests {
 
     #[ktest]
     fn one_link_selects_its_port() {
-        let mut port0 = FakeMdio::down(1);
-        let mut port1 = FakeMdio::linked();
+        let mut port0 = FakePhy::down();
+        let mut port1 = FakePhy::linked();
         let mut candidates = [
             PortCandidate::new(0, 0, &mut port0),
             PortCandidate::new(1, 0, &mut port1),
@@ -255,8 +328,8 @@ mod tests {
 
     #[ktest]
     fn lowest_alias_wins_when_both_links_are_up() {
-        let mut port1 = FakeMdio::linked();
-        let mut port0 = FakeMdio::linked();
+        let mut port1 = FakePhy::linked();
+        let mut port0 = FakePhy::linked();
         let mut candidates = [
             PortCandidate::new(1, 0, &mut port1),
             PortCandidate::new(0, 0, &mut port0),
@@ -273,9 +346,73 @@ mod tests {
     }
 
     #[ktest]
+    fn a_port_that_finishes_negotiation_is_selected_after_waiting() {
+        // 40 status reads at 50 ms per poll is roughly two seconds of
+        // negotiation, which a cold PHY really does spend.
+        let mut port0 = FakePhy::linked_after(40);
+        let mut port1 = FakePhy::down();
+        let mut candidates = [
+            PortCandidate::new(0, 0, &mut port0),
+            PortCandidate::new(1, 0, &mut port1),
+        ];
+        let mut clock = FakeClock::default();
+
+        let selected =
+            select_linked_port(&mut candidates, &mut clock, Duration::from_secs(10)).unwrap();
+
+        assert_eq!(selected.alias_index(), 0);
+        assert!(
+            !clock.waits.is_empty(),
+            "the selection must have polled more than once"
+        );
+    }
+
+    #[ktest]
+    fn a_down_port_is_told_to_start_negotiation() {
+        let mut port0 = FakePhy::linked_after(40);
+        let mut port1 = FakePhy::down();
+        let mut candidates = [
+            PortCandidate::new(0, 0, &mut port0),
+            PortCandidate::new(1, 0, &mut port1),
+        ];
+
+        let _ = select_linked_port(
+            &mut candidates,
+            &mut FakeClock::default(),
+            Duration::from_secs(10),
+        );
+
+        assert_eq!(port0.writes.len(), 1);
+        let (register, value) = port0.writes[0];
+        assert_eq!(register, MII_BMCR);
+        assert_ne!(value & BMCR_AUTONEG_ENABLE, 0);
+    }
+
+    #[ktest]
+    fn an_already_linked_port_is_not_renotiated() {
+        let mut port0 = FakePhy::linked();
+        let mut port1 = FakePhy::linked();
+        let mut candidates = [
+            PortCandidate::new(0, 0, &mut port0),
+            PortCandidate::new(1, 0, &mut port1),
+        ];
+
+        let _ = select_linked_port(
+            &mut candidates,
+            &mut FakeClock::default(),
+            Duration::from_secs(10),
+        );
+
+        assert!(
+            port0.writes.is_empty(),
+            "restarting negotiation would drop a working link"
+        );
+    }
+
+    #[ktest]
     fn exact_deadline_is_not_polled_again() {
-        let mut port0 = FakeMdio::down(2);
-        let mut port1 = FakeMdio::down(2);
+        let mut port0 = FakePhy::down();
+        let mut port1 = FakePhy::down();
         let mut candidates = [
             PortCandidate::new(0, 0, &mut port0),
             PortCandidate::new(1, 0, &mut port1),
@@ -294,14 +431,15 @@ mod tests {
             clock.waits,
             [LINK_POLL_INTERVAL_NS, 2 * LINK_POLL_INTERVAL_NS]
         );
-        assert_eq!(port0.read_count, 4);
-        assert_eq!(port1.read_count, 4);
+        // Two polls, each reading the status register twice.
+        assert_eq!(port0.reads_of(MII_BMSR), 6);
+        assert_eq!(port1.reads_of(MII_BMSR), 6);
     }
 
     #[ktest]
     fn mdio_failure_is_not_substituted_with_another_port() {
-        let mut broken = FakeMdio::new([Err(MdioError::BusFault)]);
-        let mut linked = FakeMdio::linked();
+        let mut broken = FakePhy::broken();
+        let mut linked = FakePhy::linked();
         let mut candidates = [
             PortCandidate::new(0, 0, &mut broken),
             PortCandidate::new(1, 0, &mut linked),
@@ -322,8 +460,8 @@ mod tests {
 
     #[ktest]
     fn rejects_a_selection_window_longer_than_the_boot_contract() {
-        let mut port0 = FakeMdio::down(1);
-        let mut port1 = FakeMdio::down(1);
+        let mut port0 = FakePhy::down();
+        let mut port1 = FakePhy::down();
         let mut candidates = [
             PortCandidate::new(0, 0, &mut port0),
             PortCandidate::new(1, 0, &mut port1),

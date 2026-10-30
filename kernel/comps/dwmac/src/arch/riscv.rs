@@ -18,7 +18,7 @@ pub(super) fn dma_read_barrier() {
 }
 
 use crate::{
-    phy::{Deadline, LinkState, MdioBus, MdioError},
+    phy::{Deadline, LinkState, MII_BMCR, MII_BMSR, MdioBus, MdioError},
     regs::{MAC_MDIO_ADDRESS, MAC_MDIO_DATA, MAC_VERSION},
     select::{MonotonicClock, PortCandidate, SelectError, select_linked_port},
 };
@@ -746,15 +746,45 @@ pub(super) struct MegrezPlatform {
 impl MegrezPlatform {
     pub fn select_linked(&mut self) -> Result<SelectedPortInfo, PlatformError> {
         let [gmac0, gmac1] = &self.registers.gmac;
-        let mut mdio0 = PortMdio { mmio: gmac0 };
-        let mut mdio1 = PortMdio { mmio: gmac1 };
-        let mut candidates = [
-            PortCandidate::new(0, self.configs[0].phy_address, &mut mdio0),
-            PortCandidate::new(1, self.configs[1].phy_address, &mut mdio1),
-        ];
-        let selected =
-            select_linked_port(&mut candidates, &mut PlatformClock, Duration::from_secs(3))
-                .map_err(PlatformError::Select)?;
+        let started_at = now_nanoseconds();
+        let selection = {
+            let mut mdio0 = PortMdio { mmio: gmac0 };
+            let mut mdio1 = PortMdio { mmio: gmac1 };
+            let mut candidates = [
+                PortCandidate::new(0, self.configs[0].phy_address, &mut mdio0),
+                PortCandidate::new(1, self.configs[1].phy_address, &mut mdio1),
+            ];
+            select_linked_port(&mut candidates, &mut PlatformClock, Duration::from_secs(10))
+        };
+        let selected = match selection {
+            Ok(selected) => selected,
+            Err(error) => {
+                // A selection timeout is the one failure the boot cannot
+                // explain from the outside: there is no interface to inspect.
+                // Read the PHY state back once per port here so the log says
+                // whether negotiation never ran (BMCR) or never completed
+                // (BMSR).
+                let elapsed_ms = (now_nanoseconds().saturating_sub(started_at)) / 1_000_000;
+                for (alias, mmio) in [(0u8, gmac0), (1u8, gmac1)] {
+                    let mut mdio = PortMdio { mmio };
+                    let phy_address = self.configs[usize::from(alias)].phy_address;
+                    let deadline = Deadline::from_nanoseconds(
+                        now_nanoseconds().saturating_add(50_000_000),
+                    );
+                    let basic_control = mdio.read(phy_address, MII_BMCR, deadline);
+                    let basic_status = mdio.read(phy_address, MII_BMSR, deadline);
+                    ostd::warn!(
+                        "dwmac: link selection failed after {} ms: alias={} phy={} bmcr={:?} bmsr={:?}",
+                        elapsed_ms,
+                        alias,
+                        phy_address,
+                        basic_control,
+                        basic_status,
+                    );
+                }
+                return Err(PlatformError::Select(error));
+            }
+        };
         let alias = usize::from(selected.alias_index());
         let speed = LinkSpeed::from_mbps(selected.link_state().speed_mbps())
             .ok_or(PlatformError::InvalidPhy)?;
@@ -822,12 +852,13 @@ pub(super) fn prepare() -> Result<Option<MegrezPlatform>, PlatformError> {
             return Err(PlatformError::InvalidPhy);
         }
         ostd::info!(
-            "prepared GMAC{} mmio={:#x?} irq={}:{} mac={:02x?} phy={:04x}:{:04x}",
+            "prepared GMAC{} mmio={:#x?} irq={}:{} mac={:02x?} phy_addr={} phy={:04x}:{:04x}",
             config.controller_id,
             config.mmio_range,
             interrupt_source.interrupt_parent,
             interrupt_source.interrupt,
             config.mac_address,
+            config.phy_address,
             id1,
             id2,
         );
