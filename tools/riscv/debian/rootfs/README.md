@@ -154,11 +154,12 @@ The current QEMU evidence covers:
 - virtio-net on `eth0` with the slirp fixture, DNS, and HTTPS;
 - devpts/`/dev/ptmx`, `/dev/shm`, and non-root PTY allocation.
 
-Firefox online content navigation is still blocked: every Gecko child process
-(`-contentproc`, socket, utility) exits before the IPC handshake, so
-`WebDriver:Navigate` fails even though the parent and Marionette session work.
-That is a remaining multi-process/sandbox or IPC kernel gap, not a framebuffer
-or network failure. The parity ledger records the detailed evidence.
+Firefox content processes now launch: the kernel no longer requires
+`CAP_SYS_ADMIN` to pass a UNIX socket over a UNIX socket, so the UID-1000
+browser parent can hand IPC sockets to its children. Marionette navigates to
+the local owned fixture page and reads back its title and body text. A full
+public-page gate remains to be run; the parity ledger records the detailed
+evidence and the remaining online-navigation check.
 
 The repository currently has no repository-level U-Boot desktop scenario. The
 desktop/Firefox evidence was collected with a manual U-Boot boot using a boot

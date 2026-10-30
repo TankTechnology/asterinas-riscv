@@ -6,7 +6,7 @@ use aster_bigtcp::socket::ReceiveBehavior;
 use aster_rights::ReadOp;
 use ostd::task::Task;
 
-use super::{CUserCred, UnixStreamSocket, cred::SocketCred};
+use super::{CUserCred, cred::SocketCred};
 use crate::{
     fs::file::{
         FileLike,
@@ -14,8 +14,6 @@ use crate::{
     },
     net::socket::util::{CControlHeader, ControlMessage, RecvFlags},
     prelude::*,
-    process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
-    security::lsm::hooks as lsm_hooks,
     util::net::CSocketOptionLevel,
 };
 
@@ -253,24 +251,11 @@ impl AuxiliaryData {
             }
         }
 
-        // FIXME: Sending UNIX sockets over UNIX sockets can easily lead to circular references and
-        // memory leaks. Linux uses a complex garbage collection algorithm to address these issues.
-        // See also <https://elixir.bootlin.com/linux/v6.15/source/net/unix/garbage.c#L592>.
-        if files
-            .iter()
-            .any(|file| (&**file as &dyn Any).is::<UnixStreamSocket>())
-        {
-            warn!("UNIX sockets in SCM_RIGHTS messages can leak kernel resource");
-
-            let current = current_thread!();
-            let posix_thread = current.as_posix_thread().unwrap();
-            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-                UserNamespace::get_init_singleton().as_ref(),
-                posix_thread,
-                CapSet::SYS_ADMIN,
-            ))?;
-        }
-
+        // Passing UNIX sockets over UNIX sockets is allowed without CAP_SYS_ADMIN, as on Linux.
+        // Firefox's content-process launch relies on this to hand its IPC sockets to the child.
+        // Asterinas does not yet implement Linux's UNIX-socket garbage collector, so a cyclic
+        // SCM_RIGHTS graph can retain sockets until the cycle is broken; that remains a known
+        // limitation of the current file-table lifetime model.
         Ok(Self { files, cred })
     }
 

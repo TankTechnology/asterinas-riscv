@@ -31,7 +31,7 @@ removed from this line. Their history remains in the old product tree at
 | Namespaces/procfs | `/proc/<pid>/ns/net` exposes the single synthetic `net:[4026532000]` namespace. `ip route add` is still unsupported but returns `EOPNOTSUPP` promptly. |
 | PTY | `/dev/ptmx` points at `pts/ptmx`, devpts is mounted on both boot paths, and slave ownership follows the opener. A normal root shell and non-root node-pty both work. |
 | Desktop | Manual U-Boot boot with the bochs framebuffer reaches Xorg on `/dev/fb0` at 1280x1024, then openbox, pcmanfm, and lxpanel. The wallpaper, icons, panel, and a Firefox window were captured from the QEMU display. |
-| Browser | Firefox maps its window and opens a Marionette session. Network/TLS checks and the non-root security audit are wired into the browser root. |
+| Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, and navigates to the local owned fixture page; the fixture DOM title and body text are read back. Public online navigation still needs a gate. |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
 | Kernel tests | `aster-core` ktests pass (147 tests), including the rtnetlink flag-update cases. |
 
@@ -67,6 +67,14 @@ Validation performed on the cleaned tree:
 - dsh headless returns the tool result and final text for a bash-tool turn;
   non-root dsh web starts as UID 1000 and serves the authenticated UI with
   HTTP 200.
+- The Firefox child-process blocker was traced to the kernel's SCM_RIGHTS
+  restriction: passing a UNIX socket over a UNIX socket required
+  `CAP_SYS_ADMIN`, so the UID-1000 Firefox parent could not hand IPC sockets to
+  its children. The restriction is removed (with the known absence of Linux's
+  UNIX-socket cycle collector documented in the kernel). A UID-1000
+  SCM_RIGHTS probe now succeeds, Firefox launches its forkserver and socket
+  process, and Marionette reads `Asterinas Browser Quality` from the local
+  fixture page.
 
 The 27 downstream commits were then replayed from `986c70915` onto the latest
 `upstream/main` at `cdd5bc109` (upstream added one LoongArch cache-policy fix).
@@ -82,18 +90,18 @@ wall clock, which this kernel does not support.
 Logs are under the evidence directory:
 `clean-build-minimal.log`, `clean-build-browser-web3.log`,
 `clean-desktop-capture.log`, `clean-desktop-diag.log`,
-`clean-desktop-firefox-late.png`, `ktest-cdd5-serial.log`,
-`direct-gate-cdd5.log`, `debian-dsh-headless.log`, `dsh-web-nonroot.log`,
+`clean-desktop-firefox-late.png`, `ktest-scm-serial.log`,
+`direct-gate-scm.log`, `scm-rights-probe.log`, `firefox-content-probe.log`,
+`firefox-scm-navigation.log`, `firefox-scm-diag.log`,
+`debian-dsh-headless.log`, `dsh-web-nonroot.log`,
 `runtime-regression.log`, and `clean-network-script.log`.
 
 ## Remaining blockers
 
-1. **Firefox content processes.** Every Gecko child (`-contentproc`, socket,
-   utility) exits before the IPC handshake, so `WebDriver:Navigate` fails. The
-   parent, Marionette transport, and a session work. `/dev/shm` is writable
-   with sticky 1777 permissions, `/proc/<pid>/ns/net` exists, and disabling the
-   content sandbox did not change the failure. This is a remaining
-   multi-process/sandbox or IPC kernel gap.
+1. **Firefox public online navigation.** Content-process launch and local
+   fixture navigation are fixed by the SCM_RIGHTS change. A full public-page
+   gate (Baidu/Bilibili) has not yet been re-run; the earlier online probe was
+   stopped after it did not complete, so online navigation remains unverified.
 2. **ext4/JBD2.** The upstream ext2 path rejects a normal ext4 root. Extent
    read/write, journal replay, and durability are not ported.
 3. **Network/procfs completeness.** `/proc/net` is absent and dynamic route
