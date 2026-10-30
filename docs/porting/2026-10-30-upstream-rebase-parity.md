@@ -36,7 +36,8 @@ removed from this line. Their history remains in the old product tree at
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
 | ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
-| Kernel tests | After the ext4/JBD2 absorption, the RISC-V `aster-core` suite reports `174 passed; 0 failed; 0 filtered out` in `qemu-serial.log`. This includes the `/proc/net`, IPv4 route, ext4 extent, and JBD2 unit tests. The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
+| ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The QEMU ext4 gate was rerun on this code and all four crash stages still pass with clean `e2fsck -fn`. |
+| Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
 
 ## Cleanup verification (2026-10-30)
 
@@ -153,13 +154,42 @@ QEMU verification:
 - `/proc/net/tcp` reported a live `LISTEN` socket (state `0A`) and
   `/proc/net/udp` reported a bound UDP socket (state `07`).
 
+### ext2 durability absorption (2026-10-30)
+
+Commit `31acb7c3c` ports the old tree's durability invariants into the shared
+ext2/ext4 driver:
+
+- `free_blocks` validates the complete range, system-zone overlap, already-free
+  bits, and the group/filesystem free counters before changing a bitmap, so a
+  rejected cross-group free cannot leave a half-freed prefix;
+- inode allocation and free reject bitmap/counter disagreement, out-of-range
+  partial-group indices, and filesystem free-inode overflow before mutation;
+  allocation also rolls back the bitmap if the computed inode number is
+  invalid;
+- inode reads reject numbers beyond `s_inodes_count`, and writable remounts
+  require a valid, error-free superblock while read-only remounts sync metadata
+  and the device first;
+- POSIX rename between two hard links of the same inode is a no-op and keeps
+  both directory entries.
+
+The accompanying ktests cover the partial last group, already-free block and
+inode rejection, reserved-inode allocation rollback, superblock counter
+overflow, unclean writable remount, and same-inode rename. All six new tests
+and the existing ext2 tests pass (`180 passed; 0 failed` in `aster-core`).
+
+The ext4 write suite and all four journal crash stages were rerun against the
+same kernel. Stage 1 discarded its uncommitted transaction, stages 2-4
+recovered, and every resulting image passed `e2fsck -fn`; the gate reported
+`"status": "pass"`.
+
 ## Remaining blockers
 
 1. **ext4 feature coverage.** The compatibility driver covers a downstream
    Debian ext4 profile with extents and an internal journal. It deliberately
    rejects metadata checksums, high 64-bit block numbers, `flex_bg`,
    `orphan_file`, inline data, and full multi-level extent splitting. The old
-   xfstests/durability suites are not ported to this line.
+   xfstests suite is not ported; selected ext2 durability invariants and their
+   ktests now are.
 2. **Network/procfs completeness.** IPv4 route dump/lookup/add,
    `/proc/net/route`, `/proc/net/dev`, `/proc/net/tcp`, and `/proc/net/udp`
    are present, but IPv6 route netlink, route deletion, and advanced route
@@ -241,7 +271,8 @@ The ext4/JBD2 evidence is under
   and all journal stages;
 - `ext2-write-probe.log` — the ext2 write path after the shared durability
   changes;
-- `ktest-ext4-serial.log` — the RISC-V ktest serial log (`174 passed`);
+- `ktest-ext4-serial.log` — the RISC-V ktest serial log before the durability
+  port (`174 passed`); the post-port log is in the evidence directory below;
 - `README.md` — exact image conversion, commands, and result table.
 
 The repeatable gate receipts are under
@@ -251,6 +282,13 @@ The repeatable gate receipts are under
 cover the 32-bit-compatible image with a single-file and a 32-file crash
 transaction (all four fault stages), plus a 64-bit group-descriptor image
 (write suite plus stage 2); all recovery passes end with a clean `e2fsck -fn`.
+
+The ext2 durability rerun is under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-durability/`:
+`gate-summary.log` is the post-change write/crash-stage receipt,
+`crash-stage1.log` through `crash-stage4.log` and `e2fsck-*.txt` are the four
+recovery passes, and `ktest-full-serial.log` is the full RISC-V ktest output
+(`aster-core` 180/180; full suite 536 passed with four failures outside ext2).
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.
