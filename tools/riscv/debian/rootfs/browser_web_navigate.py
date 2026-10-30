@@ -83,6 +83,22 @@ def navigate(url: str, *, port: int = PORT, connect_timeout: float = 30.0) -> No
         _result(_receive(sock))
 
 
+def _log(line: str) -> None:
+    """Keep a line in the service log and in a file the boot can be debugged from.
+
+    The journal is not available on this image, and a forked child's stderr can
+    be lost while the console is still printing boot output, so the file is the
+    durable copy.
+    """
+
+    print(line, file=sys.stderr)
+    try:
+        with open("/home/asterinas/browser-web-navigate.log", "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
+
+
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="browser-web-navigate")
     parser.add_argument(
@@ -95,9 +111,9 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         navigate(values.url, port=values.port, connect_timeout=values.timeout)
     except (MarionetteError, OSError, ValueError) as error:
-        print(f"ASTERINAS_BROWSER_NAVIGATE_FAIL url={values.url} error={error}", file=sys.stderr)
+        _log(f"ASTERINAS_BROWSER_NAVIGATE_FAIL url={values.url} error={error}")
         return 1
-    print(f"ASTERINAS_BROWSER_NAVIGATE_OK url={values.url}")
+    _log(f"ASTERINAS_BROWSER_NAVIGATE_OK url={values.url}")
     return 0
 
 

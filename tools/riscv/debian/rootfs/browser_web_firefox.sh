@@ -264,6 +264,18 @@ if [[ "${ASTERINAS_FIREFOX_PS_DIAGNOSTIC:-0}" == 1 ]]; then
         done
     ) >&2 2>&1 &
 fi
+# Firefox is started on about:blank and the page is opened through Marionette,
+# which is the only navigation interface an unprivileged, headless-by-design
+# start offers.  The navigator is forked here rather than run from its own
+# unit: an ordering unit that has to wait for this service never got its job
+# run on this image, while a child forked by the wrapper always runs, and it
+# dies with the service because the wrapper exec keeps Firefox as the MainPID.
+(
+    for _ in 1 2 3 4 5 6; do
+        /usr/bin/timeout 180 /usr/lib/asterinas/browser-web-navigate && exit 0
+        /usr/bin/timeout 12 /usr/bin/sleep 10 || exit 0
+    done
+) >&2 2>&1 &
 # Keep Firefox's stderr in its persistent evidence file while mirroring it to
 # the service journal.  The Firefox process remains the systemd MainPID
 # because the final exec below is unchanged; tail is merely a diagnostic

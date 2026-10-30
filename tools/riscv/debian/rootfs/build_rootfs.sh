@@ -1974,10 +1974,6 @@ EOF
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_navigate.py" \
                 "$stage/usr/lib/asterinas/browser-web-navigate"
-            install -D -m 0644 -- "$script_directory/browser_web_navigate.service" \
-                "$stage/etc/systemd/system/asterinas-browser-web-navigate.service"
-            ln -sf -- ../asterinas-browser-web-navigate.service \
-                "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-navigate.service"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
             install -D -m 0644 -- \
