@@ -336,6 +336,21 @@ impl PageCache {
         vmo.evict_up_to_date_pages(&range)
     }
 
+    /// Decommits pages in the specified range without writing dirty pages back.
+    ///
+    /// This is used when the backing store has been replaced by a stronger
+    /// source of truth (for example, an on-disk journal replay), so stale
+    /// cached writes must be discarded rather than flushed.
+    pub(crate) fn discard_range(&self, range: Range<usize>) -> Result<()> {
+        let Some(vmo) = self.0.as_backed_vmo() else {
+            return Ok(());
+        };
+
+        let rmap = vmo.rmap.lock();
+        let pages = vmo.pages.lock();
+        vmo.decommit_pages(rmap, pages, &range)
+    }
+
     /// Fills the specified range of the page cache with zeros.
     ///
     /// Callers must hold the filesystem-level lock that serializes operations in

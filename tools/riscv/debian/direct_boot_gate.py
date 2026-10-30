@@ -93,7 +93,11 @@ def build_qemu_argv(
     dsh_image: Path | None,
     memory: str,
     smp: int,
+    rootfstype: str | None = None,
 ) -> list[str]:
+    append = "root=/dev/vda rw console=ttyS0 earlycon init=/bin/bash loglevel=error"
+    if rootfstype is not None:
+        append += f" rootfstype={rootfstype}"
     argv = [
         qemu,
         "-cpu",
@@ -114,7 +118,7 @@ def build_qemu_argv(
         "-kernel",
         str(kernel),
         "-append",
-        "root=/dev/vda rw console=ttyS0 earlycon init=/bin/bash loglevel=error",
+        append,
         "-drive",
         f"if=none,format=raw,id=root,file={rootfs},snapshot=on",
     ]
@@ -210,6 +214,7 @@ def run_gate(args: argparse.Namespace) -> dict[str, object]:
         dsh_image=args.dsh_image,
         memory=args.memory,
         smp=args.smp,
+        rootfstype=args.rootfstype,
     )
     process = subprocess.Popen(
         argv,
@@ -261,6 +266,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--kernel", type=Path, required=True)
     parser.add_argument("--rootfs", type=Path, required=True)
     parser.add_argument("--dsh-image", type=Path)
+    parser.add_argument("--rootfstype", choices=("ext2", "ext4"))
     parser.add_argument("--qemu", default="qemu-system-riscv64")
     parser.add_argument("--memory", default="2G")
     parser.add_argument("--smp", type=int, default=4)

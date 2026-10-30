@@ -24,6 +24,11 @@ pub(in crate::fs) static EXT2_TYPE: Ext2Type = Ext2Type {
     cache: FsCache::new(),
 };
 
+/// VFS-visible ext4 compatibility type.
+pub(in crate::fs) static EXT4_TYPE: Ext4Type = Ext4Type {
+    cache: FsCache::new(),
+};
+
 impl FsType for Ext2Type {
     type Key = DeviceId;
 
@@ -39,7 +44,7 @@ impl FsType for Ext2Type {
         let disk = fs_creation_ctx.resolve_block_device()?.clone();
         let flags = fs_creation_ctx.flags();
         let args = fs_creation_ctx.args();
-        Ext2::open(disk, flags, args).map(|fs| fs as Arc<dyn FileSystem>)
+        Ext2::open(disk, flags, args, false).map(|fs| fs as Arc<dyn FileSystem>)
     }
 
     fn obtain_key_and_cache(
@@ -51,6 +56,47 @@ impl FsType for Ext2Type {
             .ok()
             .map(|disk| disk.id())?;
 
+        Some((key, &self.cache))
+    }
+
+    fn sysnode(&self) -> Option<Arc<dyn SysNode>> {
+        None
+    }
+}
+
+/// Ext4 volumes using the ext2 block and inode layout are opened through the
+/// same compatibility implementation. Journal replay and extents are enabled
+/// only through this entry point.
+pub(in crate::fs) struct Ext4Type {
+    cache: FsCache<DeviceId>,
+}
+
+impl FsType for Ext4Type {
+    type Key = DeviceId;
+
+    fn name(&self) -> &'static str {
+        "ext4"
+    }
+
+    fn properties(&self) -> FsProperties {
+        FsProperties::NEED_DISK
+    }
+
+    fn create(&self, fs_creation_ctx: &mut FsCreationCtx) -> Result<Arc<dyn FileSystem>> {
+        let disk = fs_creation_ctx.resolve_block_device()?.clone();
+        let flags = fs_creation_ctx.flags();
+        let args = fs_creation_ctx.args();
+        Ext2::open(disk, flags, args, true).map(|fs| fs as Arc<dyn FileSystem>)
+    }
+
+    fn obtain_key_and_cache(
+        &self,
+        fs_creation_ctx: &mut FsCreationCtx,
+    ) -> Option<(DeviceId, &FsCache<DeviceId>)> {
+        let key = fs_creation_ctx
+            .resolve_block_device()
+            .ok()
+            .map(|disk| disk.id())?;
         Some((key, &self.cache))
     }
 

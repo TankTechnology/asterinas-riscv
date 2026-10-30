@@ -8,7 +8,10 @@ use device_id::{decode_device_numbers, encode_device_numbers};
 use ostd::mm::io::util::HasVmReaderWriter;
 use smallvec::SmallVec;
 
-use super::indirect_block_manager::{IndirectBlock, IndirectBlockManager};
+use super::{
+    extent::ExtentTree,
+    indirect_block_manager::{IndirectBlock, IndirectBlockManager},
+};
 use crate::fs::ext2::{fs::Ext2, inode::RAW_BLOCK_PTRS_LEN, prelude::*};
 
 const PTRS_PER_BLOCK: usize = BLOCK_SIZE / size_of::<u32>();
@@ -35,12 +38,19 @@ const MAX_BLOCK_POINTER_LEVELS: usize = 4;
 pub(in inode) struct BlockPtrTree {
     raw_block_ptrs: Dirty<RawBlockPtrs>,
     indirect_blocks_manager: Mutex<IndirectBlockManager>,
+    /// Extent-tree mapping used by ext4 inodes instead of indirect pointers.
+    extent_tree: Option<ExtentTree>,
 }
 
 impl BlockPtrTree {
     /// Creates a new block-pointer tree from the on-disk raw pointers.
-    pub(in inode) fn new(raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>) -> Self {
+    ///
+    /// `has_extents` selects the ext4 extent-tree interpretation of the same
+    /// 60-byte `i_block` area.
+    pub(in inode) fn new(raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>, has_extents: bool) -> Self {
         Self {
+            extent_tree: has_extents
+                .then(|| ExtentTree::new(raw_block_ptrs.block_ptrs, fs.clone())),
             raw_block_ptrs: Dirty::new(raw_block_ptrs),
             indirect_blocks_manager: Mutex::new(IndirectBlockManager::new(fs)),
         }
@@ -63,6 +73,9 @@ impl BlockPtrTree {
 
     /// Flushes all dirty cached indirect blocks to the device.
     pub(in inode) fn sync_indirect_blocks(&self) -> Result<()> {
+        if self.extent_tree.is_some() {
+            return Ok(());
+        }
         self.indirect_blocks_manager.lock().sync()
     }
 
@@ -72,6 +85,9 @@ impl BlockPtrTree {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<Range<Ext2Bid>> {
+        if let Some(extent_tree) = &self.extent_tree {
+            return extent_tree.lookup_block_range(iblock, max_blocks);
+        }
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block range requested");
         }
@@ -113,6 +129,13 @@ impl BlockPtrTree {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<ResolvedBlockRange> {
+        if self.extent_tree.is_some() {
+            return self
+                .extent_tree
+                .as_mut()
+                .expect("extent tree checked above")
+                .resolve_block_range(&mut self.raw_block_ptrs, fs, iblock, max_blocks);
+        }
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
         }
@@ -142,6 +165,14 @@ impl BlockPtrTree {
     /// also follows this practice (see
     /// <https://elixir.bootlin.com/linux/v7.0/source/fs/ext2/inode.c#L1172>).
     pub(in inode) fn truncate_to_byte_len(&mut self, fs: &Ext2, new_size: usize) {
+        if let Some(extent_tree) = self.extent_tree.as_mut() {
+            if let Err(err) =
+                extent_tree.truncate_to_byte_len(&mut self.raw_block_ptrs, fs, new_size)
+            {
+                error!("truncate: ext4 extent truncation failed, err: {:?}", err);
+            }
+            return;
+        }
         // First logical block to free = ceil(new_size / block_size).
         let iblock = match Iblock::try_from(new_size.div_ceil(BLOCK_SIZE)) {
             Ok(ib) => ib,
@@ -178,6 +209,12 @@ impl BlockPtrTree {
     /// early at a direct/indirect region boundary, but it never overestimates:
     /// every block in the returned interval is known to be unmapped.
     pub(in inode) fn approx_hole_blocks(&self, iblock: Iblock, max_blocks: u32) -> Result<u32> {
+        if self.extent_tree.is_some() {
+            if self.lookup_block(iblock)?.is_some() {
+                return Ok(0);
+            }
+            return Ok(1.min(max_blocks));
+        }
         if max_blocks == 0 {
             return Ok(0);
         }
@@ -1229,6 +1266,7 @@ mod test {
         BlockPtrTree::new(
             RawBlockPtrs::new(sector_count, block_ptrs),
             Arc::downgrade(fs),
+            false,
         )
     }
 

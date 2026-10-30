@@ -595,15 +595,21 @@ impl InodePayload {
     fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
         let raw_block_ptrs = RawBlockPtrs::new(inode_desc.sector_count, inode_desc.block_ptrs);
         match inode_desc.type_ {
-            InodeType::File | InodeType::Dir => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)
-            }
+            InodeType::File | InodeType::Dir => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                inode_desc.flags.contains(FileFlags::EXTENTS),
+            ),
             InodeType::SymLink if Self::is_fast_symlink(inode_desc) => Self::FastSymlink {
                 target: FastSymlinkTarget::new(inode_desc.block_ptrs),
             },
-            InodeType::SymLink => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)
-            }
+            InodeType::SymLink => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                inode_desc.flags.contains(FileFlags::EXTENTS),
+            ),
             InodeType::CharDevice | InodeType::BlockDevice => Self::Device {
                 device_id: raw_block_ptrs.read_device_id(),
             },
@@ -611,10 +617,15 @@ impl InodePayload {
         }
     }
 
-    fn new_data_backed(size: usize, raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>) -> Self {
+    fn new_data_backed(
+        size: usize,
+        raw_block_ptrs: RawBlockPtrs,
+        fs: Weak<Ext2>,
+        has_extents: bool,
+    ) -> Self {
         let page_cache_size = size.align_up(PAGE_SIZE);
         let page_count = page_cache_size / PAGE_SIZE;
-        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone());
+        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone(), has_extents);
         let block_manager = Arc::new(InodeBlockManager::new(
             block_ptr_tree,
             fs.clone(),
@@ -706,6 +717,8 @@ bitflags! {
         const ENCRYPT = 1 << 11;
         /// Hash-indexed directory.
         const INDEX_DIR = 1 << 12;
+        /// Inode data is stored in an ext4 extent tree.
+        const EXTENTS = 1 << 19;
         /// AFS directory.
         const IMAGIC = 1 << 13;
         /// Journal file data.

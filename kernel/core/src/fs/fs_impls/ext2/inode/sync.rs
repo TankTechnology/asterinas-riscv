@@ -13,6 +13,12 @@ use super::{super::Ext2, Inode, InodeInner, RawInode};
 use crate::fs::ext2::{prelude::*, utils};
 
 impl Inode {
+    /// Returns whether the inode owns metadata that a filesystem-wide sync must
+    /// write back before the next metadata transaction is committed.
+    pub(in ext2) fn has_pending_metadata(&self) -> bool {
+        self.inner.read().is_dirty() || self.xattr.as_ref().is_some_and(|xattr| xattr.is_dirty())
+    }
+
     /// Flushes all dirty state owned by the inode.
     ///
     /// Writes xattrs, data pages, and indirect blocks back before staging dirty
@@ -26,7 +32,7 @@ impl Inode {
         // Step 2: flush dirty data pages.
         let fs = self.fs()?;
         let mut inner = self.inner.write();
-        inner.sync_data_pages()?;
+        inner.sync_data_pages(&fs)?;
 
         // Step 3: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -45,7 +51,7 @@ impl Inode {
         let mut inner = self.inner.write();
 
         // Step 1: flush dirty data pages.
-        inner.sync_data_pages()?;
+        inner.sync_data_pages(&fs)?;
 
         // Step 2: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -108,9 +114,32 @@ impl InodeInner {
         Ok(())
     }
 
-    fn sync_data_pages(&self) -> Result<()> {
+    /// Stages inode metadata without publishing a standalone journal
+    /// transaction. Deletion must be ordered with the parent directory update.
+    pub(super) fn stage_inode_desc(&mut self, fs: &Ext2, ino: Ext2Ino) -> Result<()> {
+        if !self.is_dirty() {
+            return Ok(());
+        }
+
+        let raw_block_ptrs = self.raw_block_ptrs();
+        self.desc.block_ptrs = raw_block_ptrs.block_ptrs;
+        self.desc.sector_count = raw_block_ptrs.sector_count;
+
+        let raw_inode = RawInode::from(&*self.desc);
+        fs.stage_inode_desc(ino, &raw_inode)?;
+        self.clear_dirty();
+        Ok(())
+    }
+
+    fn sync_data_pages(&self, fs: &Ext2) -> Result<()> {
         let file_size = self.file_size();
         if file_size == 0 {
+            return Ok(());
+        }
+
+        // Directory blocks are staged into the journal by directory operations;
+        // flushing the page cache directly would bypass that ordering.
+        if self.inode_type() == InodeType::Dir && fs.has_journal() {
             return Ok(());
         }
 

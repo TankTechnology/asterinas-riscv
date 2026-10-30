@@ -12,9 +12,11 @@
 //! The Second Extended File System (ext2) is a classic Linux filesystem
 //! introduced in 1993 as a replacement for the original ext filesystem.
 //! It was the default Linux filesystem throughout the 1990s and remains
-//! the on-disk foundation for ext3 and ext4. This implementation covers
-//! the base ext2 feature set; it does not include ext3/ext4 extensions
-//! such as journaling, extents, or inline data.
+//! the on-disk foundation for ext3 and ext4. The `ext2` type covers the base
+//! feature set. The separately registered `ext4` compatibility type adds
+//! ext4 extent-tree mapping and internal JBD2 journal replay; it deliberately
+//! rejects metadata checksums, flex_bg, orphan-file replay, inline data, and
+//! the full multi-level extent splitting/compaction surface.
 //!
 //! # On-disk layout
 //!
@@ -37,6 +39,7 @@
 //! |----------------|------------------------------------------------------|
 //! | `fs`           | Filesystem-level state: superblock, block groups     |
 //! | `inode`        | Inode operations: file I/O, directories, symlinks    |
+//! | `journal`      | JBD2 superblock, transaction, and replay decoding    |
 //! | `xattr`        | Extended attribute block management                  |
 //! | `block_group`  | Block group descriptor and per-group allocation      |
 //! | `super_block`  | On-disk superblock parsing and writeback             |
@@ -63,7 +66,7 @@ macro_rules! __log_prefix {
 pub(crate) use fs::Ext2;
 pub(crate) use inode::{FilePerm, Inode};
 
-pub(in crate::fs) use self::fs_type::EXT2_TYPE;
+pub(in crate::fs) use self::fs_type::{EXT2_TYPE, EXT4_TYPE};
 use crate::fs::vfs::registry;
 
 mod block_group;
@@ -71,6 +74,7 @@ mod fs;
 mod fs_type;
 mod impl_for_vfs;
 mod inode;
+mod journal;
 mod prelude;
 mod super_block;
 mod utils;
@@ -82,4 +86,5 @@ mod test_utils;
 /// Registers the ext2 filesystem type with the VFS registry.
 pub(super) fn init() {
     registry::register(&EXT2_TYPE).unwrap();
+    registry::register(&EXT4_TYPE).unwrap();
 }
