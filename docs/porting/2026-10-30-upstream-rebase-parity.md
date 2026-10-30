@@ -36,7 +36,7 @@ removed from this line. Their history remains in the old product tree at
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
 | ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
-| ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and the ext4 gate were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
+| ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and both the standard and 64-bit ext4 gates were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
 | Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
 
 ## Cleanup verification (2026-10-30)
@@ -178,10 +178,11 @@ overflow, unclean writable remount, and same-inode rename. All six new tests
 and the existing ext2 tests pass (`180 passed; 0 failed` in `aster-core`).
 
 The ext4 write suite and all four journal crash stages were rerun against the
-same kernel. Stage 1 discarded its uncommitted transaction, stages 2-4
-recovered, and every resulting image passed `e2fsck -fn`; the gate reported
-`"status": "pass"`. The ext2 write probe (1 MiB write, hard link, unlink,
-rename, and two syncs) also passed and left a clean `e2fsck -fn` image.
+same kernel on both the standard image and the 64-bit group-descriptor image.
+Stage 1 discarded its uncommitted transaction, stages 2-4 recovered, and every
+resulting image passed `e2fsck -fn`; both gates reported `"status": "pass"`.
+The ext2 write probe (1 MiB write, hard link, unlink, rename, and two syncs)
+also passed and left a clean `e2fsck -fn` image.
 
 ## Remaining blockers
 
@@ -291,6 +292,8 @@ The ext2 durability rerun is under
 recovery passes, `ktest-full-serial.log` is the full RISC-V ktest output
 (`aster-core` 180/180; full suite 536 passed with four failures outside ext2),
 and `ext2-write-probe.log` plus `e2fsck-ext2.txt` are the ext2 write pass.
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-64bit-durability/`
+holds the post-change 64-bit gate: all four crash stages plus `e2fsck` receipts.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.
