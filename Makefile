@@ -1731,6 +1731,12 @@ test: test_klog_store
 ktest:
 	@tools/ktest.sh
 
+# The drivers the Megrez board depends on, in QEMU, in a few minutes. Each
+# crate runs on its own so a failure names the component.
+.PHONY: ktest_megrez_core
+ktest_megrez_core:
+	@tools/riscv/gate_ktests.sh $(KTEST_MEGREZ_CRATES)
+
 .PHONY: ktest-local
 ktest-local: CONSOLE = ttyS0
 # Use KVM when the host exposes it.  Without an accelerator QEMU falls back to
