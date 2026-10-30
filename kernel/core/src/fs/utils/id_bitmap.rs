@@ -56,6 +56,11 @@ impl IdBitmap {
         BLOCK_SIZE as u16 * 8
     }
 
+    /// Returns true if every valid ID is allocated.
+    pub(crate) fn is_full(&self) -> bool {
+        self.first_available_id >= self.len
+    }
+
     /// Returns a reference to the underlying buffer of `BLOCK_SIZE` bytes.
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.buf

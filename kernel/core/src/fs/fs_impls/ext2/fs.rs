@@ -654,8 +654,25 @@ impl Ext2 {
     }
 
     /// Sets the per file system flags.
-    pub(super) fn set_fs_flags(&self, flags: FsFlags) {
+    pub(super) fn set_fs_flags(&self, flags: FsFlags) -> Result<()> {
+        let old_flags = self.fs_flags();
+        if old_flags.contains(FsFlags::RDONLY) && !flags.contains(FsFlags::RDONLY) {
+            let state = self.super_block.read().state();
+            if !state.contains(FsState::VALID) || state.contains(FsState::ERROR) {
+                return_errno_with_message!(
+                    Errno::EUCLEAN,
+                    "ext2 requires repair before writable remount"
+                );
+            }
+        }
+        if !old_flags.contains(FsFlags::RDONLY) && flags.contains(FsFlags::RDONLY) {
+            self.sync_all()?;
+            if self.block_device.sync()? != BioStatus::Complete {
+                return_errno_with_message!(Errno::EIO, "failed to flush block device");
+            }
+        }
         self.flags.store(flags, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Returns a reference to the block group at `group_idx`.
@@ -687,6 +704,9 @@ impl Ext2 {
     pub(super) fn read_inode(&self, ino: Ext2Ino) -> Result<Arc<Inode>> {
         if ino == 0 {
             return_errno_with_message!(Errno::ENOENT, "inode 0 is not valid in ext2");
+        }
+        if ino > self.super_block.read().total_inodes() {
+            return_errno_with_message!(Errno::EIO, "inode number outside filesystem");
         }
         let group = self
             .find_group(ino)
@@ -825,13 +845,48 @@ impl Ext2 {
         }
 
         let _metadata_sync_guard = self.metadata_sync_lock.lock();
-        self.discard_pending_metadata_range(start, count);
         let mut sb = self.super_block.write();
         if !sb.is_data_block_valid(start, count) {
             return_errno_with_message!(Errno::EIO, "freeing invalid data block range");
         }
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "free block range overflow"))?;
+        if sb
+            .free_blocks_count()
+            .checked_add(count)
+            .is_none_or(|new_count| new_count > sb.total_blocks())
+        {
+            return_errno_with_message!(Errno::EIO, "free block count overflow in filesystem");
+        }
         let nr_blocks_per_group = sb.nr_blocks_per_group();
         let first_data_block = sb.first_data_block();
+
+        // Validate every segment before changing any bitmap. A caller-supplied
+        // cross-group range must not leave a half-freed prefix on error.
+        let first_group_idx = (start - first_data_block) / nr_blocks_per_group;
+        let last_group_idx = (end - 1 - first_data_block) / nr_blocks_per_group;
+        if first_group_idx != last_group_idx {
+            let mut current_block = start;
+            let mut remaining_blocks = count;
+            while remaining_blocks > 0 {
+                let group_idx = ((current_block - first_data_block) / nr_blocks_per_group) as usize;
+                let group = &self.block_groups[group_idx];
+                let group_start_bit = current_block - group.first_block();
+                let blocks_in_group = remaining_blocks.min(group.last_block() - current_block + 1);
+                group.validate_free_blocks(group_start_bit..(group_start_bit + blocks_in_group))?;
+                current_block += blocks_in_group;
+                remaining_blocks -= blocks_in_group;
+            }
+        } else {
+            let group = &self.block_groups[first_group_idx as usize];
+            let group_start_bit = start - group.first_block();
+            group.validate_free_blocks(group_start_bit..(group_start_bit + count))?;
+        }
+
+        // Invalidate staged snapshots only after the entire range has been
+        // validated.
+        self.discard_pending_metadata_range(start, count);
 
         let mut current_block = start;
         let mut remaining_blocks = count;
@@ -920,13 +975,15 @@ impl Ext2 {
         if ino < first_ino || ino > total_inodes {
             return_errno_with_message!(Errno::EIO, "inode number out of valid range for free");
         }
+        if sb.free_inodes_count() >= total_inodes {
+            return_errno_with_message!(Errno::EIO, "free inode count overflow in filesystem");
+        }
 
         let group = self
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        let was_allocated = group.free_inode(ino, inode_type)?;
-        if was_allocated {
+        if group.free_inode(ino, inode_type)? {
             sb.inc_free_inodes()?;
         }
 
@@ -1077,6 +1134,7 @@ impl Ext2 {
 
             let ino = (group_idx as u32) * nr_inodes_per_group + inode_idx + 1;
             if ino < sb.first_ino() || ino > total_inodes {
+                let _ = group.free_inode(ino, inode_type);
                 return_errno_with_message!(Errno::EIO, "allocated inode number out of valid range");
             }
             sb.dec_free_inodes()?;
@@ -1312,6 +1370,115 @@ mod test {
             .link_count(link_count)
             .dtime(dtime)
             .build()
+    }
+
+    #[ktest]
+    fn unclean_ext2_allows_readonly_but_rejects_writable_mount() {
+        clocks::init_for_ktest();
+        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
+        let disk = fixture.disk.clone();
+        let mut raw = disk
+            .segment()
+            .read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)
+            .unwrap();
+
+        for state in [
+            FsState::empty(),
+            FsState::ERROR,
+            FsState::VALID | FsState::ERROR,
+        ] {
+            raw.state = state.bits();
+            disk.write_super_block(&raw);
+            assert_errno!(
+                Ext2::open(
+                    disk.clone() as Arc<dyn BlockDevice>,
+                    FsFlags::empty(),
+                    None,
+                    false,
+                ),
+                Errno::EUCLEAN
+            );
+            let readonly = Ext2::open(
+                disk.clone() as Arc<dyn BlockDevice>,
+                FsFlags::RDONLY,
+                None,
+                false,
+            )
+            .unwrap();
+            assert_errno!(readonly.set_fs_flags(FsFlags::empty()), Errno::EUCLEAN);
+        }
+
+        raw.state = FsState::VALID.bits();
+        disk.write_super_block(&raw);
+        Ext2::open(
+            disk.clone() as Arc<dyn BlockDevice>,
+            FsFlags::empty(),
+            None,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[ktest]
+    fn block_free_rejects_already_free_bit_without_partial_release() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_blocks(31, 31)
+            .block_bitmap(BlockBitmapInit::MetadataOnly)
+            .build()
+            .unwrap();
+        let goal = f.sb.group_first_block_no(0);
+        let range = f.ext2.alloc_blocks(2, goal).unwrap();
+        assert_eq!(range.len(), 2);
+
+        f.ext2.free_blocks(range.start, 1).unwrap();
+        let sb_free = f.ext2.super_block().free_blocks_count();
+        let group = f.ext2.block_group(0);
+        let group_free = group.free_blocks_count();
+
+        assert_errno!(f.ext2.free_blocks(range.start, 2), Errno::EIO);
+        assert_eq!(f.ext2.super_block().free_blocks_count(), sb_free);
+        assert_eq!(group.free_blocks_count(), group_free);
+        let second_bit = (range.start + 1 - group.first_block()) as u16;
+        assert!(group.metadata().block_bitmap.is_allocated(second_bit));
+
+        f.ext2.free_blocks(range.start + 1, 1).unwrap();
+    }
+
+    #[ktest]
+    fn inode_alloc_invalid_reserved_bit_leaves_bitmap_and_counts_unchanged() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_inodes(1000, 1000)
+            .inode_bitmap(InodeBitmapInit::Empty)
+            .build()
+            .unwrap();
+        let group = f.ext2.block_group(0);
+        assert!(!group.is_inode_allocated(1));
+
+        assert_errno!(f.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
+        assert!(!group.is_inode_allocated(1));
+        assert_eq!(group.free_inodes_count(), 1000);
+        assert_eq!(f.ext2.super_block().free_inodes_count(), 1000);
+        f.ext2.sync_all().unwrap();
+    }
+
+    #[ktest]
+    fn inode_free_rejects_superblock_counter_overflow_without_bitmap_change() {
+        clocks::init_for_ktest();
+        let target_ino = make_valid_super_block(1).first_ino();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_inodes(1024, 1013)
+            .inode_bitmap(InodeBitmapInit::ReservedPlus(vec![target_ino]))
+            .build()
+            .unwrap();
+        let group = f.ext2.block_group(0);
+        assert!(group.is_inode_allocated(target_ino));
+
+        assert_errno!(f.ext2.free_inode(target_ino, InodeType::File), Errno::EIO);
+        assert!(group.is_inode_allocated(target_ino));
+        assert_eq!(group.free_inodes_count(), 1013);
+        assert_eq!(f.ext2.super_block().free_inodes_count(), 1024);
     }
 
     #[ktest]
@@ -1553,16 +1720,25 @@ mod test {
             Errno::EIO
         );
 
-        // All inode bitmap bits set -> no allocatable inode.
+        // A zero group count with free bitmap bits is corruption, even when
+        // the filesystem-wide counter still claims free inodes.
+        let f_zero_group = Ext2FixtureBuilder::new(1, 128)
+            .with_free_inodes(1, 0)
+            .inode_bitmap(InodeBitmapInit::ReservedOnly)
+            .build()
+            .unwrap();
+        assert_errno!(
+            f_zero_group.ext2.alloc_ino(ROOT_INO, InodeType::File),
+            Errno::EIO
+        );
+
+        // A positive free count and a full bitmap disagree: report corruption.
         let f_full = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(8, 8)
             .inode_bitmap(InodeBitmapInit::Full)
             .build()
             .unwrap();
-        assert_errno!(
-            f_full.ext2.alloc_ino(ROOT_INO, InodeType::File),
-            Errno::ENOSPC
-        );
+        assert_errno!(f_full.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
 
         let f_free = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(8, 8)
@@ -1576,7 +1752,7 @@ mod test {
             Errno::EIO
         );
 
-        // Already-free inode: should return Ok and keep counters unchanged.
+        // An already-free inode is corruption, not a successful reclaim.
         let target_ino = f_free.sb.first_ino();
         let raw_file = make_raw_inode(0o100644, 1, 0);
         f_free
@@ -1586,7 +1762,10 @@ mod test {
 
         let before_sb = f_free.ext2.super_block().free_inodes_count();
         let before_group = f_free.ext2.block_group(0).free_inodes_count();
-        f_free.ext2.free_inode(target_ino, InodeType::File).unwrap();
+        assert_errno!(
+            f_free.ext2.free_inode(target_ino, InodeType::File),
+            Errno::EIO
+        );
         assert_eq!(f_free.ext2.super_block().free_inodes_count(), before_sb);
         assert_eq!(f_free.ext2.block_group(0).free_inodes_count(), before_group);
     }

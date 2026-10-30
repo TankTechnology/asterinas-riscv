@@ -69,9 +69,7 @@ impl FileSystem for Ext2 {
     }
 
     fn set_fs_flags(&self, flags: FsFlags, _data: Option<&str>, _ctx: &Context) -> Result<()> {
-        self.set_fs_flags(flags);
-        warn!("ext2-specific handling for filesystem flags is not implemented");
-        Ok(())
+        self.set_fs_flags(flags)
     }
 
     fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {

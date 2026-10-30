@@ -463,6 +463,8 @@ pub(super) enum BlockBitmapInit {
 
 #[derive(Clone)]
 pub(super) enum InodeBitmapInit {
+    /// Leaves every group-0 inode free, including reserved inode IDs.
+    Empty,
     /// Marks only reserved group-0 inodes `[1, first_ino)`.
     ReservedOnly,
     /// Marks reserved group-0 inodes plus explicit extra group-0 inodes.
@@ -495,6 +497,7 @@ impl Ext2Fixture {
 pub(super) struct Ext2FixtureBuilder {
     groups: u32,
     nblocks: usize,
+    total_inodes: Option<u32>,
     sb_free_blocks: Option<u32>,
     sb_free_inodes: Option<u32>,
     group0_free_blocks: Option<u16>,
@@ -511,6 +514,7 @@ impl Ext2FixtureBuilder {
         Self {
             groups,
             nblocks,
+            total_inodes: None,
             sb_free_blocks: None,
             sb_free_inodes: None,
             group0_free_blocks: None,
@@ -521,6 +525,11 @@ impl Ext2FixtureBuilder {
             inode_bitmap: None,
             custom_device: None,
         }
+    }
+
+    pub(super) fn with_total_inodes(mut self, total_inodes: u32) -> Self {
+        self.total_inodes = Some(total_inodes);
+        self
     }
 
     pub(super) fn with_free_blocks(mut self, sb_free_blocks: u32, group0_free_blocks: u16) -> Self {
@@ -552,6 +561,9 @@ impl Ext2FixtureBuilder {
 
     fn prepare(&self) -> Result<PreparedFixture> {
         let mut raw_sb = make_valid_raw_super_block(self.groups);
+        if let Some(total_inodes) = self.total_inodes {
+            raw_sb.inodes_count = total_inodes;
+        }
         if let Some(sb_free_blocks) = self.sb_free_blocks {
             raw_sb.free_blocks_count = sb_free_blocks;
         }
@@ -683,6 +695,7 @@ impl Ext2FixtureBuilder {
         {
             let mut bitmap = [0u8; BLOCK_SIZE];
             match &inode_init {
+                InodeBitmapInit::Empty => {}
                 InodeBitmapInit::ReservedOnly => {
                     for bit in 0..(sb.first_ino() as usize).saturating_sub(1) {
                         set_bit_lsb0(&mut bitmap, bit);

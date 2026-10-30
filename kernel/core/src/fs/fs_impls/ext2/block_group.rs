@@ -427,45 +427,53 @@ impl BlockGroup {
     /// Frees a range of blocks within this group.
     ///
     /// Frees a contiguous range of group-relative block bits.
-    /// Returns the number of blocks actually freed.
+    /// All bits and the resulting counter are checked before any bit changes.
     pub(super) fn free_blocks(&self, bit_range: Range<u32>) -> Result<u32> {
-        let start_bit = bit_range.start;
-        let group_count = bit_range.len() as u32;
-        // Validate system zone overlap using filesystem-wide coordinates.
-        let abs_range = (self.first_block + start_bit)..(self.first_block + bit_range.end);
-
         let mut metadata = self.metadata.write();
+        let new_free_count = self.checked_free_block_count(&metadata, &bit_range)?;
+        for block_bit in bit_range.start as u16..bit_range.end as u16 {
+            metadata.block_bitmap.free(block_bit);
+        }
+        metadata.desc.free_blocks_count = new_free_count;
+        Ok(bit_range.len() as u32)
+    }
 
+    /// Checks a range before a filesystem-wide free that spans groups.
+    pub(super) fn validate_free_blocks(&self, bit_range: Range<u32>) -> Result<()> {
+        self.checked_free_block_count(&self.metadata.read(), &bit_range)?;
+        Ok(())
+    }
+
+    fn checked_free_block_count(
+        &self,
+        metadata: &BlockGroupMetadata,
+        bit_range: &Range<u32>,
+    ) -> Result<u16> {
+        let group_size = self.last_block - self.first_block + 1;
+        if bit_range.start >= bit_range.end || bit_range.end > group_size {
+            return_errno_with_message!(Errno::EIO, "freeing blocks outside block group");
+        }
+        let abs_range = (self.first_block + bit_range.start)..(self.first_block + bit_range.end);
         if self.overlaps_system_zone_with(&metadata.desc, abs_range) {
             return_errno_with_message!(Errno::EIO, "freeing blocks in system zone");
         }
-
-        // Clear bits one by one and count only allocated-to-free transitions.
-        let range_start = start_bit as u16;
-        let range_end = (start_bit + group_count) as u16;
-        let mut actually_freed: u32 = 0;
-        for block_bit in range_start..range_end {
-            if !metadata.block_bitmap.is_allocated(block_bit) {
-                warn!(
-                    "free_blocks: bit already cleared for block {}",
-                    self.first_block + start_bit + (block_bit - range_start) as u32
-                );
-            } else {
-                metadata.block_bitmap.free(block_bit);
-                actually_freed += 1;
-            }
-        }
-
-        // Persistent in-memory bitmap cache; writeback is deferred to sync_metadata.
-
-        let freed_count = actually_freed as u16;
-        metadata.desc.free_blocks_count = metadata
+        let count = bit_range.len() as u16;
+        let new_free_count = metadata
             .desc
             .free_blocks_count
-            .checked_add(freed_count)
+            .checked_add(count)
+            .filter(|&count| count as u32 <= group_size)
             .ok_or_else(|| Error::with_message(Errno::EIO, "free block count overflow in group"))?;
-
-        Ok(actually_freed)
+        for bit in bit_range.start as u16..bit_range.end as u16 {
+            if !metadata.block_bitmap.is_allocated(bit) {
+                error!(
+                    "free_blocks: refusing to free already-free block {}",
+                    self.first_block + bit as u32
+                );
+                return_errno_with_message!(Errno::EIO, "freeing an already-free block");
+            }
+        }
+        Ok(new_free_count)
     }
 
     /// Attempts to allocate one inode within this group.
@@ -476,15 +484,25 @@ impl BlockGroup {
         let mut metadata = self.metadata.write();
 
         if metadata.desc.free_inodes_count == 0 {
+            if !metadata.inode_bitmap.is_full() {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "inode bitmap disagrees with free inode count"
+                );
+            }
             return Ok(None);
         }
         if inode_type.is_directory() && metadata.desc.used_dirs_count == u16::MAX {
             return_errno_with_message!(Errno::EIO, "group used directory counter overflow");
         }
+        if metadata.inode_bitmap.is_full() {
+            return_errno_with_message!(Errno::EIO, "inode bitmap disagrees with free inode count");
+        }
 
-        let Some(inode_idx) = metadata.inode_bitmap.alloc() else {
-            return Ok(None);
-        };
+        let inode_idx = metadata
+            .inode_bitmap
+            .alloc()
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode bitmap allocation failed"))?;
 
         metadata.desc.free_inodes_count = metadata
             .desc
@@ -500,21 +518,24 @@ impl BlockGroup {
 
     /// Frees one inode within this group.
     ///
-    /// Returns `true` if the allocation state transitioned allocated-to-free,
-    /// `false` if it was already free (logs warning).
+    /// Returns an error if the inode is outside this group or already free.
     pub(super) fn free_inode(&self, ino: Ext2Ino, inode_type: InodeType) -> Result<bool> {
         let inode_idx = self.inode_idx_in_group(ino);
         let mut metadata = self.metadata.write();
 
+        if inode_idx >= self.nr_inodes_in_group as u16 {
+            return_errno_with_message!(Errno::EIO, "inode index outside partial last group");
+        }
         if !metadata.inode_bitmap.is_allocated(inode_idx) {
-            warn!("free_inode: inode idx {} already freed", inode_idx);
-            return Ok(false);
+            error!("free_inode: refusing to free already-free inode {}", ino);
+            return_errno_with_message!(Errno::EIO, "freeing an already-free inode");
         }
 
         let free_inodes_count = metadata
             .desc
             .free_inodes_count
             .checked_add(1)
+            .filter(|&count| count as u32 <= self.nr_inodes_in_group)
             .ok_or_else(|| Error::with_message(Errno::EIO, "group free inode counter overflow"))?;
         let used_dirs_count = if inode_type.is_directory() {
             Some(
@@ -983,5 +1004,43 @@ impl BlockAsPageCacheBackend for InodeTableBackend {
         let len = pages.len();
 
         pages.submit_contiguous_write_pages(self.block_device.as_ref(), bid, len, io_batch)
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::{
+        fs::fs_impls::ext2::test_utils::{Ext2FixtureBuilder, assert_errno},
+        time::clocks,
+    };
+
+    #[ktest]
+    fn partial_last_group_rejects_out_of_range_inode_mutations() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(2, 256)
+            .with_total_inodes(1025)
+            .with_free_inodes(1, 0)
+            .build()
+            .unwrap();
+        let group = f.ext2.block_group(1);
+        {
+            let mut metadata = group.metadata.write();
+            assert_eq!(metadata.inode_bitmap.alloc(), Some(0));
+            metadata.desc.free_inodes_count = 0;
+        }
+
+        assert!(group.alloc_ino(InodeType::File).unwrap().is_none());
+        group.metadata.write().desc.free_inodes_count = 1;
+        assert_errno!(group.free_inode(1025, InodeType::File), Errno::EIO);
+        assert!(group.is_inode_allocated(1025));
+        assert_eq!(group.free_inodes_count(), 1);
+        assert_errno!(f.ext2.read_inode(1026), Errno::EIO);
+
+        let mut metadata = group.metadata.write();
+        metadata.desc.clear_dirty();
+        metadata.inode_bitmap.clear_dirty();
     }
 }
