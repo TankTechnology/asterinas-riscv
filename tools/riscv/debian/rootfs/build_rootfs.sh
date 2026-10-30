@@ -1779,6 +1779,15 @@ configure_desktop() {
     install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
         "$stage/usr/lib/asterinas/megrez-clock-sync"
     install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    # An ext2 root that was being written when the board died keeps names whose
+    # inodes are gone, and nothing repairs that until an offline fsck. At least
+    # make the next boot say so.
+    install -D -m 0755 -- "$script_directory/asterinas_boot_state.sh" \
+        "$stage/usr/lib/asterinas/boot-state"
+    install -D -m 0644 -- "$script_directory/asterinas-boot-state.service" \
+        "$stage/etc/systemd/system/asterinas-boot-state.service"
+    ln -sf -- ../asterinas-boot-state.service \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-boot-state.service"
 
     # The campus switch stops answering this port after a while (ARP and DHCP
     # both go silent while broadcast traffic still arrives); the watchdog makes

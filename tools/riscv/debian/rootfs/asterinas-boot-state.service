@@ -1,0 +1,17 @@
+[Unit]
+Description=Asterinas boot-state marker (unclean shutdown detection)
+# Default dependencies on purpose. A unit pulled in by basic.target with
+# `DefaultDependencies=no` never ran on this image, while units that keep the
+# defaults and are wanted by basic.target do.
+After=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /usr/lib/asterinas/boot-state start
+ExecStop=/bin/sh /usr/lib/asterinas/boot-state stop
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=basic.target
