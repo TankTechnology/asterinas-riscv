@@ -36,7 +36,7 @@ removed from this line. Their history remains in the old product tree at
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
 | ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages with clean `e2fsck -fn` results. |
-| Kernel tests | The 147-test `aster-core` ktest baseline passed before the network/procfs absorption. The new `/proc/net`, IPv4 route, ext4 extent, and JBD2 unit tests compile under `cfg(ktest)`; the current container still exits the test runner without launching the RISC-V test kernel, so the QEMU probes above are the runtime gate. |
+| Kernel tests | After the ext4/JBD2 absorption, the RISC-V `aster-core` suite reports `174 passed; 0 failed; 0 filtered out` in `qemu-serial.log`. This includes the `/proc/net`, IPv4 route, ext4 extent, and JBD2 unit tests. The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
 
 ## Cleanup verification (2026-10-30)
 
@@ -166,9 +166,9 @@ QEMU verification:
    filters remain unimplemented.
 3. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
    network, USB, and watchdog drivers are out of this line.
-4. **Test surface.** Only the direct QEMU gate and the kernel ktests are
-   ported. The old host test suite, repository-level U-Boot desktop scenario,
-   and dsh service/launcher integration are not.
+4. **Test surface.** The direct QEMU gate, ext4/JBD2 QEMU gate, and kernel
+   ktests are ported. The old host test suite, repository-level U-Boot desktop
+   scenario, and dsh service/launcher integration are not.
 
 ## Current entry points
 
@@ -195,8 +195,13 @@ python3 tools/riscv/debian/direct_boot_gate.py \
   --rootfs /absolute/path/to/debian-root.ext4 \
   --rootfstype ext4
 
-# Kernel tests (run from kernel/core)
-cargo osdk test
+# ext4/JBD2 write plus crash/replay gate
+make test_riscv_debian_ext4 \
+  DEBIAN_EXT4_ROOTFS=/absolute/path/to/debian-root.ext4
+
+# Kernel tests (run from kernel/core; output lands in qemu-serial.log)
+RUSTUP_TOOLCHAIN=nightly-2026-07-21-x86_64-unknown-linux-gnu \
+  cargo osdk test --target-arch riscv64 --scheme riscv --boot-method vmm-direct
 ```
 
 A deterministic JBD2 crash can be requested with
@@ -236,7 +241,15 @@ The ext4/JBD2 evidence is under
   and all journal stages;
 - `ext2-write-probe.log` — the ext2 write path after the shared durability
   changes;
+- `ktest-ext4-serial.log` — the RISC-V ktest serial log (`174 passed`);
 - `README.md` — exact image conversion, commands, and result table.
+
+The repeatable gate receipts are under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-gate/` and
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-64bit/`. They
+cover the 32-bit-compatible image (all four fault stages) and a 64-bit
+group-descriptor image (write suite plus stage 2); all recovery passes end
+with a clean `e2fsck -fn`.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.
