@@ -1,6 +1,6 @@
 # Upstream rebase: current state
 
-Base: official `upstream/main` at `986c70915` (2026-10-30).
+Base: official `upstream/main` at `cdd5bc109` (2026-10-30).
 Working branch: `rebase/upstream-20261029`.
 All downstream commits are local; nothing is pushed to `upstream` or `origin`.
 
@@ -68,6 +68,12 @@ Validation performed on the cleaned tree:
   non-root dsh web starts as UID 1000 and serves the authenticated UI with
   HTTP 200.
 
+The 27 downstream commits were then replayed from `986c70915` onto the latest
+`upstream/main` at `cdd5bc109` (upstream added one LoongArch cache-policy fix).
+The RISC-V kernel was rebuilt, and the direct gate, 147 kernel ktests,
+PTY/network runtime regression, and desktop/Firefox window were rerun on the
+rebased tree; all pass consistently.
+
 The QEMU input contract is the fixed `event0`/`event1` pair; the device helper
 no longer performs evdev identity ioctls that can block on this kernel. The
 network script uses QEMU-safe fixture timeouts and no longer tries to set the
@@ -76,8 +82,8 @@ wall clock, which this kernel does not support.
 Logs are under the evidence directory:
 `clean-build-minimal.log`, `clean-build-browser-web3.log`,
 `clean-desktop-capture.log`, `clean-desktop-diag.log`,
-`clean-desktop-firefox-late.png`, `ktest-clean-serial.log`,
-`debian-dsh-headless.log`, `dsh-web-nonroot.log`,
+`clean-desktop-firefox-late.png`, `ktest-cdd5-serial.log`,
+`direct-gate-cdd5.log`, `debian-dsh-headless.log`, `dsh-web-nonroot.log`,
 `runtime-regression.log`, and `clean-network-script.log`.
 
 ## Remaining blockers
