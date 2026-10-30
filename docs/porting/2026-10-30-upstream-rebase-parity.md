@@ -35,7 +35,8 @@ removed from this line. Their history remains in the old product tree at
 | Desktop | Manual U-Boot boot with the bochs framebuffer reaches Xorg on `/dev/fb0` at 1280x1024, then openbox, pcmanfm, and lxpanel. The wallpaper, icons, panel, and a Firefox window were captured from the QEMU display. |
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
-| Kernel tests | The 147-test `aster-core` ktest baseline passed before the network/procfs absorption. The new `/proc/net` and IPv4 route paths are covered by QEMU probes; the full ktest runner was not rerun because the current container does not launch the RISC-V test kernel. |
+| ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages with clean `e2fsck -fn` results. |
+| Kernel tests | The 147-test `aster-core` ktest baseline passed before the network/procfs absorption. The new `/proc/net`, IPv4 route, ext4 extent, and JBD2 unit tests compile under `cfg(ktest)`; the current container still exits the test runner without launching the RISC-V test kernel, so the QEMU probes above are the runtime gate. |
 
 ## Cleanup verification (2026-10-30)
 
@@ -154,8 +155,11 @@ QEMU verification:
 
 ## Remaining blockers
 
-1. **ext4/JBD2.** The upstream ext2 path rejects a normal ext4 root. Extent
-   read/write, journal replay, and durability are not ported.
+1. **ext4 feature coverage.** The compatibility driver covers a downstream
+   Debian ext4 profile with extents and an internal journal. It deliberately
+   rejects metadata checksums, high 64-bit block numbers, `flex_bg`,
+   `orphan_file`, inline data, and full multi-level extent splitting. The old
+   xfstests/durability suites are not ported to this line.
 2. **Network/procfs completeness.** IPv4 route dump/lookup/add,
    `/proc/net/route`, `/proc/net/dev`, `/proc/net/tcp`, and `/proc/net/udp`
    are present, but IPv6 route netlink, route deletion, and advanced route
@@ -185,9 +189,20 @@ make test_riscv_debian_direct \
   TARGET_ARCH=riscv64 \
   DEBIAN_DIRECT_ROOTFS=/absolute/path/to/debian-root.ext2
 
+# The direct gate accepts an ext4 image and selects the ext4 mount explicitly
+python3 tools/riscv/debian/direct_boot_gate.py \
+  --kernel target/osdk/asterinas-osdk-bin.Image \
+  --rootfs /absolute/path/to/debian-root.ext4 \
+  --rootfstype ext4
+
 # Kernel tests (run from kernel/core)
 cargo osdk test
 ```
+
+A deterministic JBD2 crash can be requested with
+`asterinas.ext4_fault_stage=1..4`. Stage 1 stops after durable descriptor
+blocks, stage 2 after the commit record, stage 3 after home-block writes, and
+stage 4 after the device flush before the journal checkpoint.
 
 The kernel build requires the freshly built OSDK 0.19 binary from this branch's
 `osdk/` source; the container's stock OSDK 0.18 cannot parse `vmm-direct`.
@@ -209,6 +224,19 @@ Evidence from the verification runs lives under
 - `uboot-baidu-probe.log`, `uboot-baidu.ppm` — the blocked online navigation
   and Gecko child-process failure;
 - `ktest-*-serial.log`, `ktest-netlink-core.log` — kernel tests.
+
+The ext4/JBD2 evidence is under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-jbd2/`:
+
+- `ext4-write-probe.log`, `ext4-extent-probe.log` — ext4 root writes,
+  fragmented extents, truncate, links, and rename;
+- `final-stage1.log` through `final-stage4.log` — the four journal crash
+  points and recovery boots;
+- `e2fsck-*.txt` — read-only consistency checks for the ext4 and ext2 probes
+  and all journal stages;
+- `ext2-write-probe.log` — the ext2 write path after the shared durability
+  changes;
+- `README.md` — exact image conversion, commands, and result table.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.
