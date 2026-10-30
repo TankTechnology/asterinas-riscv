@@ -1350,10 +1350,11 @@ mod tests {
     };
 
     use super::{
-        BootHidInterfaceError, BootHidKind, DriveError, MouseReportLayout, UsbKeyboardError,
-        UsbKeyboardStage, XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH, XhciMmioError,
-        classify_boot_interface, drive_with, find_boot_hid_interface, new_usb_kernel_op,
-        parse_mouse_report_descriptor, validate_xhci_mapping_properties, validate_xhci_mmio_with,
+        BootHidInterfaceError, BootHidKind, DriveError, MOUSE_REPORT_LEN, MouseReportLayout,
+        UsbKeyboardError, UsbKeyboardStage, XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH,
+        XhciMmioError, classify_boot_interface, drive_with, find_boot_hid_interface,
+        interrupt_transfer_len, new_usb_kernel_op, parse_mouse_report_descriptor,
+        validate_xhci_mapping_properties, validate_xhci_mmio_with,
     };
     use crate::{
         mm::{CachePolicy, dma::DmaWindow},
