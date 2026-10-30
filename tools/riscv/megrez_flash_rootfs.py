@@ -146,16 +146,28 @@ class Flash:
             print(f"could not remount the root read-only: {text[-200:]}", file=sys.stderr)
             return 7
 
+        # Write and reboot from one command line. After the write the running
+        # system's cached blocks no longer match what is on the device, so a
+        # binary it has to re-read fails with "Exec format error" and even
+        # `reboot` stops working; the shell that is already running can still
+        # execute it. The image is verified after the boot instead, from the
+        # system that came up from it.
         print(f"writing {image.stat().st_size} bytes over {PARTITION}", flush=True)
         text = self.command(
-            f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -2",
+            f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -1; "
+            "/usr/sbin/reboot",
             timeout=1800,
         )
         if "copied" not in text:
             print(f"dd did not report success: {text[-300:]}", file=sys.stderr)
             return 5
+        print("rebooting into the new image", flush=True)
 
-        print("reading the partition back", flush=True)
+        if not self.wait_for_boot():
+            print("the board did not come back after the reboot", file=sys.stderr)
+            return 8
+
+        print("verifying the partition from the new system", flush=True)
         blocks = image.stat().st_size // (1 << 20)
         text = self.command(
             f"dd if={PARTITION} bs=1M count={blocks} 2>/dev/null | sha256sum",
@@ -163,15 +175,22 @@ class Flash:
         )
         if expected not in text:
             print(
-                "read-back does not match the image: a dirty page was flushed "
-                "over it, or the write did not land. Not rebooting.",
+                "the image on the partition does not match the built image",
                 file=sys.stderr,
             )
             return 6
-
-        print("read-back matches; rebooting into the new image", flush=True)
-        self.command("sync; reboot", timeout=30)
+        print(f"verified: {PARTITION} matches the built image", flush=True)
         return 0
+
+    def wait_for_boot(self, timeout: float = 300.0) -> bool:
+        offset = self.log.stat().st_size
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            text = self.since(offset)
+            if "asterinas-desktop-ready" in text or "asterinas-debug:/" in text[-4000:]:
+                return True
+            time.sleep(5)
+        return False
 
 
 def main() -> int:
