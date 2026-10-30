@@ -8,7 +8,8 @@ use smoltcp::{
 };
 
 use super::{
-    BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceName, InterfaceType,
+    BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceName,
+    InterfaceType,
 };
 use crate::{errors::BindError, ext::Ext};
 
@@ -68,6 +69,11 @@ impl<E: Ext> dyn Iface<E> {
     /// In Linux, the name is usually the driver name followed by a unit number.
     pub fn name(&self) -> &InterfaceName {
         self.common().name()
+    }
+
+    /// Returns the packet and byte counters observed by this interface.
+    pub fn stats(&self) -> IfaceStatsSnapshot {
+        self.common().stats()
     }
 
     /// Returns the interface type.

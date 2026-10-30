@@ -20,7 +20,7 @@ use smoltcp::{
 };
 
 use super::{
-    Iface, InterfaceName,
+    Iface, IfaceStats, IfaceStatsSnapshot, InterfaceName,
     poll::{PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
@@ -41,6 +41,7 @@ pub struct IfaceCommon<E: Ext> {
     name: InterfaceName,
     type_: InterfaceType,
     flags: AtomicU32,
+    stats: IfaceStats,
 
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
@@ -117,6 +118,7 @@ impl<E: Ext> IfaceCommon<E> {
             name,
             type_,
             flags: AtomicU32::new(flags.bits()),
+            stats: IfaceStats::default(),
             interface: SpinLock::new(PollableIface::new(interface)),
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
@@ -130,6 +132,14 @@ impl<E: Ext> IfaceCommon<E> {
 
     pub(super) fn name(&self) -> &InterfaceName {
         &self.name
+    }
+
+    pub(super) fn stats(&self) -> IfaceStatsSnapshot {
+        self.stats.snapshot()
+    }
+
+    pub(super) fn stats_ref(&self) -> &IfaceStats {
+        &self.stats
     }
 
     pub(super) fn type_(&self) -> InterfaceType {
@@ -263,7 +273,9 @@ impl<E: Ext> IfaceCommon<E> {
         let mut sockets = self.sockets.lock();
         let mut socket_actions = Vec::new();
 
-        let mut context = PollContext::new(interface.as_mut(), &sockets, &mut socket_actions);
+        let stats = self.stats_ref();
+        let mut context =
+            PollContext::new(interface.as_mut(), &sockets, stats, &mut socket_actions);
         context.poll_ingress(device, phy);
         context.poll_egress(device, phy);
 
