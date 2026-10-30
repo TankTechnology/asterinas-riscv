@@ -196,9 +196,21 @@ direct gate, the Stage1 C sources, and the current browser/desktop runtime.
 The removed verticals were not replaced with stubs; any future board or GPU
 work needs a separately approved workstream and its own gate.
 
-## Upstream update routine
+## Upstream update and branch management
 
-Use a clean rebased worktree, fetch official main over HTTPS, rebase the small
-downstream commit stack, rebuild the kernel, and run the direct Debian gate.
-Do not merge the old fork history: its merge base with upstream is 2022 and the
-trees are structurally different.
+- `upstream/main` is the only rebase base. Fetch official main over HTTPS
+  (SSH fetch can be blocked); do not use `origin/main`, the legacy fork main,
+  as a merge base. The base was rechecked against the remote on 2026-10-30 and
+  is still `cdd5bc109`.
+- The integration branch carries the downstream product commits as one
+  rebasable stack. Keep a local backup branch or tag before each rebase and do
+  not force-push it without explicit approval.
+- Upstreamable fixes belong on short-lived topic branches cut from
+  `upstream/main`; the SCM_RIGHTS fix and its regression test are the first
+  such candidates. Do not mix them with the Debian rootfs/desktop product
+  branch.
+- `origin` is for fork backup and review only. Remote CI is not a dependency;
+  local builds and QEMU gates are the hard gate. Do not push or open a remote
+  PR without explicit authorization.
+- The old fork history must not be merged: its merge base with upstream is
+  2022 and the trees are structurally different.
