@@ -24,12 +24,32 @@ use crate::{
 const GRACEFUL_REBOOT_GRACE: Duration = Duration::from_secs(10);
 
 static REBOOT_AFTER_SECONDS: AtomicU32 = AtomicU32::new(0);
+static PANIC_REBOOT: AtomicBool = AtomicBool::new(false);
 static RECOVERY_STATE: RecoveryState = RecoveryState::new();
 static GRACEFUL_REBOOT_WORK: Once<Arc<WorkItem>> = Once::new();
 
 aster_cmdline::define_kv_param!("asterinas.reboot_after", REBOOT_AFTER_SECONDS);
+aster_cmdline::define_kv_param!("asterinas.panic_reboot", PANIC_REBOOT);
+
+/// Reboot instead of halting when a fatal abort takes the kernel down.
+///
+/// A panic without this halts the machine, which is indistinguishable from a
+/// hang from the console and needs hands on the board. With
+/// `asterinas.panic_reboot` on the command line the same panic costs one boot
+/// cycle instead, so a driver bug cannot take the board off the network.
+fn panic_shall_restart() -> bool {
+    PANIC_REBOOT.load(Ordering::Relaxed)
+}
 
 pub(super) fn arm_if_requested() {
+    if panic_shall_restart() {
+        if panic::inject_fatal_abort_restart_policy(panic_shall_restart) {
+            ostd::early_println!("ASTERINAS_PANIC_REBOOT_ARMED");
+        } else {
+            ostd::error!("failed to arm the panic restart policy");
+        }
+    }
+
     let seconds = REBOOT_AFTER_SECONDS.load(Ordering::Relaxed);
     let now = read_monotonic_time();
     let Some(deadline) = deadline_after_seconds(now, seconds) else {

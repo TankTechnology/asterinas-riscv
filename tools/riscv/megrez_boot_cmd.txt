@@ -35,5 +35,9 @@ if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=kernel"; exit 1; fi
 # (asterinas-watchdog-disarm.service disarms it as soon as it gets there).
 # Without it a hang in early unit startup leaves the board silent until
 # somebody presses the reset button.
-setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=900 asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd --debug-console=isolated-root
+# `asterinas.panic_reboot` restarts instead of halting after a fatal abort. On a
+# board nobody can reach, a halted kernel and a hung kernel look the same from
+# the console; with this one a driver bug costs a boot cycle instead of a
+# trip to the board.
+setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=900 asterinas.panic_reboot=1 asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd --debug-console=isolated-root
 booti 0x80200000 0x88300000:${initrd_size} 0x88000000
