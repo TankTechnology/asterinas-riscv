@@ -2269,7 +2269,7 @@ ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 # values to a `+` pre-start process; offline profiles must not enter the
 # network stack just to set a clock, and the leading '-' keeps a sync failure
 # from stopping the desktop.
-ExecStartPre=-/bin/sh -c 'case " $(cat /proc/cmdline 2>/dev/null) " in *" ASTERINAS_DESKTOP_OFFLINE=1 "*) exit 0;; *) exec /usr/lib/asterinas/megrez-clock-sync;; esac'
+ExecStartPre=-/bin/sh -c 'case " \$(cat /proc/cmdline 2>/dev/null) " in *" ASTERINAS_DESKTOP_OFFLINE=1 "*) exit 0;; *) exec /usr/lib/asterinas/megrez-clock-sync;; esac'
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
 RestartSec=2s

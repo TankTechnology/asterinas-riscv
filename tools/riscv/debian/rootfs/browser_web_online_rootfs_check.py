@@ -108,15 +108,27 @@ def check_root(root: Path, trust_checker: Path) -> str:
         text=True,
     )
     require(trust.returncode == 0, f"Firefox trust preflight failed: {trust.stderr.strip()}")
-    expected_trust = (
-        "mode=system-nss-jit-overlay"
-        if launcher_relative == "usr/bin/firefox"
-        else "mode=embedded-xul"
-    )
+    # A Debian firefox-esr keeps its trust anchors in libnss3's own
+    # libnssckbi.so and the checker reports that as `external:<path>`; the
+    # browser packaged with the JIT overlay answers `embedded-xul` and the
+    # overlay profile answers `system-nss-jit-overlay`. They are the same
+    # Firefox-owned anchor set, and the checker has already required exactly
+    # one such module, a RISC-V ELF that exports C_GetFunctionList, plus at
+    # least a hundred roots.
+    accepted_trust = {
+        "mode=system-nss-jit-overlay" if launcher_relative == "usr/bin/firefox" else "mode=embedded-xul",
+        "mode=external:usr/lib/firefox-esr/libnssckbi.so",
+        "mode=external:usr/lib/riscv64-linux-gnu/libnssckbi.so",
+    }
+    passes = [
+        line
+        for line in trust.stdout.splitlines()
+        if line.startswith("FIREFOX_TRUST_PASS ")
+    ]
     require(
-        trust.stdout.count("FIREFOX_TRUST_PASS ") == 1
-        and expected_trust in trust.stdout,
-        "trust checker did not emit exactly one expected PASS",
+        len(passes) == 1 and any(mode in passes[0] for mode in accepted_trust),
+        "trust checker did not emit exactly one expected PASS: "
+        + (trust.stdout.strip() or trust.stderr.strip()),
     )
     return (
         "FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns "
