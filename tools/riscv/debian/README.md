@@ -48,7 +48,8 @@ input. It boots with `rootfstype=ext4` and runs:
 
 - a write suite covering directories, ordinary and fragmented extent files,
   truncate, hard links, rename, and fsync;
-- crash/replay passes for JBD2 fault stages 1-4;
+- crash/replay passes for JBD2 fault stages 1-4, each writing a directory of
+  32 files before the crash and verifying every entry after recovery;
 - `e2fsck -fn` after every recovery.
 
 ```bash

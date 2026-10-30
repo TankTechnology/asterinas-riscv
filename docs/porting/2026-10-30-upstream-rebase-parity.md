@@ -35,7 +35,7 @@ removed from this line. Their history remains in the old product tree at
 | Desktop | Manual U-Boot boot with the bochs framebuffer reaches Xorg on `/dev/fb0` at 1280x1024, then openbox, pcmanfm, and lxpanel. The wallpaper, icons, panel, and a Firefox window were captured from the QEMU display. |
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
-| ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages with clean `e2fsck -fn` results. |
+| ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
 | Kernel tests | After the ext4/JBD2 absorption, the RISC-V `aster-core` suite reports `174 passed; 0 failed; 0 filtered out` in `qemu-serial.log`. This includes the `/proc/net`, IPv4 route, ext4 extent, and JBD2 unit tests. The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
 
 ## Cleanup verification (2026-10-30)
@@ -245,11 +245,12 @@ The ext4/JBD2 evidence is under
 - `README.md` — exact image conversion, commands, and result table.
 
 The repeatable gate receipts are under
-`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-gate/` and
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-gate/`,
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-gate-many/`, and
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-64bit/`. They
-cover the 32-bit-compatible image (all four fault stages) and a 64-bit
-group-descriptor image (write suite plus stage 2); all recovery passes end
-with a clean `e2fsck -fn`.
+cover the 32-bit-compatible image with a single-file and a 32-file crash
+transaction (all four fault stages), plus a 64-bit group-descriptor image
+(write suite plus stage 2); all recovery passes end with a clean `e2fsck -fn`.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.

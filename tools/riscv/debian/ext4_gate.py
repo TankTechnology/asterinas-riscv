@@ -86,10 +86,18 @@ SEMANTICS_MARKERS = (
 )
 
 CRASH_COMMANDS = [
-    "mkdir -p /ext4-journal",
+    "mkdir -p /ext4-journal/many",
+    "n=0; while [ $n -lt 32 ]; do echo file-$n > /ext4-journal/many/f$n; "
+    "n=$((n + 1)); done; echo GATE_EXT4_MANY_CREATED",
     "echo journal-payload > /ext4-journal/marker.txt",
     "sync; echo GATE_EXT4_SYNC_DONE",
 ]
+
+RECOVERY_MANY = (
+    "count=0; for f in /ext4-journal/many/f*; do "
+    "[ -f \"$f\" ] && count=$((count + 1)); done; "
+    "echo GATE_EXT4_MANY=$count"
+)
 
 
 class Ext4GateError(RuntimeError):
@@ -258,6 +266,7 @@ def run_crash_stage(
         send_commands(serial, COMMON_COMMANDS)
         serial.send("echo GATE_EXT4_RECOVERY_BEGIN")
         serial.send("cat /ext4-journal/marker.txt 2>/dev/null || echo GATE_EXT4_MARKER_MISSING")
+        serial.send(RECOVERY_MANY)
         serial.send("sync && echo GATE_EXT4_RECOVERY_SYNC_OK")
         serial.send("echo GATE_EXT4_RECOVERY_END")
         output = ANSI.sub(
@@ -271,6 +280,11 @@ def run_crash_stage(
             raise Ext4GateError("stage 1 replayed an uncommitted transaction")
         if stage != 1 and not recovered:
             raise Ext4GateError(f"stage {stage} did not recover the committed transaction")
+        expected_many = 0 if stage == 1 else 32
+        if f"GATE_EXT4_MANY={expected_many}" not in output:
+            raise Ext4GateError(
+                f"stage {stage} recovered an unexpected number of directory entries"
+            )
         poweroff(process, serial)
     finally:
         serial.close()
