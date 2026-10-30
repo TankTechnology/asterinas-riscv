@@ -1,0 +1,22 @@
+[Unit]
+Description=Asterinas Debian browser-web page navigation
+# Nothing else drives the browser: the Firefox service starts it on
+# about:blank with --marionette and expects a driver to navigate. Without this
+# unit the desktop shows a blank window at every boot.
+ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1
+After=basic.target asterinas-browser-web.service
+Requires=asterinas-browser-web.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The browser needs a few seconds to open its marionette port; the helper waits
+# for it, and the unit timeout is the outer bound.
+TimeoutStartSec=200s
+ExecStart=/usr/lib/asterinas/browser-web-navigate
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=graphical.target

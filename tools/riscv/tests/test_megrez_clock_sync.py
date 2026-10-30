@@ -8,7 +8,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.riscv.debian.rootfs.megrez_clock_sync import main, synchronize_clock
+from tools.riscv.debian.rootfs.megrez_clock_sync import (
+    ClockSource,
+    ClockSourceError,
+    _gateway_from_cmdline,
+    default_sources,
+    main,
+    synchronize_clock,
+    synchronize_from_sources,
+)
 
 
 class _Response:
@@ -43,14 +51,25 @@ class _Connection:
 
 
 class MegrezClockSyncTests(unittest.TestCase):
-    def test_systemd_clock_sync_gate_checks_offline_kernel_command_line(self) -> None:
-        gate = Path(__file__).parents[1] / "debian/rootfs/asterinas_clock_sync.conf"
-        source = gate.read_text()
+    def test_desktop_service_gates_the_clock_sync_on_the_kernel_command_line(
+        self,
+    ) -> None:
+        # A unit pulled in by basic.target with DefaultDependencies=no never
+        # ran on the board, so the sync hangs off the desktop service, which
+        # does start.
+        builder = (
+            Path(__file__).parents[1] / "debian/rootfs/build_rootfs.sh"
+        ).read_text()
+        gate = [
+            line
+            for line in builder.splitlines()
+            if line.startswith("ExecStartPre=-/bin/sh -c 'case")
+        ]
 
-        self.assertIn("ExecStartPre=-/bin/sh -c", source)
-        self.assertIn("cat /proc/cmdline", source)
-        self.assertIn("ASTERINAS_DESKTOP_OFFLINE=1", source)
-        self.assertIn("/usr/lib/asterinas/megrez-clock-sync", source)
+        self.assertEqual(len(gate), 1, "the desktop unit must carry exactly one gate")
+        self.assertIn("cat /proc/cmdline", gate[0])
+        self.assertIn("ASTERINAS_DESKTOP_OFFLINE=1", gate[0])
+        self.assertIn("/usr/lib/asterinas/megrez-clock-sync", gate[0])
 
     def test_offline_desktop_skips_network_clock_sync(self) -> None:
         with mock.patch.dict("os.environ", {"ASTERINAS_DESKTOP_OFFLINE": "1"}):
@@ -112,6 +131,97 @@ class MegrezClockSyncTests(unittest.TestCase):
                     connection_factory=mock.Mock(return_value=connection),
                     runner=runner,
                 )
+        runner.assert_not_called()
+
+    def test_gateway_is_read_from_the_kernel_command_line(self) -> None:
+        cmdline = (
+            "console=ttyS0 init=/init asterinas.mmc_write_partition2 "
+            "asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 "
+            "-- --root-init=systemd"
+        )
+
+        self.assertEqual(_gateway_from_cmdline(cmdline), "58.206.232.1")
+        self.assertIsNone(_gateway_from_cmdline("console=ttyS0"))
+        self.assertIsNone(_gateway_from_cmdline("asterinas.net=eic7700,bad,not-an-ip"))
+
+    def test_the_gateway_is_asked_before_the_build_host_proxy(self) -> None:
+        sources = default_sources(
+            "http://10.100.19.216:17893",
+            "asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1",
+        )
+
+        self.assertEqual(sources[0].host, "58.206.232.1")
+        self.assertEqual(sources[0].path, "/")
+        self.assertEqual(sources[1].host, "10.100.19.216")
+
+    def test_a_silent_source_falls_through_to_the_next(self) -> None:
+        connections = []
+
+        class _Dead:
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                raise OSError("Network is unreachable")
+
+            def close(self) -> None:
+                pass
+
+        class _Live(_Connection):
+            def __init__(self) -> None:
+                super().__init__()
+
+        def factory(host: str, port: int, **_kwargs: object) -> object:
+            connections.append((host, port))
+            return _Dead() if host == "58.206.232.1" else _Live()
+
+        runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(("date",), 0, "", "")
+        )
+
+        evidence = synchronize_from_sources(
+            [ClockSource.direct("58.206.232.1"), ClockSource.direct("www.baidu.com")],
+            timeout=5,
+            connection_factory=factory,
+            runner=runner,
+        )
+
+        self.assertEqual(connections, [("58.206.232.1", 80), ("www.baidu.com", 80)])
+        runner.assert_called_once()
+        self.assertEqual(evidence["source"], "www.baidu.com via www.baidu.com:80")
+        self.assertEqual(evidence["unix_seconds"], 1789099506)
+
+    def test_an_error_status_still_carries_a_usable_date(self) -> None:
+        # The campus gateway answers 404 to a HEAD of its root.
+        connection = _Connection()
+        runner = mock.Mock(
+            return_value=subprocess.CompletedProcess(("date",), 0, "", "")
+        )
+        with mock.patch.object(_Response, "status", 404):
+            evidence = synchronize_from_sources(
+                [ClockSource.direct("58.206.232.1")],
+                timeout=5,
+                connection_factory=mock.Mock(return_value=connection),
+                runner=runner,
+            )
+
+        runner.assert_called_once()
+        self.assertEqual(evidence["unix_seconds"], 1789099506)
+
+    def test_no_source_answering_is_an_error_and_never_sets_the_clock(self) -> None:
+        class _Dead:
+            def request(self, *_args: object, **_kwargs: object) -> None:
+                raise OSError("Network is unreachable")
+
+            def close(self) -> None:
+                pass
+
+        runner = mock.Mock()
+
+        with self.assertRaisesRegex(ClockSourceError, "Network is unreachable"):
+            synchronize_from_sources(
+                [ClockSource.direct("58.206.232.1")],
+                timeout=5,
+                connection_factory=mock.Mock(return_value=_Dead()),
+                runner=runner,
+            )
         runner.assert_not_called()
 
 

@@ -1771,13 +1771,14 @@ configure_desktop() {
     # certificate. The board powers up at 2026-04-13 every time, so Firefox
     # reports "Your Computer Clock is Wrong" and curl rejects every HTTPS site
     # until someone sets the date by hand.
-    install -D -m 0755 -- "$script_directory/asterinas_clock_sync.sh" \
-        "$stage/usr/lib/asterinas/clock-sync"
-    install -D -m 0644 -- "$script_directory/asterinas-clock-sync.service" \
-        "$stage/etc/systemd/system/asterinas-clock-sync.service"
+    # The clock has to be right before anything validates a certificate, and
+    # the desktop service is where it gets set: a unit pulled in by
+    # basic.target with DefaultDependencies=no does not run in this image
+    # (every such unit on the board stayed inactive), while a pre-start on the
+    # desktop service always does.
+    install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
+        "$stage/usr/lib/asterinas/megrez-clock-sync"
     install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
-    ln -sf -- ../asterinas-clock-sync.service \
-        "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-sync.service"
 
     # The campus switch stops answering this port after a while (ARP and DHCP
     # both go silent while broadcast traffic still arrives); the watchdog makes
@@ -1966,22 +1967,17 @@ EOF
             install_online_desktop_shell "$stage"
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
-            install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
-                "$stage/usr/lib/asterinas/megrez-clock-sync"
-            # The board has no RTC, so every boot starts with a clock that is
-            # wrong by months and TLS then rejects every certificate. The sync
-            # reads the proxy's Date header over plain HTTP, which works while
-            # the clock is still wrong. It hangs off the desktop service rather
-            # than a target because this image's default target is not
-            # graphical.target, and the leading '-' keeps a sync failure from
-            # stopping the desktop.
-            install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
-                "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
             configure_dns_shim "$stage" "$script_directory"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
                 "$stage/usr/lib/asterinas/browser-web-firefox"
+            install -D -m 0755 -- "$script_directory/browser_web_navigate.py" \
+                "$stage/usr/lib/asterinas/browser-web-navigate"
+            install -D -m 0644 -- "$script_directory/browser_web_navigate.service" \
+                "$stage/etc/systemd/system/asterinas-browser-web-navigate.service"
+            ln -sf -- ../asterinas-browser-web-navigate.service \
+                "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-navigate.service"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
             install -D -m 0644 -- \
@@ -2271,6 +2267,13 @@ Environment=HOME=/home/asterinas
 Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider
 $(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
+# The board has no RTC: every boot starts with a clock that is months wrong and
+# TLS then rejects every certificate. The gate reads /proc/cmdline in a shell
+# first because this systemd port does not reliably export manager setenv
+# values to a `+` pre-start process; offline profiles must not enter the
+# network stack just to set a clock, and the leading '-' keeps a sync failure
+# from stopping the desktop.
+ExecStartPre=-/bin/sh -c 'case " $(cat /proc/cmdline 2>/dev/null) " in *" ASTERINAS_DESKTOP_OFFLINE=1 "*) exit 0;; *) exec /usr/lib/asterinas/megrez-clock-sync;; esac'
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
 RestartSec=2s
