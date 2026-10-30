@@ -848,6 +848,27 @@ class BrowserWebContractTests(unittest.TestCase):
             )
             self.assertIn('user_pref("network.proxy.http_port", 17893);', profile)
 
+    def test_a_profile_that_cannot_be_seeded_is_set_aside_and_rebuilt(self) -> None:
+        # A crash during a write leaves names that cannot be stat'ed or
+        # removed (ESTALE), so `user.js` can never be rewritten and Firefox
+        # comes up with no window. A directory in its place reproduces the same
+        # "seeding cannot finish" shape without needing a damaged filesystem.
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            profile = home / ".mozilla/asterinas-browser-web"
+            (profile / "user.js").mkdir(parents=True)
+            (profile / "some-cached-file").write_text("kept", encoding="utf-8")
+
+            result = self._prepare_firefox_profile(home, mode="direct")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ASTERINAS_FIREFOX_WEB_PROFILE_ROTATED", result.stderr)
+            self.assertIn('user_pref("network.proxy.type", 0);',
+                          (profile / "user.js").read_text(encoding="utf-8"))
+            rotated = list(profile.parent.glob("asterinas-browser-web.damaged-*"))
+            self.assertEqual(len(rotated), 1)
+            self.assertTrue((rotated[0] / "some-cached-file").is_file())
+
     def test_invalid_browser_network_profile_does_not_restart_forever(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             result = self._prepare_firefox_profile(Path(temporary), mode="")

@@ -61,13 +61,9 @@ validate_network_profile() {
     [[ "$BASIC_ONLY" == 0 || "$BASIC_ONLY" == 1 ]] || return 1
 }
 
-configure_network_profile() {
+seed_profile() {
     local temporary
 
-    validate_network_profile || {
-        printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile\n' >&2
-        return 64
-    }
     /usr/bin/mkdir -p -- "$PROFILE"
     # Firefox consults the profile registry even when `--profile` names a
     # directory, and without it shows "Your Firefox profile cannot be loaded.
@@ -155,6 +151,33 @@ configure_network_profile() {
         /usr/bin/rm -f -- "$temporary"
         return 1
     fi
+}
+
+# A crash during a write leaves directory entries whose inodes are gone:
+# `stat`, `rm` and `mv` on those names fail with ESTALE, so `user.js` can never
+# be rewritten and Firefox comes up with no window at all (the failure writes
+# nothing to its own log). The damage is per-name, so the whole profile
+# directory is set aside and recreated -- that is the only way to clear it
+# without an offline fsck.
+configure_network_profile() {
+    # A bad network configuration is the operator's mistake, not damage: say so
+    # and leave the existing profile exactly as it is.
+    validate_network_profile || {
+        printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile\n' >&2
+        return 64
+    }
+    if seed_profile; then
+        return 0
+    fi
+    local damaged="$PROFILE.damaged-$(date -u +%Y%m%dT%H%M%SZ)"
+    if [[ -d "$PROFILE" ]] && /usr/bin/mv -- "$PROFILE" "$damaged" 2>/dev/null; then
+        printf 'ASTERINAS_FIREFOX_WEB_PROFILE_ROTATED from=%s to=%s\n' \
+            "$PROFILE" "$damaged" >&2
+    else
+        /usr/bin/rm -rf -- "$PROFILE" 2>/dev/null || true
+    fi
+    /usr/bin/mkdir -p -- "$PROFILE" || return 1
+    seed_profile
 }
 
 if [[ "${1:-}" == --prepare-profile && $# == 1 ]]; then
