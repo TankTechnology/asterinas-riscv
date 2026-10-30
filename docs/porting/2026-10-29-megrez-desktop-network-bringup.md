@@ -369,3 +369,31 @@ stage1 找不到 init（`-- --root-init=systemd` 丢了），panic 后内核不�
 
 **还没解释清楚的是放大本身**（25.6 帧/报文）。下一次复现时 `ASTERINAS_GMAC_TX_STALL`
 的 `submitted/reclaimed/outstanding/dma_status` 会指出是环没有被回收还是 MAC 在重传。
+
+## 10. 网络「跑一阵就坏」的真因：PHY 从没协商过（2026-10-30）
+
+前面 §7 的结论（发送放大触发端口保护）是错的。用两个实验推翻了它：
+
+| 引导方式 | `GW=` | 说明 |
+| --- | ---: | --- |
+| 直接走保存的 U-Boot `bootcmd` | 000 | 收得到广播，发出去没人认 |
+| 先在 U-Boot 里 `dhcp`，再引导内核 | **200** | 网络完全正常 |
+
+U-Boot 的 `dhcp` 会打印 `Waiting for PHY auto negotiation to complete..... done`，
+而我们的 dwmac 驱动（`kernel/comps/dwmac/src/phy.rs`）**只读** `BMCR`/`BMSR`，
+既不启动自动协商，也不清 `POWER_DOWN`/`ISOLATE` 位。冷启动时 PHY 可能仍处于
+掉电或隔离状态，驱动读到一个不可用的链路就把 MAC 按错误的速率/双工配好了：
+入向能收到（对端发来的帧照样进 FIFO），出向的帧对端不认——于是 ARP 无应答、
+DHCP 无 OFFER、TCP 超时，而 `/proc/net/dev` 的 rx/tx 仍在涨。
+
+「跑一阵就坏、重启就好」也是同一个原因：重启后如果恰好经过 U-Boot 的网络
+（或 PHY 自己协商上了）就好，否则就是坏的。
+
+两处修复：
+
+1. **引导串里加 `dhcp;`**（`tools/riscv/megrez_boot_cmd.txt` 与板上 U-Boot 环境
+   都已写入并 `saveenv` 到 SPI flash）。现在普通上电就会先协商 PHY，实测
+   `DHCP client bound to address 58.206.232.122 (291 ms)` → 内核里 `GW=200`。
+2. **驱动里补上协商**：新增 `start_auto_negotiation()`（置
+   `ANENABLE|ANRESTART`、清 `POWER_DOWN|ISOLATE`），在端口选择的第一轮轮询前
+   调用一次。装上它之后就不再依赖 U-Boot 的那一步。

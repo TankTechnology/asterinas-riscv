@@ -13,7 +13,15 @@
 # read-only: Firefox then cannot create its profile ("Your Firefox profile
 # cannot be loaded") and everything that needs to write fails. U-Boot's bootcmd
 # loads this file instead, so the boot arguments live where we can edit them.
+# `dhcp` is not here for the address — the kernel gets that from bootargs. It
+# is here because U-Boot's Ethernet driver waits for the PHY to finish
+# auto-negotiation, and the kernel's dwmac driver does not start it. Without
+# this step the MAC comes up programmed for a link that was never negotiated:
+# the board receives broadcasts and transmits frames nobody answers, so ARP,
+# DHCP and TCP all fail while /proc/net/dev keeps counting.
 echo "ASTERINAS_BOOTCMD start"
+setenv autoload no
+dhcp
 ext4load mmc 1:1 0x88300000 stage1-daily.cpio
 if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=stage1"; exit 1; fi
 setenv initrd_size ${filesize}

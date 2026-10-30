@@ -4,7 +4,9 @@
 
 use core::{cmp, time::Duration};
 
-use crate::phy::{Deadline, LinkState, MdioBus, MdioError, read_link_state};
+use crate::phy::{
+    Deadline, LinkState, MdioBus, MdioError, read_link_state, start_auto_negotiation,
+};
 
 pub const LINK_POLL_INTERVAL_NS: u64 = 50_000_000;
 pub const MAX_LINK_SELECTION_NS: u64 = 3_000_000_000;
@@ -88,10 +90,29 @@ pub fn select_linked_port(
         .ok_or(SelectError::DeadlineOverflow)?;
     let maximum_polls = timeout_ns.div_ceil(LINK_POLL_INTERVAL_NS).saturating_add(1);
 
+    let mut negotiation_started = false;
     for _ in 0..maximum_polls {
         let now_ns = clock.now_nanoseconds();
         if now_ns >= deadline_ns {
             return Err(SelectError::NoLink);
+        }
+
+        // Start negotiation once, on the first poll: the PHY may come out of
+        // reset powered down or with negotiation disabled, and reading its
+        // state alone would never bring the link up.
+        if !negotiation_started {
+            negotiation_started = true;
+            for candidate in candidates.iter_mut() {
+                start_auto_negotiation(
+                    candidate.bus,
+                    candidate.phy_address,
+                    Deadline::from_nanoseconds(deadline_ns),
+                )
+                .map_err(|error| SelectError::Mdio {
+                    alias_index: candidate.alias_index,
+                    error,
+                })?;
+            }
         }
 
         let mut selected: Option<SelectedPort> = None;

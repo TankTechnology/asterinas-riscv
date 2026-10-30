@@ -12,6 +12,12 @@ pub const MII_STATUS1000: u8 = 10;
 pub const BMCR_SPEED1000: u16 = 1 << 6;
 pub const BMCR_FULL_DUPLEX: u16 = 1 << 8;
 pub const BMCR_AUTONEG_ENABLE: u16 = 1 << 12;
+/// Restarts auto-negotiation (self-clearing).
+pub const BMCR_AUTONEG_RESTART: u16 = 1 << 9;
+/// Holds the PHY isolated from the MII, which keeps the link dead.
+pub const BMCR_ISOLATE: u16 = 1 << 10;
+/// Powers the PHY down; the link stays down until this is cleared.
+pub const BMCR_POWER_DOWN: u16 = 1 << 11;
 pub const BMCR_SPEED100: u16 = 1 << 13;
 pub const BMSR_LINK_STATUS: u16 = 1 << 2;
 pub const BMSR_AUTONEG_COMPLETE: u16 = 1 << 5;
@@ -119,6 +125,33 @@ impl LinkState {
     pub const fn rx_pause(self) -> bool {
         self.rx_pause
     }
+}
+
+/// Starts Clause 22 auto-negotiation and leaves the PHY able to complete it.
+///
+/// The driver used to only *read* BMCR and BMSR. On a cold boot the PHY can
+/// still be powered down, isolated, or sitting with auto-negotiation disabled
+/// by a strap, and then the port either never reports a link or reports a mode
+/// that does not match what the MAC was programmed with. U-Boot's `dhcp` hides
+/// this: it negotiates the PHY itself and the kernel inherits a working link,
+/// which is exactly why a board booted straight through `bootcmd` had no
+/// working network while one that ran `dhcp` in U-Boot first did.
+pub fn start_auto_negotiation(
+    bus: &mut dyn MdioBus,
+    phy_address: u8,
+    deadline: Deadline,
+) -> Result<(), MdioError> {
+    if phy_address > 31 {
+        return Err(MdioError::InvalidAddress);
+    }
+    let basic_control = bus.read(phy_address, MII_BMCR, deadline)?;
+    let value = (basic_control | BMCR_AUTONEG_ENABLE | BMCR_AUTONEG_RESTART)
+        & !(BMCR_POWER_DOWN | BMCR_ISOLATE);
+    if value == basic_control {
+        // Already negotiating; restarting again would only extend the window.
+        return Ok(());
+    }
+    bus.write(phy_address, MII_BMCR, value, deadline)
 }
 
 /// Reads and resolves the current Clause 22 link state.
