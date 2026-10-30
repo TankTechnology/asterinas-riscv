@@ -31,7 +31,7 @@ removed from this line. Their history remains in the old product tree at
 | Namespaces/procfs | `/proc/<pid>/ns/net` exposes the single synthetic `net:[4026532000]` namespace. `ip route add` is still unsupported but returns `EOPNOTSUPP` promptly. |
 | PTY | `/dev/ptmx` points at `pts/ptmx`, devpts is mounted on both boot paths, and slave ownership follows the opener. A normal root shell and non-root node-pty both work. |
 | Desktop | Manual U-Boot boot with the bochs framebuffer reaches Xorg on `/dev/fb0` at 1280x1024, then openbox, pcmanfm, and lxpanel. The wallpaper, icons, panel, and a Firefox window were captured from the QEMU display. |
-| Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, and navigates to the local owned fixture page; the fixture DOM title and body text are read back. Public online navigation still needs a gate. |
+| Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
 | Kernel tests | `aster-core` ktests pass (147 tests), including the rtnetlink flag-update cases. |
 
@@ -93,23 +93,42 @@ Logs are under the evidence directory:
 `clean-desktop-firefox-late.png`, `ktest-scm-serial.log`,
 `direct-gate-scm.log`, `scm-rights-probe.log`, `firefox-content-probe.log`,
 `firefox-scm-navigation.log`, `firefox-scm-diag.log`,
+`firefox-baidu-scm.log`, `firefox-bilibili-scm.log`,
 `debian-dsh-headless.log`, `dsh-web-nonroot.log`,
 `runtime-regression.log`, and `clean-network-script.log`.
 
+## Public Firefox evidence (2026-10-30)
+
+Both public gates ran on the SCM-fixed kernel and the cleaned `browser-web`
+image, with QEMU slirp, guest `10.0.2.15/24`, resolver `10.0.2.3`, and no
+content-sandbox environment override:
+
+- `browser-web-marionette-gate --scope baidu-home` returned 0 and printed
+  `DEBIAN_BROWSER_WEB_BAIDU_HOME_READY` for `https://www.baidu.com/` with
+  `tls=verified` and `title_sha256=b2e9462c8256c220b01b589db1ad6c4e8ebf7a6a65ccfea5811083a8fbbe3825`.
+  It wrote `baidu-home.json` (27,293 bytes) and `baidu-home.png` (134,655
+  bytes) to the guest evidence directory.
+- `browser-web-marionette-gate --scope bilibili-playback` returned 0 and printed
+  `DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv=BV1FRx76SEkz`. The live
+  640x360 blob-source video decoded 127 frames (113 dropped under TCG) while
+  muted and advanced 0.511 seconds.
+
+The guest route table still has no explicit default route and
+`ip route add default` returns `EOPNOTSUPP`; slirp nevertheless carries the
+public DNS answer and HTTPS traffic from the configured guest address. This is
+a working path, not Linux-complete routing. The evidence files above live
+inside the guest's snapshot rootfs; the serial logs remain on the host.
+
 ## Remaining blockers
 
-1. **Firefox public online navigation.** Content-process launch and local
-   fixture navigation are fixed by the SCM_RIGHTS change. A full public-page
-   gate (Baidu/Bilibili) has not yet been re-run; the earlier online probe was
-   stopped after it did not complete, so online navigation remains unverified.
-2. **ext4/JBD2.** The upstream ext2 path rejects a normal ext4 root. Extent
+1. **ext4/JBD2.** The upstream ext2 path rejects a normal ext4 root. Extent
    read/write, journal replay, and durability are not ported.
-3. **Network/procfs completeness.** `/proc/net` is absent and dynamic route
+2. **Network/procfs completeness.** `/proc/net` is absent and dynamic route
    insertion is not implemented. The current fixture and direct HTTPS paths do
    not depend on them.
-4. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
+3. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
    network, USB, and watchdog drivers are out of this line.
-5. **Test surface.** Only the direct QEMU gate and the kernel ktests are
+4. **Test surface.** Only the direct QEMU gate and the kernel ktests are
    ported. The old host test suite, repository-level U-Boot desktop scenario,
    and dsh service/launcher integration are not.
 

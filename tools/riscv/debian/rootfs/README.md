@@ -157,9 +157,11 @@ The current QEMU evidence covers:
 Firefox content processes now launch: the kernel no longer requires
 `CAP_SYS_ADMIN` to pass a UNIX socket over a UNIX socket, so the UID-1000
 browser parent can hand IPC sockets to its children. Marionette navigates to
-the local owned fixture page and reads back its title and body text. A full
-public-page gate remains to be run; the parity ledger records the detailed
-evidence and the remaining online-navigation check.
+the local owned fixture page and reads back its title and body text. The
+public Baidu homepage gate passes (`DEBIAN_BROWSER_WEB_BAIDU_HOME_READY`,
+`tls=verified`), and the Bilibili playback gate plays a live muted video
+(`DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass`). The parity ledger records
+the detailed evidence.
 
 The repository currently has no repository-level U-Boot desktop scenario. The
 desktop/Firefox evidence was collected with a manual U-Boot boot using a boot
