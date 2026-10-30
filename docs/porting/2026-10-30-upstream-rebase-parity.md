@@ -2,7 +2,9 @@
 
 Base: official `upstream/main` at `cdd5bc109` (2026-10-30).
 Working branch: `rebase/upstream-20261029`.
-All downstream commits are local; nothing is pushed to `upstream` or `origin`.
+Nothing is pushed to `upstream`. The integration branch is backed up at
+`origin/rebase/upstream-20261029`; the QEMU net/procfs work is committed on a
+short-lived local feature branch before being folded into the integration line.
 
 The repository now carries only the QEMU-supported Debian surface:
 
@@ -27,13 +29,13 @@ removed from this line. Their history remains in the old product tree at
 | Direct QEMU boot | The direct gate boots the kernel with an existing rootfs as `/dev/vda` and checks gcc (real compile/run), Python, Node, and git. An optional dsh image is checked through the same path. |
 | Stage1 | The full initramfs compiles, verifies its entry list, reaches systemd, and reaches `multi-user.target`; the browser handoff publishes `/dev/ptmx`, mounts devpts, and provides `/dev/shm`. |
 | Kernel logging | `/dev/kmsg`, a bounded kernel log ring, `SO_TIMESTAMP`, `/proc/sys/kernel/random/boot_id`, and `syslog(2)`/`dmesg` are present; systemd-journald is active. |
-| Networking | virtio-net appears as `eth0`; the slirp fixture, DNS, direct HTTPS, and the host proxy path work. `RTM_NEWLINK`, `RTM_SETLINK`, and `RTM_NEWADDR` are implemented; parse-error ACK replies carry the requester's port. |
-| Namespaces/procfs | `/proc/<pid>/ns/net` exposes the single synthetic `net:[4026532000]` namespace. `ip route add` is still unsupported but returns `EOPNOTSUPP` promptly. |
+| Networking | virtio-net appears as `eth0`; the slirp fixture, DNS, direct HTTPS, and the host proxy path work. `RTM_NEWLINK`, `RTM_SETLINK`, `RTM_NEWADDR`, and IPv4 `RTM_GETROUTE`/`RTM_NEWROUTE` are implemented; parse-error ACK replies carry the requester's port. |
+| Namespaces/procfs | `/proc/<pid>/ns/net` exposes the single synthetic `net:[4026532000]` namespace. `/proc/net` resolves to `self/net`, `/proc/<pid>/net/dev` reports live interface counters, and `ip route show/get/add` works against the main, local, and default tables. |
 | PTY | `/dev/ptmx` points at `pts/ptmx`, devpts is mounted on both boot paths, and slave ownership follows the opener. A normal root shell and non-root node-pty both work. |
 | Desktop | Manual U-Boot boot with the bochs framebuffer reaches Xorg on `/dev/fb0` at 1280x1024, then openbox, pcmanfm, and lxpanel. The wallpaper, icons, panel, and a Firefox window were captured from the QEMU display. |
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
-| Kernel tests | `aster-core` ktests pass (147 tests), including the rtnetlink flag-update cases. |
+| Kernel tests | The 147-test `aster-core` ktest baseline passed before the network/procfs absorption. The new `/proc/net` and IPv4 route paths are covered by QEMU probes; the full ktest runner was not rerun because the current container does not launch the RISC-V test kernel. |
 
 ## Cleanup verification (2026-10-30)
 
@@ -76,7 +78,7 @@ Validation performed on the cleaned tree:
   process, and Marionette reads `Asterinas Browser Quality` from the local
   fixture page.
 
-The 27 downstream commits were then replayed from `986c70915` onto the latest
+The downstream commit stack was then replayed from `986c70915` onto the latest
 `upstream/main` at `cdd5bc109` (upstream added one LoongArch cache-policy fix).
 The RISC-V kernel was rebuilt, and the direct gate, 147 kernel ktests,
 PTY/network runtime regression, and desktop/Firefox window were rerun on the
@@ -94,7 +96,9 @@ Logs are under the evidence directory:
 `direct-gate-scm.log`, `scm-rights-probe.log`, `firefox-content-probe.log`,
 `firefox-scm-navigation.log`, `firefox-scm-diag.log`,
 `firefox-baidu-scm.log`, `firefox-bilibili-scm.log`,
-`scm-regression-test-http2.log`, `debian-dsh-headless.log`,
+`scm-regression-test-http2.log`, `net-procfs-probe.log`,
+`route-dump-probe.log`, `route-insert-probe2.log`,
+`debian-dsh-headless.log`,
 `dsh-web-nonroot.log`, `runtime-regression.log`, and
 `clean-network-script.log`.
 
@@ -114,11 +118,9 @@ content-sandbox environment override:
   640x360 blob-source video decoded 127 frames (113 dropped under TCG) while
   muted and advanced 0.511 seconds.
 
-The guest route table still has no explicit default route and
-`ip route add default` returns `EOPNOTSUPP`; slirp nevertheless carries the
-public DNS answer and HTTPS traffic from the configured guest address. This is
-a working path, not Linux-complete routing. The evidence files above live
-inside the guest's snapshot rootfs; the serial logs remain on the host.
+The public browser evidence files live inside the guest's snapshot rootfs; the
+serial logs remain on the host. The QEMU network and procfs absorption is
+recorded separately below.
 
 ### SCM_RIGHTS regression coverage
 
@@ -129,13 +131,31 @@ This is the permanent regression guard for the Firefox content-process IPC
 handoff. The test passes its 15 checks on Linux and on the rebased Asterinas
 kernel.
 
+### QEMU networking/procfs absorption (2026-10-30)
+
+The rebased kernel now exposes `/proc/net` as a symlink to `self/net`,
+implements `/proc/<pid>/net/dev` with per-interface receive/transmit counters,
+and provides IPv4 route dumps, lookups, and insertions through rtnetlink.
+
+QEMU verification:
+
+- after a 571,112-byte HTTP transfer, `/proc/net/dev` reported eth0 receive
+  and transmit byte/packet counters increasing from zero;
+- `ip route show` reported the default route via `10.0.2.2` and the connected
+  `10.0.2.0/24` route;
+- `ip route get` resolved host, loopback, and added routes;
+- `ip route add 192.0.2.0/24 dev eth0` and
+  `ip route add 198.51.100.0/24 via 10.0.2.2 dev eth0` succeeded, appeared in
+  `ip route show`, and were returned by `ip route get`.
+
 ## Remaining blockers
 
 1. **ext4/JBD2.** The upstream ext2 path rejects a normal ext4 root. Extent
    read/write, journal replay, and durability are not ported.
-2. **Network/procfs completeness.** `/proc/net` is absent and dynamic route
-   insertion is not implemented. The current fixture and direct HTTPS paths do
-   not depend on them.
+2. **Network/procfs completeness.** IPv4 route dump/lookup/add and
+   `/proc/<pid>/net/dev` are present, but `/proc/net/route`, `/proc/net/tcp`,
+   `/proc/net/udp`, IPv6 route netlink, route deletion, and advanced route
+   filters remain unimplemented.
 3. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
    network, USB, and watchdog drivers are out of this line.
 4. **Test surface.** Only the direct QEMU gate and the kernel ktests are
