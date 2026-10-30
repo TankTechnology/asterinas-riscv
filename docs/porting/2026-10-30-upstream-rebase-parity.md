@@ -50,17 +50,35 @@ Validation performed on the cleaned tree:
   passed `contract verify`;
 - the full Stage1 initramfs rebuilt with the expected entry list; the current
   Stage1 self-tests pass;
-- the direct QEMU gate passes with the toolchain rootfs (`gcc`, Python, Node,
-  git, and dsh);
+- the direct QEMU gate passes with the toolchain rootfs (`gcc` compile/run,
+  Python, Node, git, and dsh help);
+- `aster-core` ktests pass: 147 passed, 0 failed, 0 filtered;
 - a manual U-Boot boot of the cleaned `browser-web` rootfs reached Xorg,
-  openbox, pcmanfm, lxpanel, and a mapped Firefox New Tab window. The QEMU
-  input contract is the fixed `event0`/`event1` pair; the device helper no
-  longer performs evdev identity ioctls that can block on this kernel.
+  openbox, pcmanfm, lxpanel, and a mapped Firefox New Tab window;
+- Stage1 devpts works for both root and UID 1000: `pty.fork` ran `/bin/sh` on
+  `/dev/pts/0` and exited 0 in both cases;
+- QEMU slirp networking works on the cleaned image: the 64 KiB fixture returns
+  200 with the exact SHA-256, DNS resolves, direct HTTPS and the host-proxy
+  HTTPS both return 200;
+- the cleaned `desktop-network-evidence` script completes all ten layers
+  (`link`, `address`, `neighbor`, `reachability`, `dns`, `http`, `https`,
+  `baidu-asset`, `repeat`, `medium`) and reports
+  `DEBIAN_WEB_NETWORK_READY mode=direct layers=10`;
+- dsh headless returns the tool result and final text for a bash-tool turn;
+  non-root dsh web starts as UID 1000 and serves the authenticated UI with
+  HTTP 200.
 
-Build and boot logs are under the evidence directory
-(`clean-build-minimal.log`, `clean-build-browser-web2.log`,
-`clean-desktop-capture.log`, `clean-desktop-diag.log`, and
-`clean-desktop-firefox-late.png`).
+The QEMU input contract is the fixed `event0`/`event1` pair; the device helper
+no longer performs evdev identity ioctls that can block on this kernel. The
+network script uses QEMU-safe fixture timeouts and no longer tries to set the
+wall clock, which this kernel does not support.
+
+Logs are under the evidence directory:
+`clean-build-minimal.log`, `clean-build-browser-web3.log`,
+`clean-desktop-capture.log`, `clean-desktop-diag.log`,
+`clean-desktop-firefox-late.png`, `ktest-clean-serial.log`,
+`debian-dsh-headless.log`, `dsh-web-nonroot.log`,
+`runtime-regression.log`, and `clean-network-script.log`.
 
 ## Remaining blockers
 

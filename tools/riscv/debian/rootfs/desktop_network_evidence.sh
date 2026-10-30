@@ -4,16 +4,14 @@
 set -euo pipefail
 
 readonly CONSOLE="${ASTERINAS_DESKTOP_NETWORK_CONSOLE:-/dev/console}"
-readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS:-30}"
-readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_COMMAND_TIMEOUT_SECONDS:-10}"
-# The owned fixture lives on the build host across one wired hop. If it is not
-# accepting connections in a second, it is absent; do not spend the transfer
-# budget finding that out.
-readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_CONNECT_TIMEOUT_SECONDS:-1}"
-# Two seconds is enough for the 64 KiB fixture on that hop.  A transfer that
-# cannot finish in that window is treated as an absent fixture (web_fail's
-# exit 75) instead of stretching the boot wait.
-readonly FIXTURE_MAX_TIME_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_MAX_TIME_SECONDS:-2}"
+readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_TIMEOUT_SECONDS:-120}"
+readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_COMMAND_TIMEOUT_SECONDS:-30}"
+# The owned fixture lives on the build host across one slirp hop. TCG can
+# stall a userspace curl for several seconds even when the fixture is healthy,
+# so allow a realistic connect/transfer window instead of treating the first
+# slow scheduling slice as an absent fixture.
+readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_CONNECT_TIMEOUT_SECONDS:-5}"
+readonly FIXTURE_MAX_TIME_SECONDS="${ASTERINAS_DESKTOP_NETWORK_FIXTURE_MAX_TIME_SECONDS:-15}"
 readonly UPTIME_PATH="${ASTERINAS_DESKTOP_NETWORK_UPTIME_PATH:-/proc/uptime}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_NETWORK_RESOLV_CONF:-/etc/resolv.conf}"
 readonly URL_FILE="${ASTERINAS_DESKTOP_NETWORK_URL_FILE:-/run/asterinas-desktop-url}"
@@ -62,7 +60,7 @@ web_fail() {
     # and answers that contradict the fixture are still failures (exit 1) and
     # remain visible.
     case "$layer:$reason" in
-        config:* | http:content | http:date-header | \
+        config:* | http:content | \
             https:http-status | https:local-address | \
             baidu-asset:content | repeat:length | repeat:digest | \
             medium:length | medium:digest)
@@ -148,14 +146,10 @@ web_validate_ipv4() {
 
 web_network_evidence() {
     local address_output
-    local clock_date=''
     local curl_result
     local curl_status
     local deadline
-    local header
-    local headers
     local http_file
-    local http_headers
     local https_status
     local https_attempt=0
     local https_reason
@@ -291,11 +285,10 @@ web_network_evidence() {
     fi
 
     http_file="$WEB_TEMPORARY_DIRECTORY/http"
-    http_headers="$WEB_TEMPORARY_DIRECTORY/http-headers"
     limit="$(web_timeout_seconds "$deadline")" || web_fail http timeout
     if timeout "$limit" curl --fail --ipv4 --silent --show-error \
         --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS" \
-        --max-time "$FIXTURE_MAX_TIME_SECONDS" --noproxy '*' --dump-header "$http_headers" \
+        --max-time "$FIXTURE_MAX_TIME_SECONDS" --noproxy '*' \
         --output "$http_file" "$FIXTURE_URL"; then
         :
     else
@@ -307,18 +300,6 @@ web_network_evidence() {
     [[ "$(sha256sum -- "$http_file" | awk '{print $1}')" == "$FIXTURE_SHA256" ]] ||
         web_fail http content
 
-    headers="$(<"$http_headers")" || web_fail http date-header
-    while IFS= read -r header; do
-        header="${header%$'\r'}"
-        if [[ "${header,,}" == date:* ]]; then
-            clock_date="${header#*:}"
-            clock_date="${clock_date#${clock_date%%[![:space:]]*}}"
-            break
-        fi
-    done <<<"$headers"
-    [[ "$clock_date" =~ ^[A-Z][a-z]{2},\ [0-9]{2}\ [A-Z][a-z]{2}\ [0-9]{4}\ [0-9]{2}:[0-9]{2}:[0-9]{2}\ GMT$ ]] ||
-        web_fail http date-header
-    date --utc --set "$clock_date" >/dev/null || web_fail http clock-set
     if ((neighbor_observable == 0)); then
         emit "DEBIAN_WEB_NETWORK_DIAGNOSTIC mode=$WEB_NETWORK_MODE neighbor=unobservable proof=owned-fixture-http"
         web_emit_layer neighbor
