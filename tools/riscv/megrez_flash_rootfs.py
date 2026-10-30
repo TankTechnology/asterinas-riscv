@@ -59,11 +59,46 @@ class Flash:
             data = handle.read()
         return ANSI.sub("", data.decode("utf-8", "replace"))
 
+    def _send(self, data: bytes, attempts: int = 6) -> None:
+        """Write to the bridge, retrying the FIFO open/write race.
+
+        The bridge opens the FIFO, reads until the writers close, and reopens.
+        A writer that opens in the gap after the reader closed its end gets
+        EPIPE, which happens most at fast character pacing.
+        """
+        for attempt in range(attempts):
+            try:
+                self.console.send_raw(data)
+                return
+            except (BrokenPipeError, OSError):
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(0.5)
+
+    def reset_line(self) -> None:
+        """Discard whatever a previous interrupted command left on the line."""
+
+        self._send(b"\x03")
+        time.sleep(0.5)
+        self._send(b"\n")
+        time.sleep(2)
+
     def command(self, text: str, timeout: float, pause: float = 0.05) -> str:
         self.counter += 1
         marker = f"ZZFLASH_{self.counter}"
+        self.reset_line()
         offset = self.log.stat().st_size
-        self.console.type_line(f"{text}; echo {marker}", pause)
+        # `type_line` frames the line with a carriage return and the raw-mode
+        # toggles; typing the characters by hand here left the line unterminated
+        # and every command silently never ran.
+        for attempt in range(4):
+            try:
+                self.console.type_line(f"{text}; echo {marker}", pause)
+                break
+            except (BrokenPipeError, OSError):
+                if attempt == 3:
+                    raise
+                self.reset_line()
         pattern = re.compile(rf"^{re.escape(marker)}\s*$", re.MULTILINE)
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -77,8 +112,8 @@ class Flash:
         expected = sha256_of(image)
         print(f"image {image.name} sha256={expected}", flush=True)
 
-        text = self.command("date -u +%s", timeout=40)
-        if not re.search(r"^\d{10}$", text, re.MULTILINE):
+        text = self.command("date -u +%s", timeout=60)
+        if not re.search(r"\b\d{10}\b", text):
             print("no shell on the console", file=sys.stderr)
             return 2
 
@@ -90,7 +125,6 @@ class Flash:
             f"rm -f {target}; curl -m 900 -s -o {target} {url}debian-root.ext2; "
             f"wc -c < {target}",
             timeout=1000,
-            pause=0.02,
         )
         size_match = re.search(r"^(\d+)$", text, re.MULTILINE)
         if not size_match or int(size_match.group(1)) != image.stat().st_size:
@@ -103,11 +137,19 @@ class Flash:
             print(f"image hash mismatch on the board: {text[-200:]}", file=sys.stderr)
             return 4
 
+        # Freeze the filesystem first. Without this the running system keeps
+        # flushing dirty pages over the freshly written image between the write
+        # and the read-back, and the read-back differs (measured: two pages).
+        print("remounting the root read-only", flush=True)
+        text = self.command("mount -o remount,ro / ; echo RM_RC=$?", timeout=120)
+        if "RM_RC=0" not in text:
+            print(f"could not remount the root read-only: {text[-200:]}", file=sys.stderr)
+            return 7
+
         print(f"writing {image.stat().st_size} bytes over {PARTITION}", flush=True)
         text = self.command(
             f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -2",
             timeout=1800,
-            pause=0.02,
         )
         if "copied" not in text:
             print(f"dd did not report success: {text[-300:]}", file=sys.stderr)
@@ -118,7 +160,6 @@ class Flash:
         text = self.command(
             f"dd if={PARTITION} bs=1M count={blocks} 2>/dev/null | sha256sum",
             timeout=1800,
-            pause=0.02,
         )
         if expected not in text:
             print(
