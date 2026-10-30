@@ -64,6 +64,48 @@ support. The image must be a compatibility ext4 image with `extent` and
 `has_journal`; 64-bit group descriptors are supported for low block numbers,
 but metadata checksums, `flex_bg`, and `orphan_file` are not.
 
+## Host tests
+
+The host suite covers the active Python/shell surface: direct and ext4 gate
+command contracts, rootfs profiles and manifest parsing, signed sources,
+descriptor-pinned publication, builder CLI contracts, and tooling syntax.
+
+```bash
+make test_riscv_host HOST_TEST_JOBS=32
+make test_riscv_host_list
+```
+
+Tests live under `tools/riscv/tests`; the runner executes each module in an
+isolated worker process and checks the collected IDs against
+`tools/riscv/tests/expected_host_tests.json`. Per-module logs go to
+`target/host-tests/` by default (`HOST_TEST_LOG_DIR` overrides it). The
+current baseline is 81 tests in 9 modules with no skips. Adding or removing a
+test requires updating the baseline in the same change.
+
+## Product gate
+
+The product gate runs the active QEMU gates and writes one receipt:
+
+```bash
+make test_riscv_debian_product \
+  DEBIAN_PRODUCT_ROOTFS=/absolute/path/to/toolchain-rootfs.ext2 \
+  DEBIAN_PRODUCT_EXT4_ROOTFS=/absolute/path/to/rootfs.ext4 \
+  DEBIAN_PRODUCT_DSH_IMAGE=/absolute/path/to/dsh-repo.ext2
+```
+
+`DEBIAN_PRODUCT_ROOTFS` is required and is checked by the direct gate.
+`DEBIAN_PRODUCT_EXT4_ROOTFS` and `DEBIAN_PRODUCT_DSH_IMAGE` are optional; the
+former enables the write/crash gate, the latter enables the dsh check inside
+the direct gate. `DEBIAN_PRODUCT_DIRECT_ROOTFSTYPE=ext4` selects ext4 when the
+direct rootfs itself is ext4. The kernel defaults to
+`target/osdk/asterinas-osdk-bin.Image`.
+
+Receipts and gate logs go to `target/riscv-debian-product/`
+(`result.json`, the parsed `direct-gate.json` / `ext4-gate.json`, their
+`direct-gate.log` / `ext4-gate.log` transcripts, `direct-serial.log`, and the
+`ext4/` crash receipts). `make test_riscv_debian_full` runs the host suite
+followed by the product gate.
+
 ## Stage1
 
 The first Stage1 migration keeps the downstream root handoff and adds the

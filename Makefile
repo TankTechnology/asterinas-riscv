@@ -22,6 +22,8 @@ NO_DEFAULT_FEATURES ?= 0
 COVERAGE ?= 0
 INITRAMFS ?= on
 CMDLINE ?=
+HOST_TEST_JOBS ?= 32
+HOST_TEST_LOG_DIR ?= target/host-tests
 
 # Specify the primary system console (supported: tty0, ttyS0, hvc0).
 # - tty0: The active virtual terminal (VT).
@@ -307,6 +309,18 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
+# Host-side tests for the downstream RISC-V tooling. Modules are discovered
+# under tools/riscv/tests and run in isolated worker processes.
+.PHONY: test_riscv_host test_riscv_host_list
+test_riscv_host:
+	@PYTHONPATH="$(CURDIR)" python3 tools/riscv/host_test_runner.py \
+		--jobs "$(HOST_TEST_JOBS)" --log-dir "$(HOST_TEST_LOG_DIR)"
+
+test_riscv_host_list:
+	@PYTHONPATH="$(CURDIR)" python3 tools/riscv/host_test_runner.py \
+		--list --json --jobs "$(HOST_TEST_JOBS)" \
+		--log-dir "$(HOST_TEST_LOG_DIR)"
+
 # Downstream Debian direct-boot gate.  This is intentionally independent of
 # the upstream Nix initramfs: it boots an existing Debian rootfs as /dev/vda
 # and checks the toolchain and optional dsh image over the serial console.
@@ -345,6 +359,41 @@ test_riscv_debian_ext4:
 		--rootfs "$(DEBIAN_EXT4_ROOTFS)" \
 		--log-dir "$(DEBIAN_EXT4_LOG_DIR)" \
 		--fault-stages "$(DEBIAN_EXT4_FAULT_STAGES)"
+
+# Aggregate QEMU product gate for the active Debian surface.  The direct boot
+# gate is mandatory; ext4/JBD2 and dsh components are enabled by supplying their
+# images.
+DEBIAN_PRODUCT_KERNEL ?= target/osdk/asterinas-osdk-bin.Image
+DEBIAN_PRODUCT_ROOTFS ?=
+DEBIAN_PRODUCT_EXT4_ROOTFS ?=
+DEBIAN_PRODUCT_DSH_IMAGE ?=
+DEBIAN_PRODUCT_DIRECT_ROOTFSTYPE ?=
+DEBIAN_PRODUCT_LOG_DIR ?= target/riscv-debian-product
+DEBIAN_PRODUCT_FAULT_STAGES ?= 1,2,3,4
+.PHONY: test_riscv_debian_product test_riscv_debian_full
+test_riscv_debian_product:
+	@if [ -z "$(DEBIAN_PRODUCT_ROOTFS)" ]; then \
+		echo "Error: set DEBIAN_PRODUCT_ROOTFS to a Debian ext2/ext4 image"; \
+		exit 2; \
+	fi
+	@set -e; \
+	args=(); \
+	if [ -n "$(DEBIAN_PRODUCT_EXT4_ROOTFS)" ]; then \
+		args+=(--ext4-rootfs "$(DEBIAN_PRODUCT_EXT4_ROOTFS)"); \
+	fi; \
+	if [ -n "$(DEBIAN_PRODUCT_DSH_IMAGE)" ]; then \
+		args+=(--dsh-image "$(DEBIAN_PRODUCT_DSH_IMAGE)"); \
+	fi; \
+	if [ -n "$(DEBIAN_PRODUCT_DIRECT_ROOTFSTYPE)" ]; then \
+		args+=(--direct-rootfstype "$(DEBIAN_PRODUCT_DIRECT_ROOTFSTYPE)"); \
+	fi; \
+	python3 tools/riscv/debian/product_gate.py \
+		--kernel "$(DEBIAN_PRODUCT_KERNEL)" \
+		--rootfs "$(DEBIAN_PRODUCT_ROOTFS)" \
+		--log-dir "$(DEBIAN_PRODUCT_LOG_DIR)" \
+		--fault-stages "$(DEBIAN_PRODUCT_FAULT_STAGES)" "$${args[@]}"
+
+test_riscv_debian_full: test_riscv_host test_riscv_debian_product
 
 DEBIAN_STAGE1_OUT ?= target/riscv-debian/stage1/initramfs.cpio
 DEBIAN_STAGE1_TOOLS_DIR ?=

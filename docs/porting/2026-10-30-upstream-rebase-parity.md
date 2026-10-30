@@ -38,6 +38,8 @@ removed from this line. Their history remains in the old product tree at
 | ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
 | ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and both the standard and 64-bit ext4 gates were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
 | Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
+| Host tests | The isolated host runner covers the active Debian tooling with 81 tests in 9 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
+| Product gate | One aggregate target runs the direct QEMU gate and optionally the ext4/JBD2 and dsh components, writing per-component receipts and a single `result.json`. A real run including dsh passed in 204.8 seconds with gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, C compile/run returning 42, and all four ext4 journal stages clean. |
 
 ## Cleanup verification (2026-10-30)
 
@@ -184,6 +186,32 @@ resulting image passed `e2fsck -fn`; both gates reported `"status": "pass"`.
 The ext2 write probe (1 MiB write, hard link, unlink, rename, and two syncs)
 also passed and left a clean `e2fsck -fn` image.
 
+### Host tests and product gate absorption (2026-10-31)
+
+The rebase line now has a host test runner at
+`tools/riscv/host_test_runner.py` and a baseline at
+`tools/riscv/tests/expected_host_tests.json`. Each module runs in an isolated
+worker process with a timeout; the runner rejects import failures, timeouts,
+duplicate IDs, missing baseline IDs, and unexplained skips. The current
+baseline is **9 modules / 81 tests / 0 skips**, covering the direct and ext4
+gate command contracts, rootfs profiles and manifests, signed sources,
+descriptor-pinned publication, builder CLI contracts, and active tooling
+syntax. Run it with `make test_riscv_host HOST_TEST_JOBS=32`.
+
+`tools/riscv/debian/product_gate.py` is the aggregate product gate. It requires
+a direct-boot rootfs and optionally adds the ext4/JBD2 gate and the dsh probe;
+it writes `result.json` plus per-component receipts. A real run used the
+2 GiB dev-runtime rootfs, the 3 GiB browser ext4 image, and the dsh repo disk:
+the direct gate reported gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, a
+compiled C program returning 42, and the dsh entry point/usage line; the ext4
+gate discarded stage 1 and recovered stages 2-4 with clean `e2fsck`; the
+aggregate result passed in 204.8 seconds.
+`make test_riscv_debian_full` runs the host suite followed by the product
+gate.
+
+The product gate covers the QEMU Debian surface, not the manual U-Boot
+desktop/browser scenario, which remains a separate acceptance step.
+
 ## Remaining blockers
 
 1. **ext4 feature coverage.** The compatibility driver covers a downstream
@@ -198,9 +226,10 @@ also passed and left a clean `e2fsck -fn` image.
    filters remain unimplemented.
 3. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
    network, USB, and watchdog drivers are out of this line.
-4. **Test surface.** The direct QEMU gate, ext4/JBD2 QEMU gate, and kernel
-   ktests are ported. The old host test suite, repository-level U-Boot desktop
-   scenario, and dsh service/launcher integration are not.
+4. **Test surface.** The direct QEMU gate, ext4/JBD2 QEMU gate, aggregate
+   product gate, host test suite, and kernel ktests are ported. The
+   repository-level U-Boot desktop scenario and dsh service/launcher
+   integration are still not automated.
 
 ## Current entry points
 
@@ -230,6 +259,14 @@ python3 tools/riscv/debian/direct_boot_gate.py \
 # ext4/JBD2 write plus crash/replay gate
 make test_riscv_debian_ext4 \
   DEBIAN_EXT4_ROOTFS=/absolute/path/to/debian-root.ext4
+
+# Host-side tooling suite (isolated modules, baseline-checked)
+make test_riscv_host HOST_TEST_JOBS=32
+
+# Aggregate product gate: direct boot plus optional ext4/JBD2 and dsh
+make test_riscv_debian_product \
+  DEBIAN_PRODUCT_ROOTFS=/absolute/path/to/toolchain-rootfs.ext2 \
+  DEBIAN_PRODUCT_EXT4_ROOTFS=/absolute/path/to/debian-root.ext4
 
 # Kernel tests (run from kernel/core; output lands in qemu-serial.log)
 RUSTUP_TOOLCHAIN=nightly-2026-07-21-x86_64-unknown-linux-gnu \
@@ -294,6 +331,18 @@ recovery passes, `ktest-full-serial.log` is the full RISC-V ktest output
 and `ext2-write-probe.log` plus `e2fsck-ext2.txt` are the ext2 write pass.
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-30-ext4-64bit-durability/`
 holds the post-change 64-bit gate: all four crash stages plus `e2fsck` receipts.
+
+Host-test evidence is under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-host-tests/`:
+`make-test-riscv-host.log`, the baseline manifest, and per-module JSON/log
+files. Full product-gate evidence is under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-product-gate-dsh/`:
+`result.json`, the parsed `direct-gate.json` / `ext4-gate.json`, their gate
+transcript logs, `direct-serial.log`, and the ext4 crash receipts. The
+combined host-plus-product invocation is preserved under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-full-gate-final2/`; the
+earlier direct+ext4-only run is in the sibling `2026-10-31-product-gate/`
+directory.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.
