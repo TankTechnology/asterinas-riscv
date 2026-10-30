@@ -39,7 +39,7 @@ removed from this line. Their history remains in the old product tree at
 | ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and both the standard and 64-bit ext4 gates were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
 | Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
 | Host tests | The isolated host runner covers the active Debian tooling with 81 tests in 9 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
-| Product gate | One aggregate target runs the direct QEMU gate and optionally the ext4/JBD2 and dsh components, writing per-component receipts and a single `result.json`. A real run including dsh passed in 204.8 seconds with gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, C compile/run returning 42, and all four ext4 journal stages clean. |
+| Product gate | One aggregate target runs the direct QEMU gate and optionally the ext4/JBD2 and dsh components, writing per-component receipts and a single `result.json`. A real run including dsh passed in 203.8 seconds with gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, C compile/run returning 42, and all four ext4 journal stages clean. |
 
 ## Cleanup verification (2026-10-30)
 
@@ -188,7 +188,8 @@ also passed and left a clean `e2fsck -fn` image.
 
 ### Host tests and product gate absorption (2026-10-31)
 
-The rebase line now has a host test runner at
+Commit `2abf63a3a` adds the host test runner and product gate. The rebase line
+now has a host test runner at
 `tools/riscv/host_test_runner.py` and a baseline at
 `tools/riscv/tests/expected_host_tests.json`. Each module runs in an isolated
 worker process with a timeout; the runner rejects import failures, timeouts,
@@ -205,7 +206,7 @@ it writes `result.json` plus per-component receipts. A real run used the
 the direct gate reported gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, a
 compiled C program returning 42, and the dsh entry point/usage line; the ext4
 gate discarded stage 1 and recovered stages 2-4 with clean `e2fsck`; the
-aggregate result passed in 204.8 seconds.
+aggregate result passed in 203.8 seconds.
 `make test_riscv_debian_full` runs the host suite followed by the product
 gate.
 
@@ -340,7 +341,7 @@ files. Full product-gate evidence is under
 `result.json`, the parsed `direct-gate.json` / `ext4-gate.json`, their gate
 transcript logs, `direct-serial.log`, and the ext4 crash receipts. The
 combined host-plus-product invocation is preserved under
-`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-full-gate-final2/`; the
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-full-gate-committed/`; the
 earlier direct+ext4-only run is in the sibling `2026-10-31-product-gate/`
 directory.
 
