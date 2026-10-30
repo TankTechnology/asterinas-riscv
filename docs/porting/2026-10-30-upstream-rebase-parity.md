@@ -97,6 +97,7 @@ Logs are under the evidence directory:
 `firefox-scm-navigation.log`, `firefox-scm-diag.log`,
 `firefox-baidu-scm.log`, `firefox-bilibili-scm.log`,
 `scm-regression-test-http2.log`, `net-procfs-probe.log`,
+`net-files-probe.log`,
 `route-dump-probe.log`, `route-insert-probe2.log`,
 `debian-dsh-headless.log`,
 `dsh-web-nonroot.log`, `runtime-regression.log`, and
@@ -146,15 +147,18 @@ QEMU verification:
 - `ip route get` resolved host, loopback, and added routes;
 - `ip route add 192.0.2.0/24 dev eth0` and
   `ip route add 198.51.100.0/24 via 10.0.2.2 dev eth0` succeeded, appeared in
-  `ip route show`, and were returned by `ip route get`.
+  `ip route show`, and were returned by `ip route get`;
+- `/proc/net/route` reported the main-table routes;
+- `/proc/net/tcp` reported a live `LISTEN` socket (state `0A`) and
+  `/proc/net/udp` reported a bound UDP socket (state `07`).
 
 ## Remaining blockers
 
 1. **ext4/JBD2.** The upstream ext2 path rejects a normal ext4 root. Extent
    read/write, journal replay, and durability are not ported.
-2. **Network/procfs completeness.** IPv4 route dump/lookup/add and
-   `/proc/<pid>/net/dev` are present, but `/proc/net/route`, `/proc/net/tcp`,
-   `/proc/net/udp`, IPv6 route netlink, route deletion, and advanced route
+2. **Network/procfs completeness.** IPv4 route dump/lookup/add,
+   `/proc/net/route`, `/proc/net/dev`, `/proc/net/tcp`, and `/proc/net/udp`
+   are present, but IPv6 route netlink, route deletion, and advanced route
    filters remain unimplemented.
 3. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
    network, USB, and watchdog drivers are out of this line.
