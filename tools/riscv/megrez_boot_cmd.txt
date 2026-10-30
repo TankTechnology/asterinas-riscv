@@ -14,11 +14,12 @@
 # cannot be loaded") and everything that needs to write fails. U-Boot's bootcmd
 # loads this file instead, so the boot arguments live where we can edit them.
 # `dhcp` is not here for the address — the kernel gets that from bootargs. It
-# is here because U-Boot's Ethernet driver waits for the PHY to finish
-# auto-negotiation, and the kernel's dwmac driver does not start it. Without
-# this step the MAC comes up programmed for a link that was never negotiated:
-# the board receives broadcasts and transmits frames nobody answers, so ARP,
-# DHCP and TCP all fail while /proc/net/dev keeps counting.
+# is here so U-Boot negotiates the PHY before the kernel starts. The kernel
+# driver can do that itself now (start_auto_negotiation() in
+# kernel/comps/dwmac/src/phy.rs), but a cold PHY needs about 3.5 s to finish
+# negotiating and U-Boot does that work outside the kernel's boot time. A
+# board whose PHY is already linked when the kernel boots does not restart the
+# negotiation, so this only saves time; it is not what makes the network work.
 echo "ASTERINAS_BOOTCMD start"
 setenv autoload no
 dhcp

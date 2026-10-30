@@ -8,7 +8,13 @@ Description=Asterinas clock sync from an HTTP Date header
 DefaultDependencies=no
 After=sysinit.target
 Before=asterinas-browser-web.service asterinas-desktop-m4.service asterinas-desktop-m5-network.service
-Wants=network.target
+# No `Wants=network.target` here, deliberately. This unit is pulled in by
+# basic.target (DefaultDependencies=no), and network.target is ordered after
+# systemd-networkd.service, which is itself ordered after basic.target. Wanting
+# it from inside basic.target therefore closes an ordering cycle, and systemd
+# resolves the cycle by dropping the job -- the unit then never runs at boot
+# and the clock stays at the power-on value. The sync does not need the target:
+# its first source is the gateway by address, not by name.
 
 [Service]
 Type=oneshot
