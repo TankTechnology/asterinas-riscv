@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::string::{String, ToString};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use aster_bigtcp::iface::IfaceStatsSnapshot;
 
@@ -19,6 +22,20 @@ pub(crate) fn init() {
     route::init();
     socket::netlink::init();
     socket::vsock::init();
+}
+
+/// Returns a snapshot of all TCP sockets across all interfaces.
+pub(crate) fn tcp_socket_snapshots() -> Vec<aster_bigtcp::socket_table::TcpSocketSnapshot> {
+    iter_all_ifaces()
+        .flat_map(|iface| iface.tcp_socket_snapshots())
+        .collect()
+}
+
+/// Returns a snapshot of all UDP sockets across all interfaces.
+pub(crate) fn udp_socket_snapshots() -> Vec<aster_bigtcp::socket_table::UdpSocketSnapshot> {
+    iter_all_ifaces()
+        .flat_map(|iface| iface.udp_socket_snapshots())
+        .collect()
 }
 
 /// Returns the current packet counters of every network interface.

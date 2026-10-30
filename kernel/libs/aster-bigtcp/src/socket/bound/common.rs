@@ -134,6 +134,11 @@ impl<T: Inner<E>, E: Ext> SocketBg<T, E> {
 }
 
 impl<T: Inner<E>, E: Ext> SocketBg<T, E> {
+    /// Returns the local endpoint of the bound socket.
+    pub(crate) fn local_endpoint(&self) -> IpEndpoint {
+        self.bound.endpoint()
+    }
+
     /// Returns whether an incoming packet _may_ be processed by the socket.
     ///
     /// The check is intended to be lock-free and fast, but may have false positives.

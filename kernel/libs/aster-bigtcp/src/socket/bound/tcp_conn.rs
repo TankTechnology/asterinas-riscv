@@ -659,6 +659,25 @@ impl<E: Ext> RawTcpSetOption for TcpConnection<E> {
     }
 }
 
+impl<E: Ext> SocketBg<TcpConnectionInner<E>, E> {
+    /// Returns the Linux-compatible TCP state code used by `/proc/net/tcp`.
+    pub(crate) fn tcp_state(&self) -> u8 {
+        match self.inner.lock().state() {
+            State::Closed => 0x07,
+            State::Listen => 0x0a,
+            State::SynSent => 0x02,
+            State::SynReceived => 0x03,
+            State::Established => 0x01,
+            State::FinWait1 => 0x04,
+            State::FinWait2 => 0x05,
+            State::CloseWait => 0x08,
+            State::Closing => 0x0b,
+            State::LastAck => 0x09,
+            State::TimeWait => 0x06,
+        }
+    }
+}
+
 impl<E: Ext> TcpConnectionBg<E> {
     pub(crate) const fn poll_key(&self) -> &PollKey {
         &self.inner.poll_key

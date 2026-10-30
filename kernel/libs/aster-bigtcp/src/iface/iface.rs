@@ -11,7 +11,11 @@ use super::{
     BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceName,
     InterfaceType,
 };
-use crate::{errors::BindError, ext::Ext};
+use crate::{
+    errors::BindError,
+    ext::Ext,
+    socket_table::{TcpSocketSnapshot, UdpSocketSnapshot},
+};
 
 /// A network interface.
 ///
@@ -114,6 +118,16 @@ impl<E: Ext> dyn Iface<E> {
     /// Returns routes currently installed in the interface.
     pub fn routes(&self) -> Vec<Route> {
         self.common().routes()
+    }
+
+    /// Returns a snapshot of all TCP sockets owned by this interface.
+    pub fn tcp_socket_snapshots(&self) -> Vec<TcpSocketSnapshot> {
+        self.common().tcp_socket_snapshots()
+    }
+
+    /// Returns a snapshot of all UDP sockets owned by this interface.
+    pub fn udp_socket_snapshots(&self) -> Vec<UdpSocketSnapshot> {
+        self.common().udp_socket_snapshots()
     }
 
     /// Returns a reference to the associated [`ScheduleNextPoll`].

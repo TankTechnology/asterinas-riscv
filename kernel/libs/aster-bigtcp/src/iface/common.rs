@@ -33,7 +33,7 @@ use crate::{
     iface::ScheduleNextPoll,
     packet::{FreshTxPacket, LinkLayer, NetworkLayer, RxPacket, TxPacket},
     socket::{TcpListenerBg, UdpSocketBg},
-    socket_table::SocketTable,
+    socket_table::{SocketTable, TcpSocketSnapshot, UdpSocketSnapshot},
 };
 
 pub struct IfaceCommon<E: Ext> {
@@ -164,6 +164,14 @@ impl<E: Ext> IfaceCommon<E> {
 
     pub(super) fn routes(&self) -> Vec<Route> {
         self.interface.lock().routes()
+    }
+
+    pub(crate) fn tcp_socket_snapshots(&self) -> Vec<TcpSocketSnapshot> {
+        self.sockets.lock().tcp_socket_snapshots()
+    }
+
+    pub(crate) fn udp_socket_snapshots(&self) -> Vec<UdpSocketSnapshot> {
+        self.sockets.lock().udp_socket_snapshots()
     }
 
     pub(super) fn sched_poll(&self) -> &E::ScheduleNextPoll {

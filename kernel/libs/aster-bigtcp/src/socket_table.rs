@@ -8,7 +8,7 @@ use core::net::Ipv4Addr;
 
 use jhash::{jhash_1vals, jhash_3vals, jhash_u32_array};
 use ostd::const_assert;
-use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint};
+use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, Ipv4Address};
 
 use crate::{
     ext::Ext,
@@ -149,6 +149,25 @@ const fn hash_addr_port(addr: IpAddress, port: PortNum) -> SocketHash {
             jhash_u32_array(hash_keys, NET_HASHMIX)
         }
     }
+}
+
+/// A read-only snapshot of one TCP socket.
+#[derive(Clone, Copy, Debug)]
+pub struct TcpSocketSnapshot {
+    pub local_address: IpAddress,
+    pub local_port: u16,
+    pub remote_address: IpAddress,
+    pub remote_port: u16,
+    pub state: u8,
+}
+
+/// A read-only snapshot of one UDP socket.
+#[derive(Clone, Copy, Debug)]
+pub struct UdpSocketSnapshot {
+    pub local_address: IpAddress,
+    pub local_port: u16,
+    pub remote_address: IpAddress,
+    pub remote_port: u16,
 }
 
 /// The socket table manages TCP and UDP sockets.
@@ -342,6 +361,57 @@ impl<E: Ext> SocketTable<E> {
 
     pub(crate) fn udp_socket_iter(&self) -> impl Iterator<Item = &Arc<UdpSocketBg<E>>> {
         self.udp_sockets.iter()
+    }
+
+    /// Returns a snapshot of all TCP listeners and connections.
+    pub(crate) fn tcp_socket_snapshots(&self) -> Vec<TcpSocketSnapshot> {
+        let mut snapshots = Vec::new();
+        let unspecified = IpAddress::Ipv4(Ipv4Address::UNSPECIFIED);
+
+        for bucket in self.listener_buckets.iter() {
+            for listener in bucket.listeners.iter() {
+                let local = listener.local_endpoint();
+                snapshots.push(TcpSocketSnapshot {
+                    local_address: local.addr,
+                    local_port: local.port,
+                    remote_address: unspecified,
+                    remote_port: 0,
+                    state: 0x0a,
+                });
+            }
+        }
+
+        for bucket in self.connection_buckets.iter() {
+            for connection in bucket.connections.iter() {
+                let key = connection.connection_key();
+                snapshots.push(TcpSocketSnapshot {
+                    local_address: key.local_addr,
+                    local_port: key.local_port,
+                    remote_address: key.remote_addr,
+                    remote_port: key.remote_port,
+                    state: connection.tcp_state(),
+                });
+            }
+        }
+
+        snapshots
+    }
+
+    /// Returns a snapshot of all UDP sockets.
+    pub(crate) fn udp_socket_snapshots(&self) -> Vec<UdpSocketSnapshot> {
+        let unspecified = IpAddress::Ipv4(Ipv4Address::UNSPECIFIED);
+        self.udp_sockets
+            .iter()
+            .map(|socket| {
+                let local = socket.local_endpoint();
+                UdpSocketSnapshot {
+                    local_address: local.addr,
+                    local_port: local.port,
+                    remote_address: unspecified,
+                    remote_port: 0,
+                }
+            })
+            .collect()
     }
 }
 
