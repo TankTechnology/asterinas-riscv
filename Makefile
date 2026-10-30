@@ -330,6 +330,22 @@ test_riscv_debian_direct:
 		--rootfs "$(DEBIAN_DIRECT_ROOTFS)" \
 		--log "$(DEBIAN_DIRECT_LOG)" $$args
 
+DEBIAN_EXT4_KERNEL ?= target/osdk/asterinas-osdk-bin.Image
+DEBIAN_EXT4_ROOTFS ?=
+DEBIAN_EXT4_LOG_DIR ?= target/riscv-debian-ext4
+DEBIAN_EXT4_FAULT_STAGES ?= 1,2,3,4
+.PHONY: test_riscv_debian_ext4
+test_riscv_debian_ext4:
+	@if [ -z "$(DEBIAN_EXT4_ROOTFS)" ]; then \
+		echo "Error: set DEBIAN_EXT4_ROOTFS to an ext4 image with extent and journal"; \
+		exit 2; \
+	fi
+	python3 tools/riscv/debian/ext4_gate.py \
+		--kernel "$(DEBIAN_EXT4_KERNEL)" \
+		--rootfs "$(DEBIAN_EXT4_ROOTFS)" \
+		--log-dir "$(DEBIAN_EXT4_LOG_DIR)" \
+		--fault-stages "$(DEBIAN_EXT4_FAULT_STAGES)"
+
 DEBIAN_STAGE1_OUT ?= target/riscv-debian/stage1/initramfs.cpio
 DEBIAN_STAGE1_TOOLS_DIR ?=
 RISC_V_CC ?=

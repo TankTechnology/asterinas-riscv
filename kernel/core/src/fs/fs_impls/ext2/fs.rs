@@ -1266,6 +1266,32 @@ mod test {
         time::clocks,
     };
 
+    #[ktest]
+    fn journal_revoke_applies_across_transactions() {
+        let revokes = vec![(77, 12)];
+        assert!(journal_revoke_supersedes(77, 11, &revokes));
+        assert!(journal_revoke_supersedes(77, 12, &revokes));
+        assert!(!journal_revoke_supersedes(77, 13, &revokes));
+        assert!(!journal_revoke_supersedes(78, 11, &revokes));
+    }
+
+    #[ktest]
+    fn journal_revoke_sequence_wrap_is_ordered() {
+        let revokes = vec![(77, 1)];
+        assert!(journal_revoke_supersedes(77, u32::MAX, &revokes));
+        assert!(!journal_revoke_supersedes(77, 2, &revokes));
+    }
+
+    #[ktest]
+    fn journal_barrier_propagates_completion_failure() {
+        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
+        fixture.ext2.flush_journal_device().unwrap();
+        fixture.disk.set_fail_flush(true);
+        assert_errno!(fixture.ext2.flush_journal_device(), Errno::EIO);
+        fixture.disk.set_fail_flush(false);
+        fixture.ext2.flush_journal_device().unwrap();
+    }
+
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {
         let nr_block_groups = sb.nr_block_groups() as usize;
         let gdb_count =

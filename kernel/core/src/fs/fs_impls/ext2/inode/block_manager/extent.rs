@@ -1224,7 +1224,7 @@ mod test {
 
     #[ktest]
     fn resolves_direct_extent_ranges() {
-        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let fixture = Ext2FixtureBuilder::new(2, 256).build().unwrap();
         let tree = ExtentTree::new(direct_root(), Arc::downgrade(&fixture.ext2));
         assert_eq!(tree.lookup_block_range(0, 4).unwrap(), 100..104);
         assert_eq!(tree.lookup_block_range(2, 8).unwrap(), 102..104);
@@ -1233,14 +1233,17 @@ mod test {
 
     #[ktest]
     fn rejects_invalid_extent_header() {
-        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let fixture = Ext2FixtureBuilder::new(2, 256).build().unwrap();
         let tree = ExtentTree::new([0; EXTENT_ROOT_WORDS], Arc::downgrade(&fixture.ext2));
         assert!(tree.lookup_block_range(0, 1).is_err());
     }
 
     #[ktest]
     fn truncates_direct_extent_and_accounts_blocks() {
-        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let fixture = Ext2FixtureBuilder::new(2, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
         let allocated = fixture
             .ext2
             .alloc_blocks(4, fixture.sb.first_data_block())
@@ -1262,8 +1265,52 @@ mod test {
     }
 
     #[ktest]
+    fn splits_a_full_depth_zero_root() {
+        let fixture = Ext2FixtureBuilder::new(2, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
+        let data = fixture
+            .ext2
+            .alloc_blocks(4, fixture.sb.first_data_block())
+            .unwrap();
+        let mut root = [0u32; EXTENT_ROOT_WORDS];
+        root[0] = u32::from(EXTENT_MAGIC) | (4 << 16);
+        root[1] = 4;
+        for index in 0..4 {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
+            root[offset / 4] = index as u32;
+            root[(offset + 4) / 4] = 1;
+            root[(offset + 8) / 4] = data.start + index as u32;
+        }
+        let mut tree = ExtentTree::new(root, Arc::downgrade(&fixture.ext2));
+        let mut pointers = RawBlockPtrs::new(32, [0; RAW_BLOCK_PTRS_LEN]);
+
+        let allocated = tree
+            .resolve_block_range(&mut pointers, &fixture.ext2, 4, 1)
+            .unwrap();
+
+        assert!(matches!(allocated, ResolvedBlockRange::NewlyAllocated(_)));
+        assert_eq!((tree.root[0] >> 16) as usize, 2);
+        assert_eq!((tree.root[1] >> 16) as u16, 1);
+        assert_eq!(
+            tree.lookup_block_range(0, 1).unwrap(),
+            data.start..data.start + 1
+        );
+        assert_eq!(
+            tree.lookup_block_range(3, 1).unwrap(),
+            data.start + 3..data.start + 4
+        );
+        assert_eq!(tree.lookup_block_range(4, 1).unwrap().len(), 1);
+        assert!(pointers.sector_count > 32);
+    }
+
+    #[ktest]
     fn allocates_into_existing_indexed_leaf() {
-        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let fixture = Ext2FixtureBuilder::new(2, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
         let child = fixture
             .ext2
             .alloc_blocks(1, fixture.sb.first_data_block())
@@ -1298,7 +1345,10 @@ mod test {
 
     #[ktest]
     fn creates_leaf_when_indexed_leaf_is_full() {
-        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let fixture = Ext2FixtureBuilder::new(2, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
         let child = fixture
             .ext2
             .alloc_blocks(1, fixture.sb.first_data_block())
@@ -1333,7 +1383,10 @@ mod test {
 
     #[ktest]
     fn truncates_indexed_leaves_and_reclaims_empty_leaf() {
-        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let fixture = Ext2FixtureBuilder::new(2, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
         let first_leaf = fixture
             .ext2
             .alloc_blocks(1, fixture.sb.first_data_block())

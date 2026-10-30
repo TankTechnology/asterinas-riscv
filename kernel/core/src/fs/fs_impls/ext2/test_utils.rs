@@ -85,6 +85,10 @@ impl Ext2MemoryDisk {
         &self.segment
     }
 
+    pub(super) fn set_fail_flush(&self, fail: bool) {
+        self.fail_flush.store(fail, Ordering::Relaxed);
+    }
+
     pub(super) fn write_super_block(&self, raw: &RawSuperBlock) {
         self.segment.write_val(SUPER_BLOCK_OFFSET, raw).unwrap();
     }

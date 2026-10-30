@@ -94,10 +94,15 @@ def build_qemu_argv(
     memory: str,
     smp: int,
     rootfstype: str | None = None,
+    extra_kernel_args: str | None = None,
+    snapshot: bool = True,
 ) -> list[str]:
     append = "root=/dev/vda rw console=ttyS0 earlycon init=/bin/bash loglevel=error"
     if rootfstype is not None:
         append += f" rootfstype={rootfstype}"
+    if extra_kernel_args:
+        append += f" {extra_kernel_args}"
+    snapshot_option = "on" if snapshot else "off"
     argv = [
         qemu,
         "-cpu",
@@ -120,7 +125,7 @@ def build_qemu_argv(
         "-append",
         append,
         "-drive",
-        f"if=none,format=raw,id=root,file={rootfs},snapshot=on",
+        f"if=none,format=raw,id=root,file={rootfs},snapshot={snapshot_option}",
     ]
     if dsh_image is not None:
         argv.extend(

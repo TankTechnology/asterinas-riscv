@@ -37,7 +37,31 @@ input images. It checks:
 standard `PATH` a login/systemd session provides before checking the
 toolchain; gcc otherwise inherits no `PATH` and cannot locate `cc1` or `ld`.
 
-The serial log is written to `target/riscv-debian-direct.log` by default.
+The serial log is written to `target/riscv-debian-direct.log` by default. If
+the image is ext4, pass `--rootfstype ext4` to `direct_boot_gate.py` directly
+or use the dedicated ext4 gate below.
+
+## ext4/JBD2 gate
+
+The ext4 gate copies the supplied image for every pass, so it never writes the
+input. It boots with `rootfstype=ext4` and runs:
+
+- a write suite covering directories, ordinary and fragmented extent files,
+  truncate, hard links, rename, and fsync;
+- crash/replay passes for JBD2 fault stages 1-4;
+- `e2fsck -fn` after every recovery.
+
+```bash
+make test_riscv_debian_ext4 \
+  DEBIAN_EXT4_ROOTFS=/absolute/path/to/rootfs.ext4
+```
+
+`DEBIAN_EXT4_FAULT_STAGES` defaults to `1,2,3,4`; set it to an empty string to
+run only the write suite. Logs and e2fsck receipts go to
+`target/riscv-debian-ext4/`. The host needs `e2fsck` and `cp` with sparse-file
+support. The image must be a compatibility ext4 image with `extent` and
+`has_journal`; 64-bit group descriptors are supported for low block numbers,
+but metadata checksums, `flex_bg`, and `orphan_file` are not.
 
 ## Stage1
 
