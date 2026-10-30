@@ -236,9 +236,11 @@ def _validate_timeout(timeout: float) -> None:
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="megrez-clock-sync")
     parser.add_argument("--proxy", default=DEFAULT_PROXY_URL)
-    # The unit runs before the desktop starts, so the whole search has to fit
-    # in a few seconds; the gateway answers in milliseconds when it answers.
-    parser.add_argument("--timeout", type=float, default=5.0)
+    # The first attempt runs before the desktop session starts, so the whole
+    # search has to fit in a few seconds: it blocks the session, and the
+    # browser wrapper repeats the sync later where the network is known to be
+    # up. The gateway answers in milliseconds when it answers at all.
+    parser.add_argument("--timeout", type=float, default=3.0)
     values = parser.parse_args(arguments)
     if os.environ.get("ASTERINAS_DESKTOP_OFFLINE") == "1":
         print(

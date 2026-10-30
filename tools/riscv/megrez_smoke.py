@@ -122,10 +122,15 @@ class Smoke:
     def wait_for_boot(self) -> Result:
         result = self.check("cold boot reaches the desktop")
         start = time.time()
+        # Only output produced after the reboot counts: the previous boot's
+        # desktop-ready line is still in the log, and reading it as this boot's
+        # success makes the script start typing while U-Boot is counting down,
+        # which stops the countdown and leaves the board at the U-Boot prompt.
+        offset = self.log.stat().st_size
         self.console.type_line("sync; reboot", 0.05)
         deadline = start + BOOT_DEADLINE_S
         while time.time() < deadline:
-            text = self.tail(20000)
+            text = self.since(offset)
             if "asterinas-desktop-ready" in text or "ASTERINAS_DEBUG_CONSOLE_READY" in text:
                 break
             time.sleep(2)
@@ -137,13 +142,30 @@ class Smoke:
         self.finish(result, True, f"{time.time() - start:.0f} s to desktop")
         return result
 
-    def wait_shell(self, timeout: float = 120.0) -> bool:
+    def wait_shell(self, timeout: float = 180.0) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
+            # A prompt means the guest shell is taking input; anything still
+            # booting (or sitting at U-Boot) must not be typed into.
             if re.search(r"root@asterinas-debug:[^#\n]*#", self.tail()[-4000:]):
                 return True
             time.sleep(2)
         return False
+
+    def wait_for_navigation(self, timeout: float = 240.0) -> Result:
+        result = self.check("the browser started and was navigated")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            text = self.command(
+                "tail -n 2 /home/asterinas/browser-web-navigate.log 2>/dev/null",
+                timeout=40,
+            )
+            if "ASTERINAS_BROWSER_NAVIGATE_OK" in text:
+                self.finish(result, True, "navigation reported OK")
+                return result
+            time.sleep(5)
+        self.finish(result, False, f"no navigation within {timeout:.0f} s")
+        return result
 
     def check_clock(self) -> Result:
         result = self.check("clock is right after boot")
@@ -267,6 +289,13 @@ class Smoke:
         if not self.wait_shell():
             print("[FAIL] no shell prompt on the console", flush=True)
             return 1
+        # The clock is set twice: once by the desktop service before the
+        # session starts, and again by the browser wrapper right before
+        # Firefox. The first attempt runs while the interface is still
+        # settling, so the checks below have to wait for the browser: a wrong
+        # clock makes every HTTPS request fail, which then looks like a
+        # network fault.
+        self.wait_for_navigation()
         self.check_clock()
         self.check_network()
         self.check_browser_navigation()

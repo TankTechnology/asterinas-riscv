@@ -2266,7 +2266,7 @@ ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 # The board has no RTC: every boot starts with a clock that is months wrong and
 # TLS then rejects every certificate. The gate reads /proc/cmdline in a shell
 # first because this systemd port does not reliably export manager setenv
-# values to a `+` pre-start process; offline profiles must not enter the
+# values to a privileged pre-start process; offline profiles must not enter the
 # network stack just to set a clock, and the leading '-' keeps a sync failure
 # from stopping the desktop.
 ExecStartPre=-/bin/sh -c 'case " \$(cat /proc/cmdline 2>/dev/null) " in *" ASTERINAS_DESKTOP_OFFLINE=1 "*) exit 0;; *) exec /usr/lib/asterinas/megrez-clock-sync;; esac'
