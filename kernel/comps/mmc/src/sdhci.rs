@@ -112,6 +112,11 @@ impl Command {
         Self::new_data(25, lba, DataDirection::Write, 512, block_count)
     }
 
+    /// CMD12: stop a multi-block transfer.
+    pub const fn stop_transmission() -> Self {
+        Self::new(12, 0, ResponseType::ShortNoChecks, None)
+    }
+
     pub const fn send_scr() -> Self {
         Self::new_data(51, 0, DataDirection::Read, 8, 1)
     }
@@ -216,6 +221,10 @@ pub enum HostError {
     DataCrc,
     DataEndBit,
     Dma,
+    /// The stop command the host appends to a multi-block transfer (auto
+    /// CMD12) failed. On the Megrez board this is the first sign of the
+    /// wedge described in `HostController::reset_data_line`.
+    AutoCommand,
     CardStatus,
     Unsupported,
 }
@@ -347,6 +356,8 @@ pub const fn decode_interrupt_error(status: u32) -> Option<HostError> {
         Some(HostError::DataCrc)
     } else if status & (1 << 22) != 0 {
         Some(HostError::DataEndBit)
+    } else if status & (1 << 24) != 0 {
+        Some(HostError::AutoCommand)
     } else if status & (1 << 25) != 0 {
         Some(HostError::Dma)
     } else {
@@ -615,6 +626,22 @@ mod tests {
             })
         );
         assert_eq!(decode_command_failure(8, 0), None);
+    }
+
+    #[ktest]
+    fn an_auto_cmd12_failure_is_named_not_reported_as_unsupported() {
+        // The status the Megrez board reports when a multi-block write fails:
+        // command complete, error interrupt, and the auto CMD12 bit.
+        let status = 0x1008001;
+        assert_eq!(decode_interrupt_error(status), Some(HostError::AutoCommand));
+        assert_eq!(
+            decode_command_failure(25, status),
+            Some(CommandFailure {
+                index: 25,
+                status,
+                error: HostError::AutoCommand,
+            })
+        );
     }
 
     #[ktest]

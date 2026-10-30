@@ -821,8 +821,34 @@ impl HostController for MmioHost {
         self.wait_interrupt(INTERRUPT_TRANSFER_COMPLETE)
     }
 
+    /// Recovers from a failed transfer instead of leaving the controller stuck.
+    ///
+    /// A multi-block transfer that fails on its auto CMD12 leaves two things
+    /// behind: the data line is not idle, and the card never received the stop
+    /// it is waiting for. Resetting only the data line clears the first and not
+    /// the second, so on the Megrez board every later transfer failed too and
+    /// the machine could not even read a binary to reboot. Reset command and
+    /// data together, clear the latched status, and send the stop command the
+    /// controller failed to deliver.
     fn reset_data_line(&mut self) {
-        let _ = self.write8(Register::SoftwareReset.offset(), RESET_DATA);
+        let reset = RESET_COMMAND | RESET_DATA;
+        let _ = self.write8(Register::SoftwareReset.offset(), reset);
+        for _ in 0..POLL_BUDGET {
+            match self.read8(Register::SoftwareReset.offset()) {
+                Ok(value) if value & reset == 0 => break,
+                Ok(_) => spin_loop(),
+                Err(_) => return,
+            }
+        }
+        if let Ok(status) = self.read32(Register::InterruptStatus.offset()) {
+            let _ = self.write32(Register::InterruptStatus.offset(), status);
+        }
+        // Best effort: the card may already be back in transfer state, in which
+        // case CMD12 is answered with an error that nothing needs to act on.
+        let _ = self.command(Command::stop_transmission());
+        if let Ok(status) = self.read32(Register::InterruptStatus.offset()) {
+            let _ = self.write32(Register::InterruptStatus.offset(), status);
+        }
     }
 
     fn max_blocks_per_command(&self) -> usize {
