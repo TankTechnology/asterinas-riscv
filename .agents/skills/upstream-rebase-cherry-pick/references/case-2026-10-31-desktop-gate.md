@@ -142,6 +142,58 @@ guest used the 1280x1024 simple framebuffer. Treat a screendump as valid only
 after checking its PPM dimensions and matching them to the guest display; do
 not keep a helper solely because it exists.
 
+## P0: real Firefox and framebuffer evidence (2026-10-31)
+
+The consolidated marker gate was still not display evidence.  A direct boot
+with the old `fb-bochs.dtb` reached every `BROWSER_WEB_DESKTOP_STAGE` marker,
+but the guest framebuffer at `0x40000000` was an unassigned bochs PCIe BAR:
+
+- QEMU `info pci` showed `BAR0 ... at 0x00000000`;
+- `pmemsave 0x40000000` returned all `0xffffffff`;
+- the earlier QMP screendump was 640x480, not the guest's 1280x1024 image.
+
+The direct-boot path has no firmware to allocate PCI BARs, so the DTB address
+was a hole.  The Xorg/desktop markers only proved process starts, not pixels.
+
+The replacement keeps direct boot and U-Boot out of the gate:
+
+1. `make_fb_ram_dtb.sh` rewrites the QEMU bochs DTB: shrink `memory@80000000`
+   by 256 MiB and put the `simple-framebuffer` reg at `0xf0000000` with a
+   16 MiB region.  The kernel reserves the region; QEMU still has 2 GiB RAM.
+2. The `browser-web` rootfs installs `desktop_frame_evidence.sh` as the root
+   `asterinas-desktop-frame-evidence.service`.  It waits for Xorg, settles the
+   desktop, finds a visible Firefox window with `xdotool` (fallback
+   `xwininfo`), and emits `BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=ready` and
+   `BROWSER_WEB_DESKTOP_FRAME_READY source=host-pmemsave`.
+3. `desktop_gate.py` opens a private QEMU monitor, dumps the guest framebuffer
+   with HMP `pmemsave` (quoted absolute path; an unquoted path is parsed as a
+   division expression), validates non-black pixels and colour count, saves
+   desktop/final raw+PPM evidence, and requires the Firefox window to change
+   the frame.
+
+Observed timing under TCG: the first wallpaper paint can be ~40 s after
+`panel-start`; the guest settle is 60 s and the host capture retries while
+draining the serial pipe.  The old 15 s settle produced a false "blank
+framebuffer" failure.  Unprivileged browser-wrapper output was not reliable on
+the serial console, so the observer runs as root and writes its own markers to
+`/dev/console`.
+
+Two follow-up failures were contract bugs, not display bugs:
+
+- `browser-web-firefox` exits 64 when `ASTERINAS_WEB_NETWORK_MODE` is empty,
+  and its unit has `RestartPreventExitStatus=64`, so basic-only boot left
+  `asterinas-browser-web.service` failed.  The gate must also pass
+  `systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct`.
+- `find_firefox_window` printed `id title` without a trailing newline; `read`
+  from the process substitution returned 1 at EOF even after finding a visible
+  window.  The observer therefore emitted `FIREFOX_WINDOW=timeout` right after
+  the window appeared.  Always terminate helper output with `\n`.
+
+The observer heartbeat is deliberately diagnostic: `service=`, `processes=`,
+and `wrapper_pid=` distinguish a failed browser unit, a running Firefox with
+no mapped window, and a window that `xdotool` missed.  The first two failures
+were fixed from those fields without another full boot.
+
 ## Path/contract observations
 
 - The current line has no `browser_web_qemu_gate.py` host gate; it only keeps

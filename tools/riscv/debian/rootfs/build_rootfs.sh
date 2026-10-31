@@ -1300,6 +1300,7 @@ install_online_desktop_shell() {
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
     install -d -m 0755 -o 1000 -g 1000 -- "$stage/home/asterinas/Desktop"
+    install -d -m 0755 -o 1000 -g 1000 -- "$stage/home/asterinas/Downloads"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas/.config"
     install -d -m 0755 -o 1000 -g 1000 -- \
         "$stage/home/asterinas/.config/pcmanfm" \
@@ -1539,6 +1540,12 @@ EOF
         "$script_directory/desktop_session.sh" \
         "$stage/usr/lib/asterinas/desktop-session"
     install -D -m 0755 -- \
+        "$script_directory/desktop_frame_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-frame-evidence"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_frame_evidence.service" \
+        "$stage/etc/systemd/system/asterinas-desktop-frame-evidence.service"
+    install -D -m 0755 -- \
         "$script_directory/desktop_display_provider.sh" \
         "$stage/usr/lib/asterinas/desktop-display-provider"
     install -D -m 0755 -- \
@@ -1596,6 +1603,9 @@ EOF
         "$stage/etc/systemd/system/basic.target.wants/asterinas-browser-web-timeline-basic.service"
     ln -s -- ../asterinas-browser-web-timeline-begin.service \
         "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/graphical.target.wants"
+    ln -s -- ../asterinas-desktop-frame-evidence.service \
+        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-frame-evidence.service"
     # Asterinas supplies its fixed /dev nodes from the initramfs. Debian's
     # static-node tmpfiles unit attempts unsupported device-node updates on
     # this kernel and can block sysinit indefinitely; mask only that unit.

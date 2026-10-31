@@ -32,14 +32,14 @@ removed from this line. Their history remains in the old product tree at
 | Networking | virtio-net appears as `eth0`; the slirp fixture, DNS, direct HTTPS, and the host proxy path work. `RTM_NEWLINK`, `RTM_SETLINK`, `RTM_NEWADDR`, and IPv4 `RTM_GETROUTE`/`RTM_NEWROUTE` are implemented; parse-error ACK replies carry the requester's port. |
 | Namespaces/procfs | `/proc/<pid>/ns/net` exposes the single synthetic `net:[4026532000]` namespace. `/proc/net` resolves to `self/net`, `/proc/<pid>/net/dev` reports live interface counters, and `ip route show/get/add` works against the main, local, and default tables. |
 | PTY | `/dev/ptmx` points at `pts/ptmx`, devpts is mounted on both boot paths, and slave ownership follows the opener. A normal root shell and non-root node-pty both work. |
-| Desktop | Manual U-Boot boot with the bochs framebuffer reaches Xorg on `/dev/fb0` at 1280x1024, then openbox, pcmanfm, and lxpanel. The wallpaper, icons, panel, and a Firefox window were captured from the QEMU display. |
-| Desktop gate | A compact direct QEMU boot (kernel + full Stage1 initrd + simple-framebuffer DTB) reaches the ordered `BROWSER_WEB_DESKTOP_STAGE` markers `display-provider-ready` through `panel-start`. Pixel/Firefox-window evidence remains manual. |
+| Desktop | A compact direct QEMU boot (kernel + full Stage1 initrd + RAM-backed simple-framebuffer DTB) reaches Xorg on `/dev/fb0` at 1280x1024, renders the wallpaper/icons/panel, and opens a visible Firefox window. The host reads the guest framebuffer through the QEMU monitor and validates the pixels. |
+| Desktop gate | `make test_riscv_debian_desktop` reaches the ordered `BROWSER_WEB_DESKTOP_STAGE` markers, requires a visible Firefox window (geometry-checked, `xdotool` with `xwininfo` fallback), captures desktop and Firefox frames from guest RAM with `pmemsave`, validates non-black/colour-rich pixels, and requires the Firefox window to change the frame. The prior marker-only gate passed on a dead bochs PCIe BAR and was not display evidence. |
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
 | ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
 | ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and both the standard and 64-bit ext4 gates were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
 | Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
-| Host tests | The isolated host runner covers the active Debian tooling with 86 tests in 10 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
+| Host tests | The isolated host runner covers the active Debian tooling with 90 tests in 10 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
 | Product gate | One aggregate target runs the direct QEMU gate and optionally the ext4/JBD2 and dsh components, writing per-component receipts and a single `result.json`. A real run including dsh passed in 203.8 seconds with gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, C compile/run returning 42, and all four ext4 journal stages clean. |
 
 ## Cleanup verification (2026-10-30)
@@ -225,15 +225,24 @@ markers and is exposed as `make test_riscv_debian_desktop`.
 This replaced the initially picked generic gate stack. The consolidation
 commit `da6542b67` added 369 lines and removed 4,306 lines: the QMP/PPM
 helpers, gate protocol/runtime/orchestration framework, systemd M2 gate, and
-M3/M4 wrappers are gone. QMP screendump could not serve as pixel evidence on
-this boot path (it returned a 640x480 VGA image while the guest used the
-1280x1024 simple framebuffer), so the gate verifies startup markers and leaves
-pixel/Firefox-window acceptance to the manual desktop check. Host tests are
-now 86 tests in 10 modules.
+M3/M4 wrappers are gone.
+
+The later P0 pass showed that the marker-only direct-boot gate was not display
+evidence. Direct boot has no firmware to program the bochs PCI BAR; `info pci`
+showed BAR0 at `0x0`, and the DTB framebuffer at `0x40000000` read back
+`0xffffffff` even while all six markers passed. The gate now builds a
+RAM-backed simple-framebuffer DTB (`make_fb_ram_dtb.sh`), boots with
+`ASTERINAS_BROWSER_WEB_BASIC_ONLY=1` and
+`ASTERINAS_WEB_NETWORK_MODE=direct`, waits for a visible Firefox window from
+a root guest observer, and reads the desktop/Firefox frames from guest RAM via
+the QEMU monitor. It validates non-black pixels and colour count and requires
+the Firefox window to change the frame. Host tests are now 90 tests in 10
+modules.
 
 The skill and pick ledger under `.agents/skills/upstream-rebase-cherry-pick/`
 and `docs/porting/2026-10-31-cherry-pick-ledger.md` record the pick and the
-consolidation decision.
+consolidation decision, including the dead-framebuffer, network-mode, and
+process-substitution pitfalls found in this pass.
 
 ## Remaining blockers
 
@@ -250,9 +259,10 @@ consolidation decision.
 3. **Board support.** EIC7700 cache/PCIe glue and the Megrez serial, storage,
    network, USB, and watchdog drivers are out of this line.
 4. **Test surface.** The direct QEMU gate, ext4/JBD2 QEMU gate, aggregate
-   product gate, host test suite, desktop startup gate, and kernel ktests are
-   ported. Pixel/Firefox-window acceptance, the U-Boot-specific desktop path,
-   and dsh service/launcher integration are still not automated.
+   product gate, host test suite, desktop Firefox/framebuffer gate, and kernel
+   ktests are ported. The U-Boot-specific desktop path remains historical and
+   out of the current gate; dsh service/launcher integration is still not
+   automated. The ext4 suite remains the P1 item below.
 
 ## Current entry points
 
@@ -291,7 +301,7 @@ make test_riscv_debian_product \
   DEBIAN_PRODUCT_ROOTFS=/absolute/path/to/toolchain-rootfs.ext2 \
   DEBIAN_PRODUCT_EXT4_ROOTFS=/absolute/path/to/debian-root.ext4
 
-# Direct-boot desktop startup gate
+# Direct-boot desktop Firefox/framebuffer gate (builds fb-ram.dtb)
 make test_riscv_debian_desktop \
   DEBIAN_DESKTOP_ROOTFS=/absolute/path/to/browser-web.ext2 \
   DEBIAN_DESKTOP_STAGE1=/absolute/path/to/initramfs.cpio \
@@ -371,9 +381,23 @@ transcript logs, `direct-serial.log`, and the ext4 crash receipts. The
 combined host-plus-product invocation is preserved under
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-full-gate-committed/`; the
 earlier direct+ext4-only run is in the sibling `2026-10-31-product-gate/`
-directory. Direct desktop-gate evidence is under
+directory. The marker-only desktop gate evidence is under
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-desktop-gate-make/`
-(`result.json`, `desktop-serial.log`, `make-run.log`, `README.md`).
+(`result.json`, `desktop-serial.log`, `make-run.log`, `README.md`), but it is
+superseded by the P0 gate below.
+
+The Firefox/framebuffer desktop gate evidence is under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-p0-desktop-gate-fb5/`:
+`log/result.json` has `status=pass`, `changed_fraction=0.993874`, and the
+Firefox window marker; `log/desktop-framebuffer.ppm` and `log/framebuffer.ppm`
+are the real guest desktop and Firefox frames; `desktop.png` and `firefox.png`
+are renderings of those PPMs; `log/desktop-serial.log` is the full marker and
+heartbeat transcript. The earlier diagnostic runs are preserved:
+`2026-10-31-p0-fbprobe-ram/` (the bochs DTB read `0xffffffff`; the RAM DTB
+rendered the wallpaper), and `2026-10-31-p0-desktop-gate-fb4/` (a small
+`Firefox` helper window was found before the main window). The
+`2026-10-31-p0-firefox-diag/` serial shows the failed browser unit and
+`2026-10-31-p0-fbprobe-ram-long/` shows the desktop settle timing.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.

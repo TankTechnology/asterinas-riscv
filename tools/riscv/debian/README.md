@@ -85,12 +85,25 @@ test requires updating the baseline in the same change.
 ## Desktop gate
 
 The desktop gate is the compact direct-boot path for the QEMU-supported
-`browser-web` image. It loads the kernel, full Stage1 initramfs, and the
-simple-framebuffer DTB directly, then checks the ordered
+`browser-web` image. It loads the kernel, full Stage1 initramfs, and a
+RAM-backed simple-framebuffer DTB directly, then checks the ordered
 `BROWSER_WEB_DESKTOP_STAGE` markers from systemd/Xorg/window-manager/panel.
-It is independent of U-Boot and the removed M3/M4 gate stack. Pixel evidence
-remains part of the manual desktop acceptance; this gate is the repeatable
-startup regression.
+It is independent of U-Boot and the removed M3/M4 gate stack.
+
+The gate does not treat those markers as pixel evidence. The rootfs installs
+`asterinas-desktop-frame-evidence.service`; it waits for a visible Firefox
+window with `xdotool` and emits `BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=ready`.
+The host then reads the guest framebuffer with the QEMU monitor's `pmemsave`,
+validates that it is non-blank and colour-rich, and requires the Firefox
+window to change the frame. The desktop and final images are saved as raw and
+PPM files next to the serial log.
+
+Why the DTB is rebuilt: direct boot has no firmware to program the bochs PCI
+BAR. A `bochs-display` BAR stays unassigned, so the historical DTB address
+`0x40000000` reads back `0xffffffff` even while every startup marker passes.
+The Makefile's `make_fb_ram_dtb.sh` moves the framebuffer to the top of QEMU
+RAM (`0xf0000000` for the 2 GiB contract) and shrinks the memory node so the
+kernel keeps it out of the allocator. The gate then reads real guest pixels.
 
 ```bash
 make test_riscv_debian_desktop \
@@ -99,10 +112,15 @@ make test_riscv_debian_desktop \
   DEBIAN_DESKTOP_DTB=/absolute/path/to/fb-bochs.dtb
 ```
 
-Use the full Stage1 image and the `browser-web` rootfs. The kernel defaults to
+Use the full Stage1 image and a `browser-web` rootfs built from this tree (it
+must include `desktop_frame_evidence.sh` and its unit). The kernel defaults to
 `target/osdk/asterinas-osdk-bin.Image`; override it with
-`DEBIAN_DESKTOP_KERNEL`. The serial log and `result.json` go to
-`target/riscv-debian-desktop/`. The rootfs is attached with `snapshot=on`.
+`DEBIAN_DESKTOP_KERNEL`. The target requires `fdtget`/`fdtput`, generates
+`fb-ram.dtb` in the log directory, and passes `--fb-address 0xf0000000`
+(override with `DEBIAN_DESKTOP_FB_ADDRESS` if the generated DTB differs). The
+serial log, `framebuffer.raw`/`.ppm`, `desktop-framebuffer.raw`/`.ppm`, and
+`result.json` go to `target/riscv-debian-desktop/`. The rootfs is attached with
+`snapshot=on`.
 
 ## Product gate
 
@@ -171,7 +189,6 @@ compiles a real C program so this cannot regress silently.
 
 The direct gate uses `init=/bin/bash` to keep the checkpoint independent of
 Stage1. The desktop gate is a separate direct-boot Stage1 check for the ordered
-desktop-session markers. Pixel and Firefox-window evidence remains part of the
-manual desktop acceptance; this gate is the repeatable startup regression. A
-direct-gate failure means the upstream kernel cannot run the Debian tools, not
-that the full desktop flow has regressed.
+desktop-session markers, a visible Firefox window, and real guest framebuffer
+pixels. A direct-gate failure means the upstream kernel cannot run the Debian
+tools, not that the full desktop flow has regressed.

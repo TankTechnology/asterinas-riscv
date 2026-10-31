@@ -7,8 +7,8 @@
 - Source product branch: `feature/qemu-network-runtime` = `af48751df`
 - Scope: QEMU-supported Debian/RISC-V surface. Board/GPU/DRM work remains out
   of scope unless separately approved.
-- Current stack: 48 commits over upstream (23 feat/fix, 4 test, 20 docs, 1
-  chore).
+- Current stack: 59 commits over upstream, including this P0 desktop-evidence
+  change.
 
 This ledger records the provenance of the current stack and the dependency
 closure for the still-missing desktop/browser automation. It is updated in the
@@ -29,8 +29,8 @@ same change as each new pick. See
 | Debian rootfs/Stage1/direct gate/Image sidecar | old builders and gates | `fc78d33a8`,`25909f303`,`0881283db` | port/adapt | rootfs contract, direct gate |
 | ext4 extents + JBD2 + crash gates | `294c225ce` | `30cd05424`,`7b2bfc87d`,`7c960b105` | superseded/expanded | 64-bit and crash gates |
 | ext2 durability invariants | old ext2 work | `31acb7c3c` | port/new | ktests + ext2/e2fsck probe |
-| host suite + aggregate product gate | old host suite, not cherry-picked wholesale | `2abf63a3a` | new on rebase line | 81 host tests, product receipt |
-| Desktop direct-boot gate (kernel + Stage1 initrd + DTB, ordered session markers) | new on rebase line; old gate behavior used as reference | pending commit | new + consolidated | `test_desktop_gate.py`, `result.json` |
+| host suite + aggregate product gate | old host suite, not cherry-picked wholesale | `2abf63a3a` | new on rebase line | 90 host tests, product receipt |
+| Desktop direct-boot gate (kernel + Stage1 initrd + RAM-fb DTB, ordered session markers, visible Firefox, guest framebuffer pixels) | new on rebase line; old gate behavior used as reference | this P0 change | new + consolidated | `test_desktop_gate.py`, `desktop_frame_evidence.sh`, fb5 `result.json`, `firefox.png` |
 
 `superseded` means the old implementation exists, but the current line's
 implementation is the one to keep. Do not replace current modules with the old
@@ -60,12 +60,35 @@ Reasons:
 - QMP screendump of the bochs display returned a 640x480 VGA image even with
   an explicit display device, while the guest consumes the 1280x1024
   simple-framebuffer. It is not reliable pixel evidence for this boot path.
-- Pixel/Firefox-window acceptance remains a manual desktop check; the new gate
-  is the repeatable startup regression.
 
-Remaining desktop work is optional and separate: a Firefox/Marionette or
-guest-side framebuffer evidence layer. It should extend `desktop_gate.py`, not
-restore the removed framework.
+## P0 desktop evidence (2026-10-31)
+
+The marker-only gate was subsequently found to pass on a dead framebuffer.
+Direct boot has no firmware to program the bochs PCI BAR: `info pci` showed
+BAR0 at `0x0`, and `pmemsave 0x40000000` returned all `0xffffffff`. The gate
+therefore did not prove pixels.
+
+P0 keeps direct boot and extends the same `desktop_gate.py`:
+
+- `make_fb_ram_dtb.sh` moves the simple-framebuffer to the top of QEMU RAM
+  (`0xf0000000` for the 2 GiB contract) and shrinks the memory node.
+- The browser-web rootfs installs `asterinas-desktop-frame-evidence.service`
+  from `desktop_frame_evidence.sh`; it waits for Xorg, settles the desktop,
+  finds a visible, geometry-checked Firefox window (`xdotool`, `xwininfo`
+  fallback), and emits the Firefox/frame-ready markers.
+- The gate passes `ASTERINAS_BROWSER_WEB_BASIC_ONLY=1` and
+  `ASTERINAS_WEB_NETWORK_MODE=direct`, captures desktop and Firefox frames
+  from guest RAM through the QEMU monitor, validates non-black/colour-rich
+  pixels, and requires the Firefox window to change the frame.
+
+The first real pass is
+`evidence/2026-10-31-p0-desktop-gate-fb5/`: `status=pass`,
+`changed_fraction=0.993874`, and a rendered Firefox New Tab window. The
+failed diagnostic runs are preserved under
+`2026-10-31-p0-fbprobe-ram/`, `2026-10-31-p0-desktop-gate-fb4/`, and
+`2026-10-31-p0-firefox-diag/`. The skill's pitfall table records the dead
+BAR, the missing network mode, the `read`/newline bug, and the helper-window
+geometry filter.
 
 ## Decisions
 
@@ -80,13 +103,12 @@ restore the removed framework.
 
 ## Next action
 
-The desktop startup gate is delivered. Next candidates are optional, in
+The desktop Firefox/framebuffer gate is delivered. Next candidates, in
 priority order:
 
-1. extend `desktop_gate.py` with a Firefox/Marionette or guest-side framebuffer
-   marker (no framework resurrection);
-2. xfstests / broader ext4 coverage;
-3. IPv6 route netlink and route deletion.
+1. xfstests / broader ext4 coverage (P1);
+2. IPv6 route netlink and route deletion;
+3. dsh service/launcher integration.
 
 Every new source-based change still gets a `Picked-from:` or `Ported-from:`
 trailer and a row here.

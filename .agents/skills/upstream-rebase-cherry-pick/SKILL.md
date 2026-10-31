@@ -228,7 +228,10 @@ authorized.
 | Kernel cherry-pick looks possible | Old kernel paths are `kernel/src`; current paths are `kernel/core/src`, and APIs were reorganized. Port semantically and record `Ported-from`. |
 | Reintroducing removed verticals | Old M4/M5/Megrez/DRM modules pull board dependencies; keep only current functional names and approved scope. |
 | Duplicating delivered work | Check current `git log`/files first; e.g. old ext4/JBD2 work is superseded by the current implementation. |
-| Screenshot is not display evidence by itself | QMP screendump returned 640x480 while the direct-boot guest used a 1280x1024 simple framebuffer; validate PPM dimensions and the selected device, and delete the helper if it cannot prove the target scanout. |
+| Startup markers are not display evidence | The direct-boot desktop gate reached all six markers while the DTB framebuffer at `0x40000000` was an unassigned bochs PCIe BAR: `info pci` showed BAR0 at `0x0`, and `pmemsave` read back `0xffffffff`. A QMP screendump at the default VGA mode is not the guest framebuffer either. Boot with a RAM-backed simple-framebuffer DTB, validate dimensions/non-black pixels/colours from a monitor `pmemsave` dump, and require a guest-observed Firefox window. |
+| Unprivileged guest output is not on the serial console | The Firefox wrapper's `printf` from uid 1000 can be dropped by the Asterinas console path. Use a root systemd observer that writes its own markers to `/dev/console` and include service/timeline diagnostics on timeout. |
+| Basic-only boot still needs a network mode | Without `systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct`, `browser-web-firefox` exits 64 with `invalid-network-profile`; `RestartPreventExitStatus=64` then leaves `asterinas-browser-web.service` failed and Firefox never starts. |
+| `read` from a process substitution needs a newline | A helper that prints `id title` without a trailing newline makes `read` return 1 at EOF, so a visible Firefox window was reported as `FIREFOX_WINDOW=timeout`. Use `printf '%s %s\n'` and let the failure path diagnose the empty case. |
 | Missing cleanup | Trial worktrees, cherry-pick state, and partial indexes must be aborted/removed before returning. |
 
 When a new pattern appears, add it to this table and to

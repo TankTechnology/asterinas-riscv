@@ -399,6 +399,8 @@ DEBIAN_DESKTOP_KERNEL ?= target/osdk/asterinas-osdk-bin.Image
 DEBIAN_DESKTOP_ROOTFS ?=
 DEBIAN_DESKTOP_STAGE1 ?=
 DEBIAN_DESKTOP_DTB ?=
+DEBIAN_DESKTOP_FB_RAM_DTB ?= $(DEBIAN_DESKTOP_LOG_DIR)/fb-ram.dtb
+DEBIAN_DESKTOP_FB_ADDRESS ?= 0xf0000000
 DEBIAN_DESKTOP_LOG_DIR ?= target/riscv-debian-desktop
 .PHONY: test_riscv_debian_desktop
 test_riscv_debian_desktop:
@@ -406,11 +408,14 @@ test_riscv_debian_desktop:
 		echo "Error: set DEBIAN_DESKTOP_ROOTFS, DEBIAN_DESKTOP_STAGE1, and DEBIAN_DESKTOP_DTB"; \
 		exit 2; \
 	fi
+	tools/riscv/debian/make_fb_ram_dtb.sh \
+		"$(DEBIAN_DESKTOP_DTB)" "$(DEBIAN_DESKTOP_FB_RAM_DTB)"
 	python3 tools/riscv/debian/desktop_gate.py \
 		--kernel "$(DEBIAN_DESKTOP_KERNEL)" \
 		--rootfs "$(DEBIAN_DESKTOP_ROOTFS)" \
 		--stage1 "$(DEBIAN_DESKTOP_STAGE1)" \
-		--dtb "$(DEBIAN_DESKTOP_DTB)" \
+		--dtb "$(DEBIAN_DESKTOP_FB_RAM_DTB)" \
+		--fb-address "$(DEBIAN_DESKTOP_FB_ADDRESS)" \
 		--log-dir "$(DEBIAN_DESKTOP_LOG_DIR)"
 
 DEBIAN_STAGE1_OUT ?= target/riscv-debian/stage1/initramfs.cpio

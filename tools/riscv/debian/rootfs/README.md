@@ -147,11 +147,22 @@ and the evidence service writes the Marionette/network/security records under
 `event0` (keyboard) and `event1` (pointer); the device helper deliberately does
 not run evdev identity ioctls because this kernel can block on them.
 
+`asterinas-desktop-frame-evidence.service` is installed from
+`desktop_frame_evidence.sh` and runs at `graphical.target`. It waits for Xorg,
+lets the desktop settle, finds a visible Firefox window with `xdotool` (`xwininfo`
+is the fallback), and emits the `BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=ready` and
+`BROWSER_WEB_DESKTOP_FRAME_READY` markers used by the direct-boot desktop gate.
+It does not copy the framebuffer itself: the host reads the RAM-backed guest
+framebuffer through the QEMU monitor and validates the pixels.
+
 The current QEMU evidence covers:
 
-- Xorg accepting `/dev/fb0` at 1280x1024 and the desktop shell rendering;
-- Firefox mapping its window and opening a Marionette session;
-- virtio-net on `eth0` with the slirp fixture, DNS, and HTTPS;
+- Xorg accepting a RAM-backed `/dev/fb0` at 1280x1024 and the desktop shell
+  rendering real pixels (the old bochs-DTB direct boot read back
+  `0xffffffff`, so its startup markers were not display evidence);
+- a visible Firefox window mapping and changing the guest framebuffer;
+- virtio-net on `eth0` with the slirp fixture, DNS, and HTTPS in the online
+  evidence profile;
 - devpts/`/dev/ptmx`, `/dev/shm`, and non-root PTY allocation.
 
 Firefox content processes now launch: the kernel no longer requires
@@ -163,10 +174,9 @@ public Baidu homepage gate passes (`DEBIAN_BROWSER_WEB_BAIDU_HOME_READY`,
 (`DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass`). The parity ledger records
 the detailed evidence.
 
-The repository currently has no repository-level U-Boot desktop scenario. The
-desktop/Firefox evidence was collected with a manual U-Boot boot using a boot
-disk containing the kernel Image, this Stage1 initramfs, and `fb-bochs.dtb`
-(simple-framebuffer at `0x40000000`, 1280x1024).
+The repository-level QEMU desktop gate uses direct boot with the generated
+`fb-ram.dtb`; it does not use U-Boot. The earlier U-Boot desktop evidence
+remains in the local evidence archive, but it is not the current gate path.
 
 ## Removed scope
 

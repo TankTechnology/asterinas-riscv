@@ -1,0 +1,16 @@
+[Unit]
+Description=Asterinas desktop Firefox framebuffer evidence
+After=asterinas-browser-web.service asterinas-desktop-browser.service
+Wants=asterinas-browser-web.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=900
+TimeoutStopSec=10
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStart=/usr/lib/asterinas/desktop-frame-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
