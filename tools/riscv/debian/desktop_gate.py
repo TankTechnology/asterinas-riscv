@@ -4,8 +4,8 @@
 """Boot the browser-web image directly and verify the graphical desktop.
 
 This is the compact replacement for the historical U-Boot/M3/M4 gate stack:
-the kernel loads Stage1 as an initrd, Stage1 mounts the browser root, and QMP
-captures the 1280x1024 scanout after the desktop session reaches its panel.
+the kernel loads Stage1 as an initrd, Stage1 mounts the browser root, and the
+serial transcript must reach the ordered desktop-session markers.
 """
 
 from __future__ import annotations

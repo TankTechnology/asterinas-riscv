@@ -372,7 +372,7 @@ combined host-plus-product invocation is preserved under
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-full-gate-committed/`; the
 earlier direct+ext4-only run is in the sibling `2026-10-31-product-gate/`
 directory. Direct desktop-gate evidence is under
-`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-desktop-gate-lean/`
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-desktop-gate-make/`
 (`result.json`, `desktop-serial.log`, `make-run.log`, `README.md`).
 
 The old tree remains the fallback for behavior that is not yet reproduced on
