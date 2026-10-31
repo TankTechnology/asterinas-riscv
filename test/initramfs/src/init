@@ -27,6 +27,9 @@ mount -t configfs none /sys/kernel/config
 if ! grep -q '^[^ ]* /dev devtmpfs ' /proc/mounts; then
     mount -t devtmpfs devtmpfs /dev
 fi
+# Provide the conventional /dev/fd alias. Test harnesses use it for shell
+# process substitution, and devtmpfs does not create it automatically.
+ln -sfn /proc/self/fd /dev/fd
 mkdir -p /dev/pts /dev/shm
 mount -t tmpfs tmpfs /dev/shm
 chmod 1777 /dev/shm

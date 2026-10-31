@@ -66,5 +66,28 @@ stdenvNoCC.mkDerivation {
 
     # The links keep the compiled suite alive during GC
     ln -s ${xfstests}/lib/xfstests/* $out/xfstests/
+
+    # The cross build's patchShebangs step leaves a few scripts pointing at
+    # the build-host bash.  Replace those files (and the directory symlinks
+    # that contain them) with target-bash versions; the remaining entries
+    # stay symlinked so the compiled suite and its closure are preserved.
+    for dir in src ltp; do
+      if [ -L "$out/xfstests/$dir" ]; then
+        real_dir=$(readlink -f "$out/xfstests/$dir")
+        rm "$out/xfstests/$dir"
+        mkdir "$out/xfstests/$dir"
+        for entry in "$real_dir"/*; do
+          ln -s "$entry" "$out/xfstests/$dir/$(basename "$entry")"
+        done
+      fi
+    done
+    for rel in check src/dmerror ltp/rwtest.sh; do
+      target="$out/xfstests/$rel"
+      real=$(readlink -f "$target")
+      rm "$target"
+      cp "$real" "$target"
+      sed -i "1s|^#!.*|#!${pkgs.bash}/bin/bash|" "$target"
+      chmod +x "$target"
+    done
   '';
 }

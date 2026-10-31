@@ -1,5 +1,5 @@
 {
-  "commit": "01de8fc06",
+  "commit": "66cd86630",
   "module_names": [
     "tools.riscv.tests.test_debian_builders",
     "tools.riscv.tests.test_desktop_gate",
@@ -110,6 +110,7 @@
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_active_modules_do_not_import_removed_verticals",
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_every_active_python_module_compiles",
     "tools.riscv.tests.test_tooling_surface.ShellSurfaceTests.test_every_active_shell_script_parses",
+    "tools.riscv.tests.test_xfstests_config.CrossBuildTests.test_cross_build_replaces_host_bash_shebangs",
     "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_build_config_uses_the_compatibility_feature_set",
     "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_prepare_script_has_valid_bash_syntax",
     "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_run_lists_are_well_formed_and_short_is_a_subset",
@@ -117,5 +118,5 @@
     "tools.riscv.tests.test_xfstests_config.RiscvQemuTests.test_xfstests_devices_are_not_attached_by_default",
     "tools.riscv.tests.test_xfstests_config.RiscvQemuTests.test_xfstests_devices_precede_x2_for_reverse_discovery"
   ],
-  "tests": 99
+  "tests": 100
 }

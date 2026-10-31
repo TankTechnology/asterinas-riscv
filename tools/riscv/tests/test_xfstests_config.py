@@ -72,6 +72,18 @@ class Ext4ConfigTests(unittest.TestCase):
         )
 
 
+class CrossBuildTests(unittest.TestCase):
+    def test_cross_build_replaces_host_bash_shebangs(self) -> None:
+        text = (REPO_ROOT / "test/initramfs/nix/conformance/xfstests.nix").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("src/dmerror", text)
+        self.assertIn("ltp/rwtest.sh", text)
+        self.assertIn("pkgs.bash", text)
+        self.assertIn("readlink -f", text)
+
+
 class RiscvQemuTests(unittest.TestCase):
     def _devices(self, enabled: bool) -> list[str]:
         env = {
