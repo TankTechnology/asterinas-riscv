@@ -238,6 +238,28 @@ def _write_ppm(raw: Path, output: Path, *, width: int, height: int, stride: int)
     output.write_bytes(f"P6\n{width} {height}\n255\n".encode() + bytes(pixels))
 
 
+def _dump_framebuffer(
+    monitor: Path,
+    args: argparse.Namespace,
+    raw_path: Path,
+) -> tuple[dict[str, object], bytes]:
+    _hmp_pmemsave(
+        monitor,
+        args.fb_address,
+        args.fb_stride * args.fb_height,
+        raw_path,
+    )
+    info = _read_framebuffer(
+        raw_path,
+        width=args.fb_width,
+        height=args.fb_height,
+        stride=args.fb_stride,
+        min_nonzero=args.fb_min_nonzero,
+        min_colors=args.fb_min_colors,
+    )
+    return info, raw_path.read_bytes()
+
+
 def _expect_evidence(
     serial: Serial,
     pattern: re.Pattern[str],
@@ -283,21 +305,8 @@ def _capture_framebuffer(
 ) -> tuple[dict[str, object], bytes]:
     last_error: Exception | None = None
     for attempt in range(attempts):
-        _hmp_pmemsave(
-            monitor,
-            args.fb_address,
-            args.fb_stride * args.fb_height,
-            raw_path,
-        )
         try:
-            info = _read_framebuffer(
-                raw_path,
-                width=args.fb_width,
-                height=args.fb_height,
-                stride=args.fb_stride,
-                min_nonzero=args.fb_min_nonzero,
-                min_colors=args.fb_min_colors,
-            )
+            info, data = _dump_framebuffer(monitor, args, raw_path)
         except DesktopGateError as error:
             last_error = error
             if attempt + 1 < attempts:
@@ -314,7 +323,7 @@ def _capture_framebuffer(
             height=args.fb_height,
             stride=args.fb_stride,
         )
-        return info, raw_path.read_bytes()
+        return info, data
     assert last_error is not None
     raise last_error
 
@@ -333,27 +342,13 @@ def _capture_until_changed(
     last_error: Exception | None = None
     last_change = 0.0
     while time.monotonic() < deadline:
-        _hmp_pmemsave(
-            monitor,
-            args.fb_address,
-            args.fb_stride * args.fb_height,
-            raw_path,
-        )
         try:
-            info = _read_framebuffer(
-                raw_path,
-                width=args.fb_width,
-                height=args.fb_height,
-                stride=args.fb_stride,
-                min_nonzero=args.fb_min_nonzero,
-                min_colors=args.fb_min_colors,
-            )
+            info, data = _dump_framebuffer(monitor, args, raw_path)
         except DesktopGateError as error:
             last_error = error
             serial._read(0.0)
             time.sleep(5)
             continue
-        data = raw_path.read_bytes()
         last_change = _changed_fraction(desktop_raw, data)
         if last_change >= args.fb_min_change:
             _write_ppm(

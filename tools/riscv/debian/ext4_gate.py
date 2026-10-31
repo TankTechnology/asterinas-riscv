@@ -60,7 +60,8 @@ SEMANTICS_COMMANDS = [
     "dd if=/dev/zero of=/ext4-gate/sparse.bin bs=4096 count=1 seek=$n "
     "2>/dev/null || exit 1; done; echo GATE_EXTENTS_OK",
     "dd if=/dev/zero of=/ext4-gate/large.bin bs=4096 count=2048 2>/dev/null && echo GATE_LARGE_OK",
-    "dd if=/dev/urandom of=/ext4-gate/rand.bin bs=4096 count=64 2>/dev/null && echo GATE_RAND_WRITE_OK",
+    "dd if=/dev/urandom of=/ext4-gate/rand.bin bs=4096 count=64 "
+    "2>/dev/null && echo GATE_RAND_WRITE_OK",
     "sha256sum /ext4-gate/rand.bin > /ext4-gate/rand.sha && sync && "
     "sha256sum -c /ext4-gate/rand.sha && echo GATE_RAND_SHA_OK",
     "truncate -s 1048576 /ext4-gate/large.bin && echo GATE_TRUNC_PARTIAL_OK",

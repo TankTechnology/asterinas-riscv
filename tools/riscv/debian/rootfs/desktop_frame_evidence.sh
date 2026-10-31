@@ -48,10 +48,12 @@ firefox_process_count() {
 }
 
 diagnose() {
-    local state count
+    local state count line
     state="$(timeout 5 /usr/bin/systemctl is-active asterinas-browser-web.service 2>/dev/null || true)"
     count="$(firefox_process_count)"
-    emit "BROWSER_WEB_DESKTOP_FIREFOX_DIAG service=$(sanitize "${state:-unknown}") firefox_processes=$(sanitize "${count:-0}")"
+    line="BROWSER_WEB_DESKTOP_FIREFOX_DIAG service=$(sanitize "${state:-unknown}")"
+    line+=" firefox_processes=$(sanitize "${count:-0}")"
+    emit "$line"
     if [[ -r "$TIMELINE" ]]; then
         timeout 5 /usr/bin/tail -n 8 "$TIMELINE" 2>/dev/null |
             while IFS= read -r line; do
@@ -101,14 +103,19 @@ window_from_xwininfo() {
 }
 
 find_firefox_window() {
-    local deadline=$((SECONDS + WINDOW_TIMEOUT)) ids id title next_report=$((SECONDS + 30))
-    local service_state processes wrapper_pid
+    local deadline=$((SECONDS + WINDOW_TIMEOUT)) ids id title window next_report=$((SECONDS + 30))
+    local service_state processes wrapper_pid line
     while ((SECONDS < deadline)); do
         if ((SECONDS >= next_report)); then
             service_state="$(timeout 5 /usr/bin/systemctl is-active asterinas-browser-web.service 2>/dev/null || true)"
             processes="$(firefox_process_count)"
             wrapper_pid="$(timeout 5 /usr/bin/cat "$HOME/browser-web-firefox.pid" 2>/dev/null || true)"
-            emit "BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=waiting elapsed=$((SECONDS - deadline + WINDOW_TIMEOUT)) service=$(sanitize "${service_state:-unknown}") processes=$(sanitize "${processes:-0}") wrapper_pid=$(sanitize "${wrapper_pid:-none}")"
+            line="BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=waiting"
+            line+=" elapsed=$((SECONDS - deadline + WINDOW_TIMEOUT))"
+            line+=" service=$(sanitize "${service_state:-unknown}")"
+            line+=" processes=$(sanitize "${processes:-0}")"
+            line+=" wrapper_pid=$(sanitize "${wrapper_pid:-none}")"
+            emit "$line"
             next_report=$((SECONDS + 30))
         fi
         ids="$(timeout 5 /usr/bin/xdotool search --onlyvisible --class '[Ff]irefox' 2>/dev/null || true)"
@@ -122,8 +129,8 @@ find_firefox_window() {
                 return 0
             fi
         done
-        if window_from_xwininfo > /tmp/asterinas-firefox-window; then
-            cat /tmp/asterinas-firefox-window
+        if window="$(window_from_xwininfo)"; then
+            printf '%s\n' "$window"
             return 0
         fi
         /usr/bin/sleep "$POLL_SECONDS"
@@ -149,7 +156,9 @@ if ! read -r window_id window_title < <(find_firefox_window); then
     exit 1
 fi
 
-emit "BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=ready id=$(sanitize "$window_id") title=$(sanitize "$window_title")"
+line="BROWSER_WEB_DESKTOP_FIREFOX_WINDOW=ready id=$(sanitize "$window_id")"
+line+=" title=$(sanitize "$window_title")"
+emit "$line"
 
 # The window is mapped before its first content paint on this CPU.  A bounded
 # delay gives the renderer time to paint the page; the host reads the actual

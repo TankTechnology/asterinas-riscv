@@ -48,8 +48,6 @@ size_low=$((16#${cells[3]}))
 
 new_size=$((size_low - MEMORY_RESERVE))
 framebuffer_address=$((memory_low + new_size))
-(( framebuffer_address >= memory_low + new_size )) ||
-    die "framebuffer does not start above the usable memory node"
 (( framebuffer_address + FRAMEBUFFER_SIZE <= memory_low + size_low )) ||
     die "framebuffer does not fit inside the original memory window"
 
@@ -60,9 +58,11 @@ fdtput -t x "$temporary" /framebuffer@40000000 reg \
 
 read -r -a memory_result < <(fdtget -t x "$temporary" /memory@80000000 reg)
 read -r -a framebuffer_result < <(fdtget -t x "$temporary" /framebuffer@40000000 reg)
-[[ "${memory_result[*]}" == "0 $(printf '%x' "$memory_low") 0 $(printf '%x' "$new_size")" ]] ||
+expected_memory="0 $(printf '%x' "$memory_low") 0 $(printf '%x' "$new_size")"
+expected_framebuffer="0 $(printf '%x' "$framebuffer_address") 0 $(printf '%x' "$FRAMEBUFFER_SIZE")"
+[[ "${memory_result[*]}" == "$expected_memory" ]] ||
     die "memory reg verification failed"
-[[ "${framebuffer_result[*]}" == "0 $(printf '%x' "$framebuffer_address") 0 $(printf '%x' "$FRAMEBUFFER_SIZE")" ]] ||
+[[ "${framebuffer_result[*]}" == "$expected_framebuffer" ]] ||
     die "framebuffer reg verification failed"
 
 width=$(fdtget -t x "$temporary" /framebuffer@40000000 width)
