@@ -184,11 +184,17 @@ Full-list triage attempts:
 
 The branch state after the xfstests short-list work is recorded in
 `docs/porting/2026-10-31-merge-route.md`: the validated code tip
-`0d552997f` is tagged `pre-main-promotion`, and the local
-`rebase/upstream-20261029` is fast-forwarded to the current line tip (this
-docs-only merge-route commit sits on top).  `backup/rebase-20261031` keeps the
-previous integration tip.  Nothing was pushed; the old `origin/main` is
-untouched.
+`0d552997f` is tagged `pre-main-promotion`, and `rebase/upstream-20261029` is
+fast-forwarded to the line tip.  `backup/rebase-20261031` keeps the previous
+integration tip.  The line was pushed on the fork: `origin/main-next` is the
+fork default, `origin/rebase/upstream-20261029` is the same tip, both tags are
+pushed, and `archive/legacy-main-2026-10-31` preserves the old `origin/main`
+at `af48751df`.  Old `main` was not deleted or renamed.
+
+The ext4 kernel fixes and the ext4 xfstests profile are **not** standalone
+upstream slices: they depend on the downstream ext4 extents/JBD2 feature stack,
+which is absent from `upstream/main`.  Only `/proc/self/exe` and the generic
+`/dev/fd` / cross-shebang test-infrastructure fixes are independent candidates.
 
 ## Next action
 

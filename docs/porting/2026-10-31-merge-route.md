@@ -5,21 +5,24 @@ Date: 2026-10-31
 ## Snapshot
 
 - Worktree: `/home/ubuntu/.config/superpowers/worktrees/asterinas/upstream-baseline`
-- Validated code tip: `0d552997f` (tag `pre-main-promotion`).  The
-  integration branch is fast-forwarded to the current line tip; docs-only
-  commits sit on top of the validated code snapshot.  The remote
-  `origin/rebase/upstream-20261029` has not been pushed.
-- Tags: `pre-main-promotion` -> `0d552997f`;
+- Line tip: `feature/ext4-jbd2`, `rebase/upstream-20261029`,
+  `origin/rebase/upstream-20261029`, and `origin/main-next` all point at the
+  same line tip.  The validated code tip is `0d552997f`; docs-only commits
+  (this file and its follow-ups) sit on top.
+- Tags (local and pushed): `pre-main-promotion` -> `0d552997f`;
   `backup/rebase-20261031` -> `01de8fc06`.
+- Fork default branch: `main-next`.
+- Archived old fork main: `archive/legacy-main-2026-10-31` -> `af48751df`
+  (old `origin/main`).  The old `main` ref still exists at the same commit;
+  it has not been deleted or renamed.
 - Base: `upstream/main` = `cdd5bc109`.
 - Validated code tip `0d552997f`: **68 ahead, 0 behind**
-  `upstream/main`; the docs-only merge-route commit adds one more commit on
-  top, still 0 behind.
-- `origin/main` vs `upstream/main`: **6232 ahead, 4741 behind**; merge-base
+  `upstream/main`; the docs-only commits add a few more on top, still 0
+  behind.
+- Old `origin/main` vs `upstream/main`: **6232 ahead, 4741 behind**; merge-base
   `634d4a501` (2022-11-04).
-- `origin/rebase/upstream-20261029`: 36 commits behind the local line; no push.
 
-Working tree is clean.  The old fork `main` and `origin/main` were not modified.
+Working tree is clean.
 
 ## Delivered on this line
 
@@ -54,29 +57,27 @@ one-time line promotion instead.
 
 ## Merge route
 
-### 1. Freeze and preserve (done locally)
+### 1. Freeze and preserve (done)
 
 - Tag `pre-main-promotion` at the validated code tip `0d552997f`.
 - Tag `backup/rebase-20261031` at the previous integration tip `01de8fc06`.
-- Fast-forward local `rebase/upstream-20261029` to the current line tip
-  (including this docs commit).
-- **Waiting for authorization:** push the fast-forwarded integration branch to
-  `origin/rebase/upstream-20261029`.
+- Fast-forward local `rebase/upstream-20261029` to the line tip and push it;
+  push both tags to the fork.
 
-### 2. Promote the rebase line to the fork's new main
+### 2. Promote the rebase line to the fork's new main (in progress)
 
 This is a deliberate one-time history replacement, not a merge:
 
-1. Archive old `origin/main` as `archive/legacy-main-2026-10-31`.
-2. Create `main-next` from the rebase line.
-3. Run the gates on `main-next` (host suite, ktest, ext4 xfstests short list).
-4. Set `main-next` as the fork default, then rename it to `main`.
-5. Keep the old `main` read-only for historical reference; do not merge it into
-   the new line.
-
-This step needs explicit approval because it changes the fork's default
-branch.  Until then, `feature/ext4-jbd2` / `rebase/upstream-20261029` is the
-development line.
+1. Archive old `origin/main` as `archive/legacy-main-2026-10-31`
+   (`af48751df`) and push it.
+2. Create `main-next` from the rebase line, push it, and set it as the fork
+   default (done).
+3. The gates already ran on the same code tip (host suite, ktest, ext4
+   xfstests short list).
+4. Old `main` remains at `af48751df` for historical reference.  Do not delete
+   or rename it until the new default has been stable and that step is
+   explicitly approved.
+5. Do not merge old main into the new line.
 
 ### 3. Upstreamable slices
 
@@ -85,15 +86,19 @@ Debian rootfs, desktop gates, board drivers, or product evidence into these.
 
 | Topic branch | Source | Status |
 |---|---|---|
-| `fix/ext4-mount-identity` | `73241d475` (name half) | ready to split |
-| `fix/ext4-statfs-overhead` | `73241d475` (statfs half) | ready to split |
-| `test/xfstests-riscv-ext4` | `66cd86630` + `13fe9f1af` | ready to split |
-| `fix/proc-exe-interpreter` | new | needs implementation + ktest |
-| `fix/ext4-journal-multidesc` | evidence candidate patch | needs recovery ktests + full-list triage |
+| `fix/proc-exe-interpreter` | new | standalone candidate; needs implementation + regression test |
+| `test/initramfs-devfd` | `13fe9f1af` subset | standalone generic test infrastructure |
+| `test/xfstests-cross-shebang` | `13fe9f1af` subset | standalone generic test infrastructure (cross builds) |
+| `fix/ext4-mount-identity` | `73241d475` subset | **blocked**: depends on the downstream ext4 extents/JBD2 feature stack, which is not in `upstream/main` |
+| `fix/ext4-statfs-overhead` | `73241d475` subset | **blocked**: same dependency |
+| `test/xfstests-riscv-ext4` | `66cd86630` | **blocked**: the profile needs kernel ext4 support; upstream x86 CI has no ext4 |
+| `fix/ext4-journal-multidesc` | evidence candidate patch | product-line work; needs recovery ktests before any upstream consideration |
 
-Upstream PRs require explicit authorization.  The `/proc/self/exe` issue is
-already recorded: Asterinas points it at the original script path rather than
-the shebang interpreter.
+Upstreaming the ext4 extents/JBD2 feature stack itself is a separate, larger
+series; the ext4 kernel and xfstests slices above become upstreamable only
+after that decision.  Upstream PRs require explicit authorization.  The
+`/proc/self/exe` issue is already recorded: Asterinas points it at the original
+script path rather than the shebang interpreter.
 
 ### 4. Product line
 
@@ -115,16 +120,21 @@ main and merge back with a squash PR.  Periodically rebase the product line on
 
 ## Authorization gates
 
-- No push to `origin` or `private` until explicitly approved.
+- Fork pushes for `rebase`, `main-next`, the archive branch, and the two tags
+  were authorized and completed.  Further pushes to `origin` or `private`
+  need explicit approval.
 - No PR or push to `upstream/asterinas` under any circumstances without
   explicit authorization.
-- No default-branch replacement or force-push without approval; the archived
-  tags are the recovery path.
+- No deletion or renaming of the old `main` branch and no force-push without
+  approval; the archived branch and tags are the recovery path.
 - No deletion of evidence; the two tags above preserve the previous tips.
 
 ## Immediate checklist
 
-- [ ] Approve and push `rebase/upstream-20261029` fast-forward.
-- [ ] Approve the `main-next` promotion and archive old `origin/main`.
-- [ ] Split the three ready upstream topic branches.
+- [x] Push `rebase/upstream-20261029` fast-forward.
+- [x] Archive old `origin/main`, create/push `main-next`, and switch the fork
+  default (old `main` retained).
+- [ ] Prepare standalone upstream branches: `/proc/self/exe`, `/dev/fd`, and
+  xfstests cross-shebang; ext4-specific slices wait on the feature-stack
+  decision.
 - [ ] Use the evidence patch and logs to start the journal/full-list triage.
