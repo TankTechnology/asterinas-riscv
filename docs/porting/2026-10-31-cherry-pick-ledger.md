@@ -31,7 +31,8 @@ same change as each new pick. See
 | ext2 durability invariants | old ext2 work | `31acb7c3c` | port/new | ktests + ext2/e2fsck probe |
 | host suite + aggregate product gate | old host suite, not cherry-picked wholesale | `2abf63a3a` | new on rebase line | 81 host tests, product receipt |
 | QMP screendump/input + PPM audit helpers | `30e71ce3f`,`5c364ff75`,`0627c9983`,`4e8d063bc`,`d858c0c85` | `961b7ceb7` | file pick + tests | `test_qemu_qmp.py`, `test_qemu_ppm.py` |
-| Debian gate framework (protocol/runtime/rootfs orchestration/systemd M2) | `239789a59`,`294c225ce`,`a7184cc59`,`8afb69e6e`,`aa98d0857`,`ef35d98a0` | pending commit | file pick + focused tests | `test_debian_gate_framework.py` |
+| Debian gate framework (protocol/runtime/rootfs orchestration/systemd M2) | `239789a59`,`294c225ce`,`a7184cc59`,`8afb69e6e`,`aa98d0857`,`ef35d98a0` | `6b62ca317` | file pick + focused tests | `test_debian_gate_framework.py` |
+| Debian desktop application gates (M3/M4 graphical shell + framebuffer classification) | `5ca126b73`,`df62a0419`,`58432ef36` | `9d597171c` | file pick + focused tests | `test_desktop_gates.py` |
 
 `superseded` means the old implementation exists, but the current line's
 implementation is the one to keep. Do not replace current modules with the old
@@ -43,21 +44,21 @@ Source commits:
 
 | Source | Feature | Status |
 |---|---|---|
-| `5ca126b73` | Debian desktop application gate (`desktop_m4_gate.py`) | blocked on gate framework |
-| `df62a0419` | usable Debian desktop (profile/desktop files) | needs merge with current `browser-web` profile |
+| `5ca126b73` | Debian desktop application gate (`desktop_m4_gate.py`) | delivered in `9d597171c` |
+| `df62a0419` | usable Debian desktop (profile/desktop files) | delivered gate portion in `9d597171c`; profile files still need merge review |
 | `a0d6f2938` | browser-web desktop shell + bounded evidence gate | blocked; 8 conflicts when picked alone |
-| `0dfa6f615` | two-boot daily-use QEMU gate | blocked; imports 6 missing modules |
-| `browser_web_qemu_gate.py` history | browser QEMU orchestration | blocked on gate framework |
+| `0dfa6f615` | two-boot daily-use QEMU gate | blocked; gate framework now present, browser/network closure still missing |
+| `browser_web_qemu_gate.py` history | browser QEMU orchestration | blocked on browser/network helpers |
 
 Dependency closure measured with
 `.agents/skills/upstream-rebase-cherry-pick/scripts/local_import_closure.py`:
 
 | Target | Closure | Missing after leaf + framework picks |
 |---|---:|---:|
-| `browser_web_desktop_shell_qemu_gate` | 24 | 11 |
-| `browser_web_qemu_gate` | 19 | 8 |
-| `desktop_m4_gate` | 10 | 2 |
-| `desktop_m3_gate` | 9 | 1 |
+| `browser_web_desktop_shell_qemu_gate` | 24 | 9 |
+| `browser_web_qemu_gate` | 19 | 6 |
+| `desktop_m4_gate` | 10 | 0 |
+| `desktop_m3_gate` | 9 | 0 |
 | `rootfs_gate` | 7 | 0 |
 | `qemu_qmp`, `qemu_ppm` | 2 | 0 |
 
@@ -72,12 +73,16 @@ Trial results:
 Pick order:
 
 1. ~~`qemu_qmp.py`, `qemu_ppm.py`~~ — done in `961b7ceb7`, with focused tests.
-2. `gate_protocol.py`, `gate_runtime.py`, `rootfs_gate.py`,
-   `rootfs_gate_backend.py`, `systemd_m2_gate.py`.
-3. Browser/desktop helpers, replacing old M4/M5 names and dropping
-   Megrez-only dependencies.
-4. `browser_web_qemu_gate.py` and the desktop shell gate.
-5. Makefile/product-gate integration and evidence.
+2. ~~`gate_protocol.py`, `gate_runtime.py`, `rootfs_gate.py`,
+   `rootfs_gate_backend.py`, `systemd_m2_gate.py`~~ — done in `6b62ca317`.
+3. ~~`desktop_m3_gate.py` / `desktop_m4_gate.py`~~ — done in `9d597171c`.
+4. Browser helpers: `browser_web_contract.py`, `firefox_startup_profile.py`,
+   `browser_web_qemu_gate.py`, `desktop_network_gate.py`,
+   `desktop_network_qemu_gate.py`, `qemu_uboot_devices.py`; adapt the Megrez
+   network fixture/proxy to the current local fixture rather than importing
+   board-specific behavior.
+5. `browser_web_desktop_shell_qemu_gate.py`.
+6. Makefile/product-gate integration and evidence.
 
 ## Decisions
 
@@ -92,8 +97,9 @@ Pick order:
 
 ## Next action
 
-Pick the gate framework next (`gate_protocol`, `gate_runtime`, `rootfs_gate`,
-`rootfs_gate_backend`, `systemd_m2_gate`) against the current
-`contract.py`/`profiles.py`/`signed_sources.py`, then re-run the closure for
-the browser/desktop layer and continue bottom-up. Every new pick gets a
+Pick the browser helper layer next (`browser_web_contract`,
+`firefox_startup_profile`, `browser_web_qemu_gate`, `desktop_network_gate`,
+`desktop_network_qemu_gate`, `qemu_uboot_devices`), adapting the Megrez
+network fixture/proxy to the current local fixture. Then re-run the closure
+for the desktop shell gate and continue bottom-up. Every new pick gets a
 `Picked-from:` or `Ported-from:` trailer and a row here.

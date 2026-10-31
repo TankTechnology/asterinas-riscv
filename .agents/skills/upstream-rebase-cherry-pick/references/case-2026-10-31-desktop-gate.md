@@ -97,6 +97,16 @@ bootargs, QEMU argv, argument defaults, and pinned-output locking. Host
 baseline is now **101 tests / 12 modules**. The desktop closure dropped from
 18 missing modules to 11; `browser_web_qemu_gate` dropped from 13 to 8.
 
+## Third pick executed
+
+The desktop application gates were picked in `9d597171c`
+(`feat(riscv): pick the Debian desktop application gates`): `desktop_m3_gate.py`
+and `desktop_m4_gate.py`. They import only the picked framework and the current
+contract module. Added 5 focused tests for graphical QEMU argv, ordered
+milestones, framebuffer evidence, out-of-order transcripts, fatal markers, and
+empty release values. Host baseline is now **106 tests / 13 modules**.
+Remaining desktop closure is 9 modules; remaining browser QEMU closure is 6.
+
 ## Path/contract observations
 
 - The current line has no `browser_web_qemu_gate.py` host gate; it only keeps
