@@ -7,8 +7,8 @@
 - Source product branch: `feature/qemu-network-runtime` = `af48751df`
 - Scope: QEMU-supported Debian/RISC-V surface. Board/GPU/DRM work remains out
   of scope unless separately approved.
-- Current stack: 60 commits over upstream, including the P0 desktop-evidence
-  and P1 broader-ext4 changes.
+- Current stack: 61 commits over upstream, including the P0 desktop-evidence,
+  P1 broader-ext4, and fresh-builder evidence changes.
 
 This ledger records the provenance of the current stack and the dependency
 closure for the still-missing desktop/browser automation. It is updated in the
@@ -84,8 +84,12 @@ P0 keeps direct boot and extends the same `desktop_gate.py`:
 
 The first real pass is
 `evidence/2026-10-31-p0-desktop-gate-fb5/`: `status=pass`,
-`changed_fraction=0.993874`, and a rendered Firefox New Tab window. The
-failed diagnostic runs are preserved under
+`changed_fraction=0.993874`, and a rendered Firefox New Tab window. A fresh
+`browser-web` rootfs was then rebuilt from the current builder and the same
+Makefile gate passed on it (`status=pass`, `changed_fraction=0.994758`, title
+`Mozilla_Firefox`) under `evidence/2026-10-31-p0-desktop-gate-fresh/`; the
+fresh image contains the observer, enabled unit, and `Downloads` directory.
+The failed diagnostic runs are preserved under
 `2026-10-31-p0-fbprobe-ram/`, `2026-10-31-p0-desktop-gate-fb4/`, and
 `2026-10-31-p0-firefox-diag/`. The skill's pitfall table records the dead
 BAR, the missing network mode, the `read`/newline bug, and the helper-window

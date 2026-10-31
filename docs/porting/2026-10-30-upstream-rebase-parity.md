@@ -407,6 +407,15 @@ rendered the wallpaper), and `2026-10-31-p0-desktop-gate-fb4/` (a small
 `2026-10-31-p0-firefox-diag/` serial shows the failed browser unit and
 `2026-10-31-p0-fbprobe-ram-long/` shows the desktop settle timing.
 
+A fresh `browser-web` rootfs was then rebuilt from the current builder
+(`build_rootfs.sh --profile browser-web`, log `target/p0-builder.log`) and the
+same Makefile gate passed on it: `status=pass`, `changed_fraction=0.994758`,
+title `Mozilla_Firefox`. Evidence is under
+`2026-10-31-p0-desktop-gate-fresh/`. The fresh image contains
+`desktop-frame-evidence`, its enabled unit, and the `Downloads` directory, so
+the P0 result is reproducible from the repository builder rather than only the
+earlier patched image.
+
 The P1 ext4 evidence is under
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-p1-ext4-64bit-extended/`
 (semantics plus stage 1 on the generated 64-bit descriptor image) and
