@@ -123,6 +123,18 @@ if [ "$1" = "riscv" ]; then
     if [ "$INITRAMFS" = "off" ]; then
         ROOTFS_RISCV_DEVICE_ARGS="-device virtio-blk-device,drive=rootfs"
     fi
+    if [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" = "true" ]; then
+        XFSTESTS_RISCV_DRIVE_ARGS="\
+        -drive if=none,format=raw,id=x3,file=./test/initramfs/build/xfstests_test.img \
+        -drive if=none,format=raw,id=x4,file=./test/initramfs/build/xfstests_scratch.img \
+        "
+        # Keep x4/x3 before x2 so the existing reverse-discovery order maps
+        # them to /dev/vdd (test) and /dev/vde (scratch).
+        XFSTESTS_RISCV_DEVICE_ARGS="\
+        -device virtio-blk-device,drive=x4 \
+        -device virtio-blk-device,drive=x3 \
+        "
+    fi
 
     QEMU_ARGS="\
         -cpu rv64,svpbmt=true,zkr=true \
@@ -138,7 +150,9 @@ if [ "$1" = "riscv" ]; then
         -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
         -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
         -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
+        $XFSTESTS_RISCV_DRIVE_ARGS \
         $ROOTFS_RISCV_DEVICE_ARGS \
+        $XFSTESTS_RISCV_DEVICE_ARGS \
         -device virtio-blk-device,drive=x2 \
         -device virtio-blk-device,drive=x1 \
         -device virtio-blk-device,drive=x0 \

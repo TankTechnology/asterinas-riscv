@@ -1,5 +1,5 @@
 {
-  "commit": "805fb3010",
+  "commit": "01de8fc06",
   "module_names": [
     "tools.riscv.tests.test_debian_builders",
     "tools.riscv.tests.test_desktop_gate",
@@ -10,9 +10,10 @@
     "tools.riscv.tests.test_product_gate",
     "tools.riscv.tests.test_rootfs_contract",
     "tools.riscv.tests.test_rootfs_profiles",
-    "tools.riscv.tests.test_tooling_surface"
+    "tools.riscv.tests.test_tooling_surface",
+    "tools.riscv.tests.test_xfstests_config"
   ],
-  "modules": 10,
+  "modules": 11,
   "schema_version": 1,
   "skip_reasons": [],
   "test_ids": [
@@ -108,7 +109,13 @@
     "tools.riscv.tests.test_tooling_surface.MakefileSurfaceTests.test_host_runner_targets_use_the_repository_runner",
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_active_modules_do_not_import_removed_verticals",
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_every_active_python_module_compiles",
-    "tools.riscv.tests.test_tooling_surface.ShellSurfaceTests.test_every_active_shell_script_parses"
+    "tools.riscv.tests.test_tooling_surface.ShellSurfaceTests.test_every_active_shell_script_parses",
+    "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_build_config_uses_the_compatibility_feature_set",
+    "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_prepare_script_has_valid_bash_syntax",
+    "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_run_lists_are_well_formed_and_short_is_a_subset",
+    "tools.riscv.tests.test_xfstests_config.Ext4ConfigTests.test_runtime_config_mounts_ext4_without_acl",
+    "tools.riscv.tests.test_xfstests_config.RiscvQemuTests.test_xfstests_devices_are_not_attached_by_default",
+    "tools.riscv.tests.test_xfstests_config.RiscvQemuTests.test_xfstests_devices_precede_x2_for_reverse_discovery"
   ],
-  "tests": 93
+  "tests": 99
 }

@@ -1,0 +1,11 @@
+# Inherited from the ext2 profile, where these cases are excluded on Asterinas.
+# They are not in the ext4 short/full lists yet; their ext4 status is untriaged.
+# Do not grow this list just to make a run green, and record a reason before
+# adding an entry that the run lists actually select.
+generic/084
+generic/226
+generic/464
+generic/524
+generic/558
+generic/590
+generic/604
