@@ -12,6 +12,9 @@ Date: 2026-10-31
 - Tags (local and pushed): `pre-main-promotion` -> `0d552997f`;
   `backup/rebase-20261031` -> `01de8fc06`.
 - Fork default branch: `main-next`.
+- Standalone upstream topic branch `fix/proc-exe-interpreter` at `1574b33e4`
+  (based on `upstream/main`); pushed to the fork, not merged into the line and
+  not submitted upstream.
 - Archived old fork main: `archive/legacy-main-2026-10-31` -> `af48751df`
   (old `origin/main`).  The old `main` ref still exists at the same commit;
   it has not been deleted or renamed.
@@ -86,7 +89,7 @@ Debian rootfs, desktop gates, board drivers, or product evidence into these.
 
 | Topic branch | Source | Status |
 |---|---|---|
-| `fix/proc-exe-interpreter` | new | standalone candidate; needs implementation + regression test |
+| `fix/proc-exe-interpreter` | new | **implemented** (`1574b33e4`): boot regression passes fixed / fails base; pushed to fork; upstream PR pending explicit authorization |
 | `test/initramfs-devfd` | `13fe9f1af` subset | standalone generic test infrastructure |
 | `test/xfstests-cross-shebang` | `13fe9f1af` subset | standalone generic test infrastructure (cross builds) |
 | `fix/ext4-mount-identity` | `73241d475` subset | **blocked**: depends on the downstream ext4 extents/JBD2 feature stack, which is not in `upstream/main` |
@@ -96,9 +99,13 @@ Debian rootfs, desktop gates, board drivers, or product evidence into these.
 
 Upstreaming the ext4 extents/JBD2 feature stack itself is a separate, larger
 series; the ext4 kernel and xfstests slices above become upstreamable only
-after that decision.  Upstream PRs require explicit authorization.  The
-`/proc/self/exe` issue is already recorded: Asterinas points it at the original
-script path rather than the shebang interpreter.
+after that decision.  Upstream PRs require explicit authorization.
+
+The `/proc/self/exe` slice was validated on `upstream/main` + `1574b33e4`:
+the base kernel reports `Unexpected /proc/self/exe: /test/boot_hello.sh`,
+while the fixed kernel reports `PROC_SELF_EXE=/usr/bin/busybox` and
+`Successfully booted.`  Evidence:
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-proc-self-exe/`.
 
 ### 4. Product line
 
@@ -134,7 +141,8 @@ main and merge back with a squash PR.  Periodically rebase the product line on
 - [x] Push `rebase/upstream-20261029` fast-forward.
 - [x] Archive old `origin/main`, create/push `main-next`, and switch the fork
   default (old `main` retained).
-- [ ] Prepare standalone upstream branches: `/proc/self/exe`, `/dev/fd`, and
-  xfstests cross-shebang; ext4-specific slices wait on the feature-stack
-  decision.
+- [x] Prepare and validate the `/proc/self/exe` standalone branch
+  (`1574b33e4`); pushed to the fork.
+- [ ] Prepare the `/dev/fd` and xfstests cross-shebang standalone branches;
+  ext4-specific slices wait on the feature-stack decision.
 - [ ] Use the evidence patch and logs to start the journal/full-list triage.

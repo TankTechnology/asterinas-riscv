@@ -196,6 +196,14 @@ upstream slices: they depend on the downstream ext4 extents/JBD2 feature stack,
 which is absent from `upstream/main`.  Only `/proc/self/exe` and the generic
 `/dev/fd` / cross-shebang test-infrastructure fixes are independent candidates.
 
+The standalone `/proc/self/exe` branch is now `fix/proc-exe-interpreter`
+(`1574b33e4`, based on `upstream/main`), pushed to the fork.  The base kernel
+fails the new boot check with `Unexpected /proc/self/exe:
+/test/boot_hello.sh`; the fixed kernel prints `PROC_SELF_EXE=/usr/bin/busybox`
+and `Successfully booted.`  Evidence:
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-proc-self-exe/`.
+No upstream PR has been opened.
+
 ## Next action
 
 The P0 desktop Firefox/framebuffer gate and the P1 broader ext4 matrix are
