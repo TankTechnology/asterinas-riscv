@@ -182,6 +182,14 @@ Full-list triage attempts:
 - **Do not** pick a gate before its closure; clean textual application is not
   a runnable feature.
 
+The branch state after the xfstests short-list work is recorded in
+`docs/porting/2026-10-31-merge-route.md`: the validated code tip
+`0d552997f` is tagged `pre-main-promotion`, and the local
+`rebase/upstream-20261029` is fast-forwarded to the current line tip (this
+docs-only merge-route commit sits on top).  `backup/rebase-20261031` keeps the
+previous integration tip.  Nothing was pushed; the old `origin/main` is
+untouched.
+
 ## Next action
 
 The P0 desktop Firefox/framebuffer gate and the P1 broader ext4 matrix are
