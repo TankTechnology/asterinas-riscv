@@ -86,6 +86,17 @@ The two leaf helpers were picked into the rebase line in `961b7ceb7`
 from 81 tests / 9 modules to **92 tests / 11 modules**, all green. The next
 target is the gate framework, not the desktop gate itself.
 
+## Second pick executed
+
+The gate framework was picked in `6b62ca317`
+(`feat(riscv): pick the Debian gate framework`): `gate_protocol.py`,
+`gate_runtime.py`, `rootfs_gate.py`, `rootfs_gate_backend.py`, and
+`systemd_m2_gate.py`. It imported cleanly against the current
+`contract.py`/`profiles.py`/`signed_sources.py`; added 9 focused host tests for
+bootargs, QEMU argv, argument defaults, and pinned-output locking. Host
+baseline is now **101 tests / 12 modules**. The desktop closure dropped from
+18 missing modules to 11; `browser_web_qemu_gate` dropped from 13 to 8.
+
 ## Path/contract observations
 
 - The current line has no `browser_web_qemu_gate.py` host gate; it only keeps
