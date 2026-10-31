@@ -1,5 +1,5 @@
 {
-  "commit": "28dde5fa8",
+  "commit": "805fb3010",
   "module_names": [
     "tools.riscv.tests.test_debian_builders",
     "tools.riscv.tests.test_desktop_gate",
@@ -54,7 +54,10 @@
     "tools.riscv.tests.test_ext4_gate.ImageCopyTests.test_sparse_copy_preserves_content",
     "tools.riscv.tests.test_ext4_gate.MarkerContractTests.test_crash_workload_creates_the_expected_directory_size",
     "tools.riscv.tests.test_ext4_gate.MarkerContractTests.test_every_semantics_marker_is_emitted_by_a_command",
+    "tools.riscv.tests.test_ext4_gate.MarkerContractTests.test_extended_semantics_cover_many_files_fallocate_and_holes",
     "tools.riscv.tests.test_ext4_gate.MarkerContractTests.test_gate_markers_are_distinct",
+    "tools.riscv.tests.test_ext4_gate.SixtyFourBitImageTests.test_helper_converts_an_ext4_image_and_checks_the_result",
+    "tools.riscv.tests.test_ext4_gate.SixtyFourBitImageTests.test_makefile_exposes_the_64bit_target",
     "tools.riscv.tests.test_fsops.CacheTests.test_cache_admission_is_content_addressed_and_idempotent",
     "tools.riscv.tests.test_fsops.CacheTests.test_changed_source_is_rejected",
     "tools.riscv.tests.test_fsops.CacheTests.test_invalid_hash_is_rejected_before_touching_the_cache",
@@ -107,5 +110,5 @@
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_every_active_python_module_compiles",
     "tools.riscv.tests.test_tooling_surface.ShellSurfaceTests.test_every_active_shell_script_parses"
   ],
-  "tests": 90
+  "tests": 93
 }

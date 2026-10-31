@@ -348,6 +348,9 @@ DEBIAN_EXT4_KERNEL ?= target/osdk/asterinas-osdk-bin.Image
 DEBIAN_EXT4_ROOTFS ?=
 DEBIAN_EXT4_LOG_DIR ?= target/riscv-debian-ext4
 DEBIAN_EXT4_FAULT_STAGES ?= 1,2,3,4
+DEBIAN_EXT4_64BIT_BASE ?=
+DEBIAN_EXT4_64BIT_LOG_DIR ?= $(DEBIAN_EXT4_LOG_DIR)-64bit
+DEBIAN_EXT4_64BIT_ROOTFS ?= $(DEBIAN_EXT4_64BIT_LOG_DIR)/ext4-64bit.ext4
 .PHONY: test_riscv_debian_ext4
 test_riscv_debian_ext4:
 	@if [ -z "$(DEBIAN_EXT4_ROOTFS)" ]; then \
@@ -358,6 +361,20 @@ test_riscv_debian_ext4:
 		--kernel "$(DEBIAN_EXT4_KERNEL)" \
 		--rootfs "$(DEBIAN_EXT4_ROOTFS)" \
 		--log-dir "$(DEBIAN_EXT4_LOG_DIR)" \
+		--fault-stages "$(DEBIAN_EXT4_FAULT_STAGES)"
+
+.PHONY: test_riscv_debian_ext4_64bit
+test_riscv_debian_ext4_64bit:
+	@if [ -z "$(DEBIAN_EXT4_64BIT_BASE)" ]; then \
+		echo "Error: set DEBIAN_EXT4_64BIT_BASE to an ext4 image with extents and journal"; \
+		exit 2; \
+	fi
+	tools/riscv/debian/make_ext4_64bit_image.sh \
+		"$(DEBIAN_EXT4_64BIT_BASE)" "$(DEBIAN_EXT4_64BIT_ROOTFS)"
+	python3 tools/riscv/debian/ext4_gate.py \
+		--kernel "$(DEBIAN_EXT4_KERNEL)" \
+		--rootfs "$(DEBIAN_EXT4_64BIT_ROOTFS)" \
+		--log-dir "$(DEBIAN_EXT4_64BIT_LOG_DIR)" \
 		--fault-stages "$(DEBIAN_EXT4_FAULT_STAGES)"
 
 # Aggregate QEMU product gate for the active Debian surface.  The direct boot

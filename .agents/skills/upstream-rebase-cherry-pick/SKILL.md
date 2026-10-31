@@ -232,6 +232,8 @@ authorized.
 | Unprivileged guest output is not on the serial console | The Firefox wrapper's `printf` from uid 1000 can be dropped by the Asterinas console path. Use a root systemd observer that writes its own markers to `/dev/console` and include service/timeline diagnostics on timeout. |
 | Basic-only boot still needs a network mode | Without `systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct`, `browser-web-firefox` exits 64 with `invalid-network-profile`; `RestartPreventExitStatus=64` then leaves `asterinas-browser-web.service` failed and Firefox never starts. |
 | `read` from a process substitution needs a newline | A helper that prints `id title` without a trailing newline makes `read` return 1 at EOF, so a visible Firefox window was reported as `FIREFOX_WINDOW=timeout`. Use `printf '%s %s\n'` and let the failure path diagnose the empty case. |
+| An adjacent branch can use a different storage design | `948b2c634` looked like a flex_bg add-on but expected `stage_metadata`, `StagedGroupMetadata`, and a `desc_size` field from another branch; porting it was a rewrite, not a pick. Trial-record the design mismatch and keep the current implementation. |
+| Additive conflict resolution is not a semantic port | `511143081` (punch hole) had only additive conflict hunks, yet the trial build produced 26 errors against current extent/indirect APIs. Always compile and run a focused test after resolving hunks, even when no semantic conflict remains. |
 | Missing cleanup | Trial worktrees, cherry-pick state, and partial indexes must be aborted/removed before returning. |
 
 When a new pattern appears, add it to this table and to

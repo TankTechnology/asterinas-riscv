@@ -15,6 +15,8 @@ from unittest import mock
 
 from tools.riscv.debian import ext4_gate as gate
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 class MarkerContractTests(unittest.TestCase):
     def test_every_semantics_marker_is_emitted_by_a_command(self) -> None:
@@ -40,6 +42,40 @@ class MarkerContractTests(unittest.TestCase):
             gate.RECOVERY_END,
         }
         self.assertEqual(len(markers), 4)
+
+    def test_extended_semantics_cover_many_files_fallocate_and_holes(self) -> None:
+        script = "\n".join(gate.SEMANTICS_COMMANDS)
+
+        self.assertIn("$n -lt 200", script)
+        self.assertIn("fallocate -z", script)
+        self.assertIn("GATE_FALLOCATE_ZERO_VERIFY_OK", script)
+        self.assertIn("GATE_HOLE_ZERO_OK", script)
+        self.assertIn("GATE_DEEP_CREATED", script)
+        self.assertIn("sha256sum -c", script)
+
+
+class SixtyFourBitImageTests(unittest.TestCase):
+    def test_helper_converts_an_ext4_image_and_checks_the_result(self) -> None:
+        helper = REPO_ROOT / "tools/riscv/debian/make_ext4_64bit_image.sh"
+        text = helper.read_text(encoding="utf-8")
+
+        subprocess.run(
+            ["bash", "-n", str(helper)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        self.assertIn("resize2fs -b", text)
+        self.assertIn("e2fsck -fy", text)
+        self.assertIn("Group descriptor size", text)
+        self.assertIn("64bit", text)
+
+    def test_makefile_exposes_the_64bit_target(self) -> None:
+        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+
+        self.assertIn("test_riscv_debian_ext4_64bit:", makefile)
+        self.assertIn("make_ext4_64bit_image.sh", makefile)
+        self.assertIn("DEBIAN_EXT4_64BIT_BASE", makefile)
 
 
 class ImageCopyTests(unittest.TestCase):

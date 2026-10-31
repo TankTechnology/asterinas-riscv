@@ -60,6 +60,9 @@ SEMANTICS_COMMANDS = [
     "dd if=/dev/zero of=/ext4-gate/sparse.bin bs=4096 count=1 seek=$n "
     "2>/dev/null || exit 1; done; echo GATE_EXTENTS_OK",
     "dd if=/dev/zero of=/ext4-gate/large.bin bs=4096 count=2048 2>/dev/null && echo GATE_LARGE_OK",
+    "dd if=/dev/urandom of=/ext4-gate/rand.bin bs=4096 count=64 2>/dev/null && echo GATE_RAND_WRITE_OK",
+    "sha256sum /ext4-gate/rand.bin > /ext4-gate/rand.sha && sync && "
+    "sha256sum -c /ext4-gate/rand.sha && echo GATE_RAND_SHA_OK",
     "truncate -s 1048576 /ext4-gate/large.bin && echo GATE_TRUNC_PARTIAL_OK",
     "truncate -s 0 /ext4-gate/sparse.bin && echo GATE_TRUNC_ZERO_OK",
     "ln /ext4-gate/dir/a.txt /ext4-gate/hardlink.txt && echo GATE_LINK_OK",
@@ -69,6 +72,26 @@ SEMANTICS_COMMANDS = [
     "mv /ext4-gate/dir/a.txt /ext4-gate/moved.txt && echo GATE_RENAME_OK",
     "cat /ext4-gate/moved.txt",
     "sync && echo GATE_SYNC2_OK",
+    "mkdir -p /ext4-gate/many; n=0; while [ $n -lt 200 ]; do "
+    "printf 'file-%s\\n' \"$n\" > /ext4-gate/many/f$n; n=$((n + 1)); done; "
+    "echo GATE_MANY_CREATED",
+    "count=0; for f in /ext4-gate/many/f*; do "
+    "[ -f \"$f\" ] && count=$((count + 1)); done; "
+    "[ \"$count\" -eq 200 ] && echo GATE_MANY_COUNT_OK",
+    "sync && echo GATE_MANY_SYNC_OK",
+    "path=/ext4-gate/deep; n=0; while [ $n -lt 20 ]; do "
+    "path=$path/d$n; mkdir -p \"$path\"; n=$((n + 1)); done; "
+    "echo GATE_DEEP_CREATED",
+    "dd if=/dev/zero of=/ext4-gate/sparse-read.bin bs=4096 count=1 seek=256 "
+    "2>/dev/null; sync; dd if=/ext4-gate/sparse-read.bin bs=4096 skip=128 count=1 "
+    "2>/dev/null | od -An -v -tx1 | tr -d ' \\n' | grep -q '^0*$' && "
+    "echo GATE_HOLE_ZERO_OK",
+    "fallocate -l 262144 /ext4-gate/falloc.bin && echo GATE_FALLOCATE_ALLOCATE_OK",
+    "fallocate -z -o 4096 -l 8192 /ext4-gate/falloc.bin && echo GATE_FALLOCATE_ZERO_OK",
+    "dd if=/ext4-gate/falloc.bin bs=4096 skip=1 count=2 2>/dev/null | "
+    "od -An -v -tx1 | tr -d ' \\n' | grep -q '^0*$' && "
+    "echo GATE_FALLOCATE_ZERO_VERIFY_OK",
+    "sync && echo GATE_FALLOCATE_SYNC_OK",
     "echo GATE_EXT4_SEMANTICS_END",
 ]
 
@@ -76,6 +99,8 @@ SEMANTICS_MARKERS = (
     "GATE_DD_OK",
     "GATE_EXTENTS_OK",
     "GATE_LARGE_OK",
+    "GATE_RAND_WRITE_OK",
+    "GATE_RAND_SHA_OK",
     "GATE_TRUNC_PARTIAL_OK",
     "GATE_TRUNC_ZERO_OK",
     "GATE_LINK_OK",
@@ -83,6 +108,15 @@ SEMANTICS_MARKERS = (
     "GATE_UNLINK_OK",
     "GATE_RENAME_OK",
     "GATE_SYNC2_OK",
+    "GATE_MANY_CREATED",
+    "GATE_MANY_COUNT_OK",
+    "GATE_MANY_SYNC_OK",
+    "GATE_DEEP_CREATED",
+    "GATE_HOLE_ZERO_OK",
+    "GATE_FALLOCATE_ALLOCATE_OK",
+    "GATE_FALLOCATE_ZERO_OK",
+    "GATE_FALLOCATE_ZERO_VERIFY_OK",
+    "GATE_FALLOCATE_SYNC_OK",
 )
 
 CRASH_COMMANDS = [

@@ -47,7 +47,9 @@ The ext4 gate copies the supplied image for every pass, so it never writes the
 input. It boots with `rootfstype=ext4` and runs:
 
 - a write suite covering directories, ordinary and fragmented extent files,
-  truncate, hard links, rename, and fsync;
+  random-data SHA-256, truncate, hard links, rename, fsync, a 200-file
+  directory, a 20-level directory tree, hole reads, `fallocate` allocation,
+  and zero-range (`fallocate -z`) verification;
 - crash/replay passes for JBD2 fault stages 1-4, each writing a directory of
   32 files before the crash and verifying every entry after recovery;
 - `e2fsck -fn` after every recovery.
@@ -55,14 +57,21 @@ input. It boots with `rootfstype=ext4` and runs:
 ```bash
 make test_riscv_debian_ext4 \
   DEBIAN_EXT4_ROOTFS=/absolute/path/to/rootfs.ext4
+
+# Derive a 64-bit-descriptor image from an ext4 base and run the same gate.
+make test_riscv_debian_ext4_64bit \
+  DEBIAN_EXT4_64BIT_BASE=/absolute/path/to/rootfs.ext4
 ```
 
 `DEBIAN_EXT4_FAULT_STAGES` defaults to `1,2,3,4`; set it to an empty string to
 run only the write suite. Logs and e2fsck receipts go to
-`target/riscv-debian-ext4/`. The host needs `e2fsck` and `cp` with sparse-file
-support. The image must be a compatibility ext4 image with `extent` and
-`has_journal`; 64-bit group descriptors are supported for low block numbers,
-but metadata checksums, `flex_bg`, and `orphan_file` are not.
+`target/riscv-debian-ext4/` (or `target/riscv-debian-ext4-64bit/`). The host
+needs `e2fsck`, `resize2fs`, `dumpe2fs`, and `cp` with sparse-file support.
+The image must be a compatibility ext4 image with `extent` and `has_journal`;
+64-bit group descriptors are supported for low block numbers, but metadata
+checksums, `flex_bg`, and `orphan_file` are not. The 64-bit target keeps the
+base image untouched, enables `64bit` on a sparse copy, and verifies the
+64-byte group descriptor size before booting.
 
 ## Host tests
 

@@ -36,10 +36,10 @@ removed from this line. Their history remains in the old product tree at
 | Desktop gate | `make test_riscv_debian_desktop` reaches the ordered `BROWSER_WEB_DESKTOP_STAGE` markers, requires a visible Firefox window (geometry-checked, `xdotool` with `xwininfo` fallback), captures desktop and Firefox frames from guest RAM with `pmemsave`, validates non-black/colour-rich pixels, and requires the Firefox window to change the frame. The prior marker-only gate passed on a dead bochs PCIe BAR and was not display evidence. |
 | Browser | Firefox maps its window, opens a Marionette session, launches Gecko content/socket processes, navigates to the local owned fixture page, completes the public Baidu homepage gate, and passes the public Bilibili playback gate. Baidu reports `BAIDU_GATE_RC=0` with `tls=verified`; Bilibili plays a live 640x360 video with 127 decoded frames (`BILIBILI_GATE_RC=0`). |
 | dsh | Non-root headless turn, C compile/run through the bash tool, and the non-root web UI (UID 1000, HTTP 200) are verified. |
-| ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
+| ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The broadened write suite adds random-data SHA-256, a 200-file directory, a 20-level tree, hole reads, `fallocate` allocation, and zero-range verification; a generated 64-bit group-descriptor image passes the same suite and stage 1. Every resulting image passes `e2fsck -fn`. |
 | ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and both the standard and 64-bit ext4 gates were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
 | Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
-| Host tests | The isolated host runner covers the active Debian tooling with 90 tests in 10 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
+| Host tests | The isolated host runner covers the active Debian tooling with 93 tests in 10 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
 | Product gate | One aggregate target runs the direct QEMU gate and optionally the ext4/JBD2 and dsh components, writing per-component receipts and a single `result.json`. A real run including dsh passed in 203.8 seconds with gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, C compile/run returning 42, and all four ext4 journal stages clean. |
 
 ## Cleanup verification (2026-10-30)
@@ -247,11 +247,15 @@ process-substitution pitfalls found in this pass.
 ## Remaining blockers
 
 1. **ext4 feature coverage.** The compatibility driver covers a downstream
-   Debian ext4 profile with extents and an internal journal. It deliberately
-   rejects metadata checksums, high 64-bit block numbers, `flex_bg`,
-   `orphan_file`, inline data, and full multi-level extent splitting. The old
-   xfstests suite is not ported; selected ext2 durability invariants and their
-   ktests now are.
+   Debian ext4 profile with extents and an internal journal. P1 broadens the
+   write suite (200-file directory, 20-level tree, hole reads, random-data
+   SHA-256, `fallocate` allocation/zero-range) and adds a generated 64-bit
+   descriptor matrix target. It still deliberately rejects metadata checksums,
+   high 64-bit block numbers, `flex_bg`, `orphan_file`, inline data, and full
+   multi-level extent splitting. The old xfstests suite is not ported; the old
+   advanced ext4 feature commits were trial-picked and classified as blocked
+   because they depend on a divergent staged-metadata/block-group design (see
+   the cherry-pick ledger).
 2. **Network/procfs completeness.** IPv4 route dump/lookup/add,
    `/proc/net/route`, `/proc/net/dev`, `/proc/net/tcp`, and `/proc/net/udp`
    are present, but IPv6 route netlink, route deletion, and advanced route
@@ -292,6 +296,10 @@ python3 tools/riscv/debian/direct_boot_gate.py \
 # ext4/JBD2 write plus crash/replay gate
 make test_riscv_debian_ext4 \
   DEBIAN_EXT4_ROOTFS=/absolute/path/to/debian-root.ext4
+
+# Derive and exercise a 64-bit-descriptor ext4 image
+make test_riscv_debian_ext4_64bit \
+  DEBIAN_EXT4_64BIT_BASE=/absolute/path/to/debian-root.ext4
 
 # Host-side tooling suite (isolated modules, baseline-checked)
 make test_riscv_host HOST_TEST_JOBS=32
@@ -398,6 +406,15 @@ rendered the wallpaper), and `2026-10-31-p0-desktop-gate-fb4/` (a small
 `Firefox` helper window was found before the main window). The
 `2026-10-31-p0-firefox-diag/` serial shows the failed browser unit and
 `2026-10-31-p0-fbprobe-ram-long/` shows the desktop settle timing.
+
+The P1 ext4 evidence is under
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-p1-ext4-64bit-extended/`
+(semantics plus stage 1 on the generated 64-bit descriptor image) and
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-p1-ext4-64bit-make/`
+(the real `make test_riscv_debian_ext4_64bit` run). Both contain
+`semantics.log`, `crash-stage1.log`, `recovery-stage1.log`, the `e2fsck`
+receipts, and the gate receipt. The earlier `2026-10-31-p1-ext4-64bit/` run
+is the pre-broadening baseline on the same image.
 
 The old tree remains the fallback for behavior that is not yet reproduced on
 this line.

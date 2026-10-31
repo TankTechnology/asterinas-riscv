@@ -194,6 +194,37 @@ and `wrapper_pid=` distinguish a failed browser unit, a running Firefox with
 no mapped window, and a window that `xdotool` missed.  The first two failures
 were fixed from those fields without another full boot.
 
+## P1: broader ext4 coverage and blocked feature picks (2026-10-31)
+
+The old ext4 feature commits were trialed on the current line:
+
+- `948b2c634` (64-bit + `flex_bg`): conflicts on `block_group.rs`, `fs.rs`, and
+  `super_block.rs`; the source expects a staged-metadata design
+  (`stage_metadata`, `StagedGroupMetadata`, `desc_size`) that the current
+  driver does not have.  Classified `blocked`; current code already validates
+  64-bit descriptors.
+- `772a3de47` (metadata_csum): depends on `948` and journal checksum v3;
+  `blocked`.
+- `511143081` (punch hole): the two kernel hunks were purely additive and were
+  resolved mechanically, but the trial build failed with 26 errors against
+  current APIs (`extent_bytes`, `read_words`, `HasVmReaderWriter`).  Classified
+  `blocked`; a real port is a new implementation.
+- `14b2d352a` (journal transaction split): the current writer commits one
+  metadata block per transaction, so the encoder split would be dead code;
+  `superseded`.
+- `14133b5d3` / `ef12b537a` (EA inodes, tmpfile): not trialed; same divergent
+  base.
+
+P1 therefore broadened the current gate instead: 200-file directory, 20-level
+tree, hole reads, random-data SHA-256, `fallocate` allocation and `-z`
+zero-range checks, plus a generated 64-bit descriptor image
+(`make_ext4_64bit_image.sh`).  The 64-bit image passed the expanded suite and
+stage 1 with clean `e2fsck`.  Host tests grew to 93 / 10 modules.
+
+The lesson: a clean or additive conflict result still needs a compile/API
+check, and a feature branch with the same paths can carry a different storage
+design.  Record the trial outcome as `blocked` rather than forcing a rewrite.
+
 ## Path/contract observations
 
 - The current line has no `browser_web_qemu_gate.py` host gate; it only keeps
