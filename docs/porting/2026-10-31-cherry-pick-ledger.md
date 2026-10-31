@@ -7,8 +7,9 @@
 - Source product branch: `feature/qemu-network-runtime` = `af48751df`
 - Scope: QEMU-supported Debian/RISC-V surface. Board/GPU/DRM work remains out
   of scope unless separately approved.
-- Current stack: 61 commits over upstream, including the P0 desktop-evidence,
-  P1 broader-ext4, and fresh-builder evidence changes.
+- Current stack: the downstream commits over upstream, including the P0
+  desktop-evidence, P1 broader-ext4, fresh-builder evidence, and cleanup
+  changes.  Use `git log upstream/main..HEAD` for the exact set.
 
 This ledger records the provenance of the current stack and the dependency
 closure for the still-missing desktop/browser automation. It is updated in the
@@ -140,11 +141,16 @@ real Makefile target). The pre-broadening baseline is preserved under
 ## Next action
 
 The P0 desktop Firefox/framebuffer gate and the P1 broader ext4 matrix are
-delivered. Next candidates, in priority order:
+delivered. The old branch's downstream ext4 xfstests gate (`8531fae58`) is a
+separate, still-unported layer; see
+`docs/porting/2026-10-31-xfstests-survey.md` for the gap analysis and port
+plan. Next candidates, in priority order:
 
-1. IPv6 route netlink and route deletion;
-2. dsh service/launcher integration;
-3. unported ext4 features (metadata checksums, `flex_bg`, EA inodes, tmpfile),
+1. RISC-V/ext4 xfstests integration (ext4 config + x3/x4 devices + riscv64
+   conformance initramfs + a small run list);
+2. IPv6 route netlink and route deletion;
+3. dsh service/launcher integration;
+4. unported ext4 features (metadata checksums, `flex_bg`, EA inodes, tmpfile),
    only after a separate design decision on replacing the current staging
    model.
 

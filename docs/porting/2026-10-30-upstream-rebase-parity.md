@@ -236,7 +236,7 @@ RAM-backed simple-framebuffer DTB (`make_fb_ram_dtb.sh`), boots with
 `ASTERINAS_WEB_NETWORK_MODE=direct`, waits for a visible Firefox window from
 a root guest observer, and reads the desktop/Firefox frames from guest RAM via
 the QEMU monitor. It validates non-black pixels and colour count and requires
-the Firefox window to change the frame. Host tests are now 90 tests in 10
+the Firefox window to change the frame. Host tests are now 93 tests in 10
 modules.
 
 The skill and pick ledger under `.agents/skills/upstream-rebase-cherry-pick/`
