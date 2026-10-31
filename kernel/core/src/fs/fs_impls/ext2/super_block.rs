@@ -125,11 +125,12 @@ pub(super) struct SuperBlock {
     prealloc_file_blocks: u8,
     /// Number of blocks to preallocate for directories.
     prealloc_dir_blocks: u8,
+    /// Blocks per group reserved for online growth of the group descriptor table.
+    reserved_gdt_blocks: u16,
     //
     // These fields are reserved and currently serve no purpose.
     min_rev_level: u16,
     algorithm_usage_bitmap: u32,
-    padding1: u16,
     journal_uuid: [u8; 16],
     journal_ino: u32,
     journal_dev: u32,
@@ -328,9 +329,9 @@ impl SuperBlock {
             last_mounted_dir: sb.last_mounted_dir,
             prealloc_file_blocks: sb.prealloc_file_blocks,
             prealloc_dir_blocks: sb.prealloc_dir_blocks,
+            reserved_gdt_blocks: sb.reserved_gdt_blocks,
             min_rev_level: sb.min_rev_level,
             algorithm_usage_bitmap: sb.algorithm_usage_bitmap,
-            padding1: sb.padding1,
             journal_uuid: sb.journal_uuid,
             journal_ino: sb.journal_ino,
             journal_dev: sb.journal_dev,
@@ -619,7 +620,9 @@ impl SuperBlock {
 
         for group_idx in 0..nr_block_groups {
             if self.has_super_block(group_idx) {
-                overhead = overhead.saturating_add(1 + group_desc_blocks_count);
+                overhead = overhead
+                    .saturating_add(1 + group_desc_blocks_count)
+                    .saturating_add(u32::from(self.reserved_gdt_blocks));
             }
         }
 
@@ -837,7 +840,8 @@ pub(super) struct RawSuperBlock {
     pub algorithm_usage_bitmap: u32,
     pub prealloc_file_blocks: u8,
     pub prealloc_dir_blocks: u8,
-    padding1: u16,
+    /// Blocks per group reserved for online growth of the group descriptor table.
+    pub reserved_gdt_blocks: u16,
     // These fields are for journaling support in Ext3.
     /// UUID of the journal superblock.
     pub journal_uuid: [u8; 16],
@@ -900,7 +904,7 @@ impl From<&SuperBlock> for RawSuperBlock {
             algorithm_usage_bitmap: sb.algorithm_usage_bitmap,
             prealloc_file_blocks: sb.prealloc_file_blocks,
             prealloc_dir_blocks: sb.prealloc_dir_blocks,
-            padding1: sb.padding1,
+            reserved_gdt_blocks: sb.reserved_gdt_blocks,
             journal_uuid: sb.journal_uuid,
             journal_ino: sb.journal_ino,
             journal_dev: sb.journal_dev,

@@ -110,6 +110,10 @@ pub(crate) struct Ext2 {
     group_descriptors_segment: USegment,
     /// Runtime mount options that affect block-count reporting.
     mount_options: Ext2MountOptions,
+    /// Whether this volume was mounted through the ext4 compatibility type.
+    mounted_as_ext4: bool,
+    /// Blocks reserved for the internal journal.
+    journal_blocks: AtomicU32,
     /// Recorded VFS filesystem flags.
     flags: AtomicFsFlags,
     /// FS event stats for VFS.
@@ -252,6 +256,8 @@ impl Ext2 {
             nr_inodes_per_group,
             group_descriptors_segment,
             mount_options,
+            mounted_as_ext4: allow_journal,
+            journal_blocks: AtomicU32::new(0),
             flags: AtomicFsFlags::new(flags),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
@@ -273,6 +279,16 @@ impl Ext2 {
         Ok(ext2)
     }
 
+    /// Returns whether this volume was opened through the ext4 entry point.
+    pub(super) fn is_ext4(&self) -> bool {
+        self.mounted_as_ext4
+    }
+
+    /// Returns the number of blocks reserved for the internal journal.
+    pub(super) fn journal_blocks(&self) -> u32 {
+        self.journal_blocks.load(Ordering::Relaxed)
+    }
+
     /// Replays committed transactions from the internal JBD2 journal.
     fn recover_journal(&self, noload: bool) -> Result<()> {
         let (journal_ino, journal_dev) = {
@@ -289,6 +305,8 @@ impl Ext2 {
             return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal superblock");
         }
         let journal = JournalSuperBlock::parse(&block)?;
+        self.journal_blocks
+            .store(journal.max_length, Ordering::Relaxed);
         self.validate_journal_uuid(journal)?;
         if !journal.needs_recovery() || noload {
             return Ok(());
@@ -1316,7 +1334,7 @@ mod test {
                 test_utils::{
                     BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
                     RawInodeBuilder, assert_errno, create_file, default_fixture,
-                    make_valid_group_desc, make_valid_super_block,
+                    make_valid_group_desc, make_valid_raw_super_block, make_valid_super_block,
                 },
             },
             vfs::file_system::FileSystem as FileSystemTrait,
@@ -1348,6 +1366,27 @@ mod test {
         assert_errno!(fixture.ext2.flush_journal_device(), Errno::EIO);
         fixture.disk.set_fail_flush(false);
         fixture.ext2.flush_journal_device().unwrap();
+    }
+
+    #[ktest]
+    fn ext4_entry_point_reports_ext4_name() {
+        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
+        let ext4 = Ext2::open(fixture.disk.clone(), FsFlags::empty(), None, true).unwrap();
+        assert_eq!(fixture.ext2.name(), "ext2");
+        assert_eq!(ext4.name(), "ext4");
+    }
+
+    #[ktest]
+    fn total_metadata_blocks_counts_reserved_gdt_blocks() {
+        let base = SuperBlock::try_from(make_valid_raw_super_block(1))
+            .unwrap()
+            .total_metadata_blocks();
+        let mut raw = make_valid_raw_super_block(1);
+        raw.reserved_gdt_blocks = 5;
+        let with_reserved = SuperBlock::try_from(raw)
+            .unwrap()
+            .total_metadata_blocks();
+        assert_eq!(with_reserved, base + 5);
     }
 
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {

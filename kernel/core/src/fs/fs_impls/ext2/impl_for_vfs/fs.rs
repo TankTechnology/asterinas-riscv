@@ -21,7 +21,7 @@ use crate::{
 
 impl FileSystem for Ext2 {
     fn name(&self) -> &'static str {
-        "ext2"
+        if self.is_ext4() { "ext4" } else { "ext2" }
     }
 
     fn sync(&self) -> Result<()> {
@@ -44,7 +44,10 @@ impl FileSystem for Ext2 {
         let blocks = if self.uses_minix_df() {
             sb.total_blocks()
         } else {
-            sb.total_blocks().saturating_sub(sb.total_metadata_blocks())
+            let overhead = sb
+                .total_metadata_blocks()
+                .saturating_add(self.journal_blocks());
+            sb.total_blocks().saturating_sub(overhead)
         };
         SuperBlock {
             magic: MAGIC_NUM as u64,
