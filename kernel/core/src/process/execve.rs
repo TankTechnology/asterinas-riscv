@@ -59,11 +59,12 @@ pub(crate) fn do_execve(
         envp
     );
 
-    let executable_path = executable.path().clone();
     let program_to_load = ProgramToLoad::from_executable(executable, &path_resolver, argv, envp)?;
     let exec_cred = prepare_exec_cred(program_to_load.elf_path(), ctx)?;
 
-    let new_vmar = VmarHandle::new(ProcessVm::new(executable_path.clone()));
+    // `/proc/self/exe` must name the program that the kernel actually loaded.
+    // For a shebang script that is its interpreter, not the script itself.
+    let new_vmar = VmarHandle::new(ProcessVm::new(program_to_load.elf_path().clone()));
     let elf_load_info = program_to_load.load_to_vmar(&new_vmar, &path_resolver)?;
 
     // Ensure no other thread is concurrently performing exit_group or execve.
