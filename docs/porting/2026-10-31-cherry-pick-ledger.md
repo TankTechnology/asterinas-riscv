@@ -30,59 +30,42 @@ same change as each new pick. See
 | ext4 extents + JBD2 + crash gates | `294c225ce` | `30cd05424`,`7b2bfc87d`,`7c960b105` | superseded/expanded | 64-bit and crash gates |
 | ext2 durability invariants | old ext2 work | `31acb7c3c` | port/new | ktests + ext2/e2fsck probe |
 | host suite + aggregate product gate | old host suite, not cherry-picked wholesale | `2abf63a3a` | new on rebase line | 81 host tests, product receipt |
-| QMP screendump/input + PPM audit helpers | `30e71ce3f`,`5c364ff75`,`0627c9983`,`4e8d063bc`,`d858c0c85` | `961b7ceb7` | file pick + tests | `test_qemu_qmp.py`, `test_qemu_ppm.py` |
-| Debian gate framework (protocol/runtime/rootfs orchestration/systemd M2) | `239789a59`,`294c225ce`,`a7184cc59`,`8afb69e6e`,`aa98d0857`,`ef35d98a0` | `6b62ca317` | file pick + focused tests | `test_debian_gate_framework.py` |
-| Debian desktop application gates (M3/M4 graphical shell + framebuffer classification) | `5ca126b73`,`df62a0419`,`58432ef36` | `9d597171c` | file pick + focused tests | `test_desktop_gates.py` |
+| Desktop direct-boot gate (kernel + Stage1 initrd + DTB, ordered session markers) | new on rebase line; old gate behavior used as reference | pending commit | new + consolidated | `test_desktop_gate.py`, `result.json` |
 
 `superseded` means the old implementation exists, but the current line's
 implementation is the one to keep. Do not replace current modules with the old
 copies merely for provenance.
 
-## Pending: desktop/browser automation
+## Desktop consolidation (2026-10-31)
 
-Source commits:
+A direct QEMU boot using `-kernel Image -initrd <full Stage1 cpio> -dtb
+fb-bochs.dtb` reached systemd, Xorg, the window manager, the desktop session,
+and `panel-start` on the current `browser-web` root. The compact
+`tools/riscv/debian/desktop_gate.py` now checks those ordered markers and
+passes with a real QEMU run. U-Boot and the historical M3/M4 gate stack are not
+needed for this check.
 
-| Source | Feature | Status |
-|---|---|---|
-| `5ca126b73` | Debian desktop application gate (`desktop_m4_gate.py`) | delivered in `9d597171c` |
-| `df62a0419` | usable Debian desktop (profile/desktop files) | delivered gate portion in `9d597171c`; profile files still need merge review |
-| `a0d6f2938` | browser-web desktop shell + bounded evidence gate | blocked; 8 conflicts when picked alone |
-| `0dfa6f615` | two-boot daily-use QEMU gate | blocked; gate framework now present, browser/network closure still missing |
-| `browser_web_qemu_gate.py` history | browser QEMU orchestration | blocked on browser/network helpers |
+As a result, the previously picked scaffolding was removed:
 
-Dependency closure measured with
-`.agents/skills/upstream-rebase-cherry-pick/scripts/local_import_closure.py`:
+- `qemu_qmp.py`, `qemu_ppm.py` (`961b7ceb7`) — removed;
+- `gate_protocol.py`, `gate_runtime.py`, `rootfs_gate.py`,
+  `rootfs_gate_backend.py`, `systemd_m2_gate.py` (`6b62ca317`) — removed;
+- `desktop_m3_gate.py`, `desktop_m4_gate.py` (`9d597171c`) — removed;
+- their wrapper test modules — removed.
 
-| Target | Closure | Missing after leaf + framework picks |
-|---|---:|---:|
-| `browser_web_desktop_shell_qemu_gate` | 24 | 9 |
-| `browser_web_qemu_gate` | 19 | 6 |
-| `desktop_m4_gate` | 10 | 0 |
-| `desktop_m3_gate` | 9 | 0 |
-| `rootfs_gate` | 7 | 0 |
-| `qemu_qmp`, `qemu_ppm` | 2 | 0 |
+Reasons:
 
-Trial results:
+- The generic framework is U-Boot/two-boot shaped and much larger than the
+  direct-boot desktop check.
+- QMP screendump of the bochs display returned a 640x480 VGA image even with
+  an explicit display device, while the guest consumes the 1280x1024
+  simple-framebuffer. It is not reliable pixel evidence for this boot path.
+- Pixel/Firefox-window acceptance remains a manual desktop check; the new gate
+  is the repeatable startup regression.
 
-- `0dfa6f615` applies cleanly to the rebase line but imports
-  `desktop_m5_qemu_gate`, `gate_protocol`, `gate_runtime`, `rootfs_gate`,
-  `rootfs_gate_backend`, and `systemd_m2_gate`; it is not runnable alone.
-- `a0d6f2938` conflicts on eight paths, including
-  `build_rootfs.sh`, `desktop_m5_session.sh`, and old rootfs tests.
-
-Pick order:
-
-1. ~~`qemu_qmp.py`, `qemu_ppm.py`~~ — done in `961b7ceb7`, with focused tests.
-2. ~~`gate_protocol.py`, `gate_runtime.py`, `rootfs_gate.py`,
-   `rootfs_gate_backend.py`, `systemd_m2_gate.py`~~ — done in `6b62ca317`.
-3. ~~`desktop_m3_gate.py` / `desktop_m4_gate.py`~~ — done in `9d597171c`.
-4. Browser helpers: `browser_web_contract.py`, `firefox_startup_profile.py`,
-   `browser_web_qemu_gate.py`, `desktop_network_gate.py`,
-   `desktop_network_qemu_gate.py`, `qemu_uboot_devices.py`; adapt the Megrez
-   network fixture/proxy to the current local fixture rather than importing
-   board-specific behavior.
-5. `browser_web_desktop_shell_qemu_gate.py`.
-6. Makefile/product-gate integration and evidence.
+Remaining desktop work is optional and separate: a Firefox/Marionette or
+guest-side framebuffer evidence layer. It should extend `desktop_gate.py`, not
+restore the removed framework.
 
 ## Decisions
 
@@ -97,9 +80,13 @@ Pick order:
 
 ## Next action
 
-Pick the browser helper layer next (`browser_web_contract`,
-`firefox_startup_profile`, `browser_web_qemu_gate`, `desktop_network_gate`,
-`desktop_network_qemu_gate`, `qemu_uboot_devices`), adapting the Megrez
-network fixture/proxy to the current local fixture. Then re-run the closure
-for the desktop shell gate and continue bottom-up. Every new pick gets a
-`Picked-from:` or `Ported-from:` trailer and a row here.
+The desktop startup gate is delivered. Next candidates are optional, in
+priority order:
+
+1. extend `desktop_gate.py` with a Firefox/Marionette or guest-side framebuffer
+   marker (no framework resurrection);
+2. xfstests / broader ext4 coverage;
+3. IPv6 route netlink and route deletion.
+
+Every new source-based change still gets a `Picked-from:` or `Ported-from:`
+trailer and a row here.

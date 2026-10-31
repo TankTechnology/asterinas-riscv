@@ -184,7 +184,29 @@ Reason: kernel/src -> kernel/core/src and API changes
 Update the ledger in the same change: source commit(s), current commit, status,
 test/evidence path.
 
-## 7. Validation and evidence
+## 7. Consolidate after the feature gate is green
+
+A pick is scaffolding until the target behavior is verified. Once the new gate
+passes, reduce the code before moving on:
+
+- If the current line's direct boot (`-kernel` + `-initrd` + `-dtb`) can drive
+  the same guest, do not keep a generic U-Boot gate framework just because the
+  source branch used one. Keep the smaller direct-boot path.
+- Collapse sibling gates into one module with a milestone table instead of
+  keeping M3/M4/M5 wrappers and their duplicated classifiers.
+- Keep one parser/helper per concern. Do not keep two PPM parsers or two
+  serial runtimes.
+- Reuse the current line's existing gate/runner modules instead of importing a
+  second generic framework.
+- Keep one focused test module per remaining feature; delete tests for deleted
+  wrappers.
+- Record the removed source commits in the ledger. Git history and the ledger
+  are the provenance; dead scaffolding does not need to stay in the tree.
+
+Aim for the smallest production surface that still passes the real QEMU gate,
+not for a one-to-one replay of the source branch.
+
+## 8. Validation and evidence
 
 After every cluster:
 
@@ -206,6 +228,7 @@ authorized.
 | Kernel cherry-pick looks possible | Old kernel paths are `kernel/src`; current paths are `kernel/core/src`, and APIs were reorganized. Port semantically and record `Ported-from`. |
 | Reintroducing removed verticals | Old M4/M5/Megrez/DRM modules pull board dependencies; keep only current functional names and approved scope. |
 | Duplicating delivered work | Check current `git log`/files first; e.g. old ext4/JBD2 work is superseded by the current implementation. |
+| Screenshot is not display evidence by itself | QMP screendump returned 640x480 while the direct-boot guest used a 1280x1024 simple framebuffer; validate PPM dimensions and the selected device, and delete the helper if it cannot prove the target scanout. |
 | Missing cleanup | Trial worktrees, cherry-pick state, and partial indexes must be aborted/removed before returning. |
 
 When a new pattern appears, add it to this table and to

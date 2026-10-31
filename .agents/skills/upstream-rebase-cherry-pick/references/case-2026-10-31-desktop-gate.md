@@ -107,6 +107,41 @@ milestones, framebuffer evidence, out-of-order transcripts, fatal markers, and
 empty release values. Host baseline is now **106 tests / 13 modules**.
 Remaining desktop closure is 9 modules; remaining browser QEMU closure is 6.
 
+## Direct-boot consolidation turn
+
+A direct QEMU boot with `-kernel Image -initrd <full Stage1 cpio> -dtb
+fb-bochs.dtb -device bochs-display` reached systemd, Xorg, window manager,
+desktop session, and `panel-start` using the current `browser-web` root. This
+makes the old generic U-Boot gate framework unnecessary for the QEMU desktop
+gate.
+
+Consolidation target:
+
+- keep one `tools/riscv/debian/desktop_gate.py` for direct boot + marker checks
+  + QMP screenshot;
+- keep `qemu_qmp.py` and `qemu_ppm.py`;
+- delete `gate_protocol.py`, `gate_runtime.py`, `rootfs_gate.py`,
+  `rootfs_gate_backend.py`, `systemd_m2_gate.py`, `desktop_m3_gate.py`, and
+  `desktop_m4_gate.py` after the lean gate passes;
+- delete their wrapper tests and keep one `test_desktop_gate.py`.
+
+The old files remain in git history and in the rejected source branch.
+
+## Consolidated result
+
+The direct-boot marker gate passed with all six `BROWSER_WEB_DESKTOP_STAGE`
+markers (`display-provider-ready` through `panel-start`). The final production
+surface is just `desktop_gate.py`; the QMP/PPM helpers, generic gate framework,
+and M3/M4 wrappers were removed. Host tests dropped from 106/13 modules to
+**86/10 modules**, and the desktop gate has its own five contract tests.
+
+QMP screendump was not usable as pixel evidence here: even with
+`-vga none`, an explicit `bochs-display,id=desktop-display,xres=1280,yres=1024`,
+and QMP `device=desktop-display`, it returned a 640x480 VGA image while the
+guest used the 1280x1024 simple framebuffer. Treat a screendump as valid only
+after checking its PPM dimensions and matching them to the guest display; do
+not keep a helper solely because it exists.
+
 ## Path/contract observations
 
 - The current line has no `browser_web_qemu_gate.py` host gate; it only keeps
