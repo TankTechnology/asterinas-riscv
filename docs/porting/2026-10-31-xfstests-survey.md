@@ -186,11 +186,31 @@ are the recorded baseline (two `ostd` simple-framebuffer, two `aster-nvme`);
 - `/dev/fd` was missing from the initramfs, so the `-E` blocklist could not
   be loaded through process substitution.  The init now creates the alias.
 
+### Full-list triage (attempted)
+
+The 40-case `full.list` is **not** green yet.  With 4 GiB the guest panics at
+generic/100 with a page-table `NoMemory`.  With 12 GiB, ext4/042 through
+generic/246 pass (29 tests), but:
+
+- generic/006 hits `E2BIG` from the single-descriptor journal encoder.  A local
+  multi-descriptor encoder/decoder adaptation makes it pass (70 s); the patch is
+  saved in evidence but not committed because it has no dedicated recovery
+  ktest.
+- generic/224 (`_scratch_mkfs_sized` + 1000 concurrent 10 MB files) reports
+  `_check_generic_filesystem: filesystem on /dev/vde is inconsistent`.
+- generic/248 panics at `spawn task failed: NoMemory` after the long stress
+  sequence.
+
+These are kernel-level ENOSPC/task-memory/journal-recovery issues, not
+integration wiring.  The 8-case short list remains the validated gate; the full
+list needs a separate triage round.  `block.list` is still the inherited ext2
+set and is untriaged for ext4.
+
 ### Next
 
-1. Run `full.list` (the 40-case downstream list) and triage each failure.
-   `block.list` currently inherits the ext2 exclusions and is untriaged for
-   ext4.
+1. Triage the full-list blockers above (journal split with recovery tests;
+   generic/224 fsck detail; generic/248 task-memory pressure); only then expand
+   the short list.
 2. Add a Makefile/entry-point target if the `make run_kernel` path needs
    adjustments beyond the direct OSDK invocation.
 3. Decide whether to add `conformance.xfstests` to `riscv64_pkgs` or keep the

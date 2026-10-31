@@ -106,7 +106,7 @@ deciding the P1 scope:
 | `948b2c634` | 64-bit descriptors + `flex_bg` | **Blocked.** The kernel hunks conflict with the current `Dirty`/`sync_metadata` design and expect `stage_metadata`, `StagedGroupMetadata`, and a `desc_size` field from a divergent branch. Current code already validates 64-bit descriptors; `flex_bg` remains unsupported. |
 | `772a3de47` | metadata checksums | **Blocked.** Depends on `948b2c634` and journal/checksum-v3 helpers that this line does not have. |
 | `511143081` | `FALLOC_FL_PUNCH_HOLE` | **Blocked.** The additive hunks resolved cleanly, but the trial build produced 26 errors against the current extent/indirect APIs (`extent_bytes`, `read_words`, `HasVmReaderWriter`). Picking it would be a new implementation. |
-| `14b2d352a` | split oversized journal transactions | **Superseded.** The current writer commits one metadata block per transaction, so a multi-descriptor encoder path would be unexercised dead code. |
+| `14b2d352a` | split oversized journal transactions | **Candidate, not committed.** The earlier "superseded" assessment was wrong: `sync_all` batches many metadata blocks into one transaction, and xfstests generic/006 (4096 files) hits E2BIG. A local multi-descriptor encoder/decoder adaptation made generic/006 pass (70 s), but the 40-test full list still reports a scratch inconsistency at generic/224 and a task-spawn OOM at generic/248. Keep the patch in evidence until dedicated recovery ktests and ENOSPC/task-memory triage exist. |
 | `14133b5d3`, `ef12b537a` | EA inodes, tmpfile orphan list | Not trialed; they share the same divergent block-manager/staging base and are outside this P1. |
 
 P1 therefore broadens the **current** driver's evidence instead of forcing an
@@ -155,6 +155,21 @@ short list is 8/8.  Evidence:
 Not yet done: the 40-case `full.list` and the inherited block-list triage; the
 `make run_kernel` wrapper was not exercised end-to-end (the validated run used
 the same OSDK arguments directly with a prebuilt initramfs).
+
+Full-list triage attempts:
+
+- 4 GiB: page-table allocation panic (`Failed to allocate a page table node:
+  NoMemory`) at generic/100.
+- 12 GiB: ext4/042 through generic/246 pass (29 tests).  generic/006 first
+  exposed the single-descriptor journal limit; a local multi-descriptor
+  encoder/decoder adaptation made it pass (70 s), but generic/224 then reported
+  `_check_generic_filesystem: filesystem on /dev/vde is inconsistent`, and
+  generic/248 panicked at `spawn task failed: NoMemory`.  The candidate patch
+  and both logs are under
+  `evidence/2026-10-31-xfstests-ext4-short/full-list-journal-candidate.patch`.
+  It is not committed: the decoder has no dedicated recovery ktest, and the
+  ENOSPC/task-memory failures are independent blockers.  The full list is not
+  a gate yet; the 8-case short list remains the validated result.
 
 ## Decisions
 
