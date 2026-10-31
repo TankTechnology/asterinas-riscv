@@ -38,7 +38,7 @@ removed from this line. Their history remains in the old product tree at
 | ext4/JBD2 | The ext2 driver also registers an `ext4` type with extent-tree mapping and internal-journal replay. QEMU boots a 4 KiB ext4 root, runs GCC and Python from it, passes multi-extent/truncate/link/rename/sync probes, and recovers all four deterministic journal crash stages. The crash workload includes a multi-file directory, and a 64-bit group-descriptor image passes the write suite and stage 2. Every resulting image passes `e2fsck -fn`. |
 | ext2 durability | Block and inode frees validate the whole range, system-zone overlap, bitmap state, and counters before mutating anything; inode reads are bounded by the filesystem inode count; writable remounts require a clean superblock and read-only remounts sync first; renaming between two hard links of the same inode is a no-op. The ext2 write probe and both the standard and 64-bit ext4 gates were rerun on this code; all four crash stages still pass with clean `e2fsck -fn`. |
 | Kernel tests | The RISC-V `aster-core` suite reports `180 passed; 0 failed; 0 filtered out`, including the `/proc/net`, IPv4 route, ext4 extent, JBD2, and ext2 durability tests. The full 18-crate suite reports 536 passed and 4 failures outside ext2 (two `ostd` simple-framebuffer metadata tests and two `aster-nvme` block-device tests). The QEMU ext4 gate below adds the crash/replay and `e2fsck` runtime checks. |
-| Host tests | The isolated host runner covers the active Debian tooling with 101 tests in 12 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
+| Host tests | The isolated host runner covers the active Debian tooling with 106 tests in 13 modules and no skips; the baseline manifest rejects missing tests, new skips, timeouts, and import failures. |
 | Product gate | One aggregate target runs the direct QEMU gate and optionally the ext4/JBD2 and dsh components, writing per-component receipts and a single `result.json`. A real run including dsh passed in 203.8 seconds with gcc 14, Python 3.13.5, Node v24.21.0, git 2.47.3, C compile/run returning 42, and all four ext4 journal stages clean. |
 
 ## Cleanup verification (2026-10-30)
@@ -194,7 +194,7 @@ now has a host test runner at
 `tools/riscv/tests/expected_host_tests.json`. Each module runs in an isolated
 worker process with a timeout; the runner rejects import failures, timeouts,
 duplicate IDs, missing baseline IDs, and unexplained skips. The current
-baseline is **12 modules / 101 tests / 0 skips**, covering the direct and ext4
+baseline is **13 modules / 106 tests / 0 skips**, covering the direct and ext4
 gate command contracts, rootfs profiles and manifests, signed sources,
 descriptor-pinned publication, builder CLI contracts, and active tooling
 syntax. Run it with `make test_riscv_host HOST_TEST_JOBS=32`.
