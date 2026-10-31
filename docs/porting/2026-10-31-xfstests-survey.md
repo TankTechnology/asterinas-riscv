@@ -138,11 +138,60 @@ reason and the source test.
   hole) until triage shows that a specific xfstests failure requires them.
 - The whole upstream test catalog; start with a deterministic ext4 subset.
 
-## Current status
+## Current status (2026-10-31)
 
-- Code cleanup finished in `2b6546733`.
-- Nix dry-run for riscv64 xfstests succeeded.
-- Full riscv64 xfstests initramfs build started; results are appended to
-  `target/xfstests-riscv-build.log`.
-- No xfstests image/config/QEMU change has been committed yet; this note is
-  the review point before the port.
+The short ext4 list is green on QEMU/RISC-V:
+
+```
+ext4/042  3s   generic/001 24s   generic/002 3s   generic/005 3s
+generic/007 7s generic/011 17s   generic/013 5s   generic/014 5s
+Passed all 8 tests
+All conformance tests passed.
+```
+
+Evidence: `~/.cache/asterinas-sync/evidence/2026-10-31-xfstests-ext4-short/`
+(run log, QEMU log, initramfs hash, ktest log).  The run used the same OSDK
+arguments as `make run_kernel AUTO_TEST=conformance CONFORMANCE_TEST_SUITE=xfstests
+XFSTESTS_FS_TYPE=ext4 XFSTESTS_RUNLIST=short.list TARGET_ARCH=riscv64
+INITRAMFS=on MEM=4G SMP=4 RELEASE=1 ENABLE_KVM=0`, with a prebuilt initramfs.
+
+Commits on `feature/ext4-jbd2`:
+
+- `66cd86630` test(xfstests): add ext4 coverage on RISC-V (profile, run lists,
+  x3/x4 QEMU devices, contract tests).
+- `73241d475` fix(ext2): match Linux ext4 identity and bsddf overhead
+  (`FileSystem::name()` returns ext4; journal and reserved-GDT blocks are
+  excluded from `f_blocks`; ktests added).
+- `13fe9f1af` test(xfstests): make the cross-built RISC-V image runnable
+  (target-bash repair for the three host-shebang scripts, `/dev/fd` alias,
+  host test/baseline).
+
+Ktest after the kernel change: **538 passed, 4 failed**.  The four failures
+are the recorded baseline (two `ostd` simple-framebuffer, two `aster-nvme`);
+`aster-core` is 182/182 and both new tests pass.
+
+### Findings from the bring-up
+
+- Cross-Nix `patchShebangs` left `check`, `src/dmerror`, and `ltp/rwtest.sh`
+  with the **build-host x86_64 bash** shebang.  Executing `check` failed;
+  bash's `ENOEXEC` fallback then re-executed `/proc/self/exe`, which in
+  Asterinas points at the **script** rather than the interpreter, so the
+  wrapper re-ran itself in a loop.  The packaging fix removes the trigger.
+  The `/proc/self/exe` mismatch is a separate Linux-compatibility bug: it is
+  set from `ProcessVm::new(executable_path)` before shebang resolution.
+- The ext2/ext4 driver reported every mount as `ext2`, so xfstests rejected
+  the ext4 test device; the ext4 entry point now reports `ext4`.
+- `bsddf` `statfs` omitted the internal journal and reserved GDT blocks;
+  ext4/042's block-count window failed until both were counted.
+- `/dev/fd` was missing from the initramfs, so the `-E` blocklist could not
+  be loaded through process substitution.  The init now creates the alias.
+
+### Next
+
+1. Run `full.list` (the 40-case downstream list) and triage each failure.
+   `block.list` currently inherits the ext2 exclusions and is untriaged for
+   ext4.
+2. Add a Makefile/entry-point target if the `make run_kernel` path needs
+   adjustments beyond the direct OSDK invocation.
+3. Decide whether to add `conformance.xfstests` to `riscv64_pkgs` or keep the
+   build local-only.

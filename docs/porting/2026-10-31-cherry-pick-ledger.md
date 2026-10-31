@@ -127,6 +127,35 @@ Evidence: `evidence/2026-10-31-p1-ext4-64bit-extended/` (semantics plus stage
 real Makefile target). The pre-broadening baseline is preserved under
 `2026-10-31-p1-ext4-64bit/`.
 
+## P2 RISC-V ext4 xfstests (2026-10-31)
+
+The old `8531fae58` ext4 gate was a flat-layout prototype with no successful
+RISC-V evidence.  The port keeps the current upstream per-filesystem layout and
+adds:
+
+- `test/initramfs/src/conformance/xfstests/ext4/`: compatibility-profile mkfs,
+  runtime config, explicit test/scratch mounts, `short.list` (8 cases),
+  `full.list` (the old 40-case list), and an inherited block list;
+- `tools/qemu_args.sh`: x3/x4 test/scratch images for the RISC-V machine,
+  mapped to `/dev/vdd` and `/dev/vde` by the reverse virtio-mmio discovery
+  order;
+- `test/initramfs/nix/conformance/xfstests.nix`: target-bash repair for the
+  three scripts that cross `patchShebangs` had left pointing at the host bash;
+- `test/initramfs/src/init`: the `/dev/fd -> /proc/self/fd` alias needed by
+  `check`'s process substitution when loading `-E` blocklists;
+- kernel ext4 fixes: report `ext4` from `FileSystem::name()` for the ext4 entry
+  point, and subtract journal and reserved-GDT blocks in `bsddf` `f_blocks`.
+
+Commits: `66cd86630` (profile/devices/tests), `73241d475` (kernel fixes),
+`13fe9f1af` (cross-build/runtime fixes).  Host suite is 100 tests / 11 modules;
+RISC-V ktest is 538 passed / 4 known failures (unchanged baseline); the ext4
+short list is 8/8.  Evidence:
+`/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-xfstests-ext4-short/`.
+
+Not yet done: the 40-case `full.list` and the inherited block-list triage; the
+`make run_kernel` wrapper was not exercised end-to-end (the validated run used
+the same OSDK arguments directly with a prebuilt initramfs).
+
 ## Decisions
 
 - **Skip** board/GPU/DRM/Megrez commits from the old tree; not part of this
@@ -146,8 +175,9 @@ separate, still-unported layer; see
 `docs/porting/2026-10-31-xfstests-survey.md` for the gap analysis and port
 plan. Next candidates, in priority order:
 
-1. RISC-V/ext4 xfstests integration (ext4 config + x3/x4 devices + riscv64
-   conformance initramfs + a small run list);
+1. RISC-V/ext4 xfstests: the 8-case short list is green; run and triage the
+   40-case `full.list`, then settle the inherited block list and the Makefile
+   entry point;
 2. IPv6 route netlink and route deletion;
 3. dsh service/launcher integration;
 4. unported ext4 features (metadata checksums, `flex_bg`, EA inodes, tmpfile),
