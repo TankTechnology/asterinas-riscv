@@ -79,7 +79,7 @@ Tests live under `tools/riscv/tests`; the runner executes each module in an
 isolated worker process and checks the collected IDs against
 `tools/riscv/tests/expected_host_tests.json`. Per-module logs go to
 `target/host-tests/` by default (`HOST_TEST_LOG_DIR` overrides it). The
-current baseline is 81 tests in 9 modules with no skips. Adding or removing a
+current baseline is 92 tests in 11 modules with no skips. Adding or removing a
 test requires updating the baseline in the same change.
 
 ## Product gate

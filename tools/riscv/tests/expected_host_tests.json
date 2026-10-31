@@ -1,5 +1,5 @@
 {
-  "commit": "24adcf174",
+  "commit": "31886c061",
   "module_names": [
     "tools.riscv.tests.test_debian_builders",
     "tools.riscv.tests.test_direct_boot_gate",
@@ -7,11 +7,13 @@
     "tools.riscv.tests.test_fsops",
     "tools.riscv.tests.test_host_test_runner",
     "tools.riscv.tests.test_product_gate",
+    "tools.riscv.tests.test_qemu_ppm",
+    "tools.riscv.tests.test_qemu_qmp",
     "tools.riscv.tests.test_rootfs_contract",
     "tools.riscv.tests.test_rootfs_profiles",
     "tools.riscv.tests.test_tooling_surface"
   ],
-  "modules": 9,
+  "modules": 11,
   "schema_version": 1,
   "skip_reasons": [],
   "test_ids": [
@@ -73,6 +75,17 @@
     "tools.riscv.tests.test_product_gate.InputTests.test_missing_kernel_is_rejected_before_any_gate",
     "tools.riscv.tests.test_product_gate.MakefileRecipeTests.test_optional_image_paths_with_spaces_stay_single_arguments",
     "tools.riscv.tests.test_product_gate.ProductRunTests.test_direct_and_ext4_components_write_a_pass_receipt",
+    "tools.riscv.tests.test_qemu_ppm.PpmAuditTests.test_black_image_is_not_a_passing_capture",
+    "tools.riscv.tests.test_qemu_ppm.PpmAuditTests.test_colored_region_reports_its_bounding_box",
+    "tools.riscv.tests.test_qemu_ppm.PpmAuditTests.test_header_and_dimensions_are_strict",
+    "tools.riscv.tests.test_qemu_ppm.PpmAuditTests.test_nonblack_pixels_below_threshold_do_not_pass",
+    "tools.riscv.tests.test_qemu_qmp.PathValidationTests.test_non_private_root_and_outside_paths_are_rejected",
+    "tools.riscv.tests.test_qemu_qmp.PathValidationTests.test_private_root_accepts_an_absent_output",
+    "tools.riscv.tests.test_qemu_qmp.PathValidationTests.test_relative_and_parent_traversal_paths_are_rejected",
+    "tools.riscv.tests.test_qemu_qmp.PathValidationTests.test_symlink_output_is_rejected",
+    "tools.riscv.tests.test_qemu_qmp.TabletEventTests.test_coordinates_are_bounded_integers",
+    "tools.riscv.tests.test_qemu_qmp.TabletEventTests.test_left_click_presses_and_releases",
+    "tools.riscv.tests.test_qemu_qmp.TabletEventTests.test_movements_start_at_origin_then_reach_the_target",
     "tools.riscv.tests.test_rootfs_contract.ManifestTests.test_empty_downloads_and_partial_gate_packages_are_rejected",
     "tools.riscv.tests.test_rootfs_contract.ManifestTests.test_invalid_json_and_duplicate_keys_are_rejected",
     "tools.riscv.tests.test_rootfs_contract.ManifestTests.test_missing_schema_version_is_rejected",
@@ -97,5 +110,5 @@
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_every_active_python_module_compiles",
     "tools.riscv.tests.test_tooling_surface.ShellSurfaceTests.test_every_active_shell_script_parses"
   ],
-  "tests": 81
+  "tests": 92
 }
