@@ -30,6 +30,8 @@ same change as each new pick. See
 | ext4 extents + JBD2 + crash gates | `294c225ce` | `30cd05424`,`7b2bfc87d`,`7c960b105` | superseded/expanded | 64-bit and crash gates |
 | ext2 durability invariants | old ext2 work | `31acb7c3c` | port/new | ktests + ext2/e2fsck probe |
 | host suite + aggregate product gate | old host suite, not cherry-picked wholesale | `2abf63a3a` | new on rebase line | 81 host tests, product receipt |
+| QMP screendump/input + PPM audit helpers | `30e71ce3f`,`5c364ff75`,`0627c9983`,`4e8d063bc`,`d858c0c85` | `961b7ceb7` | file pick + tests | `test_qemu_qmp.py`, `test_qemu_ppm.py` |
+| Debian gate framework (protocol/runtime/rootfs orchestration/systemd M2) | `239789a59`,`294c225ce`,`a7184cc59`,`8afb69e6e`,`aa98d0857`,`ef35d98a0` | pending commit | file pick + focused tests | `test_debian_gate_framework.py` |
 
 `superseded` means the old implementation exists, but the current line's
 implementation is the one to keep. Do not replace current modules with the old
@@ -46,19 +48,18 @@ Source commits:
 | `a0d6f2938` | browser-web desktop shell + bounded evidence gate | blocked; 8 conflicts when picked alone |
 | `0dfa6f615` | two-boot daily-use QEMU gate | blocked; imports 6 missing modules |
 | `browser_web_qemu_gate.py` history | browser QEMU orchestration | blocked on gate framework |
-| `qemu_qmp.py`, `qemu_ppm.py` history | QMP screenshot/input + PPM audit | ready to pick (no local imports) |
 
 Dependency closure measured with
 `.agents/skills/upstream-rebase-cherry-pick/scripts/local_import_closure.py`:
 
-| Target | Closure | Missing on current line |
+| Target | Closure | Missing after leaf + framework picks |
 |---|---:|---:|
-| `browser_web_desktop_shell_qemu_gate` | 24 | 18 |
-| `browser_web_qemu_gate` | 19 | 13 |
-| `desktop_m4_gate` | 10 | 7 |
-| `desktop_m3_gate` | 9 | 6 |
-| `rootfs_gate` | 7 | 4 |
-| `qemu_qmp`, `qemu_ppm` | 2 | 2 (self-contained) |
+| `browser_web_desktop_shell_qemu_gate` | 24 | 11 |
+| `browser_web_qemu_gate` | 19 | 8 |
+| `desktop_m4_gate` | 10 | 2 |
+| `desktop_m3_gate` | 9 | 1 |
+| `rootfs_gate` | 7 | 0 |
+| `qemu_qmp`, `qemu_ppm` | 2 | 0 |
 
 Trial results:
 
@@ -70,7 +71,7 @@ Trial results:
 
 Pick order:
 
-1. `qemu_qmp.py`, `qemu_ppm.py` (leaf helpers, add focused tests).
+1. ~~`qemu_qmp.py`, `qemu_ppm.py`~~ — done in `961b7ceb7`, with focused tests.
 2. `gate_protocol.py`, `gate_runtime.py`, `rootfs_gate.py`,
    `rootfs_gate_backend.py`, `systemd_m2_gate.py`.
 3. Browser/desktop helpers, replacing old M4/M5 names and dropping
@@ -91,6 +92,8 @@ Pick order:
 
 ## Next action
 
-Pick the two leaf helpers, add host tests, then re-run the closure for the gate
-framework and continue bottom-up. Every new pick gets a `Picked-from:` or
-`Ported-from:` trailer and a row here.
+Pick the gate framework next (`gate_protocol`, `gate_runtime`, `rootfs_gate`,
+`rootfs_gate_backend`, `systemd_m2_gate`) against the current
+`contract.py`/`profiles.py`/`signed_sources.py`, then re-run the closure for
+the browser/desktop layer and continue bottom-up. Every new pick gets a
+`Picked-from:` or `Ported-from:` trailer and a row here.

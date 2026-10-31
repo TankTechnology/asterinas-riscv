@@ -1,7 +1,8 @@
 {
-  "commit": "31886c061",
+  "commit": "961b7ceb7",
   "module_names": [
     "tools.riscv.tests.test_debian_builders",
+    "tools.riscv.tests.test_debian_gate_framework",
     "tools.riscv.tests.test_direct_boot_gate",
     "tools.riscv.tests.test_ext4_gate",
     "tools.riscv.tests.test_fsops",
@@ -13,7 +14,7 @@
     "tools.riscv.tests.test_rootfs_profiles",
     "tools.riscv.tests.test_tooling_surface"
   ],
-  "modules": 11,
+  "modules": 12,
   "schema_version": 1,
   "skip_reasons": [],
   "test_ids": [
@@ -28,6 +29,15 @@
     "tools.riscv.tests.test_debian_builders.Stage1BuilderTests.test_required_tools_are_reported",
     "tools.riscv.tests.test_debian_builders.Stage1BuilderTests.test_script_has_valid_bash_syntax",
     "tools.riscv.tests.test_debian_builders.Stage1BuilderTests.test_source_date_epoch_must_fit_newc",
+    "tools.riscv.tests.test_debian_gate_framework.BootArgsTests.test_systemd_bootargs_have_one_init_and_separator",
+    "tools.riscv.tests.test_debian_gate_framework.BootArgsTests.test_systemd_bootargs_reject_fragment_strings_and_bad_selectors",
+    "tools.riscv.tests.test_debian_gate_framework.BootArgsTests.test_systemd_m2_selects_ext2_or_ext4",
+    "tools.riscv.tests.test_debian_gate_framework.ParseArgsTests.test_defaults_match_the_gate_contract",
+    "tools.riscv.tests.test_debian_gate_framework.ParseArgsTests.test_non_four_hart_configuration_is_rejected",
+    "tools.riscv.tests.test_debian_gate_framework.PinnedDirectoryTests.test_exclusive_lock_and_invalidate",
+    "tools.riscv.tests.test_debian_gate_framework.QemuArgumentTests.test_allow_reboot_and_graphical_devices_are_explicit",
+    "tools.riscv.tests.test_debian_gate_framework.QemuArgumentTests.test_default_is_an_offline_four_hart_fixed_disk_contract",
+    "tools.riscv.tests.test_debian_gate_framework.QemuArgumentTests.test_invalid_inputs_are_rejected",
     "tools.riscv.tests.test_direct_boot_gate.ArgumentTests.test_defaults_target_direct_boot",
     "tools.riscv.tests.test_direct_boot_gate.ArgumentTests.test_unknown_rootfstype_is_rejected",
     "tools.riscv.tests.test_direct_boot_gate.GuestCommandTests.test_commands_export_path_and_finish_with_gate_end",
@@ -110,5 +120,5 @@
     "tools.riscv.tests.test_tooling_surface.PythonSurfaceTests.test_every_active_python_module_compiles",
     "tools.riscv.tests.test_tooling_surface.ShellSurfaceTests.test_every_active_shell_script_parses"
   ],
-  "tests": 92
+  "tests": 101
 }

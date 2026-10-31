@@ -78,6 +78,14 @@ It cannot be ported by one `git cherry-pick`.
 At step 2, adapt against the current `contract.py`, `profiles.py`, and
 `signed_sources.py`; do not replace them with the older copies.
 
+## First pick executed
+
+The two leaf helpers were picked into the rebase line in `961b7ceb7`
+(`feat(riscv): pick QMP screendump and PPM audit helpers`). Added focused tests:
+7 for QMP event/path validation and 4 for PPM audit. The host baseline moved
+from 81 tests / 9 modules to **92 tests / 11 modules**, all green. The next
+target is the gate framework, not the desktop gate itself.
+
 ## Path/contract observations
 
 - The current line has no `browser_web_qemu_gate.py` host gate; it only keeps
