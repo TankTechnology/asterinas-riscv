@@ -79,8 +79,30 @@ Tests live under `tools/riscv/tests`; the runner executes each module in an
 isolated worker process and checks the collected IDs against
 `tools/riscv/tests/expected_host_tests.json`. Per-module logs go to
 `target/host-tests/` by default (`HOST_TEST_LOG_DIR` overrides it). The
-current baseline is 106 tests in 13 modules with no skips. Adding or removing a
+current baseline is 86 tests in 10 modules with no skips. Adding or removing a
 test requires updating the baseline in the same change.
+
+## Desktop gate
+
+The desktop gate is the compact direct-boot path for the QEMU-supported
+`browser-web` image. It loads the kernel, full Stage1 initramfs, and the
+simple-framebuffer DTB directly, then checks the ordered
+`BROWSER_WEB_DESKTOP_STAGE` markers from systemd/Xorg/window-manager/panel.
+It is independent of U-Boot and the removed M3/M4 gate stack. Pixel evidence
+remains part of the manual desktop acceptance; this gate is the repeatable
+startup regression.
+
+```bash
+make test_riscv_debian_desktop \
+  DEBIAN_DESKTOP_ROOTFS=/absolute/path/to/debian-root.ext2 \
+  DEBIAN_DESKTOP_STAGE1=/absolute/path/to/initramfs.cpio \
+  DEBIAN_DESKTOP_DTB=/absolute/path/to/fb-bochs.dtb
+```
+
+Use the full Stage1 image and the `browser-web` rootfs. The kernel defaults to
+`target/osdk/asterinas-osdk-bin.Image`; override it with
+`DEBIAN_DESKTOP_KERNEL`. The serial log and `result.json` go to
+`target/riscv-debian-desktop/`. The rootfs is attached with `snapshot=on`.
 
 ## Product gate
 
@@ -148,7 +170,8 @@ compiles a real C program so this cannot regress silently.
 ## Current boundary
 
 The direct gate uses `init=/bin/bash` to keep the checkpoint independent of
-Stage1. The full Stage1 browser root and the manual QEMU/U-Boot desktop boot
-are verified separately; the repository still has no automated U-Boot desktop
-scenario. A direct-gate failure means the upstream kernel cannot run the Debian
-tools, not that the full desktop flow has regressed.
+Stage1. The desktop gate is a separate direct-boot Stage1 check for the ordered
+desktop-session markers. Pixel and Firefox-window evidence remains part of the
+manual desktop acceptance; this gate is the repeatable startup regression. A
+direct-gate failure means the upstream kernel cannot run the Debian tools, not
+that the full desktop flow has regressed.

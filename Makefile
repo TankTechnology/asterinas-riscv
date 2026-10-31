@@ -395,6 +395,24 @@ test_riscv_debian_product:
 
 test_riscv_debian_full: test_riscv_host test_riscv_debian_product
 
+DEBIAN_DESKTOP_KERNEL ?= target/osdk/asterinas-osdk-bin.Image
+DEBIAN_DESKTOP_ROOTFS ?=
+DEBIAN_DESKTOP_STAGE1 ?=
+DEBIAN_DESKTOP_DTB ?=
+DEBIAN_DESKTOP_LOG_DIR ?= target/riscv-debian-desktop
+.PHONY: test_riscv_debian_desktop
+test_riscv_debian_desktop:
+	@if [ -z "$(DEBIAN_DESKTOP_ROOTFS)" ] || [ -z "$(DEBIAN_DESKTOP_STAGE1)" ] || [ -z "$(DEBIAN_DESKTOP_DTB)" ]; then \
+		echo "Error: set DEBIAN_DESKTOP_ROOTFS, DEBIAN_DESKTOP_STAGE1, and DEBIAN_DESKTOP_DTB"; \
+		exit 2; \
+	fi
+	python3 tools/riscv/debian/desktop_gate.py \
+		--kernel "$(DEBIAN_DESKTOP_KERNEL)" \
+		--rootfs "$(DEBIAN_DESKTOP_ROOTFS)" \
+		--stage1 "$(DEBIAN_DESKTOP_STAGE1)" \
+		--dtb "$(DEBIAN_DESKTOP_DTB)" \
+		--log-dir "$(DEBIAN_DESKTOP_LOG_DIR)"
+
 DEBIAN_STAGE1_OUT ?= target/riscv-debian/stage1/initramfs.cpio
 DEBIAN_STAGE1_TOOLS_DIR ?=
 RISC_V_CC ?=

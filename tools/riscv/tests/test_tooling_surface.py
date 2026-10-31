@@ -67,6 +67,8 @@ class MakefileSurfaceTests(unittest.TestCase):
         self.assertIn("test_riscv_debian_product:", makefile)
         self.assertIn("test_riscv_debian_full:", makefile)
         self.assertIn("tools/riscv/debian/product_gate.py", makefile)
+        self.assertIn("test_riscv_debian_desktop:", makefile)
+        self.assertIn("tools/riscv/debian/desktop_gate.py", makefile)
 
 
 if __name__ == "__main__":
