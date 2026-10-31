@@ -200,7 +200,8 @@ The standalone `/proc/self/exe` branch is now `fix/proc-exe-interpreter`
 (`1574b33e4`, based on `upstream/main`), pushed to the fork.  The base kernel
 fails the new boot check with `Unexpected /proc/self/exe:
 /test/boot_hello.sh`; the fixed kernel prints `PROC_SELF_EXE=/usr/bin/busybox`
-and `Successfully booted.`  Evidence:
+and `Successfully booted.`  The fix is cherry-picked onto `main-next` as
+`d9f4d31dc` and passes the same boot check there.  Evidence:
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-proc-self-exe/`.
 No upstream PR has been opened.
 

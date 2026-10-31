@@ -13,8 +13,8 @@ Date: 2026-10-31
   `backup/rebase-20261031` -> `01de8fc06`.
 - Fork default branch: `main-next`.
 - Standalone upstream topic branch `fix/proc-exe-interpreter` at `1574b33e4`
-  (based on `upstream/main`); pushed to the fork, not merged into the line and
-  not submitted upstream.
+  (based on `upstream/main`), pushed to the fork.  The fix is also cherry-picked
+  onto `main-next` as `d9f4d31dc`; it is not submitted upstream yet.
 - Archived old fork main: `archive/legacy-main-2026-10-31` -> `af48751df`
   (old `origin/main`).  The old `main` ref still exists at the same commit;
   it has not been deleted or renamed.
@@ -89,7 +89,7 @@ Debian rootfs, desktop gates, board drivers, or product evidence into these.
 
 | Topic branch | Source | Status |
 |---|---|---|
-| `fix/proc-exe-interpreter` | new | **implemented** (`1574b33e4`): boot regression passes fixed / fails base; pushed to fork; upstream PR pending explicit authorization |
+| `fix/proc-exe-interpreter` | new | **implemented and merged**: upstream branch `1574b33e4`, main-next cherry-pick `d9f4d31dc`; boot regression passes fixed / fails base; upstream PR pending explicit authorization |
 | `test/initramfs-devfd` | `13fe9f1af` subset | standalone generic test infrastructure |
 | `test/xfstests-cross-shebang` | `13fe9f1af` subset | standalone generic test infrastructure (cross builds) |
 | `fix/ext4-mount-identity` | `73241d475` subset | **blocked**: depends on the downstream ext4 extents/JBD2 feature stack, which is not in `upstream/main` |
@@ -104,7 +104,8 @@ after that decision.  Upstream PRs require explicit authorization.
 The `/proc/self/exe` slice was validated on `upstream/main` + `1574b33e4`:
 the base kernel reports `Unexpected /proc/self/exe: /test/boot_hello.sh`,
 while the fixed kernel reports `PROC_SELF_EXE=/usr/bin/busybox` and
-`Successfully booted.`  Evidence:
+`Successfully booted.`  The same boot check passes on `main-next` after the
+`d9f4d31dc` cherry-pick.  Evidence:
 `/home/ubuntu/.cache/asterinas-sync/evidence/2026-10-31-proc-self-exe/`.
 
 ### 4. Product line
@@ -142,7 +143,8 @@ main and merge back with a squash PR.  Periodically rebase the product line on
 - [x] Archive old `origin/main`, create/push `main-next`, and switch the fork
   default (old `main` retained).
 - [x] Prepare and validate the `/proc/self/exe` standalone branch
-  (`1574b33e4`); pushed to the fork.
+  (`1574b33e4`); pushed to the fork and cherry-picked onto `main-next`
+  (`d9f4d31dc`).
 - [ ] Prepare the `/dev/fd` and xfstests cross-shebang standalone branches;
   ext4-specific slices wait on the feature-stack decision.
 - [ ] Use the evidence patch and logs to start the journal/full-list triage.
