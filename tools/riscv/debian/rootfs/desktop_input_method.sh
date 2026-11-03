@@ -6,18 +6,21 @@
 # This is the RISC-V port of the session that already works on the x86 image
 # (tools/x86/debian/daily_session.sh). What matters here:
 #
+# * the keyboard layout has to be the *first* item of the group. fcitx's
+#   InputMethodGroup::setDefaultInputMethod treats item 0 as the layout slot:
+#   when the requested default is item 0 and the group holds more than one
+#   item, it silently picks item 1 instead. With [pinyin, keyboard-us] the
+#   profile says DefaultIM=pinyin while every context really lands on
+#   keyboard-us; [keyboard-us, pinyin] is what makes pinyin the default
+#   (verified on the board: the focused context reports pinyin and `nihao` +
+#   space commits 你好 with no manual switch).
 # * the engine is pinyin (libpinyin, from fcitx5-chinese-addons). It ships
-#   with OnDemand=True and that silently breaks the profile: by the time the
-#   group is parsed the engine is not registered yet, fcitx drops "pinyin"
-#   from the group and every window starts in keyboard-us. Making the addon
-#   eager is what makes DefaultIM=pinyin stick (verified on the board: with
-#   OnDemand=True `fcitx5-remote -n` reports keyboard-us, with False it
-#   reports pinyin and `nihao` + space commits 你好).
+#   with OnDemand=True; the addon is made eager so the engine is loaded with
+#   the rest of the input-method addons instead of on first use.
 # * the input method must be *active* out of the box. fcitx5 starts inactive
 #   by default, and an inactive context passes every key through unchanged --
 #   typing pinyin then produces literal letters and looks exactly like a
-#   broken engine. ActiveByDefault asks for that; fcitx 5.1.8 needs the eager
-#   engine above before the flag can have anything to switch to.
+#   broken engine. ActiveByDefault asks for that.
 # * XDG_RUNTIME_DIR has to be per user. A single value in /etc/environment
 #   makes a dbus-daemon started as root refuse to run ("owned by uid 1000, not
 #   our uid 0").
@@ -43,11 +46,11 @@ Default Layout=us
 DefaultIM=pinyin
 
 [Groups/0/Items/0]
-Name=pinyin
+Name=keyboard-us
 Layout=
 
 [Groups/0/Items/1]
-Name=keyboard-us
+Name=pinyin
 Layout=
 
 [GroupOrder]
@@ -61,10 +64,9 @@ ActiveByDefault=True
 EOF
 chown -R "$USER_ID:$USER_ID" "/home/${USER_NAME}/.config/fcitx5"
 
-# The engine has to be eager. fcitx parses the profile before an on-demand
-# addon registers, treats "pinyin" as unknown and rewrites the group down to
-# keyboard-us, so every new window starts with the layout and typing produces
-# literal letters. This is the same trap the old wbpy profile hit.
+# Load the engine with the rest of the input-method addons rather than on
+# first use, so the first keystroke in a fresh session already has a live
+# pinyin engine behind it.
 if [ -f /usr/share/fcitx5/addon/pinyin.conf ]; then
     sed -i 's/^OnDemand=True/OnDemand=False/' /usr/share/fcitx5/addon/pinyin.conf
     install -d -o "$USER_ID" -g "$USER_ID" "/home/${USER_NAME}/.local/share/fcitx5/addon"

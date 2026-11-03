@@ -1110,6 +1110,10 @@ class BrowserWebContractTests(unittest.TestCase):
             "zip",
             "unzip",
             "dbus-x11",
+            "lxterminal",
+            "git",
+            "python3-pip",
+            "scrot",
         ):
             self.assertIn(package, profile.requested_packages)
             self.assertIn(package, profile.identity_packages)
@@ -1209,6 +1213,19 @@ class BrowserWebContractTests(unittest.TestCase):
             '--tool-version "browser-web-runtime=$browser_web_runtime_version"',
             builder,
         )
+
+    def test_input_method_profile_puts_the_layout_first(self) -> None:
+        # fcitx treats item 0 of a group as the keyboard-layout slot and
+        # silently promotes item 1 to the default when the requested default
+        # is item 0: with [pinyin, keyboard-us] every context lands on
+        # keyboard-us no matter what DefaultIM says.
+        script = (ROOTFS / "desktop_input_method.sh").read_text()
+        profile = script[script.index("[Groups/0]") : script.index("[GroupOrder]")]
+        self.assertLess(
+            profile.index("Name=keyboard-us"), profile.index("Name=pinyin")
+        )
+        self.assertIn("DefaultIM=pinyin", profile)
+        self.assertIn("ActiveByDefault=True", script)
 
     def test_browser_web_builder_wires_explicit_frozen_jit_packages(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()

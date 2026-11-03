@@ -3111,6 +3111,9 @@ WantedBy=multi-user.target
                 f"id=asterinas-{name}.desktop",
                 panel.read_text(),
             )
+        # The editor button must name the desktop file Debian ships, not the
+        # package name, or lxpanel silently drops the launcher.
+        self.assertIn("id=org.xfce.mousepad.desktop", panel.read_text())
         self.assertEqual(pcmanfm.stat().st_uid, 1000)
         self.assertEqual(panel.stat().st_uid, 1000)
         for relative in (
@@ -3138,7 +3141,7 @@ WantedBy=multi-user.target
         self.assertEqual(stat.S_IMODE(browser.stat().st_mode), 0o755)
         self.assertEqual(browser.stat().st_uid, 1000)
         self.assertIn(
-            "Exec=xterm -title Asterinas-Terminal",
+            "Exec=lxterminal --title=Asterinas-Terminal",
             (desktop / "asterinas-terminal.desktop").read_text(),
         )
         for name in ("files", "terminal"):

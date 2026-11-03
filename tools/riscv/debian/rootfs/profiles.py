@@ -430,6 +430,15 @@ BROWSER_WEB_DESKTOP_PACKAGES = BROWSER_WEB_SCHEMA_SEVEN_PACKAGES + (
     "fcitx5-chinese-addons",
     "fcitx5-frontend-gtk3",
     "fcitx5-frontend-gtk2",
+    # Day-to-day applications.  lxterminal is the GTK terminal the desktop
+    # launcher opens (xterm's Xlib XIM never receives keys from fcitx here,
+    # so Chinese input only worked in GTK clients); git and pip are what a
+    # user reaches for first; scrot is the screenshot tool every bug report
+    # starts with.
+    "lxterminal",
+    "git",
+    "python3-pip",
+    "scrot",
 )
 
 
