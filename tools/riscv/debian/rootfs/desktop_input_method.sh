@@ -4,18 +4,23 @@
 # Configure the Chinese input method inside the staged rootfs.
 #
 # This is the RISC-V port of the session that already works on the x86 image
-# (tools/x86/debian/daily_session.sh). Four things there were not obvious and
-# are reproduced here:
+# (tools/x86/debian/daily_session.sh). What matters here:
 #
-# * the table addon must be eager. While it is loaded on demand, fcitx parses
-#   the profile before the engine exists, treats wbpy as unknown and rewrites
-#   the group down to keyboard-us, so a new window never starts in Chinese.
+# * the engine is pinyin (libpinyin, from fcitx5-chinese-addons), not the
+#   wbpy table engine. It is loaded on demand and that works: once the
+#   profile names pinyin, the addon is pulled in and the group keeps it. The
+#   table engine has to be eager instead, which is why the earlier wbpy
+#   profile needed a hack; pinyin avoids the whole problem.
+# * the input method must be *active* out of the box. fcitx5 starts inactive
+#   by default, and an inactive context reports keyboard-us and passes every
+#   key through unchanged -- typing pinyin then produces literal letters and
+#   looks exactly like a broken engine. ActiveByDefault turns it on.
 # * XDG_RUNTIME_DIR has to be per user. A single value in /etc/environment
 #   makes a dbus-daemon started as root refuse to run ("owned by uid 1000, not
 #   our uid 0").
-# * xterm's Xlib XIM swallows every keystroke once XMODIFIERS names fcitx, so
-#   xterm is told not to use an input method at all. Chinese stays available in
-#   the GTK clients, which go through fcitx's GTK frontend.
+# * xterm's Xlib XIM never receives keys here, so xterm is told not to use an
+#   input method at all. Chinese stays available in the GTK clients, which go
+#   through fcitx's GTK frontend.
 # * the session must not register XIM (fcitx5 --disable xim). Two XIM servers
 #   make GTK clients started with GTK_IM_MODULE=xim hang before their first map.
 #
@@ -32,10 +37,10 @@ cat >"/home/${USER_NAME}/.config/fcitx5/profile" <<'EOF'
 [Groups/0]
 Name=Default
 Default Layout=us
-DefaultIM=wbpy
+DefaultIM=pinyin
 
 [Groups/0/Items/0]
-Name=wbpy
+Name=pinyin
 Layout=
 
 [Groups/0/Items/1]
@@ -45,16 +50,13 @@ Layout=
 [GroupOrder]
 0=Default
 EOF
-chown -R "$USER_ID:$USER_ID" "/home/${USER_NAME}/.config/fcitx5"
 
-# Eager table addon, system wide (the session may start fcitx as either user).
-if [ -f /usr/share/fcitx5/addon/table.conf ]; then
-    sed -i 's/^OnDemand=True/OnDemand=False/' /usr/share/fcitx5/addon/table.conf
-    install -d -o "$USER_ID" -g "$USER_ID" "/home/${USER_NAME}/.local/share/fcitx5/addon"
-    sed 's/^OnDemand=True/OnDemand=False/' /usr/share/fcitx5/addon/table.conf \
-        >"/home/${USER_NAME}/.local/share/fcitx5/addon/table.conf"
-    chown -R "$USER_ID:$USER_ID" "/home/${USER_NAME}/.local/share/fcitx5"
-fi
+# Start with the input method switched on; see the header for why.
+cat >"/home/${USER_NAME}/.config/fcitx5/config" <<'EOF'
+[Behavior]
+ActiveByDefault=True
+EOF
+chown -R "$USER_ID:$USER_ID" "/home/${USER_NAME}/.config/fcitx5"
 
 # xterm: no XIM (see above).
 install -d /etc/X11/app-defaults
@@ -73,4 +75,4 @@ export XMODIFIERS=@im=fcitx
 EOF
 chmod 0644 /etc/profile.d/92-asterinas-im.sh
 
-echo "ASTERINAS_INPUT_METHOD ims=$(ls /usr/share/fcitx5/inputmethod 2>/dev/null | wc -l) tables=$(ls /usr/share/fcitx5/table 2>/dev/null | wc -l) profile=wbpy"
+echo "ASTERINAS_INPUT_METHOD ims=$(ls /usr/share/fcitx5/inputmethod 2>/dev/null | wc -l) tables=$(ls /usr/share/fcitx5/table 2>/dev/null | wc -l) profile=pinyin"

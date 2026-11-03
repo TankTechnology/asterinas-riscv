@@ -106,13 +106,15 @@ if [[ "${1-}" == --xsession ]]; then
         fi
     fi
     # The input method starts before the clients so that GTK applications find
-    # it on their first map. XIM is deliberately not registered: fcitx's XIM
-    # server makes GTK clients started with GTK_IM_MODULE=xim hang in XOpenIM,
-    # and xterm's Xlib XIM swallows every keystroke (it is told not to use one
-    # through /etc/X11/app-defaults/XTerm).
+    # it on their first map. The engine (pinyin) is pulled in by the profile;
+    # ActiveByDefault in ~/.config/fcitx5/config keeps the context switched on.
+    # XIM is deliberately not registered: fcitx's XIM server makes GTK clients
+    # started with GTK_IM_MODULE=xim hang in XOpenIM, and xterm's Xlib XIM
+    # never delivers keys here (it is told not to use one through
+    # /etc/X11/app-defaults/XTerm).
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
     if [[ -x /usr/bin/fcitx5 ]]; then
-        /usr/bin/fcitx5 -d --replace --enable table --disable xim \
+        /usr/bin/fcitx5 -d --replace --disable xim \
             >"$HOME/fcitx5.log" 2>&1 || true
         /usr/bin/sleep 1
     fi
