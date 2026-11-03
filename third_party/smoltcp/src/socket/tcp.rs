@@ -1303,6 +1303,19 @@ impl<'a> Socket<'a> {
         self.tx_buffer.len()
     }
 
+    /// Return the inputs of the transmit decision as (remote window, octets in
+    /// flight, Nagle enabled).
+    ///
+    /// This exists for the kernel's bounded TCP trace: when a write is
+    /// accepted but nothing leaves the interface, these three values say
+    /// which half of [`seq_to_transmit`] refused.
+    ///
+    /// [`seq_to_transmit`]: #method.seq_to_transmit
+    pub fn egress_diagnostic_state(&self) -> (usize, usize, bool) {
+        let in_flight = self.remote_last_seq - self.local_seq_no;
+        (self.remote_win_len, in_flight, self.nagle)
+    }
+
     /// Return the amount of octets queued in the receive buffer. This value can be larger than
     /// the slice read by the next `recv` or `peek` call because it includes all queued octets,
     /// and not only the octets that may be returned as a contiguous slice.

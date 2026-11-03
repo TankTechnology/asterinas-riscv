@@ -13,7 +13,11 @@ pub use policy::TcpDiagnosticStage;
 use policy::{TcpTraceState, TraceDecision};
 
 #[cfg(target_os = "none")]
-const TCP_DIAGNOSTIC_LIMIT: u64 = 128;
+// One SSH authentication alone consumes the first couple of hundred records,
+// so a smaller budget hides the interesting phase (the first session command)
+// behind the handshake. Only the connections involving the configured port
+// consume the budget.
+const TCP_DIAGNOSTIC_LIMIT: u64 = 4096;
 #[cfg(target_os = "none")]
 static TCP_TRACE: TcpTraceState = TcpTraceState::new(TCP_DIAGNOSTIC_LIMIT);
 
