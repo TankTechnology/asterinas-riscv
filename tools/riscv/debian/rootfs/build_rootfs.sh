@@ -1805,6 +1805,16 @@ configure_desktop() {
     ln -sf -- ../asterinas-net-watchdog.service \
         "$stage/etc/systemd/system/multi-user.target.wants/asterinas-net-watchdog.service"
 
+    # Publish the boot-bound handoff file that megrez-safe-reboot waits for.
+    # The stage1 readiness tool on the board's boot partition only disarms the
+    # kernel watchdog; without this file the userspace timer reboots a healthy
+    # desktop at its 720 s deadline (observed: every boot without the file
+    # restarted at 721 s). The drop-in applies to the unit stage1 generates in
+    # /run/systemd/system, and its ExecStartPost runs only after the readiness
+    # tool succeeded, so a desktop that genuinely fails still reboots.
+    install -D -m 0644 -- "$script_directory/asterinas-desktop-handoff.conf" \
+        "$stage/etc/systemd/system/asterinas-desktop-ready.service.d/asterinas-handoff.conf"
+
     # Pairs with `asterinas.reboot_after=` on the kernel command line: a boot
     # that hangs in early unit startup reboots itself instead of waiting for
     # somebody to press reset.
