@@ -190,13 +190,35 @@ class Smoke:
 
     def check_network(self) -> Result:
         result = self.check("network reaches the internet")
+        # The campus portal intercepts unauthenticated traffic: the gateway
+        # answers with a redirect to the login page and everything else is
+        # blocked, which from the inside looks exactly like a broken stack. Ask
+        # the gateway first so the report names the real cause.
+        text = self.command(
+            "curl -m 6 -s -o /dev/null -w 'ZZGW=%{http_code}' http://58.206.232.1/",
+            timeout=45,
+        )
+        match = re.search(r"ZZGW=(\d+)", text)
+        gateway = match.group(1) if match else "none"
+        if gateway.startswith("3"):
+            self.finish(
+                result,
+                False,
+                "PORTAL_EXPIRED: the gateway redirects to the campus login; "
+                "log in for this address and retry",
+            )
+            return result
+
         text = self.command(
             "curl -m 8 -s -o /dev/null -w 'ZZNET=%{http_code}' https://www.baidu.com/",
             timeout=60,
         )
         match = re.search(r"ZZNET=(\d+)", text)
         code = match.group(1) if match else "none"
-        self.finish(result, code == "200", f"https://www.baidu.com/ -> {code}")
+        detail = f"gateway {gateway}, https://www.baidu.com/ -> {code}"
+        if code != "200" and gateway not in ("200", "404"):
+            detail += " (the gateway answered neither a page nor a redirect)"
+        self.finish(result, code == "200", detail)
         return result
 
     def check_browser_navigation(self) -> Result:
