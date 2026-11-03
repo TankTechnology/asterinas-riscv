@@ -182,13 +182,28 @@ class Bridge:
                 self._note(f"[bridge] sent {self.sent} bytes")
 
     def commands(self) -> None:
-        while True:
+        """Reads command lines while keeping one reader open for good.
+
+        Reopening the pipe after every command leaves a window where the old
+        read end is closed but a writer has already opened against it, and that
+        write dies with EPIPE. Opening the pipe O_RDWR pins a reader for the
+        bridge's lifetime, so writers always find one.
+        """
+        fd = -1
+        while fd < 0:
             try:
-                with open(self.fifo, "rb") as fifo:
-                    for line in fifo:
-                        self.handle(line)
+                fd = os.open(self.fifo, os.O_RDWR)
             except FileNotFoundError:
                 time.sleep(0.5)
+        pending = b""
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                continue
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                self.handle(line + b"\n")
 
     def handle(self, raw_line: bytes) -> None:
         line = raw_line.decode("utf-8", "replace").rstrip("\n")
