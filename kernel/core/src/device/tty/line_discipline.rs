@@ -362,7 +362,12 @@ fn is_eof(ch: u8, termios: &CTermios) -> bool {
 }
 
 fn is_printable_char(ch: u8) -> bool {
-    (0x20..0x7f).contains(&ch)
+    // Bytes above 0x7f carry UTF-8 text (a Chinese character is three of
+    // them), and there is no character set here to ask: Linux stores and
+    // echoes them verbatim instead of treating them as control characters.
+    // Filtering them out here silently dropped every non-ASCII byte typed
+    // into a canonical-mode terminal.
+    (0x20..0x7f).contains(&ch) || ch >= 0x80
 }
 
 fn is_ctrl_char(ch: u8) -> bool {
@@ -416,5 +421,26 @@ mod tests {
 
         assert_eq!(received_signal, Some(SIGINT));
         assert_eq!(line_discipline.buffer_len(), 0);
+    }
+
+    #[ktest]
+    fn canonical_mode_keeps_utf8_bytes() {
+        let mut line_discipline = LineDiscipline::new();
+        let mut echoed = [0u8; 8];
+        let mut echoed_len = 0;
+
+        for &ch in "你好\n".as_bytes() {
+            let mut echo = |bytes: &[u8]| {
+                echoed[echoed_len..echoed_len + bytes.len()].copy_from_slice(bytes);
+                echoed_len += bytes.len();
+            };
+            line_discipline.push_char(ch, |_| {}, &mut echo).unwrap();
+        }
+
+        assert_eq!(&echoed[..echoed_len], "你好\n".as_bytes());
+
+        let mut dst = [0u8; 16];
+        let read = line_discipline.try_read(&mut dst).unwrap();
+        assert_eq!(&dst[..read], "你好\n".as_bytes());
     }
 }
