@@ -159,6 +159,11 @@ enum BootHidKind {
 
 /// The `wValue` of a HID `SET_PROTOCOL` request selecting the boot report.
 const SET_BOOT_PROTOCOL: u16 = 0;
+/// The `wValue` of a HID `SET_PROTOCOL` request selecting the full report.
+///
+/// The boot report for a mouse is three bytes and has no wheel, so a wheel can
+/// only ever arrive in the report protocol.
+const SET_REPORT_PROTOCOL: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DiscoveryDecision {
@@ -1037,15 +1042,23 @@ fn open_hid_device(
     }
 
     let mouse_layout = fetch_mouse_layout(&mut device, events, interface);
-    // Always ask for the boot report.
+    // Ask for the full report on a mouse, the boot report on a keyboard.
     //
-    // The report protocol was only ever wanted for the mouse wheel, and it is
-    // part of what broke the pointer: this mouse's reports are five-byte full
-    // packets over a five-byte packet size, so the eight-byte transfer the old
-    // code used turned every one of them into a babble error that crab-usb
-    // discards. The boot report is three bytes, shorter than one packet, so the
-    // controller ends the transfer on it at any reasonable buffer length.
-    let protocol = SET_BOOT_PROTOCOL;
+    // The boot mouse report is three bytes: buttons, X, Y. Every wheel a mouse
+    // has is outside it, which is why scrolling did nothing while the pointer
+    // itself was fine. The report protocol delivers the five-byte report the
+    // descriptor describes, wheel included.
+    //
+    // This used to be the boot report for both, because the full report once
+    // broke the pointer: the device sends five-byte packets and the transfer
+    // asked for eight, so every report was a babble error that crab-usb
+    // throws away. The transfer length is now exactly one packet
+    // (`interrupt_transfer_len`), so the five bytes fit and the report is
+    // read whole.
+    let protocol = match interface.kind {
+        BootHidKind::Mouse => SET_REPORT_PROTOCOL,
+        BootHidKind::Keyboard => SET_BOOT_PROTOCOL,
+    };
 
     match set_hid_protocol(xhci, &mut device, events, interface, protocol) {
         Ok(()) => crate::info!(
