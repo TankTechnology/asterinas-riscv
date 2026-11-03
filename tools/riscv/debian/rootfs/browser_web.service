@@ -17,6 +17,11 @@ CapabilityBoundingSet=
 NoNewPrivileges=yes
 Environment=HOME=/home/asterinas
 Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/
+# The board reaches the internet directly. A profile that wants a proxy sets
+# this to `proxy` together with the proxy variables; leaving it unset made the
+# wrapper refuse to start with `reason=invalid-network-profile`, which looks
+# like a network fault and is not one.
+Environment=ASTERINAS_WEB_NETWORK_MODE=direct
 SupplementaryGroups=video input
 StandardOutput=journal+console
 StandardError=journal+console
