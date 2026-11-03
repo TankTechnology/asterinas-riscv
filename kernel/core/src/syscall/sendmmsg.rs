@@ -25,10 +25,10 @@ pub(super) fn sys_sendmmsg(
         sockfd, mmsghdrs_addr, count, flags
     );
 
-    if !flags.is_empty() {
-        warn!("sendmmsg flags {:?} are not supported", flags);
-    }
-
+    // `from_bits` already rejected unknown flags, so everything left here is
+    // supported and is forwarded to the send path unchanged. Warning about
+    // MSG_NOSIGNAL here (pip and requests pass it on every write) only
+    // flooded the console.
     let file = {
         // Reading control messages may access the file table,
         // so we have to clone the file and drop the file table reference here.
