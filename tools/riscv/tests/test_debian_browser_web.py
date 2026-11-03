@@ -1114,6 +1114,9 @@ class BrowserWebContractTests(unittest.TestCase):
             "git",
             "python3-pip",
             "scrot",
+            "dropbear-bin",
+            "rsync",
+            "sudo",
         ):
             self.assertIn(package, profile.requested_packages)
             self.assertIn(package, profile.identity_packages)
@@ -1226,6 +1229,27 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertIn("DefaultIM=pinyin", profile)
         self.assertIn("ActiveByDefault=True", script)
+
+    def test_remote_access_uses_dropbear_with_a_script_backed_login_shell(self) -> None:
+        # Dropbear's pty relay stalls on this kernel, so keys carry no-pty and
+        # the login shell gives interactive sessions a board-side pty.
+        builder = (ROOTFS / "build_rootfs.sh").read_text()
+        self.assertIn('"$script_directory/asterinas-login-shell.sh"', builder)
+        self.assertIn("/usr/local/bin/asterinas-login-shell", builder)
+        self.assertIn(
+            "asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:"
+            "/usr/local/bin/asterinas-login-shell",
+            builder,
+        )
+        helper = (ROOTFS / "asterinas-add-ssh-key.sh").read_text()
+        self.assertIn('printf \'%s\\n\' "$1"', helper)
+        self.assertIn("ExecStart=/usr/sbin/dropbear", (ROOTFS / "asterinas-dropbear.service").read_text())
+        # The distro dropbear relays a real pty (which stalls here); the
+        # image installs the same source patched to answer the request over
+        # pipes, plus the upstream sftp-server path Debian does not create.
+        self.assertIn("dropbear-patched-riscv64", builder)
+        self.assertIn("dropbear-asterinas-fake-pty.patch", builder)
+        self.assertIn("/usr/libexec/sftp-server", builder)
 
     def test_browser_web_builder_wires_explicit_frozen_jit_packages(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()

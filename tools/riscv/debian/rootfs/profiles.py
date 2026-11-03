@@ -439,6 +439,16 @@ BROWSER_WEB_DESKTOP_PACKAGES = BROWSER_WEB_SCHEMA_SEVEN_PACKAGES + (
     "git",
     "python3-pip",
     "scrot",
+    # Remote access. dropbear is the SSH server that works on this kernel;
+    # OpenSSH's session loop stalls after authentication. rsync rides on it.
+    "dropbear-bin",
+    "rsync",
+    # The image ships /etc/sudoers.d/asterinas; without the package that file
+    # grants nothing, which left remote/console administration impossible.
+    "sudo",
+    # API-drivable Python harnesses (DeepSeek and friends) install cleanly
+    # into a venv; Debian splits ensurepip out of the base interpreter.
+    "python3-venv",
 )
 
 

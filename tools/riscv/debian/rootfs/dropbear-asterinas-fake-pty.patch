@@ -1,0 +1,53 @@
+--- src/svr-chansession.c.orig	2026-11-04 03:08:23.041355513 +0800
++++ src/svr-chansession.c	2026-11-04 03:18:30.482164620 +0800
+@@ -598,29 +598,22 @@
+ 		return DROPBEAR_FAILURE;
+ 	}
+ 
+-	/* allocate the pty */
++	/* Asterinas: do not allocate a pty. The kernel's pty relay between
++	 * the session relays data unreliably, while the pipe transport is
++	 * solid. Answer the client's request so it keeps its normal
++	 * terminal handling, consume the packet fields, and run the
++	 * session over pipes; the login shell wrapper gives the user a
++	 * board-side pty with script(1). */
+ 	if (chansess->master != -1) {
+ 		dropbear_exit("Multiple pty requests");
+ 	}
+-	if (pty_allocate(&chansess->master, &chansess->slave, namebuf, 64) == 0) {
+-		TRACE(("leave sessionpty: failed to allocate pty"))
+-		return DROPBEAR_FAILURE;
+-	}
+-	
+-	chansess->tty = m_strdup(namebuf);
+-	if (!chansess->tty) {
+-		dropbear_exit("Out of memory"); /* TODO disconnect */
+-	}
+-
+-	pw = getpwnam(ses.authstate.pw_name);
+-	if (!pw)
+-		dropbear_exit("getpwnam failed after succeeding previously");
+-	pty_setowner(pw, chansess->tty);
++	(void)namebuf;
++	(void)pw;
+ 
+-	/* Set up the rows/col counts */
++	/* Set up the rows/col counts (consumes the packet fields) */
+ 	sessionwinchange(chansess);
+ 
+-	/* Read the terminal modes */
++	/* Read the terminal modes (consumes the modes blob) */
+ 	get_termmodes(chansess);
+ 
+ 	TRACE(("leave sessionpty"))
+@@ -731,8 +724,8 @@
+ 	make_connection_string(chansess);
+ #endif
+ 
+-	if (chansess->term == NULL) {
+-		/* no pty */
++	if (chansess->term == NULL || chansess->master == -1) {
++		/* no pty (Asterinas: a faked pty is reported as no-pty) */
+ 		ret = noptycommand(channel, chansess);
+ 		if (ret == DROPBEAR_SUCCESS) {
+ 			channel->prio = DROPBEAR_PRIO_NORMAL;

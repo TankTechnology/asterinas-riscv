@@ -1721,6 +1721,33 @@ install_online_desktop_shell() {
             "$script_directory/asterinas-$launcher.desktop" \
             "$stage/home/asterinas/Desktop/asterinas-$launcher.desktop"
     done
+    # Remote access. OpenSSH's session loop stalls on this kernel (the client
+    # authenticates and the command even runs, but the reply never comes
+    # back), while dropbear relays commands, scp and rsync correctly. Ship
+    # dropbear as the SSH server and mask the openssh unit so the two cannot
+    # fight over port 22. openssh-server stays installed because it provides
+    # the client and the sftp-server that scp's default protocol needs.
+    install -D -m 0644 -- "$script_directory/asterinas-dropbear.service" \
+        "$stage/etc/systemd/system/asterinas-dropbear.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/asterinas-debug-console.target.wants"
+    ln -sf -- ../asterinas-dropbear.service \
+        "$stage/etc/systemd/system/asterinas-debug-console.target.wants/asterinas-dropbear.service"
+    ln -sf /dev/null "$stage/etc/systemd/system/ssh.service"
+    install -D -m 0755 -- "$script_directory/asterinas-add-ssh-key.sh" \
+        "$stage/usr/lib/asterinas/add-ssh-key"
+    # The distro dropbear allocates a real pty for pty-req and relays it
+    # through this kernel, whose pty relay stalls. Install the binary built
+    # from the same 2025.89 source with dropbear-asterinas-fake-pty.patch: it
+    # answers the request (so clients keep their terminal handling) but runs
+    # the session over the reliable pipe transport; the login shell wrapper
+    # gives the user a board-side pty with script(1).
+    install -D -m 0755 -- "$script_directory/dropbear-patched-riscv64" \
+        "$stage/usr/sbin/dropbear"
+    # Upstream's default SFTPSERVER_PATH is /usr/libexec/sftp-server; Debian
+    # installs the helper at /usr/lib/openssh/sftp-server. scp (SFTP
+    # protocol) and sftp need the subsystem to resolve.
+    install -d -m 0755 -- "$stage/usr/libexec"
+    ln -sf /usr/lib/openssh/sftp-server "$stage/usr/libexec/sftp-server"
 }
 
 configure_desktop() {
@@ -1824,9 +1851,17 @@ configure_desktop() {
         "$stage/etc/systemd/system/basic.target.wants/asterinas-watchdog-disarm.service"
 
     configure_logind_namespace_compatibility "$stage"
+    # The login shell wraps interactive sessions in `script`: dropbear's pty
+    # relay stalls on this kernel, so SSH keys carry `no-pty` and the wrapper
+    # gives the session a board-side pty over the reliable pipe transport.
+    install -D -m 0755 -- "$script_directory/asterinas-login-shell.sh" \
+        "$stage/usr/local/bin/asterinas-login-shell"
+    grep -qx '/usr/local/bin/asterinas-login-shell' "$stage/etc/shells" 2>/dev/null ||
+        printf '%s\n' '/usr/local/bin/asterinas-login-shell' \
+            >>"$stage/etc/shells"
     grep -q '^asterinas:' "$stage/etc/passwd" ||
         printf '%s\n' \
-            'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash' \
+            'asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/usr/local/bin/asterinas-login-shell' \
             >>"$stage/etc/passwd"
     grep -q '^asterinas:' "$stage/etc/group" ||
         printf '%s\n' 'asterinas:x:1000:' >>"$stage/etc/group"

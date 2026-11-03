@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+[Unit]
+Description=Asterinas Dropbear SSH server
+Documentation=man:dropbear(8)
+After=local-fs.target
+# This image never reaches basic/multi-user target: the boot is driven by
+# asterinas-debug-console.target (the desktop unit hangs off it too). Keep the
+# server independent of the graphical session: SSH is the recovery channel.
+[Service]
+Type=simple
+# First boot: dropbear refuses to start without a host key.
+ExecStartPre=-/bin/sh -c 'install -d -m 0700 -p /etc/dropbear'
+ExecStartPre=-/bin/sh -c 'test -f /etc/dropbear/dropbear_ed25519_host_key || /usr/bin/dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key'
+ExecStart=/usr/sbin/dropbear -F -E -p 22 -r /etc/dropbear/dropbear_ed25519_host_key
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=asterinas-debug-console.target

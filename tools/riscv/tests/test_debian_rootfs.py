@@ -2814,7 +2814,8 @@ WantedBy=multi-user.target
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(
-            "asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:/bin/bash\n",
+            "asterinas:x:1000:1000:Asterinas Desktop:/home/asterinas:"
+        "/usr/local/bin/asterinas-login-shell\n",
             (stage / "etc/passwd").read_text(),
         )
         session = stage / "usr/lib/asterinas/desktop-m3-session"
@@ -3114,6 +3115,19 @@ WantedBy=multi-user.target
         # The editor button must name the desktop file Debian ships, not the
         # package name, or lxpanel silently drops the launcher.
         self.assertIn("id=org.xfce.mousepad.desktop", panel.read_text())
+        # Remote access: dropbear owns port 22 and starts from sysinit (this
+        # image never reaches basic/multi-user target); the openssh unit is
+        # masked because its session loop stalls on this kernel.
+        dropbear_unit = stage / "etc/systemd/system/asterinas-dropbear.service"
+        self.assertIn("ExecStart=/usr/sbin/dropbear", dropbear_unit.read_text())
+        self.assertTrue(
+            (stage / "etc/systemd/system/asterinas-debug-console.target.wants/"
+             "asterinas-dropbear.service").resolve().is_file()
+        )
+        self.assertEqual(
+            os.readlink(stage / "etc/systemd/system/ssh.service"), "/dev/null"
+        )
+        self.assertTrue((stage / "usr/lib/asterinas/add-ssh-key").is_file())
         self.assertEqual(pcmanfm.stat().st_uid, 1000)
         self.assertEqual(panel.stat().st_uid, 1000)
         for relative in (
