@@ -10,10 +10,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.riscv.prepare_board_image import inject, sha256_of
+from tools.riscv.board.prepare_board_image import inject, sha256_of
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
-SCRIPT = REPOSITORY_ROOT / "tools/riscv/prepare_board_image.py"
+SCRIPT = REPOSITORY_ROOT / "tools/riscv/board/prepare_board_image.py"
 
 
 def make_image(directory: Path, size_mb: int = 8) -> Path:

@@ -48,7 +48,7 @@
 
 ```bash
 # 控制台桥（另开一个终端常驻）
-tools/riscv/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /tmp/board2.cmd
+tools/riscv/board/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /tmp/board2.cmd
 ```
 
 验收按"一条短命令一个结论"来做，没有一键脚本：

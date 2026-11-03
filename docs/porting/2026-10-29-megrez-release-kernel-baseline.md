@@ -88,11 +88,11 @@ sha256 与主机产物一致（`03536979…a65d`）。反向也通：板子起
 
 ```sh
 # 主机：常驻桥接
-python3 tools/riscv/megrez_console.py bridge /dev/ttyUSB0 \
+python3 tools/riscv/board/megrez_console.py bridge /dev/ttyUSB0 \
     --log /tmp/board.log --fifo /tmp/board.cmd &
 
 # U-Boot 里加载并启动指定内核（p2 路径）
-python3 tools/riscv/megrez_console.py boot --kernel /root/kernel-rel.img \
+python3 tools/riscv/board/megrez_console.py boot --kernel /root/kernel-rel.img \
     --append 'console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 \
 asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd \
 --debug-console=isolated-root'

@@ -48,7 +48,7 @@ binary file` / `Exec format error` → **文件系统层坏了**，别再用 GUI
 
 ```sh
 # 控制台桥
-tools/riscv/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /tmp/board2.cmd &
+tools/riscv/board/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /tmp/board2.cmd &
 
 # 逐条短命令验收：date -u / curl https://www.baidu.com/ / tail 导航日志
 ```
@@ -56,10 +56,10 @@ tools/riscv/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /
 刷写新镜像（镜像里必须已经含内核）：
 
 ```sh
-sudo python3 tools/riscv/prepare_board_image.py \
+sudo python3 tools/riscv/board/prepare_board_image.py \
   --image target/debian-riscv/browser-web/rootfs/debian-root.ext2 \
   --kernel target/osdk/aster-kernel-osdk-bin.Image
-python3 tools/riscv/megrez_flash_rootfs.py \
+python3 tools/riscv/board/megrez_flash_rootfs.py \
   --image target/debian-riscv/browser-web/rootfs/debian-root.ext2 \
   --url http://<host>:18090/
 ```

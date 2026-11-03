@@ -9,7 +9,7 @@ import json
 import unittest
 from unittest import mock
 
-from tools.riscv import megrez_portal_login as portal
+from tools.riscv.board import megrez_portal_login as portal
 
 PAYLOAD = (
     '{"username":"u","password":"p","ip":"1.2.3.4","acid":"1","enc_ver":"srun_bx1"}'
