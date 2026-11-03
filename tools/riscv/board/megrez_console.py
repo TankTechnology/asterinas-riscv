@@ -215,6 +215,10 @@ def run_bridge(device: str, log_path: str, fifo: str, baud: int, pace_ms: float)
     if os.path.exists(fifo):
         os.unlink(fifo)
     os.mkfifo(fifo)
+    # The bridge needs the serial device (root), but every tool that talks to
+    # the board runs as the invoking user. A root-owned pipe would make
+    # Console.send_line fail with EACCES, so let anyone write to it.
+    os.chmod(fifo, 0o666)
     bridge = Bridge(device, log_path, fifo, baud, pace_ms)
     threading.Thread(target=bridge.reader, daemon=True).start()
     bridge._note(f"[bridge] started on {device} @ {baud}")
