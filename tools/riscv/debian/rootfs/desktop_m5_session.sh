@@ -79,6 +79,40 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
         exit 1
     fi
     emit_stage x-socket-ready "$xorg_pid"
+    # Chinese input: the GTK clients below reach fcitx5 through their immodule
+    # over the session bus, so the bus address and the client defaults have to
+    # be in place before the first client starts.  A session bus normally
+    # already exists for this boot; create one when it does not, otherwise
+    # fcitx5 exits with "Failed to create dbus connection" and the clients
+    # silently fall back to plain keyboard input.
+    export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
+    if [[ -d /run ]]; then
+        /usr/bin/install -d -o asterinas -g asterinas -m 0700 \
+            /run/user/1000 2>/dev/null || true
+        export XDG_RUNTIME_DIR=/run/user/1000
+    fi
+    if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+        # The session bus must be owned by the user that will talk to it: a
+        # daemon started by root accepts the connection but fcitx5 then fails
+        # to request `org.fcitx.Fcitx5` ("Unable to request dbus name"), and
+        # every client silently falls back to plain keyboard input.  Start it
+        # as asterinas and re-use it when a previous session already did.
+        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/bus"
+        if ! /usr/bin/dbus-send --bus="$DBUS_SESSION_BUS_ADDRESS" --print-reply \
+            --dest=org.freedesktop.DBus / org.freedesktop.DBus.Peer.Ping \
+            >/dev/null 2>&1; then
+            /usr/bin/rm -f /run/user/1000/bus 2>/dev/null || true
+            /usr/sbin/runuser --user asterinas -- \
+                /usr/bin/dbus-daemon --session --fork --nopidfile \
+                --address="$DBUS_SESSION_BUS_ADDRESS" >/dev/null 2>&1 || true
+        fi
+        export DBUS_SESSION_BUS_ADDRESS
+    fi
+    if [[ -x /usr/bin/fcitx5 ]]; then
+        /usr/sbin/runuser --user asterinas --preserve-environment -- \
+            /usr/bin/fcitx5 -d --replace --disable xim >>"$SESSION_LOG" 2>&1 || true
+        /usr/bin/sleep 1
+    fi
     # Xorg owns the VT as the privileged display provider; keep the window
     # manager and desktop shell unprivileged so they cannot grant Firefox extra
     # capabilities through the session process.

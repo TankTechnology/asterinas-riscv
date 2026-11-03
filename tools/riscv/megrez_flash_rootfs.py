@@ -108,7 +108,7 @@ class Flash:
         time.sleep(1)
         return self.since(offset)
 
-    def run(self, image: Path, url: str) -> int:
+    def run(self, image: Path, url: str, compressed: bool = False) -> int:
         expected = sha256_of(image)
         print(f"image {image.name} sha256={expected}", flush=True)
 
@@ -121,11 +121,20 @@ class Flash:
         # the only thing worth trusting at this point.
         target = "/tmp/rootfs-flash.img"
         print("downloading the image to the board's tmpfs", flush=True)
-        text = self.command(
-            f"rm -f {target}; curl -m 900 -s -o {target} {url}debian-root.ext2; "
-            f"wc -c < {target}",
-            timeout=1000,
-        )
+        # The board-to-host path runs at about 2 MiB/s here, so the image is
+        # usually shipped gzipped: 3 GiB of ext2 is mostly free blocks and
+        # compresses to a fraction of that.
+        if compressed:
+            download = (
+                f"rm -f {target}; curl -m 3600 -s {url}{image.name}.gz | "
+                f"gunzip > {target}; wc -c < {target}"
+            )
+        else:
+            download = (
+                f"rm -f {target}; curl -m 3600 -s -o {target} {url}{image.name}; "
+                f"wc -c < {target}"
+            )
+        text = self.command(download, timeout=3700)
         size_match = re.search(r"^(\d+)$", text, re.MULTILINE)
         if not size_match or int(size_match.group(1)) != image.stat().st_size:
             print(f"download incomplete: {text[-300:]}", file=sys.stderr)
@@ -153,9 +162,13 @@ class Flash:
         # execute it. The image is verified after the boot instead, from the
         # system that came up from it.
         print(f"writing {image.stat().st_size} bytes over {PARTITION}", flush=True)
+        # The reboot must not execute a binary: after the write the running
+        # system's cached blocks no longer match the device, and exec of an
+        # uncached binary fails ("Permission denied"/"Exec format error").
+        # `echo` is a shell builtin and the sysrq path lives in the kernel.
         text = self.command(
             f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -1; "
-            "/usr/sbin/reboot",
+            "echo ZZFLASH_5; echo b > /proc/sysrq-trigger",
             timeout=1800,
         )
         if "copied" not in text:
@@ -183,11 +196,18 @@ class Flash:
         return 0
 
     def wait_for_boot(self, timeout: float = 300.0) -> bool:
+        # The shell prompt is present before the reboot too, so wait for
+        # evidence that a new kernel actually started before accepting it.
         offset = self.log.stat().st_size
         deadline = time.time() + timeout
+        rebooted = False
         while time.time() < deadline:
             text = self.since(offset)
-            if "asterinas-desktop-ready" in text or "asterinas-debug:/" in text[-4000:]:
+            if "Starting kernel" in text or "OpenSBI" in text:
+                rebooted = True
+            if rebooted and (
+                "asterinas-desktop-ready" in text or "asterinas-debug:/" in text[-4000:]
+            ):
                 return True
             time.sleep(5)
         return False
@@ -199,10 +219,12 @@ def main() -> int:
     parser.add_argument("--url", required=True, help="HTTP prefix serving the image")
     parser.add_argument("--log", default="/tmp/board2.log")
     parser.add_argument("--fifo", default="/tmp/board2.cmd")
+    parser.add_argument("--compressed", action="store_true",
+                        help="the server also has <image>.gz; stream it through gunzip")
     values = parser.parse_args()
     if not values.url.endswith("/"):
         values.url += "/"
-    return Flash(values.log, values.fifo).run(values.image, values.url)
+    return Flash(values.log, values.fifo).run(values.image, values.url, values.compressed)
 
 
 if __name__ == "__main__":

@@ -6,15 +6,18 @@
 # This is the RISC-V port of the session that already works on the x86 image
 # (tools/x86/debian/daily_session.sh). What matters here:
 #
-# * the engine is pinyin (libpinyin, from fcitx5-chinese-addons), not the
-#   wbpy table engine. It is loaded on demand and that works: once the
-#   profile names pinyin, the addon is pulled in and the group keeps it. The
-#   table engine has to be eager instead, which is why the earlier wbpy
-#   profile needed a hack; pinyin avoids the whole problem.
+# * the engine is pinyin (libpinyin, from fcitx5-chinese-addons). It ships
+#   with OnDemand=True and that silently breaks the profile: by the time the
+#   group is parsed the engine is not registered yet, fcitx drops "pinyin"
+#   from the group and every window starts in keyboard-us. Making the addon
+#   eager is what makes DefaultIM=pinyin stick (verified on the board: with
+#   OnDemand=True `fcitx5-remote -n` reports keyboard-us, with False it
+#   reports pinyin and `nihao` + space commits 你好).
 # * the input method must be *active* out of the box. fcitx5 starts inactive
-#   by default, and an inactive context reports keyboard-us and passes every
-#   key through unchanged -- typing pinyin then produces literal letters and
-#   looks exactly like a broken engine. ActiveByDefault turns it on.
+#   by default, and an inactive context passes every key through unchanged --
+#   typing pinyin then produces literal letters and looks exactly like a
+#   broken engine. ActiveByDefault asks for that; fcitx 5.1.8 needs the eager
+#   engine above before the flag can have anything to switch to.
 # * XDG_RUNTIME_DIR has to be per user. A single value in /etc/environment
 #   makes a dbus-daemon started as root refuse to run ("owned by uid 1000, not
 #   our uid 0").
@@ -57,6 +60,18 @@ cat >"/home/${USER_NAME}/.config/fcitx5/config" <<'EOF'
 ActiveByDefault=True
 EOF
 chown -R "$USER_ID:$USER_ID" "/home/${USER_NAME}/.config/fcitx5"
+
+# The engine has to be eager. fcitx parses the profile before an on-demand
+# addon registers, treats "pinyin" as unknown and rewrites the group down to
+# keyboard-us, so every new window starts with the layout and typing produces
+# literal letters. This is the same trap the old wbpy profile hit.
+if [ -f /usr/share/fcitx5/addon/pinyin.conf ]; then
+    sed -i 's/^OnDemand=True/OnDemand=False/' /usr/share/fcitx5/addon/pinyin.conf
+    install -d -o "$USER_ID" -g "$USER_ID" "/home/${USER_NAME}/.local/share/fcitx5/addon"
+    sed 's/^OnDemand=True/OnDemand=False/' /usr/share/fcitx5/addon/pinyin.conf \
+        >"/home/${USER_NAME}/.local/share/fcitx5/addon/pinyin.conf"
+    chown -R "$USER_ID:$USER_ID" "/home/${USER_NAME}/.local/share/fcitx5"
+fi
 
 # xterm: no XIM (see above).
 install -d /etc/X11/app-defaults
