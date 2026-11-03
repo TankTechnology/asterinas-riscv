@@ -50,8 +50,7 @@ binary file` / `Exec format error` → **文件系统层坏了**，别再用 GUI
 # 控制台桥
 tools/riscv/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /tmp/board2.cmd &
 
-# 五项验收：时钟、联网、导航、截图像素、编译运行
-tools/riscv/megrez_smoke.sh
+# 逐条短命令验收：date -u / curl https://www.baidu.com/ / tail 导航日志
 ```
 
 刷写新镜像（镜像里必须已经含内核）：

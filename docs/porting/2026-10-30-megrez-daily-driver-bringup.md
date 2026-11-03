@@ -13,7 +13,7 @@
 | 时钟 | 桌面服务 `ExecStartPre` + 浏览器 wrapper 各对一次时，源是网关的 HTTP `Date:` |
 | 桌面 | Xorg + openbox 会话 |
 | 浏览器 | Firefox 以 `--marionette` 起在 `about:blank`，wrapper fork 的导航器把它开到目标页 |
-| 验收 | `tools/riscv/megrez_smoke.sh --reboot` 五步全绿 |
+| 验收 | 逐条短命令确认（时钟 / HTTPS / 导航日志 / 截图按需） |
 
 ## 2. 这一轮修掉的五个缺陷
 
@@ -49,13 +49,17 @@
 ```bash
 # 控制台桥（另开一个终端常驻）
 tools/riscv/megrez_console.py bridge /dev/ttyUSB0 --log /tmp/board2.log --fifo /tmp/board2.cmd
-
-# 冷启动 + 五项验收，约 5 分钟
-tools/riscv/megrez_smoke.sh --reboot
 ```
 
-五项：时钟偏差 ≤10 min、`https://www.baidu.com/` = 200、导航器报 OK、截图像素判读
-（≥200 色且亮度不在两端）、`g++` 编译运行。
+验收按"一条短命令一个结论"来做，没有一键脚本：
+
+| 问题 | 命令 | 期望 |
+| --- | --- | --- |
+| 系统真的活着吗 | `/usr/sbin/reboot --help` | 不报 I/O / Exec format 错误 |
+| 时钟对不对 | `date -u` | 与主机一致 |
+| 能不能出网 | `curl -m 8 -s -o /dev/null -w '%{http_code}' https://www.baidu.com/` | 200 |
+| 浏览器被导航了吗 | `tail -2 /home/asterinas/browser-web-navigate.log` | `ASTERINAS_BROWSER_NAVIGATE_OK` |
+| 屏幕上是什么 | `DISPLAY=:0 xwd -root -silent -out /tmp/s.xwd` 再从主机取 | 人工看一眼 |
 
 ## 5. 已知未解
 
