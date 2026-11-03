@@ -1094,6 +1094,10 @@ WantedBy=basic.target
 EOF
     chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
     install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    # The shipped resolver is the QEMU slirp one; on the board it has to be
+    # replaced before anything resolves a name.
+    install -D -m 0755 -- "$script_directory/asterinas_resolv.sh" \
+        "$stage/usr/lib/asterinas/asterinas-resolv"
     ln -sf -- "../asterinas-dns-shim.service" \
         "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
 }
@@ -2278,6 +2282,7 @@ ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 # values to a privileged pre-start process; offline profiles must not enter the
 # network stack just to set a clock, and the leading '-' keeps a sync failure
 # from stopping the desktop.
+ExecStartPre=-/bin/sh /usr/lib/asterinas/asterinas-resolv
 ExecStartPre=-/bin/sh -c 'case " \$(cat /proc/cmdline 2>/dev/null) " in *" ASTERINAS_DESKTOP_OFFLINE=1 "*) exit 0;; *) exec /usr/lib/asterinas/megrez-clock-sync;; esac'
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure

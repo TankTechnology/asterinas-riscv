@@ -108,6 +108,7 @@ class Smoke:
         result = Result(name)
         self.results.append(result)
         result.seconds = -time.time()
+        print(f"...    {name}", flush=True)
         return result
 
     def finish(self, result: Result, ok: bool, detail: str) -> None:
@@ -154,16 +155,20 @@ class Smoke:
 
     def wait_for_navigation(self, timeout: float = 240.0) -> Result:
         result = self.check("the browser started and was navigated")
+        # The wrapper prints its verdict to the console, so watch the log
+        # instead of typing a command every few seconds: each typed line costs
+        # about five seconds on this console, and this step is just waiting.
+        offset = self.log.stat().st_size
         deadline = time.time() + timeout
         while time.time() < deadline:
-            text = self.command(
-                "tail -n 2 /home/asterinas/browser-web-navigate.log 2>/dev/null",
-                timeout=40,
-            )
+            text = self.since(offset)
             if "ASTERINAS_BROWSER_NAVIGATE_OK" in text:
                 self.finish(result, True, "navigation reported OK")
                 return result
-            time.sleep(5)
+            if "ASTERINAS_BROWSER_NAVIGATE_FAIL" in text:
+                self.finish(result, False, "the navigator reported a failure")
+                return result
+            time.sleep(3)
         self.finish(result, False, f"no navigation within {timeout:.0f} s")
         return result
 
@@ -272,7 +277,7 @@ class Smoke:
         text = self.command(
             "cd /tmp && rm -rf smokecpp && mkdir smokecpp && cd smokecpp && "
             "printf '#include <iostream>\\nint main(){std::cout<<\"hello smoke\";}' > a.cpp && "
-            "g++ -O1 a.cpp -o a && ./a",
+            "g++ -O0 a.cpp -o a && ./a",
             timeout=180,
         )
         ok = "hello smoke" in text
@@ -281,7 +286,7 @@ class Smoke:
 
     # -- driver ----------------------------------------------------------
 
-    def run(self, reboot: bool) -> int:
+    def run(self, reboot: bool, fast: bool = False) -> int:
         if reboot:
             if not self.wait_for_boot().ok:
                 self.report()
@@ -300,7 +305,10 @@ class Smoke:
         self.check_network()
         self.check_browser_navigation()
         self.check_screen()
-        self.check_toolchain()
+        if fast:
+            print("...    skipped: vim and g++ (--fast)", flush=True)
+        else:
+            self.check_toolchain()
         self.report()
         return 0 if all(result.ok for result in self.results) else 1
 
@@ -319,10 +327,15 @@ def main() -> int:
     parser.add_argument("--fifo", default="/tmp/board2.cmd")
     parser.add_argument("--reboot", action="store_true", help="cold boot first")
     parser.add_argument("--json", help="write the results here")
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="skip the C++ compile step, the slowest check",
+    )
     values = parser.parse_args()
 
     smoke = Smoke(values.log, values.fifo)
-    code = smoke.run(values.reboot)
+    code = smoke.run(values.reboot, fast=values.fast)
     if values.json:
         Path(values.json).write_text(
             json.dumps([result.as_dict() for result in smoke.results], indent=2) + "\n",
