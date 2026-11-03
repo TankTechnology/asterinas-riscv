@@ -1091,7 +1091,9 @@ class BrowserWebContractTests(unittest.TestCase):
         profile = get_profile("browser-web")
         self.assertEqual(profile.schema_version, 7)
         self.assertEqual(profile.root_label, "ASTER_BROWSERWEB")
-        self.assertEqual(profile.root_size_bytes, 2 * 1024 * 1024 * 1024)
+        # 2 GiB left 49 MB free in the image, which is not enough for the
+        # browser's own profile; the board's partition is 4 GiB.
+        self.assertEqual(profile.root_size_bytes, 3 * 1024 * 1024 * 1024)
         for package in (
             "firefox-esr",
             "python3-minimal",

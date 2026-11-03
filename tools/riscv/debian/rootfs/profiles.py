@@ -452,10 +452,12 @@ _PROFILES["browser-web"] = RootfsProfile(
     + BROWSER_WEB_DESKTOP_PACKAGES,
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
-    # normal bookmark/places maintenance path.  Keep the smaller milestone
-    # images unchanged, but give the long-lived online browser a real working
-    # margin.
-    root_size_bytes=2 * 1024 * 1024 * 1024,
+    # normal bookmark/places maintenance path.  Two gigabytes still left only
+    # 49 MB free on the board, which is where the browser's first profile
+    # write landed: the service failed with "No space left on device" and the
+    # desktop had no browser.  The board's root partition is 4 GiB, so give the
+    # long-lived online browser a real working margin.
+    root_size_bytes=3 * 1024 * 1024 * 1024,
 )
 
 
