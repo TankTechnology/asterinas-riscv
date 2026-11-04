@@ -256,6 +256,43 @@ impl<M: AnyFrameMeta + ?Sized> Clone for Frame<M> {
     }
 }
 
+impl<M: AnyFrameMeta + ?Sized> Frame<M> {
+    /// Releases one reference to the frame at `paddr` without returning the
+    /// frame to the allocator.
+    ///
+    /// Returns `true` when this was the last reference; the caller then owns
+    /// the frame and must return it with `GlobalFrameAllocator::dealloc`,
+    /// possibly together with its contiguous neighbours. Merging the
+    /// deallocation of a [`Segment`](super::Segment)'s frames into one call per
+    /// contiguous run keeps a 64 KiB pipe buffer from taking sixteen trips
+    /// through the frame allocator.
+    ///
+    /// # Safety
+    ///
+    /// `paddr` must be a frame with a forgotten `Frame<M>` handle, as when a
+    /// segment is dropped.
+    pub(in crate::mm::frame) unsafe fn release_ref(paddr: Paddr) -> bool {
+        let frame = unsafe { Self::from_raw(paddr) };
+        let slot = frame.slot() as *const MetaSlot;
+        core::mem::forget(frame);
+        // SAFETY: the slot outlives every frame handle and is never freed.
+        let slot = unsafe { &*slot };
+        let last_ref_cnt = slot.ref_count.fetch_sub(1, Ordering::Release);
+        debug_assert!(last_ref_cnt != 0 && last_ref_cnt != REF_COUNT_UNUSED);
+
+        if last_ref_cnt != 1 {
+            return false;
+        }
+
+        // A fence is needed here with the same reasons stated in the
+        // implementation of `Arc::drop`.
+        core::sync::atomic::fence(Ordering::Acquire);
+        // SAFETY: this was the last reference and the frame is about to be freed.
+        unsafe { slot.drop_last_in_place() };
+        true
+    }
+}
+
 impl<M: AnyFrameMeta + ?Sized> Drop for Frame<M> {
     fn drop(&mut self) {
         let last_ref_cnt = self.slot().ref_count.fetch_sub(1, Ordering::Release);

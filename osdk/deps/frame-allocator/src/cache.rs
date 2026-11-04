@@ -19,6 +19,12 @@ struct CacheOfSizes {
     cache2: CacheArray<2, 6>,
     cache3: CacheArray<3, 6>,
     cache4: CacheArray<4, 6>,
+    /// 64 KiB segments, the size of a default pipe buffer.
+    ///
+    /// Without this class every pipe creation and destruction went straight to
+    /// the buddy pools; on the Megrez board a `pipe()` + close cost ~0.8 ms
+    /// while a Unix socket (no buffer) cost ~20 µs.
+    cache16: CacheArray<16, 6>,
 }
 
 /// A fixed-size local cache for frame allocation.
@@ -53,16 +59,20 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
         }
 
         let nr_to_alloc = COUNT * 2 / 3;
-        let allocated = super::pools::alloc(
-            guard,
-            Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE).unwrap(),
-        )?;
-
-        for i in 1..nr_to_alloc {
-            self.push_front(allocated + i * Self::segment_size());
+        let batch = Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE);
+        if let Some(allocated) = batch.ok().and_then(|layout| super::pools::alloc(guard, layout)) {
+            for i in 1..nr_to_alloc {
+                self.push_front(allocated + i * Self::segment_size());
+            }
+            return Some(allocated);
         }
 
-        Some(allocated)
+        // Refilling the cache must not turn into a new allocation failure:
+        // fall back to a single segment, which is what the caller asked for.
+        super::pools::alloc(
+            guard,
+            Layout::from_size_align(Self::segment_size(), PAGE_SIZE).unwrap(),
+        )
     }
 
     /// Deallocates a segment of frames.
@@ -120,6 +130,7 @@ impl CacheOfSizes {
             cache2: CacheArray::new(),
             cache3: CacheArray::new(),
             cache4: CacheArray::new(),
+            cache16: CacheArray::new(),
         }
     }
 }
@@ -138,6 +149,7 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
         2 => cache.cache2.alloc(guard),
         3 => cache.cache3.alloc(guard),
         4 => cache.cache4.alloc(guard),
+        16 => cache.cache16.alloc(guard),
         _ => super::pools::alloc(guard, layout),
     }
 }
@@ -163,7 +175,7 @@ pub(super) fn alloc_in(
 
 pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {
     let nr_frames = size / PAGE_SIZE;
-    if nr_frames > 4 {
+    if nr_frames > 4 && nr_frames != 16 {
         super::pools::dealloc(guard, [(addr, size)].into_iter());
         return;
     }
@@ -176,6 +188,7 @@ pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {
         2 => cache.cache2.dealloc(guard, addr),
         3 => cache.cache3.dealloc(guard, addr),
         4 => cache.cache4.dealloc(guard, addr),
+        16 => cache.cache16.dealloc(guard, addr),
         _ => super::pools::dealloc(guard, [(addr, size)].into_iter()),
     }
 }
