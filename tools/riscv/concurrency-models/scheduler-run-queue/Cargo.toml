@@ -1,0 +1,11 @@
+[package]
+name = "scheduler-run-queue-model"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A standalone model; do not join the kernel workspace.
+[workspace]
+
+[dependencies]
+loom = "0.7"
