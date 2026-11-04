@@ -41,7 +41,7 @@ verdict carries the test's own `TCONF:` reason.
 | --- | --- |
 | Workflow, board image (flashed before this round) | 9/10 — `tar_xz` fails, image has no `xz` |
 | Workflow, QEMU image (rebuilt) | 10/10 |
-| LTP arch-riscv64 | 137/158 pass, 21 CONF, 0 FAIL/CRASH/TIMEOUT |
+| LTP arch-riscv64 (fixed kernel) | 141/158 pass, 17 CONF, 0 FAIL/CRASH/TIMEOUT |
 | LTP syscalls | 642/767 pass, 57 FAIL, 68 CONF, 0 CRASH/TIMEOUT |
 
 The board's single failure was real and is fixed in the image build:
@@ -60,6 +60,13 @@ the board will once it is reflashed.
   the bucket lock; the requeue operations now return woken+requeued (Linux's
   contract), reject negative counts with EINVAL, and treat a zero wake count
   as "wake nobody". `futex_cmp_requeue02` passes.
+- **Scheduler panic under multi-process futex wake/requeue churn.** LTP's
+  `futex_cmp_requeue01` (1000 children) panicked `exit_current` on 4 CPUs and
+  passed on 1: a wake that arrived while a task was leaving the run queue
+  pushed it back into another CPU's queue, and the stale entry later resumed
+  the exited task's saved context. The run queue now refuses to re-enqueue a
+  task whose `exit_pending` flag is set (checked under the queue lock). The
+  full arch suite completes: 141 pass, 17 conf, 0 fail.
 - **LTP `CONF` reasons were invisible.** The runner only dumped a test's output
   for FAIL/CRASH/TIMEOUT; it now dumps every non-pass, so the 21 skips in the
   arch suite are explained (e.g. `cacheflush` does not exist on riscv,
@@ -68,27 +75,21 @@ the board will once it is reflashed.
 
 ## Open findings, most severe first
 
-1. **Kernel panic under `futex_cmp_requeue01` (scheduler).** With the real
-   implementation in place the test's 1000-child workload reaches the wake and
-   requeue paths; a task then exits and `ostd` panics at
-   `ostd/src/task/scheduler/mod.rs:545` (`exit_current`'s `unreachable!`),
-   with the stack `kernel_task_entry -> exit_current`. Reproduce with
-   `--tag futex_cmp_requeue01`; it blocks the full arch-suite run while open.
-2. **System V IPC and POSIX mqueue are absent**: `msgget`, `msgsnd`, `mq_open`
+1. **System V IPC and POSIX mqueue are absent**: `msgget`, `msgsnd`, `mq_open`
    (`ENOSYS`).
-3. **fcntl family (24 of the 57 failures)**: lease (`F_SETLEASE`), `F_DUPFD`,
+2. **fcntl family (24 of the 57 failures)**: lease (`F_SETLEASE`), `F_DUPFD`,
    pipe-size, and record-lock corner cases; several also need
    `/proc/sys/fs/pipe-max-size`.
-4. **/proc gaps**: `/proc/self/smaps` (mlock05) and `/proc/sys/fs/pipe-max-size`
+3. **/proc gaps**: `/proc/self/smaps` (mlock05) and `/proc/sys/fs/pipe-max-size`
    (fcntl30) are missing.
-5. **Socket option errno mismatches**: `getsockopt`/`setsockopt` return
+4. **Socket option errno mismatches**: `getsockopt`/`setsockopt` return
    ENOPROTOOPT where LTP expects EINVAL; `socket`/`socketpair` swap
    EAFNOSUPPORT and EPROTONOSUPPORT.
-6. **Semantics details**: `tgkill` should report EAGAIN at the pending-signal
+5. **Semantics details**: `tgkill` should report EAGAIN at the pending-signal
    limit, `waitpid01` expects a core-dump flag, `sbrk01` hits ENOMEM,
    `readlink`/`readlinkat` accept a zero-length buffer, `pidfd_send_signal01`
    fails with EBADF.
-7. **Timing-sensitive tests** (`select02`, `timerfd04`, `times03`, `sysinfo03`)
+6. **Timing-sensitive tests** (`select02`, `timerfd04`, `times03`, `sysinfo03`)
    may be TCG artifacts rather than kernel defects; re-check on hardware
    before treating them as gaps.
 
