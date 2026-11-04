@@ -252,10 +252,11 @@ int main(int argc, char **argv) {
         case R_TIMEOUT: timeout++; fail++; break;
         }
         printf("[%s] %s\n", verdict_name(r), tag);
-        // On failure, dump the first part of the captured output so loader/libc
-        // errors are visible on the serial console (otherwise they stay in the
-        // per-test log under /tmp).
-        if (r == R_FAIL || r == R_CRASH || r == R_TIMEOUT) {
+        // On any non-pass, dump the first part of the captured output so
+        // loader/libc errors and the test's own TCONF reason are visible on
+        // the serial console (otherwise they stay in the per-test log under
+        // /tmp and a CONF verdict cannot be explained).
+        if (r != R_PASS) {
             FILE *lf = fopen(log_path, "r");
             if (lf) {
                 char b[4096];
