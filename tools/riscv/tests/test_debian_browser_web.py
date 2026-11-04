@@ -1230,9 +1230,10 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("DefaultIM=pinyin", profile)
         self.assertIn("ActiveByDefault=True", script)
 
-    def test_remote_access_uses_dropbear_with_a_script_backed_login_shell(self) -> None:
-        # Dropbear's pty relay stalls on this kernel, so keys carry no-pty and
-        # the login shell gives interactive sessions a board-side pty.
+    def test_remote_access_ships_openssh_with_dropbear_as_a_fallback(self) -> None:
+        # OpenSSH is the default server again; the fake-pty dropbear stays
+        # installed (disabled) so the fallback needs no image rebuild. The
+        # login shell wrapper is kept for sessions that arrive without a pty.
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         self.assertIn('"$script_directory/asterinas-login-shell.sh"', builder)
         self.assertIn("/usr/local/bin/asterinas-login-shell", builder)
@@ -1243,12 +1244,27 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         helper = (ROOTFS / "asterinas-add-ssh-key.sh").read_text()
         self.assertIn('printf \'%s\\n\' "$1"', helper)
+        openssh = (ROOTFS / "asterinas-openssh.service").read_text()
+        self.assertIn("ExecStart=/usr/sbin/sshd -D -e", openssh)
+        self.assertIn("WantedBy=asterinas-debug-console.target", openssh)
+        self.assertIn("RuntimeDirectory=sshd", openssh)
+        self.assertIn(
+            "asterinas-openssh.service",
+            builder,
+        )
+        self.assertIn(
+            "asterinas-debug-console.target.wants/asterinas-openssh.service",
+            builder,
+        )
         self.assertIn("ExecStart=/usr/sbin/dropbear", (ROOTFS / "asterinas-dropbear.service").read_text())
-        # The distro dropbear relays a real pty (which stalls here); the
-        # image installs the same source patched to answer the request over
-        # pipes, plus the upstream sftp-server path Debian does not create.
+        self.assertNotIn(
+            "asterinas-debug-console.target.wants/asterinas-dropbear.service",
+            builder,
+        )
+        # The fake-pty dropbear and the upstream sftp-server path Debian does
+        # not create are still installed for the fallback.
         self.assertIn("dropbear-patched-riscv64", builder)
-        self.assertIn("dropbear-asterinas-fake-pty.patch", builder)
+        self.assertTrue((ROOTFS / "dropbear-asterinas-fake-pty.patch").is_file())
         self.assertIn("/usr/libexec/sftp-server", builder)
 
     def test_browser_web_builder_wires_explicit_frozen_jit_packages(self) -> None:

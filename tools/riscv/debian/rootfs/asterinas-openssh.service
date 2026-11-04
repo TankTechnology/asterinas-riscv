@@ -1,0 +1,22 @@
+[Unit]
+Description=Asterinas OpenSSH server
+Documentation=man:sshd(8) man:sshd_config(5)
+After=local-fs.target
+
+[Service]
+Type=notify
+# /run/sshd is sshd's privilege-separation directory; Debian's own unit
+# creates it the same way.
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+# The image's default target never starts systemd-user-sessions.service, so
+# /run/nologin stays behind and pam_nologin would refuse every login.
+ExecStartPre=-/bin/sh -c 'rm -f /run/nologin'
+ExecStartPre=-/bin/sh -c 'test -f /etc/ssh/ssh_host_ed25519_key || /usr/bin/ssh-keygen -A'
+ExecStart=/usr/sbin/sshd -D -e
+Restart=on-failure
+RestartSec=2s
+KeyringMode=inherit
+
+[Install]
+WantedBy=asterinas-debug-console.target

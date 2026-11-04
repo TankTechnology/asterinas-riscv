@@ -3115,17 +3115,24 @@ WantedBy=multi-user.target
         # The editor button must name the desktop file Debian ships, not the
         # package name, or lxpanel silently drops the launcher.
         self.assertIn("id=org.xfce.mousepad.desktop", panel.read_text())
-        # Remote access: dropbear owns port 22 and starts from sysinit (this
-        # image never reaches basic/multi-user target); the openssh unit is
-        # masked because its session loop stalls on this kernel.
-        dropbear_unit = stage / "etc/systemd/system/asterinas-dropbear.service"
-        self.assertIn("ExecStart=/usr/sbin/dropbear", dropbear_unit.read_text())
+        # Remote access: OpenSSH owns port 22 and starts from the debug
+        # console target (this image never reaches basic/multi-user target).
+        # The fake-pty dropbear stays installed, disabled, as a fallback.
+        openssh_unit = stage / "etc/systemd/system/asterinas-openssh.service"
+        self.assertIn("ExecStart=/usr/sbin/sshd -D -e", openssh_unit.read_text())
         self.assertTrue(
             (stage / "etc/systemd/system/asterinas-debug-console.target.wants/"
-             "asterinas-dropbear.service").resolve().is_file()
+             "asterinas-openssh.service").resolve().is_file()
         )
-        self.assertEqual(
-            os.readlink(stage / "etc/systemd/system/ssh.service"), "/dev/null"
+        dropbear_unit = stage / "etc/systemd/system/asterinas-dropbear.service"
+        self.assertIn("ExecStart=/usr/sbin/dropbear", dropbear_unit.read_text())
+        self.assertFalse(
+            (stage / "etc/systemd/system/asterinas-debug-console.target.wants/"
+             "asterinas-dropbear.service").exists()
+        )
+        ssh_unit = stage / "etc/systemd/system/ssh.service"
+        self.assertFalse(
+            ssh_unit.is_symlink() and os.readlink(ssh_unit) == "/dev/null"
         )
         self.assertTrue((stage / "usr/lib/asterinas/add-ssh-key").is_file())
         self.assertEqual(pcmanfm.stat().st_uid, 1000)

@@ -439,8 +439,9 @@ BROWSER_WEB_DESKTOP_PACKAGES = BROWSER_WEB_SCHEMA_SEVEN_PACKAGES + (
     "git",
     "python3-pip",
     "scrot",
-    # Remote access. dropbear is the SSH server that works on this kernel;
-    # OpenSSH's session loop stalls after authentication. rsync rides on it.
+    # Remote access. openssh-server is the default SSH server (the two kernel
+    # bugs behind its old stall are fixed); dropbear stays installed for the
+    # disabled fake-pty fallback unit. rsync rides on either.
     "dropbear-bin",
     "rsync",
     # The image ships /etc/sudoers.d/asterinas; without the package that file
