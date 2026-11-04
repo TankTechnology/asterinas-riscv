@@ -161,5 +161,29 @@ environment. A minimal check (replace the key at run time):
         messages=[{"role": "user", "content": "ping"}]).choices[0].message.content)
 
 With a deliberately invalid key the SDK raises `AuthenticationError` with
-status 401, which is the expected proof that DNS, TLS, HTTP and the client
-library all work up to the API.
+status 401, which proves DNS, TLS, HTTP and the client library work up to the
+API.
+
+### Verified on the board: a real completion
+
+`tools/riscv/compat/deepseek_harness_check.py` makes one real
+`/v1/chat/completions` call with the standard library only (no pip needed on
+a minimal rootfs), reading the key from `DEEPSEEK_API_KEY` (or the harness's
+own `ANTHROPIC_API_KEY`) and never printing it. Run on the board:
+
+    DEEPSEEK_API_IP=119.188.220.215 python3 /tmp/dsk.py
+    DEEPSEEK_API_OK status=200 model=deepseek-flash finish=length content_chars=13 usage=13
+
+`DEEPSEEK_API_IP` exists because the board's Debian image ships an empty
+`/etc/resolv.conf`: the script then connects to the pinned address while
+keeping `api.deepseek.com` as the TLS server name and `Host`, so DNS, TLS
+verification and the API path are all still exercised (the pinned address
+comes from the host's resolver). Without the variable the system resolver is
+used, which works on the host.
+
+Two board prerequisites for any portal-authenticated traffic:
+
+- the clock must be right (a board that boots with a stale RTC gets
+  `challenge_expire_error` from the portal; `date -s` fixed it here), and
+- the portal session must be current (`/root/srun_board.py --expect-ip
+  <address>`), otherwise even the host becomes unreachable again.
