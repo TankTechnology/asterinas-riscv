@@ -78,6 +78,18 @@ producing a counterexample, and the suite fails.
   variant without the `reference_count() == 1` check is asserted to break the
   invariant.
 
+## Findings from the lock-order audit and the epoll review
+
+- **Lock order** (`docs/porting/2026-11-04-lock-order-checklist.md`): the
+  documented ext2 order stopped at `Inode::inner -> BlockPtrTree` and omitted
+  the page lock and the VMO page table. The checklist records the full order,
+  the six paths checked against it, and the two known truncate-concurrency
+  TODOs in the page cache. No inversion was found.
+- **epoll cycles** (`docs/porting/2026-11-04-epoll-cycle.md`): two epoll sets
+  could watch each other; `epoll_wait` then hangs even with a timeout. Fixed
+  by a reachability check before `EPOLL_CTL_ADD` (ELOOP), serialized by a
+  global loop-check lock. LTP `epoll_ctl05`, previously disabled, now runs.
+
 ## Limits
 
 These are bounded model checks over extracted protocols, not proofs about the
