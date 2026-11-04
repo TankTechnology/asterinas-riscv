@@ -289,7 +289,7 @@ def run_guest_checks(args: argparse.Namespace) -> list[Check]:
         cache = Path(args.wheel_cache).expanduser().resolve()
         if ensure_wheel(cache):
             server, template = serve_wheels(cache)
-            host = local_address_for(args.host)
+            host = args.wheel_index_host or local_address_for(args.host)
             wheel_index = template.format(host=host)
             wheel_host = f"{host}:{server.server_address[1]}"
         else:
@@ -341,6 +341,10 @@ def main(argv: list[str] | None = None) -> int:
         "--wheel-cache",
         default="target/compat/wheels",
         help="directory of wheels served to the guest for the pip check",
+    )
+    parser.add_argument(
+        "--wheel-index-host",
+        help="address the guest uses to reach the wheel index (default: this host's LAN address)",
     )
     parser.add_argument(
         "--no-wheel-index",
