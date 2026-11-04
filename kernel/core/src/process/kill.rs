@@ -55,7 +55,15 @@ pub(crate) fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> 
     // the namespace are invisible and cannot be signaled.
     let caller_pid_ns = ctx.process.pid_ns();
     let process = if caller_pid_ns.is_init() {
-        pid_table::pid_table_mut().get_process(pid)
+        let mut pid_table = pid_table::pid_table_mut();
+        // Linux resolves the `struct pid` of any task, so the thread ID of a
+        // non-leader names its thread group. LTP's `rt_sigqueueinfo01` sends
+        // to a pthread's TID through `kill(2)`'s path and expects delivery.
+        pid_table.get_process(pid).or_else(|| {
+            pid_table
+                .get_thread(pid)
+                .and_then(|thread| thread.as_posix_thread().map(|t| t.process().clone()))
+        })
     } else {
         caller_pid_ns.process_of_vpid(pid)
     }
