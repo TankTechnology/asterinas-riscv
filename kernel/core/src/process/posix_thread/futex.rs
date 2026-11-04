@@ -435,18 +435,136 @@ pub(crate) fn futex_requeue(
 
     let nwakes = futex_bucket.remove_and_wake_items(&futex_key, max_nwakes);
 
-    if let Some(mut futex_new_bucket) = futex_new_bucket {
+    // Linux reports the waiters woken plus the waiters moved to the second
+    // address; callers (LTP included) check that sum.
+    let nrequeued = if let Some(mut futex_new_bucket) = futex_new_bucket {
         futex_bucket.requeue_items_to_another_bucket(
             &futex_key,
             &mut futex_new_bucket,
             &futex_new_key,
             max_nrequeues,
-        );
+        )
     } else {
-        futex_bucket.update_item_keys(&futex_key, &futex_new_key, max_nrequeues);
+        futex_bucket.update_item_keys(&futex_key, &futex_new_key, max_nrequeues)
+    };
+
+    Ok(nwakes + nrequeued)
+}
+
+/// `FUTEX_CMP_REQUEUE`: requeue only if the futex word still holds
+/// `expected_val`.
+///
+/// The comparison happens while the bucket pair is locked, exactly like
+/// `FUTEX_WAKE_OP` reads its word, so a concurrent `FUTEX_WAIT`/`FUTEX_WAKE`
+/// cannot slip between the check and the requeue.
+pub fn futex_cmp_requeue(
+    futex_addr: Vaddr,
+    expected_val: u32,
+    max_nwakes: usize,
+    max_nrequeues: usize,
+    futex_new_addr: Vaddr,
+    ctx: &Context,
+    visibility: FutexVisibility,
+) -> Result<usize> {
+    if futex_new_addr == futex_addr {
+        // Requeueing to the same address is a pure wake; only the compare
+        // still applies (Linux does the same).
+        let user_space = ctx.user_space();
+        let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, &user_space, visibility)?;
+        let (mut futex_bucket, _) = lock_bucket_pairs(&futex_key, &futex_key);
+        let current_val = loop {
+            let pf_result = ctx.thread_local.with_page_fault_disabled(|| {
+                user_space.atomic_fetch_update::<u32>(futex_addr, |val| val)
+            });
+            if let Some(result) = pf_result {
+                break result?;
+            }
+            // The futex word is 4-byte aligned, so it cannot cross a page boundary.
+            drop(futex_bucket);
+            user_space
+                .vmar()
+                .handle_page_fault(&PageFaultInfo::new(
+                    futex_addr,
+                    VmPerms::READ | VmPerms::WRITE,
+                ))
+                .map_err(|_| {
+                    Error::with_message(
+                        Errno::EFAULT,
+                        "the page fault of the futex word cannot be resolved",
+                    )
+                })?;
+            let (bucket, _) = lock_bucket_pairs(&futex_key, &futex_key);
+            futex_bucket = bucket;
+        };
+        if current_val != expected_val {
+            return_errno_with_message!(
+                Errno::EAGAIN,
+                "the futex word does not hold the expected value"
+            );
+        }
+        return Ok(futex_bucket.remove_and_wake_items(&futex_key, max_nwakes));
     }
 
-    Ok(nwakes)
+    let user_space = ctx.user_space();
+    let futex_key = FutexKey::new(futex_addr, FUTEX_BITSET_MATCH_ANY, &user_space, visibility)?;
+    let futex_new_key = FutexKey::new(
+        futex_new_addr,
+        FUTEX_BITSET_MATCH_ANY,
+        &user_space,
+        visibility,
+    )?;
+
+    let (mut futex_bucket, futex_new_bucket, current_val) = loop {
+        let (futex_bucket, futex_new_bucket) = lock_bucket_pairs(&futex_key, &futex_new_key);
+
+        let pf_result = ctx.thread_local.with_page_fault_disabled(|| {
+            user_space.atomic_fetch_update::<u32>(futex_addr, |val| val)
+        });
+        if let Some(result) = pf_result {
+            break (futex_bucket, futex_new_bucket, result?);
+        }
+
+        drop(futex_bucket);
+        drop(futex_new_bucket);
+
+        // The futex word is 4-byte aligned, so it cannot cross a page boundary.
+        user_space
+            .vmar()
+            .handle_page_fault(&PageFaultInfo::new(
+                futex_addr,
+                VmPerms::READ | VmPerms::WRITE,
+            ))
+            .map_err(|_| {
+                Error::with_message(
+                    Errno::EFAULT,
+                    "the page fault of the futex word cannot be resolved",
+                )
+            })?;
+    };
+
+    if current_val != expected_val {
+        return_errno_with_message!(
+            Errno::EAGAIN,
+            "the futex word does not hold the expected value"
+        );
+    }
+
+    let nwakes = futex_bucket.remove_and_wake_items(&futex_key, max_nwakes);
+
+    // Linux reports the waiters woken plus the waiters moved to the second
+    // address; callers (LTP included) check that sum.
+    let nrequeued = if let Some(mut futex_new_bucket) = futex_new_bucket {
+        futex_bucket.requeue_items_to_another_bucket(
+            &futex_key,
+            &mut futex_new_bucket,
+            &futex_new_key,
+            max_nrequeues,
+        )
+    } else {
+        futex_bucket.update_item_keys(&futex_key, &futex_new_key, max_nrequeues)
+    };
+
+    Ok(nwakes + nrequeued)
 }
 
 static FUTEX_BUCKETS: Once<FutexBucketVec> = Once::new();
@@ -565,7 +683,12 @@ impl FutexBucket {
         count
     }
 
-    pub(self) fn update_item_keys(&mut self, key: &FutexKey, new_key: &FutexKey, max_count: usize) {
+    pub(self) fn update_item_keys(
+        &mut self,
+        key: &FutexKey,
+        new_key: &FutexKey,
+        max_count: usize,
+    ) -> usize {
         let mut count = 0;
         for item in self.items.iter_mut() {
             if item.key.match_up(key) {
@@ -576,6 +699,7 @@ impl FutexBucket {
                 break;
             }
         }
+        count
     }
 
     pub(self) fn requeue_items_to_another_bucket(
@@ -584,7 +708,7 @@ impl FutexBucket {
         another: &mut Self,
         new_key: &FutexKey,
         max_nrequeues: usize,
-    ) {
+    ) -> usize {
         let mut count = 0;
         self.items
             .extract_if(.., |item| {
@@ -599,6 +723,7 @@ impl FutexBucket {
                 extracted.key = new_key.clone();
                 another.add_item(extracted);
             });
+        count
     }
 }
 
