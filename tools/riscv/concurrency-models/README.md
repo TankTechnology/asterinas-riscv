@@ -24,6 +24,7 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` | `fork`'s CoW rule: a writable mapping's frame must have no other reference (PTE or page-cache). |
 | `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` | Who may reap whom: a reaped child exited first, only its parent reaps it, and no zombie is orphaned. |
 | `fork-spec/` | TLA+/TLC | the design behind `kernel/src/vm/vmar` and `kernel/src/process` | What fork promises: a frame mapped in two processes is never writable in either, reference counts match the mappings, and the lifecycle rules hold. |
+| `futex-bucket/` | loom | `kernel/src/process/posix_thread/futex.rs` | Futex wait/wake/requeue bookkeeping: a requeued waiter is woken on the target bucket and no wake is lost. |
 | `kani:cow-decision` | Kani | `kernel/libs/cow-decision`, called from `vm_mapping.rs` | The shipped CoW decision function: a private mapping is upgraded in place only when it is the frame's sole reference. |
 
 The buggy variants are kept and asserted to *fail*: `loom` must find the
