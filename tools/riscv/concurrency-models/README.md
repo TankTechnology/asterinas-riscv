@@ -22,6 +22,7 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `net-poll-scheduler/` | TLA+/TLC | `kernel/src/net/iface/{sched,poll}.rs` | `"no poll"` sharing the value of `"poll now"` strands an immediate request (`9a802125b`). |
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` | `fork`'s CoW rule: a writable mapping's frame must have no other reference (PTE or page-cache). |
 | `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` | Who may reap whom: a reaped child exited first, only its parent reaps it, and no zombie is orphaned. |
+| `fork-spec/` | TLA+/TLC | the design behind `kernel/src/vm/vmar` and `kernel/src/process` | What fork promises: a frame mapped in two processes is never writable in either, reference counts match the mappings, and the lifecycle rules hold. |
 
 The buggy variants are kept and asserted to *fail*: `loom` must find the
 interleaving, TLC must report the invariant violation. That makes the model a

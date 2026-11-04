@@ -142,9 +142,12 @@ def run_tlc(spec: Path, cfg: Path, jar: Path, workers: int) -> Result:
             return Result(name, False,
                           f"unexpected failure (exit {proc.returncode})"
                           + (f", {violation.group(1)} violated" if violation else ""), out)
-        states = re.search(r"(\d+) distinct states found", out)
-        return Result(name, True,
-                      f"{states.group(1)} states" if states else "no error", out)
+        # Progress lines also contain "distinct states found"; the last one is
+        # the final count.
+        counts = re.findall(r"([\d,]+) distinct states found", out)
+        if counts:
+            return Result(name, True, f"{counts[-1].replace(',', '')} states", out)
+        return Result(name, True, "no error", out)
 
     # expected a violation
     if not violation:

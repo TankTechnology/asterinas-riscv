@@ -33,6 +33,7 @@ tools/riscv/concurrency-models/fetch-tla.sh                   # TLC jar into tar
 | `pollee-poll/` | loom | `kernel/src/process/signal/poll.rs` (`poll_with`, `register_poller`, `notify`) |
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` |
 | `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` |
+| `fork-spec/` | TLA+/TLC | design-level `fork`: CoW isolation, reference counts, lifecycle |
 | `net-poll-scheduler/` | TLA+/TLC | `kernel/src/net/iface/{sched,poll}.rs`, `aster-bigtcp` `PollKey` |
 
 Every model keeps the kernel's operation order and states the invariant the
