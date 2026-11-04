@@ -25,7 +25,7 @@ _SUITE_SPECS = (
     (
         "syscalls",
         Path("test/initramfs/src/conformance/ltp/testcases/all.txt"),
-        767,
+        768,
         12,
     ),
     (
