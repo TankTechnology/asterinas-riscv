@@ -9,6 +9,7 @@ mod processor;
 pub mod scheduler;
 mod utils;
 
+use core::sync::atomic::Ordering;
 use core::{
     any::Any,
     borrow::Borrow,
@@ -70,6 +71,15 @@ pub struct Task {
     /// See [`processor::switch_to_task`] for more details.
     switched_to_cpu: AtomicBool,
 
+    /// Set just before the exiting task is dequeued from its run queue.
+    ///
+    /// A wake that arrives after the task left the run queue must not put it
+    /// back: the task would be switched to again from its saved (already
+    /// exited) context, and `exit_current` would resume past the switch. The
+    /// run queue checks this flag under its lock, which serializes it with the
+    /// dequeue.
+    exit_pending: AtomicBool,
+
     schedule_info: TaskScheduleInfo,
 }
 
@@ -126,6 +136,16 @@ impl Task {
     /// Returns the task data.
     pub fn data(&self) -> &Box<dyn Any + Send + Sync> {
         &self.data
+    }
+
+    /// Marks this task as leaving the scheduler for good.
+    pub(super) fn mark_exit_pending(&self) {
+        self.exit_pending.store(true, Ordering::Release);
+    }
+
+    /// Returns whether this task has already left the run queue to exit.
+    pub(super) fn is_exit_pending(&self) -> bool {
+        self.exit_pending.load(Ordering::Acquire)
     }
 
     /// Get the attached scheduling information.
@@ -242,6 +262,7 @@ impl TaskOptions {
             ctx: SyncUnsafeCell::new(ctx),
             kstack,
             switched_to_cpu: AtomicBool::new(false),
+            exit_pending: AtomicBool::new(false),
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
             },

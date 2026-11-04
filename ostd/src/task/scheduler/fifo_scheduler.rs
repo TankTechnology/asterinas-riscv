@@ -51,6 +51,12 @@ impl<T: CommonSchedInfo + Send + Sync> Scheduler<T> for FifoScheduler<T> {
         };
 
         let mut rq = self.rq[target_cpu.as_usize()].disable_irq().lock();
+        // A wake may race with the task leaving the run queue to exit. The
+        // flag is set before that dequeue and checked under the same run-queue
+        // lock, so a task that already left can never be put back.
+        if runnable.is_exit_pending() {
+            return None;
+        }
         if still_in_rq && let Err(_) = runnable.cpu().set_if_is_none(target_cpu) {
             return None;
         }

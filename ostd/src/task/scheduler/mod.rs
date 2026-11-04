@@ -523,6 +523,11 @@ fn set_need_preempt(cpu_id: CpuId) {
 /// This should only be called if the current is to exit.
 #[track_caller]
 pub(super) fn exit_current() -> ! {
+    // Set before the dequeue below; a concurrent wake consults it under the
+    // run-queue lock and must not re-enqueue this task.
+    if let Some(current) = Task::current() {
+        current.mark_exit_pending();
+    }
     let mut is_first_try = true;
 
     reschedule(|local_rq: &mut dyn LocalRunQueue| {
