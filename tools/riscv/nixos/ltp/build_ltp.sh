@@ -130,9 +130,13 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     # Drop stale objects from any prior (e.g. static glibc/musl) configure so a
     # CC/libc/flag switch does not leave a mixed build.
     [ -f Makefile ] && make clean >/dev/null 2>&1 || true
+    # Arch's riscv64 gcc names its atomic shim `libatomic_asneeded` and keeps
+    # it in the GNU sysroot, while the musl specs replace the default -L list
+    # with the musl one. Without this path the very first link of the
+    # configure probe fails with "cannot find -latomic_asneeded".
     CC="${CC}" DEBUG_CFLAGS="" \
         CFLAGS="-O2 -fno-stack-protector -fPIC -idirafter ${GNU_UAPI_ROOT}" \
-        LDFLAGS="" \
+        LDFLAGS="-L${GNU_UAPI_ROOT%/include}/lib" \
         ./configure --host=riscv64-linux-gnu --prefix=/opt/ltp \
         >/dev/null 2>&1 || { echo "configure failed" >&2; exit 2; }
 
@@ -140,7 +144,7 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     make -C testcases/lib -j"${JOBS}"
 
     echo "=== link shared libltp.so from PIC objects ==="
-    ( cd lib && "${CC}" -shared -o libltp.so ./*.o )
+    ( cd lib && "${CC}" -shared -L"${GNU_UAPI_ROOT%/include}/lib" -o libltp.so ./*.o )
 
     echo "=== build syscall tests (dynamic, tolerant, ${JOBS} jobs) ==="
     FAIL_LOG="${REPO_ROOT}/target/ltp/build-failures.txt"
@@ -252,8 +256,10 @@ echo "suite: ${SUITE}"
 
 echo "=== build /init and /ltp_runner (static musl) ==="
 "${CC}" -O2 -static -no-pie -fno-stack-protector \
+    -L"${GNU_UAPI_ROOT%/include}/lib" \
     -o "${ROOTFS}/init" "${SRC_DIR}/init_ltp.c"
 "${CC}" -O2 -static -no-pie -fno-stack-protector \
+    -L"${GNU_UAPI_ROOT%/include}/lib" \
     -o "${ROOTFS}/ltp_runner" "${SRC_DIR}/ltp_runner.c"
 
 echo "=== pack initramfs ==="
