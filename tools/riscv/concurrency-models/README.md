@@ -24,6 +24,8 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` | `fork`'s CoW rule: a writable mapping's frame must have no other reference (PTE or page-cache). |
 | `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` | Who may reap whom: a reaped child exited first, only its parent reaps it, and no zombie is orphaned. |
 | `fork-spec/` | TLA+/TLC | the design behind `kernel/src/vm/vmar` and `kernel/src/process` | What fork promises: a frame mapped in two processes is never writable in either, reference counts match the mappings, and the lifecycle rules hold. |
+| `switch-handoff/` | loom | `ostd/src/task/processor.rs` | The `switched_to_cpu` handoff: two CPUs never run one task at once; the board's warning is the intended wait. |
+| `lock-order/` | policy check | futex bucket pairs, VMAR, page table | Every two-lock path follows one total order, so those paths cannot deadlock. |
 | `futex-bucket/` | loom | `kernel/src/process/posix_thread/futex.rs` | Futex wait/wake/requeue bookkeeping: a requeued waiter is woken on the target bucket and no wake is lost. |
 | `kani:cow-decision` | Kani | `kernel/libs/cow-decision`, called from `vm_mapping.rs` | The shipped CoW decision function: a private mapping is upgraded in place only when it is the frame's sole reference. |
 

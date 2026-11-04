@@ -33,6 +33,8 @@ tools/riscv/concurrency-models/fetch-tla.sh                   # TLC jar into tar
 | `pollee-poll/` | loom | `kernel/src/process/signal/poll.rs` (`poll_with`, `register_poller`, `notify`) |
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` |
 | `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` |
+| `switch-handoff/` | loom | `ostd/src/task/processor.rs` (task handoff) |
+| `lock-order/` | policy check | futex bucket pairs, VMAR and page-table locks |
 | `futex-bucket/` | loom | `kernel/src/process/posix_thread/futex.rs` (wait, wake, requeue) |
 | `fork-spec/` | TLA+/TLC | design-level `fork`: CoW isolation, reference counts, lifecycle |
 | `net-poll-scheduler/` | TLA+/TLC | `kernel/src/net/iface/{sched,poll}.rs`, `aster-bigtcp` `PollKey` |
