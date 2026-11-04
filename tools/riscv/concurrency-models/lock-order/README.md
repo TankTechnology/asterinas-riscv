@@ -9,20 +9,31 @@ Lock classes, in acquisition order:
 
 | Order | Lock | Paths |
 | --- | --- | --- |
-| 0..63 | futex buckets, ordered by bucket index | `lock_bucket_pairs` (`futex.rs`), for `FUTEX_REQUEUE`/`FUTEX_CMP_REQUEUE` |
+| 0..63 | futex buckets, by bucket index | `lock_bucket_pairs` (`futex.rs`) |
 | 64 | VMAR `RwLock` | `Vmar::fork_from` (write), page faults (read) |
-| 65 | page-table cursor lock | under the VMAR lock |
+| 65 | ext2 `Inode::inner` | file I/O, truncate, writeback |
+| 66 | VMO `pages` (XArray) | `commit_on*`, `resize`, `collect_pages` — held briefly, released before the page lock |
+| 67 | page lock (`LockedCachePage`) | page-cache I/O, writeback — one page at a time |
+| 68 | `BlockPtrTree` | the page-cache backend's block lookup |
+| 69 | `IndirectBlockManager` | under `BlockPtrTree` |
+| 70 | `Ext2::super_block` | block allocation |
+| 71 | `BlockGroup::metadata` | block/inode bitmaps |
 
 `futex_wait_bitset` drops the bucket lock before calling `handle_page_fault`,
 so a futex bucket is never held while taking the VMAR or page-table locks.
+The full checklist, including the open items the audit found, is
+[docs/porting/2026-11-04-lock-order-checklist.md](../../../../docs/porting/2026-11-04-lock-order-checklist.md).
 
 | Test | Checks |
 | --- | --- |
 | `requeue_in_both_directions_keeps_the_total_order` | `requeue(A,B)` racing `requeue(B,A)` |
 | `every_bucket_pair_is_ordered` | all 64×64 bucket pairs, including the same-bucket case (locked once) |
-| `fork_and_fault_take_the_vmar_before_the_page_table` | fork and fault both take VMAR then page table |
-| `argument_order_without_sorting_breaks_the_total_order` | negative control: unsorted acquisition is rejected |
-| `page_table_before_vmar_would_break_the_total_order` | negative control: the inverse order is rejected |
+| `a_private_file_page_fault_follows_the_order` | VMAR → cursor → XArray → page lock → block tree |
+| `buffered_io_and_truncate_follow_the_order` | inode → page lock → block tree → metadata, with the release between page lock and block manager |
+| `writeback_waits_for_the_page_before_taking_the_page_table` | page lock, release, then XArray |
+| `a_futex_bucket_is_never_held_across_a_fault` | bucket released before the fault path |
+| `the_model_rejects_inversions` | seven inversion sequences, each rejected |
+| `unsorted_bucket_acquisition_is_rejected` | negative control |
 
 ## Scope
 
