@@ -439,6 +439,9 @@ BROWSER_WEB_DESKTOP_PACKAGES = BROWSER_WEB_SCHEMA_SEVEN_PACKAGES + (
     "git",
     "python3-pip",
     "scrot",
+    # tar(1) shells out to xz for -J; the base image has gzip but not xz, so
+    # `tar -cJf` failed in every workflow check that touched a .tar.xz.
+    "xz-utils",
     # Remote access. openssh-server is the default SSH server (the two kernel
     # bugs behind its old stall are fixed); dropbear stays installed for the
     # disabled fake-pty fallback unit. rsync rides on either.

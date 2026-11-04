@@ -1114,6 +1114,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "git",
             "python3-pip",
             "scrot",
+            "xz-utils",
             "dropbear-bin",
             "rsync",
             "sudo",
