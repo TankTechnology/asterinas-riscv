@@ -78,6 +78,49 @@ the board will once it is reflashed.
   `MAP_DROPPABLE`/`hugetlbfs` are unimplemented, several tests list x86-only
   architectures in `supported_archs`).
 
+## Fixed since the syscalls baseline
+
+Twelve LTP tests were failing for five reasons, all addressed in the kernel
+and verified by running the individual tags (4 CPUs):
+
+- **`RLIMIT_NOFILE` was never enforced.** The descriptor table allocated past
+  the soft limit, so `pipe06` saw `pipe()` succeed with no room left and
+  `fcntl12` saw `F_DUPFD` succeed instead of `EMFILE`. The table now finds only
+  free descriptor numbers below the limit, `setrlimit`/`prlimit` propagate the
+  value, and a failed `pipe(2)`/`socketpair(2)` rolls back the first descriptor
+  so the pair is allocated atomically.
+- **epoll had no nesting limit.** `epoll_ctl04` adds a sixth level to a chain
+  of five; `add_interest` now tracks the set depth and returns `ELOOP`.
+- **socket/socketpair errno order.** An unknown or `AF_UNSPEC` family is
+  `EAFNOSUPPORT`, `AF_INET`+`SOCK_RAW` is `EPROTONOSUPPORT`, and Internet
+  stream/datagram sockets report `EOPNOTSUPP` from `socketpair(2)` (they are
+  valid sockets that cannot be paired).
+- **`setsockopt` errno mapping.** Unknown levels and unsupported levels are
+  `ENOPROTOOPT` (not `EOPNOTSUPP`), and an empty value is `EINVAL`;
+  `getsockopt` rejects a negative `socklen_t` with `EINVAL`.
+- **`F_SETLEASE`/`F_GETLEASE` were unimplemented.** A read lease on a
+  read-only descriptor succeeds, a read lease on a writable descriptor is
+  `EAGAIN`, and `F_GETLEASE` reports the held type. Leases are tracked per
+  open file description; lease breaks (`SIGIO`, a blocking `open`) are not
+  implemented yet.
+
+## Failures that are userspace artifacts, not kernel gaps
+
+The suite is built against **musl**, while LTP's expectations are written for
+glibc+kernel behaviour. Two failures cannot pass on musl regardless of the
+kernel:
+
+- `gethostname02` — musl's `gethostname` truncates instead of returning
+  `ENAMETOOLONG` (glibc returns `ENAMETOOLONG`).
+- `readlink03`, `readlinkat02` (zero-length buffer case) — musl rewrites a
+  zero `bufsize` to a one-byte stack buffer before the syscall (visible in
+  `libc.so`: `readlink` branches on `bufsize == 0` and substitutes `bufsize = 1`),
+  so the kernel's `EINVAL` for a zero-length buffer is never reached.
+- `gethostbyname_r01` — `ERANGE` handling differs between musl and glibc.
+
+These should be excluded from the pass-rate target or recorded as expected
+failures, rather than "fixed" in the kernel.
+
 ## Open findings, most severe first
 
 1. **System V IPC and POSIX mqueue are absent**: `msgget`, `msgsnd`, `mq_open`

@@ -6,7 +6,7 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::{
-            FileLike, StatusFlags, StatusFlagsUpdate,
+            AccessMode, FileLike, StatusFlags, StatusFlagsUpdate,
             file_table::{FdFlags, FileDesc, FileTable, RawFileDesc, WithFileTable, get_file_fast},
         },
         ramfs::memfd::{FileSeals, MemfdInodeHandle},
@@ -56,6 +56,8 @@ pub(super) fn sys_fcntl(
         }
         FcntlCmd::F_GETOWN => handle_getown(fd, ctx),
         FcntlCmd::F_SETOWN => handle_setown(fd, arg, ctx),
+        FcntlCmd::F_SETLEASE => handle_setlease(fd, arg, ctx),
+        FcntlCmd::F_GETLEASE => handle_getlease(fd, ctx),
         FcntlCmd::F_ADD_SEALS => handle_addseal(fd, arg, ctx),
         FcntlCmd::F_GET_SEALS => handle_getseal(fd, ctx),
     }
@@ -268,6 +270,46 @@ fn handle_setown(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn>
     Ok(SyscallReturn::Return(0))
 }
 
+/// The three lease types, as defined by `<fcntl.h>`.
+const LEASE_RDLCK: u16 = 0;
+const LEASE_WRLCK: u16 = 1;
+
+fn handle_setlease(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
+    let lease = match arg as i32 {
+        lease @ (0..=2) => lease as u16,
+        _ => return_errno_with_message!(Errno::EINVAL, "invalid lease type"),
+    };
+
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, fd);
+
+    match lease {
+        LEASE_RDLCK => {
+            // A read lease is only possible when the file is not open for
+            // writing; Linux reports the conflict as EAGAIN.
+            if file.access_mode() != AccessMode::O_RDONLY {
+                return_errno_with_message!(Errno::EAGAIN, "the file is open for writing");
+            }
+        }
+        LEASE_WRLCK => {
+            if file.access_mode() == AccessMode::O_RDONLY {
+                return_errno_with_message!(Errno::EAGAIN, "the file is open read-only");
+            }
+        }
+        _ => {}
+    }
+
+    file.common().set_lease_type(lease);
+    Ok(SyscallReturn::Return(0))
+}
+
+fn handle_getlease(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, fd);
+
+    Ok(SyscallReturn::Return(file.common().lease_type() as _))
+}
+
 fn handle_addseal(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
     let new_seals = FileSeals::from_bits(arg as u32)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid seals"))?;
@@ -302,6 +344,8 @@ enum FcntlCmd {
     F_SETLKW = 7,
     F_SETOWN = 8,
     F_GETOWN = 9,
+    F_SETLEASE = 1024,
+    F_GETLEASE = 1025,
     F_OFD_GETLK = 36,
     F_OFD_SETLK = 37,
     F_OFD_SETLKW = 38,

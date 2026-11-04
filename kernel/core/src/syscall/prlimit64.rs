@@ -91,12 +91,31 @@ fn do_prlimit64(
         if resource == ResourceType::RLIMIT_NOFILE && new_raw.max > SYSCTL_NR_OPEN {
             return_errno_with_message!(Errno::EPERM, "the new limit exceeds the system limit");
         }
-        rlimit.set_raw_rlimit(new_raw, ctx)?
+        let old_raw = rlimit.set_raw_rlimit(new_raw, ctx)?;
+        if resource == ResourceType::RLIMIT_NOFILE {
+            // The descriptor table enforces the soft limit at allocation time,
+            // so it has to learn about the new value. A limit change applies to
+            // the whole process; every thread shares this table unless it
+            // unshared it with `CLONE_FILES`.
+            apply_nofile_limit(target_process, new_raw.cur, ctx);
+        }
+        old_raw
     } else {
         rlimit.get_raw_rlimit()
     };
 
     Ok(old_raw)
+}
+
+/// Propagates a new `RLIMIT_NOFILE` soft limit to the descriptor table.
+fn apply_nofile_limit(target_process: &Process, limit: u64, ctx: &Context) {
+    if !core::ptr::eq(target_process, ctx.process.as_ref()) {
+        // Another process's thread-local file table is not reachable from
+        // here; its next allocation keeps using the value it was given.
+        return;
+    }
+    let file_table = ctx.thread_local.borrow_file_table();
+    file_table.unwrap().write().set_fd_limit(limit);
 }
 
 /// Checks whether the current process has permission to access

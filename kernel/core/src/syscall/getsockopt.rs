@@ -26,6 +26,12 @@ pub(super) fn sys_getsockopt(
     }
     let optlen = optlen.cast_unsigned();
 
+    // `socklen_t` is unsigned, but the kernel treats the value as a signed
+    // length; a negative one (e.g. `(socklen_t)-1`) is EINVAL.
+    if (optlen as i32) < 0 {
+        return_errno_with_message!(Errno::EINVAL, "the option length is negative");
+    }
+
     debug!("level = {level:?}, sockfd = {sockfd}, optname = {optname:?}, optlen = {optlen}");
 
     // Validate optval pointer before option-name lookup: Linux returns EFAULT

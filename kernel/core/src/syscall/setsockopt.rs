@@ -15,7 +15,9 @@ pub(super) fn sys_setsockopt(
     optlen: i32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let level = CSocketOptionLevel::try_from(level).map_err(|_| Errno::EOPNOTSUPP)?;
+    // `setsockopt(2)` reports an unknown level as `ENOPROTOOPT` (unlike
+    // `getsockopt(2)`, which uses `EOPNOTSUPP`).
+    let level = CSocketOptionLevel::try_from(level).map_err(|_| Errno::ENOPROTOOPT)?;
 
     if optlen < 0 {
         return_errno_with_message!(Errno::EINVAL, "optlen is negative");
@@ -33,12 +35,23 @@ pub(super) fn sys_setsockopt(
         return_errno_with_message!(Errno::EFAULT, "optval is NULL");
     }
 
+    // The socket-level options all take an integer value; Linux rejects an
+    // empty one with EINVAL before dispatching on the option name.
+    if level == CSocketOptionLevel::SOL_SOCKET && optlen == 0 {
+        return_errno_with_message!(Errno::EINVAL, "the option length is zero");
+    }
+
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
     let socket = file.as_socket_or_err()?;
 
     let raw_option = {
-        let mut option = new_raw_socket_option(level, optname)?;
+        // An unsupported level is `ENOPROTOOPT` for `setsockopt(2)`.
+        let mut option =
+            new_raw_socket_option(level, optname).map_err(|err| match err.error() {
+                Errno::EOPNOTSUPP => Error::with_message(Errno::ENOPROTOOPT, "unsupported level"),
+                _ => err,
+            })?;
         option.read_from_user(optval, optlen)?;
         option
     };

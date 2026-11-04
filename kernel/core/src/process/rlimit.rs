@@ -21,7 +21,7 @@ const INIT_RLIMIT_NICE: u64 = 0;
 const INIT_RLIMIT_SIGPENDING: u64 = 0;
 const INIT_RLIMIT_RTPRIO: u64 = 0;
 // https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/include/uapi/linux/fs.h#L37
-const INIT_RLIMIT_NOFILE_CUR: u64 = 1024;
+pub const INIT_RLIMIT_NOFILE_CUR: u64 = 1024;
 const INIT_RLIMIT_NOFILE_MAX: u64 = 4096;
 // https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/include/uapi/linux/resource.h#L79
 const INIT_RLIMIT_MEMLOCK: u64 = 8 * 1024 * 1024;

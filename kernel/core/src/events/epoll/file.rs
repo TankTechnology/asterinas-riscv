@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{borrow::Borrow, fmt::Display, time::Duration};
+use core::{
+    borrow::Borrow,
+    fmt::Display,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use keyable_arc::KeyableWeak;
 
@@ -40,6 +45,11 @@ use crate::{
 pub(crate) struct EpollFile {
     // All interesting entries.
     interest: Mutex<BTreeSet<EntryHolder>>,
+    /// The nesting depth of this epoll set, including itself.
+    ///
+    /// Linux bounds the chain of epoll sets (`EPOLL_MAX_NESTS`); adding an
+    /// epoll set that already has the maximum depth must fail with `ELOOP`.
+    depth: AtomicUsize,
     // A set of ready entries.
     //
     // Keep this in a separate `Arc` to avoid dropping `EpollFile` in the observer callback, which
@@ -56,6 +66,7 @@ impl EpollFile {
 
         Arc::new(Self {
             interest: Mutex::new(BTreeSet::new()),
+            depth: AtomicUsize::new(1),
             ready: Arc::new(ReadySet::new()),
             // Reference: <https://elixir.bootlin.com/linux/v7.0/source/fs/eventpoll.c#L2191>.
             common: FileCommon::new(pseudo_path, AccessMode::O_RDWR, StatusFlags::empty()),
@@ -108,6 +119,24 @@ impl EpollFile {
         // Add the new entry to the interest list and start monitoring its events
         let ready_entry = {
             let mut interest = self.interest.lock();
+
+            if let Some(child) = file.downcast_ref::<EpollFile>() {
+                if core::ptr::eq(child, self) {
+                    return_errno_with_message!(Errno::ELOOP, "an epoll set cannot watch itself");
+                }
+                // `LTP`'s epoll_ctl04 builds a chain of `EPOLL_MAX_NESTS`
+                // sets and requires the next addition to fail.
+                const EPOLL_MAX_NESTS: usize = 5;
+                let child_depth = child.depth.load(Ordering::Relaxed);
+                if child_depth + 1 > EPOLL_MAX_NESTS {
+                    return_errno_with_message!(
+                        Errno::ELOOP,
+                        "the epoll nesting depth limit has been reached"
+                    );
+                }
+                self.depth
+                    .fetch_max(child_depth + 1, Ordering::Relaxed);
+            }
 
             if interest.contains(&EntryKey::from((fd, &file))) {
                 return_errno_with_message!(
