@@ -61,6 +61,32 @@
   / 0 crash，唯一失败是 `clock_gettime03` 的粗时钟容差抖动（此前也单次出现）。
 - 板子：新内核经 RockOS/HTTP 传输并校验 SHA-256 后部署，实测数据如上。
 
+## 后续测量：fork 与唤醒（2026-11-04 晚）
+
+帧分配器改动之后，`fork` 仍约 2.5 ms。用 `fork_bench.c`、`wakeup_bench.c`、
+`futex_wake_check.c` 拆分（同一块板、同一 release 内核）：
+
+| 场景 | 结果 |
+| --- | --- |
+| fork + wait（未触碰内存） | 2.72 ms |
+| fork 不等待（仅创建），n=30 | 1.36 ms/op |
+| reap（子进程已退出） | 227 µs |
+| vfork + wait | 2.90 ms |
+| fork + wait（16 MB 已触碰） | 4.69 ms |
+| fork + wait（64 MB 已触碰） | 15.0 ms |
+| futex 唤醒→线程运行 | 42 µs |
+| pthread create + join | 21 ms |
+
+结论：`vfork`（不复制地址空间）与 `fork` 一样慢，说明基准成本不在页表复制；
+页表复制按每页约 180–200 ns 线性增长（64 MB 时 15 ms）。单次 futex 唤醒 42 µs
+是正常的，因此 `pthread_create+join` 的 21 ms 主要不在唤醒路径，而在线程栈
+建立（musl 每次 mmap/mprotect 保护页）或任务栈分配（OSTD 默认 512 KiB，
+每次走全局 buddy 池）。下一步要真正定位，需要内核内计时（在 fork/clone 各阶段
+打点），而不是继续从外部猜。
+
+调试中发现的两点值得记住：300 个同时存活的子进程会让 `fork` 不等待阶段卡住
+（需要用增量进度和较小 n 复现）；`futex_wake_check` 证明"唤醒丢失"可以排除。
+
 ## 上传路径（本轮建立）
 
 板子网络在 RockOS 下可用：U-Boot `sysboot mmc 1:1 …` 进 RockOS，门户登录后
