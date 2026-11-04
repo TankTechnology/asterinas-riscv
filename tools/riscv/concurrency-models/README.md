@@ -10,7 +10,8 @@ They are cheap (the whole set runs in seconds) and they are the only part of
 the test suite that *searches* interleavings instead of sampling them.
 
 ```sh
-python3 tools/riscv/concurrency-models/run.py          # everything
+python3 tools/riscv/concurrency-models/run.py          # loom + TLC models
+python3 tools/riscv/concurrency-models/run.py --kani   # ... plus the Kani proofs
 python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 ```
 
@@ -23,6 +24,7 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` | `fork`'s CoW rule: a writable mapping's frame must have no other reference (PTE or page-cache). |
 | `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` | Who may reap whom: a reaped child exited first, only its parent reaps it, and no zombie is orphaned. |
 | `fork-spec/` | TLA+/TLC | the design behind `kernel/src/vm/vmar` and `kernel/src/process` | What fork promises: a frame mapped in two processes is never writable in either, reference counts match the mappings, and the lifecycle rules hold. |
+| `kani:cow-decision` | Kani | `kernel/libs/cow-decision`, called from `vm_mapping.rs` | The shipped CoW decision function: a private mapping is upgraded in place only when it is the frame's sole reference. |
 
 The buggy variants are kept and asserted to *fail*: `loom` must find the
 interleaving, TLC must report the invariant violation. That makes the model a

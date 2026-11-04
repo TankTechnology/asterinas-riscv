@@ -37,18 +37,49 @@
 
 | 阻塞 | 事实 |
 | --- | --- |
-| 工具链 | 本机没有 Kani / Verus / Creusot / Prusti / TLAPS；`cargo kani` 不存在 |
+| 工具链 | Kani 0.68.0 + CBMC 6.11.0 已安装并用于决策函数（见下节）；Verus / Creusot / Prusti / TLAPS 仍不可用 |
 | `unsafe` 密度 | fork 与页表路径中 `unsafe` 出现 88 处，页表游标直接操作硬件结构 |
 | 构建约束 | 内核是 `no_std` + 自定义 target + 内联汇编 + 全局分配器；Kani 需要一个可编译的 harness，必须为帧分配、页表、TLB 提供桩 |
 | 规模 | `kernel/src/vm` + `kernel/src/process` 的 fork 相关路径是数千行，且跨模块（VMA、VMO、文件表、信号、调度器） |
 | 并发语义 | 锁顺序、抢占禁用、TLB shootdown 与 IPI，都需要进入模型 |
 
+## 已落地：用 Kani 验证真实的决策函数
+
+`kernel/libs/cow-decision` 是一个无 `unsafe`、无依赖的 crate，
+`decide(is_write, writable, is_shared, refcount) -> CowAction` 就是
+`handle_single_page_fault` 用的那条规则：
+
+```rust
+if !is_write || writable { return None; }
+if is_shared || refcount == 1 { Upgrade } else { Copy }
+```
+
+`kernel/src/vm/vmar/vm_mapping.rs` 现在**直接调用它**，所以 Kani 验证的是内核
+实际执行的代码，不是另写一份复制品。三个 harness（`cargo kani -p cow-decision`，
+共 29 条 CBMC 检查，0 失败）：
+
+| Harness | 证明的性质 |
+| --- | --- |
+| `upgrade_only_for_shared_or_sole_reference` | 对私有映射选择原地升级 ⇒ `refcount == 1` |
+| `a_shared_private_frame_is_always_copied` | `!shared ∧ refcount > 1` ⇒ 必然复制 |
+| `shared_mappings_never_copy` | 共享映射永不走复制路径 |
+
+对全部输入（两个布尔 + `usize`，约定 `refcount ≥ 1`）有界验证。这套性质正是
+`fork-spec` 模型里 `CoWIsolation` 的"机制版"：设计层把它写成不变量，Kani 把它
+证明到真实位宽的函数实现上。
+
+**仍然没证明的**：调用方收集的四个参数是否真实（`is_write`、PTE 的 W 位、
+`is_shared`、`reference_count()`），以及 `Upgrade`/`Copy` 之后动作的正确性
+（`protect_next`、`duplicate_frame`、TLB flush）。这条边界写在
+`cow-decision` 的 crate 文档里。
+
 ## 现实可行的分阶段路线
 
-1. **抽取纯决策函数**（数周）：把 `handle_single_page_fault` 的判定
-   （是否复制、是否原地升级）抽成无 `unsafe` 的纯函数，用 Kani 做有界验证
-   ——这正是 `cow-fork` 模型在验证的规则，Kani 能把它推广到真实位宽与更大的
-   输入域。
+1. **抽取纯决策函数**（✅ 已完成）：`handle_single_page_fault` 的判定已抽到
+   `kernel/libs/cow-decision`，Kani 在真实位宽与全部输入上证明
+   "私有映射只有在独占帧时才原地升级"。下一步是把 `Upgrade`/`Copy` 两个分支
+   的动作（`protect_next`、`duplicate_frame`、TLB flush 的调用序列）也纳入
+   验证，需要把页表游标抽象成可验证的接口。
 2. **验证数据结构不变式**（数月）：`Vmar`/`FileTable` 的并发不变量（例如
    "引用计数 = 映射数"）用 loom 或 Kani 逐条验证，`fork-spec` 的
    `RefsAccurate` 就是这个不变式的规格版本。

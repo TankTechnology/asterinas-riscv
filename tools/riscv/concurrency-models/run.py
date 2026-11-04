@@ -40,6 +40,10 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 DEFAULT_JAR = REPO / "target" / "tla" / "tla2tools.jar"
 
+# Crates with Kani proofs (`#[cfg(kani)]` harnesses). Kani needs its own
+# toolchain and CBMC, so these run only with `--kani`.
+KANI_PACKAGES = ("cow-decision",)
+
 EXPECT_RE = re.compile(r"\\\*\s*EXPECT:\s*(?P<kind>ok|violation)(?:\s+(?P<what>\S+))?")
 
 
@@ -126,6 +130,17 @@ def expectation(cfg: Path) -> tuple[str, str | None]:
     return m.group("kind"), m.group("what")
 
 
+def run_kani(package: str) -> Result:
+    proc = run(["cargo", "kani", "-p", package], cwd=REPO, timeout=3600)
+    out = proc.stdout + proc.stderr
+    complete = re.search(r"Complete - (\d+) successfully verified harnesses, (\d+) failures", out)
+    if proc.returncode == 0 and complete:
+        return Result(f"kani:{package}", True,
+                      f"{complete.group(1)} harnesses verified", out)
+    detail = complete.group(0) if complete else f"exit {proc.returncode}"
+    return Result(f"kani:{package}", False, detail, out)
+
+
 def run_tlc(spec: Path, cfg: Path, jar: Path, workers: int) -> Result:
     kind, what = expectation(cfg)
     name = f"{cfg.parent.name}/{cfg.name}"
@@ -172,6 +187,8 @@ def main() -> int:
                         help="LOOM_MAX_PREEMPTIONS for the loom crates")
     parser.add_argument("--tla-jar", type=Path, default=DEFAULT_JAR)
     parser.add_argument("--tlc-workers", type=int, default=4)
+    parser.add_argument("--kani", action="store_true",
+                        help="also run the Kani proofs (needs the Kani toolchain)")
     parser.add_argument("--verbose", action="store_true",
                         help="dump the full output of failing runs")
     args = parser.parse_args()
@@ -187,6 +204,11 @@ def main() -> int:
              if not selected or c.parent.name in selected]
     for spec, cfg in pairs:
         results.append(run_tlc(spec, cfg, args.tla_jar, args.tlc_workers))
+
+    if args.kani:
+        for package in KANI_PACKAGES:
+            if not selected or package in selected:
+                results.append(run_kani(package))
 
     if not results:
         print("no models selected", file=sys.stderr)
