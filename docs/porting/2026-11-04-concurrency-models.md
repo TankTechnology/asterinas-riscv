@@ -32,6 +32,7 @@ tools/riscv/concurrency-models/fetch-tla.sh                   # TLC jar into tar
 | `waitqueue-waker/` | loom | `ostd/src/sync/wait.rs` (`Waiter`, `Waker`) |
 | `pollee-poll/` | loom | `kernel/src/process/signal/poll.rs` (`poll_with`, `register_poller`, `notify`) |
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` |
+| `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` |
 | `net-poll-scheduler/` | TLA+/TLC | `kernel/src/net/iface/{sched,poll}.rs`, `aster-bigtcp` `PollKey` |
 
 Every model keeps the kernel's operation order and states the invariant the
@@ -63,6 +64,10 @@ producing a counterexample, and the suite fails.
   behind a sleeping or indefinitely waiting thread, the thread never sleeps
   past the earliest deadline, and a real deadline never leaves it waiting
   without a timer.
+- **Process lifecycle**: a reaped child exited before it was reaped, only its
+  parent (or init after re-parenting) reaps it, a zombie is never orphaned,
+  and init never exits. The pre-fix variants (reap before exit, no
+  re-parenting, reap by anyone) are each asserted to break one invariant.
 - **Copy-on-write fork**: a writable mapping's frame is otherwise
   unreferenced — no other address space maps it and the page cache does not
   hold it — under fault-vs-fault, fault-vs-unmap and fault-vs-remap races. The

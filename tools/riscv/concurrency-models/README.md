@@ -21,6 +21,7 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `pollee-poll/` | loom | `kernel/src/process/signal/poll.rs` | Duplicate poll entries for one object replace each other's mask (`66d0290f7`); this is the OpenSSH hibernation hang on a pty. |
 | `net-poll-scheduler/` | TLA+/TLC | `kernel/src/net/iface/{sched,poll}.rs` | `"no poll"` sharing the value of `"poll now"` strands an immediate request (`9a802125b`). |
 | `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` | `fork`'s CoW rule: a writable mapping's frame must have no other reference (PTE or page-cache). |
+| `process-lifecycle/` | TLA+/TLC | `kernel/src/process/{wait,status}.rs`, `posix_thread/exit.rs` | Who may reap whom: a reaped child exited first, only its parent reaps it, and no zombie is orphaned. |
 
 The buggy variants are kept and asserted to *fail*: `loom` must find the
 interleaving, TLC must report the invariant violation. That makes the model a
