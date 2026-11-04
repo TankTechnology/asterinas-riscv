@@ -1,0 +1,4 @@
+# The models are standalone crates: they are not part of the kernel build and
+# do not need the kernel's pinned nightly or its rustc-dev components.
+[toolchain]
+channel = "stable"

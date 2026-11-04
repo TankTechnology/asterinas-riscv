@@ -8,6 +8,24 @@ on:
       - main
 
 jobs:
+  concurrency-models:
+    # Model-check the kernel protocols that LTP reaches only rarely: the run
+    # queue's exit/wake race, the Waiter/Waker handshake, the pollee
+    # register/notify protocol, and the network poll scheduler. Each model keeps
+    # the kernel's operation order; the pre-fix variants are asserted to fail,
+    # so a regression in either the protocol or the model turns this job red.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install a JRE for TLC
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends default-jre-headless
+      - name: Fetch TLA+ tools
+        run: tools/riscv/concurrency-models/fetch-tla.sh
+      - name: Model-check the concurrency protocols
+        run: python3 tools/riscv/concurrency-models/run.py --loom-max-preemptions 6
+
   basic-test:
     runs-on: ubuntu-latest
     container:

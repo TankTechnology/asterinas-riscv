@@ -15,6 +15,11 @@ Three independent layers, each a short command with its own evidence:
 3. **LTP syscalls** (`--suite syscalls`): the 767-test subset used upstream.
    This is the broad sweep; it stays in the baseline list below.
 
+Alongside them, `tools/riscv/concurrency-models/` model-checks the four kernel
+protocols whose bugs only appear under specific interleavings (loom for the run
+queue, `Waiter`/`Waker` and the pollee, TLA+/TLC for the network poll
+scheduler); see [2026-11-04-concurrency-models.md](2026-11-04-concurrency-models.md).
+
 ```sh
 # workflow checks against the board (key already authorized)
 python3 -m tools.riscv.compat.run_workflow_checks \

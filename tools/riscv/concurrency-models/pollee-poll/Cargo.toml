@@ -1,0 +1,10 @@
+[package]
+name = "pollee-poll-model"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+loom = "0.7"
