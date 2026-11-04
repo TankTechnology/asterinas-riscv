@@ -141,6 +141,15 @@ impl FileOps for PtyMaster {
 }
 
 impl PerOpenFileOps for PtyMaster {
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        // The master owns the devpts node (whose filesystem reference is
+        // weak) and the slave `Tty`, the same core the serial and hvc drivers
+        // already pass through `SCM_RIGHTS`; nothing under it can reach a file
+        // table. OpenSSH's privsep monitor sends this descriptor to its
+        // session child, so an interactive login needs the opt-in.
+        true
+    }
+
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is a pty");
     }

@@ -51,6 +51,28 @@ marker file and the remote output. The pty path needs `devpts` mounted
 (systemd mounts it; a stage1 interactive shell does not), so a `-tt` run
 there stops at `openpty: No such file or directory`, not in `ppoll`.
 
+### Interactive pty: SCM_RIGHTS leaf classification
+
+On the board `devpts` is mounted, and `ssh -tt` then failed one layer
+deeper: sshd's privsep monitor passes the pty master to its session child
+with `SCM_RIGHTS`, and the unix stream send path refuses any file it cannot
+classify as an ownership leaf (`SCM_RIGHTS contains a file container
+unsupported by B1` → `EPERM`). The log showed
+`mm_send_fd: sendmsg(8): Operation not permitted` and then
+`mm_answer_pty: send fds failed`.
+
+A pty is the same `Tty` core the serial and hvc drivers already certify:
+line discipline, pollees whose observers are weak, and a job control that
+holds only weak session/process-group references. The master additionally
+holds the devpts node, whose filesystem reference is also weak. Both ends
+now opt in (`PtyDriver::SCM_RIGHTS_PROVEN_LEAF`,
+`PtyMaster::is_scm_rights_proven_leaf`, `PtySlaveFile` delegating to the
+driver constant), with a ktest on the constant.
+
+With that, host → board `ssh -tt` allocates `/dev/pts/0`, runs the command
+and exits 0; exec, scp (both ways), sftp and rsync still pass, as does the
+shipped dropbear server on port 22.
+
 The image still ships dropbear on port 22 because it was verified first and
 keeps working; the OpenSSH server can now be unmasked if desired.
 

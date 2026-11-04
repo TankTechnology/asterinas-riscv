@@ -2,8 +2,9 @@
 
 use inherit_methods_macro::inherit_methods;
 
+use super::driver::PtyDriver;
 use crate::{
-    device::PtySlave,
+    device::{PtySlave, tty::TtyDriver},
     events::IoEvents,
     fs::{
         file::{PerOpenFileOps, SettableStatusFlags, StatusFlags},
@@ -92,6 +93,10 @@ impl FileOps for PtySlaveFile {
 }
 
 impl PerOpenFileOps for PtySlaveFile {
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        PtyDriver::SCM_RIGHTS_PROVEN_LEAF
+    }
+
     fn check_seekable(&self) -> Result<()> {
         return_errno_with_message!(Errno::ESPIPE, "the inode is a TTY");
     }
