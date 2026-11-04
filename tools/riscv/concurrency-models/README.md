@@ -20,6 +20,7 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `waitqueue-waker/` | loom | `ostd/src/sync/wait.rs` | The `Waiter`/`Waker` handshake: a wake delivered before or during the park, and two wakers collapsing into one park. |
 | `pollee-poll/` | loom | `kernel/src/process/signal/poll.rs` | Duplicate poll entries for one object replace each other's mask (`66d0290f7`); this is the OpenSSH hibernation hang on a pty. |
 | `net-poll-scheduler/` | TLA+/TLC | `kernel/src/net/iface/{sched,poll}.rs` | `"no poll"` sharing the value of `"poll now"` strands an immediate request (`9a802125b`). |
+| `cow-fork/` | loom | `kernel/src/vm/vmar/vmar_impls/fork.rs`, `vm_mapping.rs` | `fork`'s CoW rule: a writable mapping's frame must have no other reference (PTE or page-cache). |
 
 The buggy variants are kept and asserted to *fail*: `loom` must find the
 interleaving, TLC must report the invariant violation. That makes the model a
