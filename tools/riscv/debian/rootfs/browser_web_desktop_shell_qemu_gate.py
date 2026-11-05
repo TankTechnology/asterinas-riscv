@@ -29,9 +29,9 @@ from tools.riscv.debian.rootfs.firefox_startup_profile import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
-from tools.riscv.qemu_ppm import audit_ppm
-from tools.riscv.qemu_qmp import ABSOLUTE_AXIS_MAX, capture_screendump, click_tablet
-from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
+from tools.riscv.qemu.qemu_ppm import audit_ppm
+from tools.riscv.qemu.qemu_qmp import ABSOLUTE_AXIS_MAX, capture_screendump, click_tablet
+from tools.riscv.qemu.qemu_uboot_devices import BOCHS_XRGB8888
 
 
 class DesktopShellQemuOperations(BrowserWebQemuOperations):

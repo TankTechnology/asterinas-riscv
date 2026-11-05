@@ -19,6 +19,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(TOOLS / "qemu"))
 
 from qemu_uboot_commands import qemu_argv  # noqa: E402
 from qemu_uboot_devices import DRM_CURSOR, device_set_by_name  # noqa: E402

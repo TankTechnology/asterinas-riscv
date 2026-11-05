@@ -569,7 +569,7 @@ test_riscv_host_list:
 
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:
-	@PYTHONPATH=tools/riscv python3 -m unittest \
+	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m unittest \
 		tools.riscv.tests.test_ltp_result \
 		tools.riscv.tests.test_ltp_manifest \
 		tools.riscv.tests.test_ltp_suite \
@@ -647,7 +647,7 @@ test_riscv_megrez_debug_unit:
 
 .PHONY: test_riscv_physical_graphics_unit
 test_riscv_physical_graphics_unit:
-	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)/tools/riscv/qemu:$(CURDIR)" \
 		python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_physical_graphics_gate \
 		tools.riscv.tests.test_hdmi_pixel_oracle \
@@ -772,7 +772,7 @@ test_riscv_megrez_preboard:
 
 .PHONY: test_riscv_megrez_install_unit
 test_riscv_megrez_install_unit:
-	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)/tools/riscv/qemu:$(CURDIR)" \
 		python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debian_installer \
 		tools.riscv.tests.test_megrez_board_session \
@@ -1145,7 +1145,7 @@ test_riscv_physical_graphics_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" || { echo "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)/tools/riscv/qemu:$(CURDIR)" \
 		python3 -m tools.riscv.physical_graphics_qemu_gate \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" --stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
@@ -1278,7 +1278,7 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		{ echo "DRM_CURSOR_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_CURSOR_GATE_OUTPUT)" || \
 		{ echo "DRM_CURSOR_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv python3 -m drm.cursor_gate \
+	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.cursor_gate \
 		--uboot "$(DRM_CURSOR_UBOOT)" \
 		--boot-disk "$(DRM_CURSOR_BOOT_DISK)" \
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
@@ -1310,7 +1310,7 @@ test_riscv_drm_gem: test_riscv_drm_gem_unit
 		{ echo "DRM_GEM_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_GEM_GATE_OUTPUT)" || \
 		{ echo "DRM_GEM_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv python3 -m drm.gem_gate \
+	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.gem_gate \
 		--uboot "$(DRM_GEM_UBOOT)" \
 		--boot-disk "$(DRM_GEM_BOOT_DISK)" \
 		--manifest "$(DRM_GEM_MANIFEST)" \
@@ -1331,7 +1331,7 @@ test_riscv_drm_firmware: test_riscv_drm_firmware_unit
 		{ echo "DRM_FIRMWARE_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_FIRMWARE_GATE_OUTPUT)" || \
 		{ echo "DRM_FIRMWARE_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv python3 -m drm.firmware_gate \
+	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.firmware_gate \
 		--uboot "$(DRM_FIRMWARE_UBOOT)" \
 		--boot-disk "$(DRM_FIRMWARE_BOOT_DISK)" \
 		--manifest "$(DRM_FIRMWARE_MANIFEST)" \
@@ -1352,7 +1352,7 @@ test_riscv_drm_render_node: test_riscv_drm_render_node_unit
 		{ echo "DRM_RENDER_NODE_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_RENDER_NODE_GATE_OUTPUT)" || \
 		{ echo "DRM_RENDER_NODE_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv python3 -m drm.render_node_gate \
+	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.render_node_gate \
 		--uboot "$(DRM_RENDER_NODE_UBOOT)" \
 		--boot-disk "$(DRM_RENDER_NODE_BOOT_DISK)" \
 		--manifest "$(DRM_RENDER_NODE_MANIFEST)" \
@@ -1375,7 +1375,7 @@ test_riscv_drm_virgl_param: test_riscv_drm_virgl_param_unit
 		{ echo "DRM_VIRGL_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_VIRGL_GATE_OUTPUT)" || \
 		{ echo "DRM_VIRGL_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv python3 -m drm.virgl_param_gate \
+	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.virgl_param_gate \
 		--uboot "$(DRM_VIRGL_UBOOT)" \
 		--boot-disk "$(DRM_VIRGL_BOOT_DISK)" \
 		--manifest "$(DRM_VIRGL_MANIFEST)" \
@@ -1395,8 +1395,8 @@ test_riscv_uboot_booti: test_riscv_uboot_booti_unit
 		QEMU_UBOOT_PROFILE="generic-sv39" \
 		QEMU_UBOOT_OUT_DIR="$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)" \
 		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
-		tools/riscv/prepare_qemu_uboot_booti.sh prepare
-	@python3 tools/riscv/qemu_uboot_booti.py run \
+		tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
+	@python3 tools/riscv/qemu/qemu_uboot_booti.py run \
 		--profile "generic-sv39" \
 		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot" \
 		--boot-disk "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/boot.ext4" \
@@ -1430,8 +1430,8 @@ test_riscv_sifive_u test_riscv_sifive_u_linux_reference: test_riscv_uboot_booti_
 		QEMU_UBOOT_PROFILE="$(SIFIVE_U_PROFILE)" \
 		QEMU_UBOOT_OUT_DIR="$(SIFIVE_U_OUT)" \
 		QEMU_UBOOT_BUILD_DIR="$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)" \
-		tools/riscv/prepare_qemu_uboot_booti.sh prepare
-	@python3 tools/riscv/qemu_uboot_booti.py run \
+		tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
+	@python3 tools/riscv/qemu/qemu_uboot_booti.py run \
 		--profile "$(SIFIVE_U_PROFILE)" \
 		--uboot "$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
 		--boot-disk "$(SIFIVE_U_OUT)/boot.ext4" \
@@ -1462,8 +1462,8 @@ test_riscv_third_board: test_riscv_uboot_booti_unit
 		QEMU_UBOOT_PROFILE="$(THIRD_BOARD_PROFILE)" \
 		QEMU_UBOOT_OUT_DIR="$(THIRD_BOARD_OUT)" \
 		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
-		tools/riscv/prepare_qemu_uboot_booti.sh prepare
-	@python3 tools/riscv/qemu_uboot_booti.py run \
+		tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
+	@python3 tools/riscv/qemu/qemu_uboot_booti.py run \
 		--profile "$(THIRD_BOARD_PROFILE)" \
 		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
 		--boot-disk "$(THIRD_BOARD_OUT)/boot.ext4" \

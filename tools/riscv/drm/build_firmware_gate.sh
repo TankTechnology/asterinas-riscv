@@ -75,5 +75,5 @@ printf 'firmware gate geometry: %sx%s stride %s\n' \
     -DMODE_HEIGHT="${mode_height}U" \
     -DMODE_STRIDE="${mode_stride}U" \
     "$SOURCE" -o "$BUILD_DIRECTORY/init"
-PYTHONPATH="$TOOLS_DIR" python3 "$TOOLS_DIR/make_qemu_uboot_initramfs.py" \
+PYTHONPATH="$TOOLS_DIR:$TOOLS_DIR/qemu" python3 "$TOOLS_DIR/qemu/make_qemu_uboot_initramfs.py" \
     "$OUTPUT" --init-elf "$BUILD_DIRECTORY/init"

@@ -31,7 +31,7 @@ mkdir -p "${BUILD_DIR}"
     "${SRC_DIR}/client_libwayland.c" \
     -L"${CROSS_USR}/lib" -lwayland-server -lwayland-client -lffi
 
-python3 "${REPO_ROOT}/tools/riscv/make_qemu_uboot_initramfs.py" \
+python3 "${REPO_ROOT}/tools/riscv/qemu/make_qemu_uboot_initramfs.py" \
     --init-elf "${BUILD_DIR}/init" "${OUTPUT}"
 
 echo "built ${OUTPUT}"

@@ -29,8 +29,9 @@ from typing import Any, Protocol
 
 
 TOOLS_RISCV = Path(__file__).parents[1]
-if os.fspath(TOOLS_RISCV) not in sys.path:
-    sys.path.insert(0, os.fspath(TOOLS_RISCV))
+for directory in (TOOLS_RISCV, TOOLS_RISCV / "qemu"):
+    if os.fspath(directory) not in sys.path:
+        sys.path.insert(0, os.fspath(directory))
 
 from qemu_uboot_artifacts import (  # noqa: E402
     ArtifactExpectations,

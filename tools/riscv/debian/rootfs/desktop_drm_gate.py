@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
+from tools.riscv.qemu.qemu_uboot_devices import BOCHS_XRGB8888
 from tools.riscv.debian.rootfs.contract import load_manifest
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
     DesktopM3Operations,

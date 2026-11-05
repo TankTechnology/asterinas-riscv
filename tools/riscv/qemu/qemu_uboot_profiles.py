@@ -8,6 +8,16 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
 
+import os
+import sys
+
+# This module lives in a subdirectory after the qemu/ regroup, but still imports
+# the top-level megrez_* modules. Put tools/riscv back on the path when the
+# file is run directly (python3 tools/riscv/qemu/...), where sys.path[0] is qemu/.
+_TOOLS_RISCV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _TOOLS_RISCV not in sys.path:
+    sys.path.insert(0, _TOOLS_RISCV)
+
 from megrez_contract import MegrezContract
 from qemu_uboot_gate import has_valid_slow_run_permit
 

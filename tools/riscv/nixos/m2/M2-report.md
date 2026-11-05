@@ -44,7 +44,7 @@ export ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image"
 export ASTERINAS_INITRAMFS="$PWD/target/nixos/m2/m2-initramfs.cpio.gz"
 export QEMU_UBOOT_CACHE_DIR=/home/arch-anjie/Program/asterinas-riscv/target/qemu-uboot/cache
 export QEMU_UBOOT_PROFILE=generic-sv39
-tools/riscv/prepare_qemu_uboot_booti.sh prepare
+tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 
 # 3. QEMU smoke
 python3 tools/riscv/nixos/m2/boot_m2_smoke.py

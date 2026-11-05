@@ -106,10 +106,12 @@ class FirstProcessDiagnosticSourceTests(unittest.TestCase):
 
         tools_directory = str(REPOSITORY_ROOT / "tools/riscv")
         sys.path.insert(0, tools_directory)
+        sys.path.insert(0, str(REPOSITORY_ROOT / "tools/riscv/qemu"))
         try:
             from qemu_uboot_audit import audit_diagnostic_markers
             from qemu_uboot_variants import FIRST_PROCESS_CONSOLE_LOSS
         finally:
+            sys.path.remove(str(REPOSITORY_ROOT / "tools/riscv/qemu"))
             sys.path.remove(tools_directory)
 
         lines = (

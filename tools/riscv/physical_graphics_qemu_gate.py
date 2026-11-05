@@ -50,7 +50,7 @@ from tools.riscv.megrez_physical_graphics import (
     validate_physical_external_services_quiesced,
     validate_physical_browser_start,
 )
-from tools.riscv.qemu_qmp import (
+from tools.riscv.qemu.qemu_qmp import (
     ABSOLUTE_AXIS_MAX,
     capture_screendump,
     click_left_button,

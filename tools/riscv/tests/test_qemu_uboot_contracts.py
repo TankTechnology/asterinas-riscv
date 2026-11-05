@@ -16,8 +16,9 @@ from unittest import mock
 
 
 TOOLS = Path(__file__).resolve().parents[1]
-RUNNER = TOOLS / "qemu_uboot_booti.py"
+RUNNER = TOOLS / "qemu" / "qemu_uboot_booti.py"
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(TOOLS / "qemu"))
 
 import qemu_uboot_devices as qemu_devices  # noqa: E402
 import qemu_uboot_shell as qemu_shell  # noqa: E402

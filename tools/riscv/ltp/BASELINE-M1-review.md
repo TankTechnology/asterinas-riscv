@@ -618,7 +618,7 @@ Race during tree snapshot (major): `package_subset()` hashes `rootfs` before and
 > +    _validate_run_paths(repo, paths)
 > ...
 > +        subprocess.run(
-> +            [str(repo / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
+> +            [str(repo / "tools/riscv/qemu/prepare_qemu_uboot_booti.sh"), "prepare"],
 > +            cwd=repo,
 > +            env=environment,
 > +            check=True,

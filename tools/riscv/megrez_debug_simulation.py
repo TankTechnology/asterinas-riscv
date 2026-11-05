@@ -222,7 +222,7 @@ def simulate_fast(
         }
     )
     preparation = _run(
-        [str(repository / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
+        [str(repository / "tools/riscv/qemu/prepare_qemu_uboot_booti.sh"), "prepare"],
         environment=environment,
         repository_root=repository,
         deadline=deadline,
@@ -246,7 +246,7 @@ def simulate_fast(
     execution = _run(
         [
             sys.executable,
-            str(repository / "tools/riscv/qemu_uboot_booti.py"),
+            str(repository / "tools/riscv/qemu/qemu_uboot_booti.py"),
             "run",
             "--profile",
             FAST_PROFILE,

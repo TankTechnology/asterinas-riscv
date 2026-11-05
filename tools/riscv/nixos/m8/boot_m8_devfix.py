@@ -140,7 +140,7 @@ def main() -> int:
     if not BOOT_DISK.exists():
         raise SystemExit("missing boot.ext4 — run build_m8_devfix.sh first")
     if not UBOOT.exists():
-        raise SystemExit("missing U-Boot — run tools/riscv/prepare_qemu_uboot_booti.sh first")
+        raise SystemExit("missing U-Boot — run tools/riscv/qemu/prepare_qemu_uboot_booti.sh first")
 
     boot = Boot(make_argv(), args.serial_log)
     transcript = b""

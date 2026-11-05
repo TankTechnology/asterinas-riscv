@@ -114,7 +114,7 @@ fi
 # 编程设备，把 QEMU 命令行的 `xres=`/`yres=` 覆盖掉），而 runner 会拒绝尺寸
 # 与契约不符的截图。所以每个几何各用一份 U-Boot 构建目录，见下面循环。
 framebuffer_geometry() {
-    PYTHONPATH="${REPO_ROOT}/tools/riscv" python3 - "$1" <<'PY'
+    PYTHONPATH="${REPO_ROOT}/tools/riscv:${REPO_ROOT}/tools/riscv/qemu" python3 - "$1" <<'PY'
 import sys
 
 from qemu_uboot_devices import device_set_by_name
@@ -155,11 +155,11 @@ for device_set in "${DEVICE_SETS[@]}"; do
     QEMU_UBOOT_OUT_DIR="${set_out}" \
     QEMU_UBOOT_BUILD_DIR="${set_build_dir}" \
     QEMU_UBOOT_BOCHS_SIZE="${fw_width}x${fw_height}" \
-    tools/riscv/prepare_qemu_uboot_booti.sh prepare
+    tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 
     echo "== gate (${device_set}) =="
     mkdir -p "${set_evidence}"
-    PYTHONPATH="${REPO_ROOT}/tools/riscv" python3 tools/riscv/drm/firmware_gate.py \
+    PYTHONPATH="${REPO_ROOT}/tools/riscv:${REPO_ROOT}/tools/riscv/qemu" python3 tools/riscv/drm/firmware_gate.py \
         --uboot "${set_build_dir}/u-boot" \
         --boot-disk "${set_out}/boot.ext4" \
         --manifest "${set_out}/artifacts.json" \

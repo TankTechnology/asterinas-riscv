@@ -22,14 +22,15 @@ from pathlib import Path
 from unittest import mock
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "qemu_uboot_booti.py"
-PREPARE_SCRIPT = Path(__file__).resolve().parents[1] / "prepare_qemu_uboot_booti.sh"
-REPO_ROOT = SCRIPT.parents[2]
+SCRIPT = Path(__file__).resolve().parents[1] / "qemu" / "qemu_uboot_booti.py"
+PREPARE_SCRIPT = Path(__file__).resolve().parents[1] / "qemu" / "prepare_qemu_uboot_booti.sh"
+REPO_ROOT = SCRIPT.parents[3]
 MAKEFILE = REPO_ROOT / "Makefile"
-README = SCRIPT.parent / "README.md"
+README = SCRIPT.parents[1] / "README.md"
 INITRAMFS_BUILDER = SCRIPT.parent / "make_qemu_uboot_initramfs.py"
 INITRAMFS_SOURCE = SCRIPT.parent / "qemu_uboot_init.S"
 sys.path.insert(0, str(SCRIPT.parent))
+sys.path.insert(0, str(SCRIPT.parents[1]))
 from megrez_contract import load_contract  # noqa: E402
 import qemu_uboot_audit  # noqa: E402
 import qemu_uboot_shell as shell_module  # noqa: E402
@@ -7598,7 +7599,7 @@ class RepositoryIntegrationTests(unittest.TestCase):
         invoked_python = {
             token for token in target_text.split() if token.endswith(".py")
         }
-        self.assertEqual(invoked_python, {"tools/riscv/qemu_uboot_booti.py"})
+        self.assertEqual(invoked_python, {"tools/riscv/qemu/qemu_uboot_booti.py"})
 
     def test_make_uses_one_nonempty_absolute_path_contract(self) -> None:
         default_out = REPO_ROOT / "target/qemu-uboot/current"

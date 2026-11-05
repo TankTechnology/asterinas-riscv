@@ -37,7 +37,7 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     reject_a_kernel_that_cannot_boot,
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure
-from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
+from tools.riscv.qemu.qemu_uboot_devices import BOCHS_XRGB8888
 from tools.riscv.debian.rootfs.profiles import get_profile
 
 

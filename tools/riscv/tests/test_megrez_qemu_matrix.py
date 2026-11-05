@@ -14,10 +14,10 @@ import threading
 import unittest
 from unittest import mock
 
-from tools.riscv.qemu_ppm import audit_ppm
-import tools.riscv.qemu_qmp as qmp
-from tools.riscv.qemu_qmp import capture_screendump
-from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888, MEGREZ_BOARD_GEOMETRY
+from tools.riscv.qemu.qemu_ppm import audit_ppm
+import tools.riscv.qemu.qemu_qmp as qmp
+from tools.riscv.qemu.qemu_qmp import capture_screendump
+from tools.riscv.qemu.qemu_uboot_devices import BOCHS_XRGB8888, MEGREZ_BOARD_GEOMETRY
 
 
 def ppm(width: int, height: int, pixels: bytes) -> bytes:
@@ -572,7 +572,11 @@ class QmpCaptureTests(unittest.TestCase):
 
     def test_qmp_module_imports_as_a_top_level_riscv_runner_module(self) -> None:
         riscv_tools = Path(__file__).parents[1]
-        environment = {"PYTHONPATH": os.fspath(riscv_tools)}
+        environment = {
+            "PYTHONPATH": os.pathsep.join(
+                (os.fspath(riscv_tools), os.fspath(riscv_tools / "qemu"))
+            )
+        }
         result = subprocess.run(
             [sys.executable, "-c", "import qemu_qmp"],
             cwd="/tmp",

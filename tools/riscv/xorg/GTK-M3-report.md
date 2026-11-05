@@ -63,7 +63,7 @@ stall.
 
 No kernel fix is needed. The initramfs is trimmed to ~27.7 MB (still well under the
 machine's 2 GiB), and the runner's userspace deadline is raised from 120 s to 300 s
-(`tools/riscv/qemu_desktop_boot.py`) so a slow boot is not mistaken for a hang.
+(`tools/riscv/qemu/qemu_desktop_boot.py`) so a slow boot is not mistaken for a hang.
 The M2 kernel-side "gap" (§4 of that report) is therefore **closed by correction**,
 not by a code change: the earlier 20 MB threshold was an artefact of the timeout.
 
@@ -175,7 +175,7 @@ Default session (`tools/riscv/xorg/init.c`): Xorg → `matchbox-window-manager` 
 | `tools/riscv/xorg/init.c` | session: matchbox-wm + xpanel + 2× gtk-hello + pcmanfm + xterm |
 | `tools/riscv/xorg/xpanel.c` | panel; now sets `_NET_WM_WINDOW_TYPE_DOCK` |
 | `tools/riscv/xorg/build_xorg_initramfs.sh` | initramfs packaging: + pcmanfm/xterm + data + `/root` |
-| `tools/riscv/qemu_desktop_boot.py` | runner: userspace deadline 120 s → 300 s |
+| `tools/riscv/qemu/qemu_desktop_boot.py` | runner: userspace deadline 120 s → 300 s |
 | `target/qemu-uboot/riscv-gtk2-m3-desktop.ppm` | the milestone screenshot |
 | matchbox-wm `src/main_client.c` / `src/wm.c` | the app-client tiling patch (in `target/riscv-cross/src/`, not this repo's git) |
 

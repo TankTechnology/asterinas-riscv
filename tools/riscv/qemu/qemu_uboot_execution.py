@@ -11,6 +11,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import sys
+
+# This module lives in a subdirectory after the qemu/ regroup, but still imports
+# the top-level megrez_* modules. Put tools/riscv back on the path when the
+# file is run directly (python3 tools/riscv/qemu/...), where sys.path[0] is qemu/.
+_TOOLS_RISCV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _TOOLS_RISCV not in sys.path:
+    sys.path.insert(0, _TOOLS_RISCV)
+
 from megrez_contract import artifact_identity
 from qemu_uboot_artifacts import ArtifactExpectations, verify_boot_disk_artifacts
 from qemu_uboot_audit import BootAudit, memory_layout_observer

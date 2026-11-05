@@ -12,6 +12,7 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
+sys.path.insert(0, str(TOOLS / "qemu"))
 # `megrez_board_session` imports `tools.riscv.*`, so the repository root has to
 # be importable too -- the board modules are reached as a package, not as
 # siblings of the QEMU ones. Inserted rather than relied on from the caller's

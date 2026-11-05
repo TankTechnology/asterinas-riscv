@@ -5,7 +5,7 @@
 #
 # Produces a static riscv64 /init that renders a full-screen image via LVGL on
 # /dev/fb0, then packs it as the marker initramfs (with the smoke-test /init)
-# for use with tools/riscv/qemu_desktop_boot.py.
+# for use with tools/riscv/qemu/qemu_desktop_boot.py.
 #
 # Usage:
 #   build_lvgl_initramfs.sh [image.png] [output.cpio.gz]
@@ -131,7 +131,7 @@ patch_lvgl
 prepare_image
 build_init
 
-python3 "${REPO_ROOT}/tools/riscv/make_qemu_uboot_initramfs.py" \
+python3 "${REPO_ROOT}/tools/riscv/qemu/make_qemu_uboot_initramfs.py" \
     --init-elf "${BUILD_DIR}/init" "${OUTPUT}"
 
 echo "built ${OUTPUT}"

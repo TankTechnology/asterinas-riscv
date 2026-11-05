@@ -23,7 +23,7 @@ the kernel-side plumbing without any kernel changes.
 ```bash
 python3 tools/riscv/wayland/build_wayland.sh   # -> target/qemu-uboot/initramfs-wayland.cpio.gz
 # ... prepare_qemu_uboot_booti.sh prepare (with that initramfs) ...
-python3 tools/riscv/qemu_desktop_boot.py --display-gtk   # or headless + screendump
+python3 tools/riscv/qemu/qemu_desktop_boot.py --display-gtk   # or headless + screendump
 ```
 
 ## Verification

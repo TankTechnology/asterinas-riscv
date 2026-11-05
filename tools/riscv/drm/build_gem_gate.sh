@@ -52,5 +52,5 @@ trap 'exit 143' TERM
 
 "$COMPILER" -std=c11 -O2 -static -no-pie -Wall -Wextra -Werror \
     -march=rv64gc -mabi=lp64d "$SOURCE" -o "$BUILD_DIRECTORY/init"
-PYTHONPATH="$TOOLS_DIR" python3 "$TOOLS_DIR/make_qemu_uboot_initramfs.py" \
+PYTHONPATH="$TOOLS_DIR:$TOOLS_DIR/qemu" python3 "$TOOLS_DIR/qemu/make_qemu_uboot_initramfs.py" \
     "$OUTPUT" --init-elf "$BUILD_DIRECTORY/init"

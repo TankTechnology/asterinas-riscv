@@ -73,7 +73,7 @@ ASTERINAS_INITRAMFS="$PWD/target/riscv-xhci-input/initramfs.cpio" \
 QEMU_UBOOT_PROFILE=generic-sv39-ltp-smp4 \
 QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/xhci-input" \
 QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
-  tools/riscv/prepare_qemu_uboot_booti.sh prepare
+  tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 ```
 
 The host gate verifies that the prepared DTB has exactly four enabled CPU

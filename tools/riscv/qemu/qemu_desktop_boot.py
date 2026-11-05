@@ -17,8 +17,8 @@ and a U-Boot with ``CONFIG_VIDEO_BOCHS=y`` (the pinned commit's
 ``qemu-riscv64_smode_defconfig`` already enables it).
 
 Usage:
-    python3 tools/riscv/qemu_desktop_boot.py            # headless + screendump
-    python3 tools/riscv/qemu_desktop_boot.py --display-gtk  # open a window
+    python3 tools/riscv/qemu/qemu_desktop_boot.py            # headless + screendump
+    python3 tools/riscv/qemu/qemu_desktop_boot.py --display-gtk  # open a window
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import threading
 import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent.parent
 UBOOT = REPO / "target/qemu-uboot/cache/u-boot-build/u-boot"
 BOOT_DISK = REPO / "target/qemu-uboot/current/boot.ext4"
 MON_SOCK = Path("/tmp/qemu-desktop-mon.sock")

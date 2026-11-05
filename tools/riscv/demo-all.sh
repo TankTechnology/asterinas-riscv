@@ -65,7 +65,7 @@ die() { echo "demo-all: $*" >&2; exit 2; }
 # --- prerequisites ---------------------------------------------------------
 command -v qemu-system-riscv64 >/dev/null 2>&1 || die "qemu-system-riscv64 not found"
 [[ -s "${KERNEL_IMAGE}" ]] || die "missing kernel Image (build with: make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode; or set ASTERINAS_RISCV_BOOTI=)"
-[[ -s "${UBOOT}" ]] || die "missing U-Boot (run: tools/riscv/prepare_qemu_uboot_booti.sh prepare)"
+[[ -s "${UBOOT}" ]] || die "missing U-Boot (run: tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare)"
 [[ -s "${DTB}" ]] || die "missing DTB: ${DTB}"
 
 # --- 1. build the full rootfs (systemd + desktop + nix) --------------------

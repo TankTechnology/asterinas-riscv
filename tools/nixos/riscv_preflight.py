@@ -57,10 +57,10 @@ class PreflightFailure:
 _ARTIFACT_REMEDIES = {
     "uboot": (
         "the producer requires a nonempty Sv39 Image and nonempty initramfs; "
-        "first run tools/riscv/prepare_qemu_uboot_booti.sh --check-tools, then "
+        "first run tools/riscv/qemu/prepare_qemu_uboot_booti.sh --check-tools, then "
         "run ASTERINAS_RISCV_BOOTI=<nonempty Sv39 Image> "
         "ASTERINAS_INITRAMFS=<nonempty initramfs> "
-        "tools/riscv/prepare_qemu_uboot_booti.sh prepare"
+        "tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare"
     ),
     "boot-disk": "implement or run the R1-B boot-disk producer (not yet available)",
     "root-disk": (

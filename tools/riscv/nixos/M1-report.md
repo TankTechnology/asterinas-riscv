@@ -32,7 +32,7 @@ export ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image"
 export ASTERINAS_INITRAMFS="$PWD/target/nixos/busybox-initramfs.cpio.gz"
 export QEMU_UBOOT_CACHE_DIR=/home/arch-anjie/Program/asterinas-riscv/target/qemu-uboot/cache
 export QEMU_UBOOT_PROFILE=generic-sv39
-tools/riscv/prepare_qemu_uboot_booti.sh prepare
+tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 
 # 4. QEMU 冒烟
 python3 tools/riscv/nixos/boot_busybox_smoke.py

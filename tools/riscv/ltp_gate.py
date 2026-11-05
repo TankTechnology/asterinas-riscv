@@ -426,7 +426,7 @@ def _qemu_command(
     cache = repo / "target/ltp/qemu/cache"
     command = [
         sys.executable,
-        str(repo / "tools/riscv/qemu_uboot_booti.py"),
+        str(repo / "tools/riscv/qemu/qemu_uboot_booti.py"),
         "run",
         "--profile",
         profile,
@@ -641,7 +641,7 @@ def _dry_run(
         print("# validate and snapshot the complete named suite")
     environment = _qemu_environment(repo, paths, profile, selected_initramfs)
     _print_command(
-        [str(repo / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
+        [str(repo / "tools/riscv/qemu/prepare_qemu_uboot_booti.sh"), "prepare"],
         environment=environment,
     )
     _print_command(
@@ -724,7 +724,7 @@ def _execute_run_gate(
         selected_initramfs,
     )
     subprocess.run(
-        [str(repo / "tools/riscv/prepare_qemu_uboot_booti.sh"), "prepare"],
+        [str(repo / "tools/riscv/qemu/prepare_qemu_uboot_booti.sh"), "prepare"],
         cwd=repo,
         env=environment,
         check=True,

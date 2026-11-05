@@ -1,5 +1,7 @@
 # RISC-V firmware boot validation
 
+Where files live, and where new ones belong: [LAYOUT.md](LAYOUT.md).
+
 This directory validates the firmware-to-kernel handoff without modeling a single development board in QEMU.
 The same runner describes a machine contract, a boot flow, and the observable milestones expected from the guest.
 The registered profiles currently cover QEMU `virt`, SiFive U, Sv39, and the Sv48/Svade/Svadu envelope used by the Megrez integration.
@@ -570,7 +572,7 @@ ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-cursor/initramfs.cpio.gz" \
 QEMU_UBOOT_PROFILE=generic-sv39-drm-cursor-smp4 \
 QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-cursor/prepared" \
 QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
-tools/riscv/prepare_qemu_uboot_booti.sh prepare
+tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 ```
 
 Run the bounded evidence gate:
@@ -614,7 +616,7 @@ ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-gem/initramfs.cpio.gz" \
 QEMU_UBOOT_PROFILE=generic-sv39-drm-gem-smp4 \
 QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-gem/prepared" \
 QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
-tools/riscv/prepare_qemu_uboot_booti.sh prepare
+tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 
 make test_riscv_drm_gem \
   DRM_GEM_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
@@ -1564,7 +1566,7 @@ observed the kernel register the handoff; Debian/systemd output after that is
 expected on HDMI rather than on the serial console.
 
 ```bash
-PYTHONPATH=tools/riscv python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
+PYTHONPATH=tools/riscv:tools/riscv/qemu python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
   --booti ASTERINAS_IMAGE_ON_BOOT_FS \
   --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
   --dtb DTB_ON_BOOT_FS \
@@ -1669,7 +1671,7 @@ evidence under investigation.
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
 
 ```bash
-python3 tools/riscv/make_qemu_uboot_initramfs.py \
+python3 tools/riscv/qemu/make_qemu_uboot_initramfs.py \
   target/qemu-uboot/marker-initramfs.cpio.gz
 make test_riscv_uboot_booti \
   ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
@@ -1689,7 +1691,7 @@ This is the single most common cause of a failed sifive_u run.
 
 ```bash
 make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
-python3 tools/riscv/make_qemu_uboot_initramfs.py target/qemu-uboot/marker-initramfs.cpio.gz
+python3 tools/riscv/qemu/make_qemu_uboot_initramfs.py target/qemu-uboot/marker-initramfs.cpio.gz
 make test_riscv_sifive_u \
   ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image" \
   ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/marker-initramfs.cpio.gz"
@@ -1719,10 +1721,10 @@ be the real marker initramfs (not the nix-build stub). Then run the driver:
 
 ```bash
 make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
-python3 tools/riscv/make_qemu_uboot_initramfs.py target/qemu-uboot/initramfs.cpio.gz
+python3 tools/riscv/qemu/make_qemu_uboot_initramfs.py target/qemu-uboot/initramfs.cpio.gz
 # ... prepare_qemu_uboot_booti.sh prepare (see the doc for env vars)
-python3 tools/riscv/qemu_desktop_boot.py             # headless + screendump
-python3 tools/riscv/qemu_desktop_boot.py --display-gtk  # open a window
+python3 tools/riscv/qemu/qemu_desktop_boot.py             # headless + screendump
+python3 tools/riscv/qemu/qemu_desktop_boot.py --display-gtk  # open a window
 ```
 
 ## LVGL desktop GUI (framebuffer interactive demo)

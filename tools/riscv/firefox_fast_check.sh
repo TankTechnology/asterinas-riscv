@@ -54,8 +54,8 @@ python3 -m py_compile \
 
 bash -n \
   tools/qemu_args.sh \
-  tools/riscv/qemu_live_pc_sampler.sh \
-  tools/riscv/qemu_system_gdb_probe.sh \
+  tools/riscv/qemu/qemu_live_pc_sampler.sh \
+  tools/riscv/qemu/qemu_system_gdb_probe.sh \
   tools/riscv/firefox_kernel_static_check.sh \
   tools/riscv/kernel_ktest.sh \
   tools/riscv/debian/rootfs/build_rootfs.sh \

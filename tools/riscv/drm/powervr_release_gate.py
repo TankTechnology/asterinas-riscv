@@ -18,7 +18,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(REPO_ROOT / "tools" / "riscv"))
 
 from tools.riscv.drm.powervr_dma_stage import checked_frames
-from tools.riscv.make_qemu_uboot_initramfs import InitramfsEntry, make_newc_archive
+from tools.riscv.qemu.make_qemu_uboot_initramfs import InitramfsEntry, make_newc_archive
 
 
 INIT_SOURCE = Path(__file__).with_name("powervr_release_gate_init.c")

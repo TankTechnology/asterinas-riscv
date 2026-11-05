@@ -26,7 +26,7 @@ IMAGE="${ASTERINAS_RISCV_BOOTI:-${REPO_ROOT}/target/osdk/aster-kernel/aster-kern
 INITRAMFS="${ASTERINAS_INITRAMFS:-${REPO_ROOT}/target/qemu-uboot/marker-initramfs.cpio.gz}"
 
 echo "== [1/5] marker initramfs =="
-python3 tools/riscv/make_qemu_uboot_initramfs.py "${INITRAMFS}"
+python3 tools/riscv/qemu/make_qemu_uboot_initramfs.py "${INITRAMFS}"
 
 echo "== [2/5] prepare (${PROFILE}) =="
 ASTERINAS_RISCV_BOOTI="${IMAGE}" \
@@ -34,10 +34,10 @@ ASTERINAS_INITRAMFS="${INITRAMFS}" \
 QEMU_UBOOT_PROFILE="${PROFILE}" \
 QEMU_UBOOT_OUT_DIR="${OUT_DIR}" \
 QEMU_UBOOT_BUILD_DIR="${BUILD_DIR}" \
-tools/riscv/prepare_qemu_uboot_booti.sh prepare
+tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 
 echo "== [3/5] run =="
-python3 tools/riscv/qemu_uboot_booti.py run \
+python3 tools/riscv/qemu/qemu_uboot_booti.py run \
     --profile "${PROFILE}" \
     --uboot "${BUILD_DIR}/u-boot" \
     --boot-disk "${OUT_DIR}/boot.ext4" \

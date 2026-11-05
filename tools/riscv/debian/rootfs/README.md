@@ -560,7 +560,7 @@ ASTERINAS_INITRAMFS="$PWD/target/debian-riscv/stage1/initramfs.cpio" \
 QEMU_UBOOT_PROFILE=generic-sv39-ltp-smp4 \
 QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/debian-root" \
 QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
-  tools/riscv/prepare_qemu_uboot_booti.sh prepare
+  tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
 ```
 
 ## Test and run
@@ -600,7 +600,7 @@ The kernel-side reset probe is also reusable and does not boot the guest past
 the first instruction:
 
 ```bash
-tools/riscv/qemu_system_gdb_probe.sh \
+tools/riscv/qemu/qemu_system_gdb_probe.sh \
   target/osdk/aster-kernel/aster-kernel-osdk-bin.Image \
   "$PWD/../backups/asterinas-system-gdb-$(date +%Y%m%d)" \
   15
@@ -623,7 +623,7 @@ ASTERINAS_QEMU_GDB_PORT=23456 \
   --network-mode direct \
   ...the frozen browser-web gate arguments...
 
-tools/riscv/qemu_live_pc_sampler.sh 23456 \
+tools/riscv/qemu/qemu_live_pc_sampler.sh 23456 \
   "$PWD/../backups/firefox-live-pc-$(date +%Y%m%d)" 20 2
 ```
 

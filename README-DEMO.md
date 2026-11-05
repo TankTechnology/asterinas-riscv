@@ -103,7 +103,7 @@ milestone). It needs these to already exist:
 - a Sv39 kernel Image at `target/osdk/aster-kernel-osdk-bin.Image`
   (`make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode`), or set
   `ASTERINAS_RISCV_BOOTI=`;
-- U-Boot and a boot disk (from `tools/riscv/prepare_qemu_uboot_booti.sh prepare`);
+- U-Boot and a boot disk (from `tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare`);
 - the systemd + desktop cross-build in `target/riscv-cross/` and the nix
   products in the sibling `asterinas-riscv-nixos` tree (`NIXOS_REPO=` to override).
 

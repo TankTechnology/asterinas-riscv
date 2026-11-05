@@ -128,7 +128,7 @@ class FirefoxDebugToolTests(unittest.TestCase):
     def test_live_pc_sampler_is_bounded_loopback_only_and_binfmt_read_only(
         self,
     ) -> None:
-        sampler = Path("tools/riscv/qemu_live_pc_sampler.sh")
+        sampler = Path("tools/riscv/qemu/qemu_live_pc_sampler.sh")
         subprocess.run(["bash", "-n", sampler], check=True)
         source = sampler.read_text(encoding="utf-8")
         self.assertIn("target remote 127.0.0.1:$PORT", source)

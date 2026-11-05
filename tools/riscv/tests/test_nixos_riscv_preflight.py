@@ -19,6 +19,7 @@ from unittest import mock
 
 TOOLS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(TOOLS / "riscv"))
+sys.path.insert(0, str(TOOLS / "riscv" / "qemu"))
 sys.path.insert(0, str(TOOLS / "nixos"))
 
 from qemu_uboot_profiles import GENERIC_SV39, QEMU_VIRT_SMP4  # noqa: E402
@@ -133,7 +134,7 @@ class RiscvNixosPreflightTests(unittest.TestCase):
         self.assertIn("ASTERINAS_RISCV_BOOTI", failures[0].remedy)
         self.assertIn("ASTERINAS_INITRAMFS", failures[0].remedy)
         self.assertIn(
-            "tools/riscv/prepare_qemu_uboot_booti.sh prepare",
+            "tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare",
             failures[0].remedy,
         )
         self.assertIn("R1-B", failures[1].remedy)
