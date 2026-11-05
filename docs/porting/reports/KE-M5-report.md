@@ -98,7 +98,7 @@ Guest evidence: `tools/riscv/nsmatrix/kill_ns_test.c` (`KILL_NS_TEST_PASS`).
   `boot_ltp_gate.py`): `total=78 pass=68 fail=4 conf=6` — byte-identical
   verdict set to the KE-M4 run (the 4 fails are the known `clone08`,
   `clone304`, `tgkill02`, `waitpid01` gaps documented in the KE-M4
-  report); verdict log in `tools/riscv/pidns/ltp-kem5-verdicts.log`.
+  report); verdict log in `docs/porting/evidence/2026-11-05-namespace-run-logs/ltp-kem5-verdicts.log`.
 
 ## Namespace matrix status after KE-M5
 

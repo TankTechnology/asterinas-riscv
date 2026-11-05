@@ -59,8 +59,8 @@ merge commit):
 - LTP subsets (SMP=1): process (78): `pass=68 fail=4 conf=6` and network
   (44): `pass=30 fail=14 conf=0 timeout=1` — both verdict sets are
   byte-identical to the pre-merge KE-M6 runs (only documented known
-  failures). Verdict logs: `tools/riscv/pidns/ltp-kem7-proc-verdicts.log`
-  and `ltp-kem7-net-verdicts.log`.
+  failures). Verdict logs: `docs/porting/evidence/2026-11-05-namespace-run-logs/ltp-kem7-proc-verdicts.log`
+  and `docs/porting/evidence/2026-11-05-namespace-run-logs/ltp-kem7-net-verdicts.log`.
 
 ## Resulting capability set on main
 

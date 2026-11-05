@@ -73,8 +73,8 @@ requests that the kernel used to reject with EINVAL.
   baseline; three baseline crashes (`connect01`, `recvfrom01`,
   `sendto01`) are ordinary FAILs now and three more baseline failures
   (`accept01`, `bind01`, `epoll_wait04`) pass now — no new failures.
-  Verdict logs: `tools/riscv/pidns/ltp-kem6-net-verdicts.log` and
-  `ltp-kem6-net-baseline-verdicts.log`.
+  Verdict logs: `docs/porting/evidence/2026-11-05-namespace-run-logs/ltp-kem6-net-verdicts.log` and
+  `docs/porting/evidence/2026-11-05-namespace-run-logs/ltp-kem6-net-baseline-verdicts.log`.
 - Xfce desktop chain: boots to `graphical.target`, all session milestones
   OK, no kernel panic, desktop screendump unchanged.
 
