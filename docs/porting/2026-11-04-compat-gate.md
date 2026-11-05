@@ -1,5 +1,9 @@
 # Compatibility gate: developer workflow and LTP on RISC-V
 
+> The IPv4 addresses in this document are RFC 5737 documentation addresses
+> (`192.0.2.0/24`). Real values come from the local configuration
+> (`BOARD_IP` / `BOARD_GW` / `PORTAL_IP`) and are never committed.
+
 Date: 2026-11-04
 
 ## What the gate is
@@ -23,7 +27,7 @@ scheduler); see [2026-11-04-concurrency-models.md](2026-11-04-concurrency-models
 ```sh
 # workflow checks against the board (key already authorized)
 python3 -m tools.riscv.compat.run_workflow_checks \
-    --host 58.206.232.122 --key ~/.ssh/asterinas-gate
+    --host 192.0.2.10 --key ~/.ssh/asterinas-gate
 
 # the same checks against a QEMU boot of the image (boots and tears down)
 python3 -m tools.riscv.compat.run_qemu_workflow_checks

@@ -30,10 +30,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "board"))
 
 from megrez_console import Console  # noqa: E402
 
-BOARD_IP = "58.206.232.122"
-BOARD_GW = "58.206.232.1"
-PORTAL_IP = "58.206.248.10"
-PORTAL_HOST = "auth.zgclab.edu.cn"
+
+# Board addressing is site configuration. Read it from the environment and fall
+# back to the RFC 5737 documentation addresses, so the repository never carries
+# a real public address (see xaj_vibenote.md, section 7).
+def _site_address(variable: str, documentation: str) -> str:
+    value = os.environ.get(variable)
+    if value:
+        return value
+    print(
+        f"warning: {variable} is not set; using the documentation address "
+        f"{documentation} (set it to the board's address)",
+        file=sys.stderr,
+    )
+    return documentation
+
+
+BOARD_IP = _site_address("BOARD_IP", "192.0.2.10")
+BOARD_GW = _site_address("BOARD_GW", "192.0.2.1")
+PORTAL_IP = _site_address("PORTAL_IP", "192.0.2.20")
+PORTAL_HOST = os.environ.get("PORTAL_HOST", "auth.zgclab.edu.cn")
 
 
 def wait_for(con: Console, pattern: str, timeout: float, label: str) -> str:

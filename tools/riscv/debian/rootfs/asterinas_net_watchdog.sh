@@ -21,7 +21,9 @@ gateway=""
 if [ -r /proc/cmdline ]; then
     gateway="$(sed -n 's/.*asterinas\.net=[^,]*,\([0-9.]*\)\/[0-9]*,\([0-9.]*\).*/\2/p' /proc/cmdline)"
 fi
-[ -n "$gateway" ] || gateway="58.206.232.1"
+# The fallback is an RFC 5737 documentation address, overridable from the
+# environment (the guest normally gets the gateway from asterinas.net).
+[ -n "$gateway" ] || gateway="${BOARD_GW:-192.0.2.1}"
 
 interval="${ASTERINAS_NET_WATCHDOG_INTERVAL:-30}"
 reboot_after="${ASTERINAS_NET_WATCHDOG_REBOOT_AFTER:-20}"

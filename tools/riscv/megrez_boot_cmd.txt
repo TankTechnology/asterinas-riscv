@@ -39,5 +39,8 @@ if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=kernel"; exit 1; fi
 # board nobody can reach, a halted kernel and a hung kernel look the same from
 # the console; with this one a driver bug costs a boot cycle instead of a
 # trip to the board.
-setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=900 asterinas.panic_reboot=1 asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd --debug-console=isolated-root
+# 192.0.2.10 / 192.0.2.1 are RFC 5737 documentation addresses; substitute
+# the board's real address in your local copy (BOARD_IP / BOARD_GW), never
+# in the repository.
+setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=900 asterinas.panic_reboot=1 asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1 -- --root-init=systemd --debug-console=isolated-root
 booti 0x80200000 0x88300000:${initrd_size} 0x88000000

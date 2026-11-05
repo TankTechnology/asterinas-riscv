@@ -54,7 +54,7 @@ class ResolvTests(unittest.TestCase):
             )
             result = run(
                 directory,
-                "console=ttyS0 asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1",
+                "console=ttyS0 asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -83,7 +83,7 @@ class ResolvTests(unittest.TestCase):
             )
             result = run(
                 directory,
-                "asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1",
+                "asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1",
             )
 
             self.assertNotIn("ASTERINAS_RESOLV_SET", result.stdout)

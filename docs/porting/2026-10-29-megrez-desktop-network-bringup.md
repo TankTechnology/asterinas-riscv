@@ -1,5 +1,8 @@
 # Megrez 桌面：联网络与壁纸的两条断点
 
+> 本文中的 IPv4 地址均为 RFC 5737 文档保留地址（`192.0.2.0/24`）。
+> 实际地址见本地配置（`BOARD_IP` / `BOARD_GW` / `PORTAL_IP`），不写入仓库。
+
 日期：2026-10-29
 基线：`727878c26`（本地 `main`），板上 release 内核 `/root/kernel-rel.img`
 
@@ -11,11 +14,11 @@
 
 ### 1.1 DNS 指向一台不回答的服务器
 
-镜像里 `/etc/resolv.conf` 只有 `nameserver 58.206.232.1`（校园网关），实测
+镜像里 `/etc/resolv.conf` 只有 `nameserver 192.0.2.1`（校园网关），实测
 UDP:53 到它 **3001 ms 超时**；而 `114.114.114.114`、`223.5.5.5` 都是 5–10 ms
 正常。Firefox 的「Server Not Found」就是它。
 
-修法：`/etc/resolv.conf` 改成 `114.114.114.114` / `223.5.5.5`（把 58.206.232.1
+修法：`/etc/resolv.conf` 改成 `114.114.114.114` / `223.5.5.5`（把 192.0.2.1
 留在最后作兜底）。
 
 ### 1.2 板子时钟比真实时间慢 6 个月
@@ -35,7 +38,7 @@ Firefox 则是一张连不上/不安全页。
 认证（深澜 srun）在**只能拿到门户 IP、DNS 不可用**时，先给主机名兜底：
 
 ```sh
-echo '58.206.248.10 auth.zgclab.edu.cn' >> /etc/hosts
+echo '192.0.2.20 auth.zgclab.edu.cn' >> /etc/hosts
 python3 /root/srun.py <user> <pass>     # 凭据只作运行时参数，不落盘
 ```
 
@@ -112,7 +115,7 @@ ext4load mmc 1:1 0x88300000 stage1-daily.cpio; setenv initrd_size ${filesize}
 ext4load mmc 1:1 0x88000000 megrez-daily.dtb
 ext4load mmc 1:2 0x80200000 /root/kernel-rel.img
 setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 \
-asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd \
+asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1 -- --root-init=systemd \
 --debug-console=isolated-root
 booti 0x80200000 0x88300000:${initrd_size} 0x88000000
 
@@ -267,14 +270,14 @@ setenv initrd_size ${filesize}; \
 ext4load mmc 1:1 0x88000000 megrez-daily.dtb; \
 ext4load mmc 1:2 0x80200000 /root/kernel-rel.img; \
 setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 \
-asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 \
+asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1 \
 -- --root-init=systemd --debug-console=isolated-root; \
 booti 0x80200000 0x88300000:${initrd_size} 0x88000000'
 saveenv
 ```
 
 这样每次上电都自带 `asterinas.mmc_write_partition2` 和
-`asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1`，根分区 `rw`，
+`asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1`，根分区 `rw`，
 桌面和 Firefox 不再需要主机介入。回滚：
 
 ```
@@ -301,14 +304,14 @@ saveenv
 
 | 探针 | 卡住时 | 重启后同一探针 |
 | --- | --- | --- |
-| `curl http://58.206.232.1/`（网关） | `000` 超时 | `200` |
-| `curl http://58.206.248.10/`（门户） | `000` | `302` |
+| `curl http://192.0.2.1/`（网关） | `000` 超时 | `200` |
+| `curl http://192.0.2.20/`（门户） | `000` | `302` |
 | `ip neigh` | 始终为空 | 有解析 |
 
 一开始怀疑校园网把端口隔离了，用两个决定性实验排除掉了：
 
 1. **U-Boot 自己的 DHCP**（`setenv autoload no; dhcp`）：
-   `DHCP client bound to address 58.206.232.122 (1306 ms)` ——
+   `DHCP client bound to address 192.0.2.10 (1306 ms)` ——
    网线、交换机、DHCP 全部正常，而且租约给的正是我们用的地址，
    所以既不是端口隔离也不是 DHCP snooping。
 2. **收发计数**：`/proc/net/dev` 里 eth0 的 rx 一直在涨（约 10 包/秒的广播流量），
@@ -355,7 +358,7 @@ stage1 找不到 init（`-- --root-init=systemd` 丢了），panic 后内核不�
 | 健康时 50 个广播的 tx 帧数 | 126 | 健康时也 >1（约 2.5 帧/报文） |
 
 另外用 **U-Boot 自己的 DHCP** 做了对照：`DHCP client bound to address
-58.206.232.122 (1306 ms)`，说明网口、交换机、DHCP 在引导阶段都是好的，重启后
+192.0.2.10 (1306 ms)`，说明网口、交换机、DHCP 在引导阶段都是好的，重启后
 内核侧也立刻恢复（`GATEWAY=200`、`PORTAL=302`）。
 
 所以现在的判断是：**发送放大触发交换机端口保护**（风暴控制/端口安全），端口被
@@ -393,7 +396,7 @@ DHCP 无 OFFER、TCP 超时，而 `/proc/net/dev` 的 rx/tx 仍在涨。
 
 1. **引导串里加 `dhcp;`**（`tools/riscv/megrez_boot_cmd.txt` 与板上 U-Boot 环境
    都已写入并 `saveenv` 到 SPI flash）。现在普通上电就会先协商 PHY，实测
-   `DHCP client bound to address 58.206.232.122 (291 ms)` → 内核里 `GW=200`。
+   `DHCP client bound to address 192.0.2.10 (291 ms)` → 内核里 `GW=200`。
 2. **驱动里补上协商**：新增 `start_auto_negotiation()`（置
    `ANENABLE|ANRESTART`、清 `POWER_DOWN|ISOLATE`），在端口选择的第一轮轮询前
    调用一次。装上它之后就不再依赖 U-Boot 的那一步。
@@ -420,6 +423,6 @@ DHCP 无 OFFER、TCP 超时，而 `/proc/net/dev` 的 rx/tx 仍在涨。
 - 已经拿到可用链路的端口不再重启协商（否则每次走 `dhcp` 的引导都白掉 3 秒）。
 
 改完后在**不跑 U-Boot `dhcp`** 的条件下验证通过：`eth0` 拿到
-`58.206.232.122/24`、默认路由正常、网关 `GW=404`（网关的 HTTP 应答）、
+`192.0.2.10/24`、默认路由正常、网关 `GW=404`（网关的 HTTP 应答）、
 宿主机文件服务 `HOST=200`。`bootcmd` 里保留 `dhcp;` 只是省掉那 3.5 秒，
 不再是网络能不能用的前提。

@@ -1,5 +1,8 @@
 # Megrez：release 内核与桌面性能基线
 
+> 本文中的 IPv4 地址均为 RFC 5737 文档保留地址（`192.0.2.0/24`）。
+> 实际地址见本地配置（`BOARD_IP` / `BOARD_GW` / `PORTAL_IP`），不写入仓库。
+
 日期：2026-10-29
 基线：`727878c26`（本地 `main`）
 硬件：Megrez（EIC7700，4×RV64 @1.6 GHz，16 GiB）+ 校园网有线口
@@ -49,7 +52,7 @@
 ### 2.2 网络：先过门户，再走 HTTP
 
 板子的有线口未认证时只有**广播**能过：U-Boot `dhcp` 能拿到
-`58.206.232.122/24`，但 ARP/ICMP/TFTP 到网关和主机的单播全部无响应。
+`192.0.2.10/24`，但 ARP/ICMP/TFTP 到网关和主机的单播全部无响应。
 浏览器侧表现是 TCP 到任意地址返回门户拦截页
 （`Authentication is required. → https://auth.zgclab.edu.cn/index_1.html`）。
 
@@ -94,7 +97,7 @@ python3 tools/riscv/board/megrez_console.py bridge /dev/ttyUSB0 \
 # U-Boot 里加载并启动指定内核（p2 路径）
 python3 tools/riscv/board/megrez_console.py boot --kernel /root/kernel-rel.img \
     --append 'console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 \
-asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 -- --root-init=systemd \
+asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1 -- --root-init=systemd \
 --debug-console=isolated-root'
 
 # 桌面就绪后测一遍

@@ -9,7 +9,12 @@ SKIP when the guest cannot reach the package source.
 
     # board over the network (key already authorized in ~asterinas/.ssh)
     python3 -m tools.riscv.compat.run_workflow_checks \\
-        --host 58.206.232.122 --key ~/.ssh/asterinas-gate
+        --host 192.0.2.10 --key ~/.ssh/asterinas-gate
+
+`192.0.2.10` is an RFC 5737 documentation address. The board's real
+address is site configuration: set `BOARD_IP` (and `BOARD_GW` /
+`PORTAL_IP` where the script uses them) in the local environment; never
+commit it.
 
     # one check at a time while debugging
     python3 -m tools.riscv.compat.run_workflow_checks --host ... --only gcc

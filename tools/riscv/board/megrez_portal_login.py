@@ -14,9 +14,14 @@ they are read from the system's own secret store and never appear on a command
 line, in a file this repository owns, or in the output. Run it with the
 privilege that can read that secret.
 
-    sudo megrez_portal_login.py --ip 58.206.232.122          # from the active WiFi
-    sudo megrez_portal_login.py --ip 58.206.232.122 --profile ZGCLab
-    sudo megrez_portal_login.py --ip 58.206.232.122 --logout
+    sudo megrez_portal_login.py --ip 192.0.2.10          # from the active WiFi
+    sudo megrez_portal_login.py --ip 192.0.2.10 --profile ZGCLab
+    sudo megrez_portal_login.py --ip 192.0.2.10 --logout
+
+`192.0.2.10` is an RFC 5737 documentation address. The board's real
+address is site configuration: set `BOARD_IP` (and `BOARD_GW` /
+`PORTAL_IP` where the script uses them) in the local environment; never
+commit it.
 
 Exit status: 0 logged in (or already logged in), 1 the portal refused,
 2 the credentials or the network could not be read.

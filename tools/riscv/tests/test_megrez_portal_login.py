@@ -49,7 +49,7 @@ class AddressRuleTests(unittest.TestCase):
         challenge = 'cb1({"challenge":"abc","client_ip":"10.0.0.9"})'
         with mock.patch.object(portal, "_fetch", return_value=challenge):
             with self.assertRaises(SystemExit) as raised:
-                portal.login("u", "p", "58.206.232.122", "1")
+                portal.login("u", "p", "192.0.2.10", "1")
         self.assertIn("10.0.0.9", str(raised.exception))
 
     def test_the_signature_uses_the_client_address(self) -> None:
@@ -66,7 +66,7 @@ class AddressRuleTests(unittest.TestCase):
             self.assertEqual(portal.login("u", "p", None, "1"), "login_ok")
         login_url = sent[-1]
         self.assertIn("ip=10.0.0.9", login_url)
-        self.assertNotIn("ip=58.206.232.122", login_url)
+        self.assertNotIn("ip=192.0.2.10", login_url)
 
 
 if __name__ == "__main__":

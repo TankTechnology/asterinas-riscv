@@ -136,21 +136,21 @@ class MegrezClockSyncTests(unittest.TestCase):
     def test_gateway_is_read_from_the_kernel_command_line(self) -> None:
         cmdline = (
             "console=ttyS0 init=/init asterinas.mmc_write_partition2 "
-            "asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1 "
+            "asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1 "
             "-- --root-init=systemd"
         )
 
-        self.assertEqual(_gateway_from_cmdline(cmdline), "58.206.232.1")
+        self.assertEqual(_gateway_from_cmdline(cmdline), "192.0.2.1")
         self.assertIsNone(_gateway_from_cmdline("console=ttyS0"))
         self.assertIsNone(_gateway_from_cmdline("asterinas.net=eic7700,bad,not-an-ip"))
 
     def test_the_gateway_is_asked_before_the_build_host_proxy(self) -> None:
         sources = default_sources(
             "http://10.100.19.216:17893",
-            "asterinas.net=eic7700-rj45,58.206.232.122/24,58.206.232.1",
+            "asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1",
         )
 
-        self.assertEqual(sources[0].host, "58.206.232.1")
+        self.assertEqual(sources[0].host, "192.0.2.1")
         self.assertEqual(sources[0].path, "/")
         self.assertEqual(sources[1].host, "10.100.19.216")
 
@@ -170,20 +170,20 @@ class MegrezClockSyncTests(unittest.TestCase):
 
         def factory(host: str, port: int, **_kwargs: object) -> object:
             connections.append((host, port))
-            return _Dead() if host == "58.206.232.1" else _Live()
+            return _Dead() if host == "192.0.2.1" else _Live()
 
         runner = mock.Mock(
             return_value=subprocess.CompletedProcess(("date",), 0, "", "")
         )
 
         evidence = synchronize_from_sources(
-            [ClockSource.direct("58.206.232.1"), ClockSource.direct("www.baidu.com")],
+            [ClockSource.direct("192.0.2.1"), ClockSource.direct("www.baidu.com")],
             timeout=5,
             connection_factory=factory,
             runner=runner,
         )
 
-        self.assertEqual(connections, [("58.206.232.1", 80), ("www.baidu.com", 80)])
+        self.assertEqual(connections, [("192.0.2.1", 80), ("www.baidu.com", 80)])
         runner.assert_called_once()
         self.assertEqual(evidence["source"], "www.baidu.com via www.baidu.com:80")
         self.assertEqual(evidence["unix_seconds"], 1789099506)
@@ -196,7 +196,7 @@ class MegrezClockSyncTests(unittest.TestCase):
         )
         with mock.patch.object(_Response, "status", 404):
             evidence = synchronize_from_sources(
-                [ClockSource.direct("58.206.232.1")],
+                [ClockSource.direct("192.0.2.1")],
                 timeout=5,
                 connection_factory=mock.Mock(return_value=connection),
                 runner=runner,
@@ -217,7 +217,7 @@ class MegrezClockSyncTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ClockSourceError, "Network is unreachable"):
             synchronize_from_sources(
-                [ClockSource.direct("58.206.232.1")],
+                [ClockSource.direct("192.0.2.1")],
                 timeout=5,
                 connection_factory=mock.Mock(return_value=_Dead()),
                 runner=runner,
