@@ -64,7 +64,12 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=../../lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/../../lib/shell.sh"
+unset _shell_self_dir
+REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"
 
 # The profile name is the *machine contract*: it says the device tree declares

@@ -12,8 +12,12 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 TEST_FILTER=$1
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-REPO_ROOT=$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)
+# shellcheck source=../lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/../lib/shell.sh"
+unset _shell_self_dir
+REPO_ROOT="$(repo_root)"
 KERNEL_DIR=${REPO_ROOT}/kernel
 OSDK_MAIN_BIN=${OSDK_MAIN_BIN:-/home/arch-anjie/.cargo/bin/osdk-by-repo/main}
 INITRAMFS=${ASTERINAS_KTEST_INITRAMFS:-${REPO_ROOT}/test/initramfs/build/initramfs.cpio.gz}

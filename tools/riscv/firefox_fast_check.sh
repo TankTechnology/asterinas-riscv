@@ -5,8 +5,12 @@ set -euo pipefail
 
 # Host-side checks for the Firefox/Asterinas workflow.  This intentionally does
 # not build the kernel, start QEMU, touch binfmt, or access external websites.
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
+# shellcheck source=../lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/../lib/shell.sh"
+unset _shell_self_dir
+REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"
 
 python3 -m unittest \

@@ -14,7 +14,12 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# shellcheck source=../../lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/../../lib/shell.sh"
+unset _shell_self_dir
+REPO_ROOT="$(repo_root)"
 CROSS_USR="${REPO_ROOT}/target/riscv-cross/usr"
 SRC_DIR="${REPO_ROOT}/target/riscv-cross/src"
 

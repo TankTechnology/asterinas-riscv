@@ -9,7 +9,12 @@ readonly UBOOT_COMMIT=ece349ade2973e220f524ce59e59711cc919263f
 # Leave room for the three payloads without creating a large sparse test disk.
 readonly BOOT_DISK_SIZE=64M
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+# shellcheck source=../../lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/../../lib/shell.sh"
+unset _shell_self_dir
+readonly REPO_ROOT="$(repo_root)"
 readonly -a REQUIRED_TOOLS=(
     bc
     bison

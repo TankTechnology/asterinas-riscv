@@ -9,7 +9,12 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+# shellcheck source=../../../lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/../../../lib/shell.sh"
+unset _shell_self_dir
+REPO_ROOT="$(repo_root)"
 DISK="${REPO_ROOT}/target/nixos/m9/nix-store.ext2"
 SIZE_MB=256
 

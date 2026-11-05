@@ -25,6 +25,15 @@ DEFAULT_LOG_DIR = REPO_ROOT / "target" / "host-tests"
 MODULE_PREFIX = "tools.riscv.tests."
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
+# Workers import the test modules from the repository root, and the tests then
+# import the top-level tooling modules (`megrez_*`, `qemu_*`). Put both
+# directories on the path here so an isolated worker imports them the same way
+# the Makefile targets do.
+for _tooling_dir in (REPO_ROOT / "tools" / "riscv", REPO_ROOT / "tools" / "riscv" / "qemu"):
+    if os.fspath(_tooling_dir) not in sys.path:
+        sys.path.insert(0, os.fspath(_tooling_dir))
+del _tooling_dir
+
 
 def discover_modules(
     tests_dir: Path = DEFAULT_TESTS_DIR, *, root: Path = REPO_ROOT

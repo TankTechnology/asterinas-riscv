@@ -27,7 +27,12 @@
 # OSDK runs QEMU from an ephemeral bundle directory.  Resolve repository
 # artifacts here so drive and log paths do not depend on that working directory.
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd -P )
-REPO_ROOT=$( cd -- "${SCRIPT_DIR}/.." && pwd -P )
+# shellcheck source=lib/shell.sh
+_shell_self_dir=${BASH_SOURCE[0]%/*}
+if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
+source "${_shell_self_dir}/lib/shell.sh"
+unset _shell_self_dir
+REPO_ROOT="$(repo_root)"
 TEST_BUILD_DIR=${ASTERINAS_TEST_BUILD_DIR:-${REPO_ROOT}/test/initramfs/build}
 QEMU_LOG_DIR=${ASTERINAS_QEMU_LOG_DIR:-${REPO_ROOT}}
 EXT2_DRIVE_FILE=${ASTERINAS_EXT2_DRIVE_FILE:-${TEST_BUILD_DIR}/ext2.img}
