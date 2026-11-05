@@ -1,6 +1,5 @@
-use crate::time::Instant;
-
 use super::Controller;
+use crate::time::Instant;
 
 // Constants for the Cubic congestion control algorithm.
 // See RFC 8312.
@@ -157,9 +156,8 @@ fn cube_root(a: f64) -> Option<f64> {
 
 #[cfg(test)]
 mod test {
-    use crate::{socket::tcp::RttEstimator, time::Instant};
-
     use super::*;
+    use crate::{socket::tcp::RttEstimator, time::Instant};
 
     #[test]
     fn test_cubic() {

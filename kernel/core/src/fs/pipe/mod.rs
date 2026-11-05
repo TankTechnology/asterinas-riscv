@@ -4,12 +4,12 @@
 //!
 //! This module provides both anonymous and named pipes for inter-process communication.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 pub(super) use anon_pipe::AnonPipeInode;
 pub(crate) use anon_pipe::new_file_pair;
 pub(super) use common::Pipe;
 pub(crate) use common::PipeHandle;
-
-use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::prelude::*;
 

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_util::printer::VmPrinter;
-use ostd::mm::VmIo;
 
 use crate::{
     fs::{
@@ -28,7 +27,11 @@ impl ProcFileOps for PipeMaxSizeFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
 
-        writeln!(printer, "{}", PIPE_MAX_SIZE.load(core::sync::atomic::Ordering::Relaxed))?;
+        writeln!(
+            printer,
+            "{}",
+            PIPE_MAX_SIZE.load(core::sync::atomic::Ordering::Relaxed)
+        )?;
 
         Ok(printer.bytes_written())
     }
@@ -41,12 +44,12 @@ impl ProcFileOps for PipeMaxSizeFileOps {
             .read_fallible(&mut writer)
             .map_err(|(err, _)| err)?
             .min(len);
-        let text = core::str::from_utf8(&buf[..len]).map_err(|_| {
-            Error::with_message(Errno::EINVAL, "the value is not a valid integer")
-        })?;
-        let value: usize = text.trim().parse().map_err(|_| {
-            Error::with_message(Errno::EINVAL, "the value is not a valid integer")
-        })?;
+        let text = core::str::from_utf8(&buf[..len])
+            .map_err(|_| Error::with_message(Errno::EINVAL, "the value is not a valid integer"))?;
+        let value: usize = text
+            .trim()
+            .parse()
+            .map_err(|_| Error::with_message(Errno::EINVAL, "the value is not a valid integer"))?;
 
         // Linux clamps the minimum to the page size; a smaller value would
         // make a pipe buffer unable to hold even one byte in practice.

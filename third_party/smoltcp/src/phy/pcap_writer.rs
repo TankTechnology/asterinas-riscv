@@ -1,11 +1,14 @@
-use byteorder::{ByteOrder, NativeEndian};
 use core::cell::RefCell;
-use phy::Medium;
 #[cfg(feature = "std")]
 use std::io::Write;
 
-use crate::phy::{self, Device, DeviceCapabilities};
-use crate::time::Instant;
+use byteorder::{ByteOrder, NativeEndian};
+use phy::Medium;
+
+use crate::{
+    phy::{self, Device, DeviceCapabilities},
+    time::Instant,
+};
 
 enum_with_unknown! {
     /// Captured packet header type.
@@ -165,10 +168,12 @@ impl<D: Device, S> Device for PcapWriter<D, S>
 where
     S: PcapSink,
 {
-    type RxToken<'a> = RxToken<'a, D::RxToken<'a>, S>
+    type RxToken<'a>
+        = RxToken<'a, D::RxToken<'a>, S>
     where
         Self: 'a;
-    type TxToken<'a> = TxToken<'a, D::TxToken<'a>, S>
+    type TxToken<'a>
+        = TxToken<'a, D::TxToken<'a>, S>
     where
         Self: 'a;
 

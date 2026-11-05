@@ -101,7 +101,10 @@ mod proofs {
         let refcount: usize = kani::any();
         kani::assume(is_write && !writable && !is_shared && refcount > 1);
 
-        assert_eq!(decide(is_write, writable, is_shared, refcount), CowAction::Copy);
+        assert_eq!(
+            decide(is_write, writable, is_shared, refcount),
+            CowAction::Copy
+        );
     }
 
     #[kani::proof]
@@ -111,6 +114,9 @@ mod proofs {
         let refcount: usize = kani::any();
         kani::assume(is_write && !writable);
 
-        assert_eq!(decide(is_write, writable, true, refcount), CowAction::Upgrade);
+        assert_eq!(
+            decide(is_write, writable, true, refcount),
+            CowAction::Upgrade
+        );
     }
 }

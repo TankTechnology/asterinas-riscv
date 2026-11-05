@@ -768,9 +768,8 @@ impl MegrezPlatform {
                 for (alias, mmio) in [(0u8, gmac0), (1u8, gmac1)] {
                     let mut mdio = PortMdio { mmio };
                     let phy_address = self.configs[usize::from(alias)].phy_address;
-                    let deadline = Deadline::from_nanoseconds(
-                        now_nanoseconds().saturating_add(50_000_000),
-                    );
+                    let deadline =
+                        Deadline::from_nanoseconds(now_nanoseconds().saturating_add(50_000_000));
                     let basic_control = mdio.read(phy_address, MII_BMCR, deadline);
                     let basic_status = mdio.read(phy_address, MII_BMSR, deadline);
                     ostd::warn!(

@@ -6,7 +6,6 @@ use core::{
     time::Duration,
 };
 
-use alloc::collections::BTreeMap;
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 use ostd::sync::{Waiter, Waker};
 
@@ -389,7 +388,13 @@ pub(super) fn update_pending_alter(
         }
         has_completed = true;
 
-        do_smart_wakeup_zero(sems, undo, pending_const, alter_op.front().unwrap(), wake_queue);
+        do_smart_wakeup_zero(
+            sems,
+            undo,
+            pending_const,
+            alter_op.front().unwrap(),
+            wake_queue,
+        );
         wake_queue.append(&mut alter_op);
 
         // Retry from the beginning since we've performed some alteration.

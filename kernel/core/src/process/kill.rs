@@ -12,9 +12,7 @@ use super::{
 };
 use crate::{
     prelude::*,
-    process::{
-        ResourceType, credentials::capabilities::CapSet, posix_thread::PosixThread,
-    },
+    process::{ResourceType, credentials::capabilities::CapSet, posix_thread::PosixThread},
     security::lsm::hooks as lsm_hooks,
     thread::Tid,
 };
@@ -57,7 +55,7 @@ pub(crate) fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> 
     // the namespace are invisible and cannot be signaled.
     let caller_pid_ns = ctx.process.pid_ns();
     let process = if caller_pid_ns.is_init() {
-        let mut pid_table = pid_table::pid_table_mut();
+        let pid_table = pid_table::pid_table_mut();
         // Linux resolves the `struct pid` of any task, so the thread ID of a
         // non-leader names its thread group. LTP's `rt_sigqueueinfo01` sends
         // to a pthread's TID through `kill(2)`'s path and expects delivery.

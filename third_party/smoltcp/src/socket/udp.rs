@@ -2,13 +2,15 @@ use core::cmp::min;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::iface::Context;
-use crate::phy::PacketMeta;
-use crate::socket::PollAt;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::storage::Empty;
-use crate::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr};
+use crate::{
+    iface::Context,
+    phy::PacketMeta,
+    socket::PollAt,
+    storage::Empty,
+    wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, UdpRepr},
+};
 
 /// Metadata for a sent or received UDP packet.
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -603,12 +605,14 @@ impl<'a> Socket<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::wire::{IpRepr, UdpRepr};
-
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
+
+    use super::*;
+    use crate::{
+        phy::Medium,
+        tests::setup,
+        wire::{IpRepr, UdpRepr},
+    };
 
     fn buffer(packets: usize) -> PacketBuffer<'static> {
         PacketBuffer::new(

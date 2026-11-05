@@ -3,9 +3,11 @@
 
 use heapless::LinearMap;
 
-use crate::config::IFACE_NEIGHBOR_CACHE_COUNT;
-use crate::time::{Duration, Instant};
-use crate::wire::{HardwareAddress, IpAddress};
+use crate::{
+    config::IFACE_NEIGHBOR_CACHE_COUNT,
+    time::{Duration, Instant},
+    wire::{HardwareAddress, IpAddress},
+};
 
 /// A cached neighbor.
 ///
@@ -184,7 +186,6 @@ mod test {
     use crate::wire::ipv4::test::{MOCK_IP_ADDR_1, MOCK_IP_ADDR_2, MOCK_IP_ADDR_3, MOCK_IP_ADDR_4};
     #[cfg(feature = "proto-ipv6")]
     use crate::wire::ipv6::test::{MOCK_IP_ADDR_1, MOCK_IP_ADDR_2, MOCK_IP_ADDR_3, MOCK_IP_ADDR_4};
-
     use crate::wire::EthernetAddress;
 
     const HADDR_A: HardwareAddress = HardwareAddress::Ethernet(EthernetAddress([0, 0, 0, 0, 0, 1]));

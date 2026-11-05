@@ -1,8 +1,8 @@
 #![allow(unsafe_code)]
 
+use std::{io, mem, os::unix::io::RawFd, ptr};
+
 use crate::time::Duration;
-use std::os::unix::io::RawFd;
-use std::{io, mem, ptr};
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[path = "linux.rs"]

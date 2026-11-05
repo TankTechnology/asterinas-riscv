@@ -1,21 +1,20 @@
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::iface::Context;
-use crate::time::{Duration, Instant};
-use crate::wire::dhcpv4::field as dhcpv4_field;
-use crate::wire::{
-    DhcpMessageType, DhcpPacket, DhcpRepr, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt,
-    Ipv4Cidr, Ipv4Repr, UdpRepr, DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT,
-    UDP_HEADER_LEN,
-};
-use crate::wire::{DhcpOption, HardwareAddress};
 use heapless::Vec;
 
+use super::PollAt;
 #[cfg(feature = "async")]
 use super::WakerRegistration;
-
-use super::PollAt;
+use crate::{
+    iface::Context,
+    time::{Duration, Instant},
+    wire::{
+        dhcpv4::field as dhcpv4_field, DhcpMessageType, DhcpOption, DhcpPacket, DhcpRepr,
+        HardwareAddress, IpAddress, IpProtocol, Ipv4Address, Ipv4AddressExt, Ipv4Cidr, Ipv4Repr,
+        UdpRepr, DHCP_CLIENT_PORT, DHCP_MAX_DNS_SERVER_COUNT, DHCP_SERVER_PORT, UDP_HEADER_LEN,
+    },
+};
 
 const DEFAULT_LEASE_DURATION: Duration = Duration::from_secs(120);
 
@@ -1062,9 +1061,9 @@ mod test {
     // =========================================================================================//
     // Tests
 
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
+
+    use crate::{phy::Medium, tests::setup};
 
     fn socket(medium: Medium) -> TestSocket {
         let (iface, _, _) = setup(medium);

@@ -2,17 +2,18 @@ use core::cmp::min;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::iface::Context;
-use crate::socket::PollAt;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-
-use crate::storage::Empty;
-use crate::wire::{IpProtocol, IpRepr, IpVersion};
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Ipv4Packet, Ipv4Repr};
 #[cfg(feature = "proto-ipv6")]
 use crate::wire::{Ipv6Packet, Ipv6Repr};
+use crate::{
+    iface::Context,
+    socket::PollAt,
+    storage::Empty,
+    wire::{IpProtocol, IpRepr, IpVersion},
+};
 
 /// Error returned by [`Socket::bind`]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -471,16 +472,14 @@ impl<'a> Socket<'a> {
 
 #[cfg(test)]
 mod test {
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
     use super::*;
-    use crate::wire::IpRepr;
     #[cfg(feature = "proto-ipv4")]
     use crate::wire::{Ipv4Address, Ipv4Repr};
     #[cfg(feature = "proto-ipv6")]
     use crate::wire::{Ipv6Address, Ipv6Repr};
+    use crate::{phy::Medium, tests::setup, wire::IpRepr};
 
     fn buffer(packets: usize) -> PacketBuffer<'static> {
         PacketBuffer::new(vec![PacketMetadata::EMPTY; packets], vec![0; 48 * packets])

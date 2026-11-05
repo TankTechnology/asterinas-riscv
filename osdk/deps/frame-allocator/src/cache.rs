@@ -60,7 +60,10 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
 
         let nr_to_alloc = COUNT * 2 / 3;
         let batch = Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE);
-        if let Some(allocated) = batch.ok().and_then(|layout| super::pools::alloc(guard, layout)) {
+        if let Some(allocated) = batch
+            .ok()
+            .and_then(|layout| super::pools::alloc(guard, layout))
+        {
             for i in 1..nr_to_alloc {
                 self.push_front(allocated + i * Self::segment_size());
             }

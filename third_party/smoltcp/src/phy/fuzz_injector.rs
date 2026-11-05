@@ -1,6 +1,9 @@
-use crate::phy::{self, Device, DeviceCapabilities};
-use crate::time::Instant;
 use alloc::vec::Vec;
+
+use crate::{
+    phy::{self, Device, DeviceCapabilities},
+    time::Instant,
+};
 
 // This could be fixed once associated consts are stable.
 const MTU: usize = 1536;
@@ -47,10 +50,12 @@ where
     FTx: Fuzzer,
     FRx: Fuzzer,
 {
-    type RxToken<'a> = RxToken<'a, D::RxToken<'a>, FRx>
+    type RxToken<'a>
+        = RxToken<'a, D::RxToken<'a>, FRx>
     where
         Self: 'a;
-    type TxToken<'a> = TxToken<'a, D::TxToken<'a>, FTx>
+    type TxToken<'a>
+        = TxToken<'a, D::TxToken<'a>, FTx>
     where
         Self: 'a;
 

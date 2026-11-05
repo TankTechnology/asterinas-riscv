@@ -250,7 +250,11 @@ mod tests {
                 return Err(MdioError::BusFault);
             }
             self.reads += 1;
-            match self.reads_by_register.iter_mut().find(|(seen, _)| *seen == register) {
+            match self
+                .reads_by_register
+                .iter_mut()
+                .find(|(seen, _)| *seen == register)
+            {
                 Some((_, count)) => *count += 1,
                 None => self.reads_by_register.push((register, 1)),
             }

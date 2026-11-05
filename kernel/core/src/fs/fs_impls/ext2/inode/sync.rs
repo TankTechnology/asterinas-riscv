@@ -23,11 +23,7 @@ impl Inode {
     /// descriptor that points at missing data. Data durability for such an
     /// inode is the job of that inode's own `fsync`/`fdatasync`.
     pub(in crate::fs::fs_impls::ext2) fn has_pending_metadata(&self) -> bool {
-        self.inner.read().is_dirty()
-            || self
-                .xattr
-                .as_ref()
-                .is_some_and(|xattr| xattr.is_dirty())
+        self.inner.read().is_dirty() || self.xattr.as_ref().is_some_and(|xattr| xattr.is_dirty())
     }
 
     /// Flushes all dirty state owned by the inode.

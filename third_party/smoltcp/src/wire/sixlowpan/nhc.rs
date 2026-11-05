@@ -1,13 +1,14 @@
 //! Implementation of Next Header Compression from [RFC 6282 § 4].
 //!
 //! [RFC 6282 § 4]: https://datatracker.ietf.org/doc/html/rfc6282#section-4
+use byteorder::{ByteOrder, NetworkEndian};
+use ipv6::Address;
+
 use super::{Error, NextHeader, Result, DISPATCH_EXT_HEADER, DISPATCH_UDP_HEADER};
 use crate::{
     phy::ChecksumCapabilities,
     wire::{ip::checksum, ipv6, udp::Repr as UdpRepr, IpProtocol},
 };
-use byteorder::{ByteOrder, NetworkEndian};
-use ipv6::Address;
 
 macro_rules! get_field {
     ($name:ident, $mask:expr, $shift:expr) => {
@@ -315,13 +316,11 @@ impl ExtHeaderRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use crate::wire::{Ipv6RoutingHeader, Ipv6RoutingRepr};
-
     #[cfg(feature = "proto-rpl")]
     use crate::wire::{
         Ipv6Option, Ipv6OptionRepr, Ipv6OptionsIterator, RplHopByHopRepr, RplInstanceId,
     };
+    use crate::wire::{Ipv6RoutingHeader, Ipv6RoutingRepr};
 
     #[cfg(feature = "proto-rpl")]
     const RPL_HOP_BY_HOP_PACKET: [u8; 9] = [0xe0, 0x3a, 0x06, 0x63, 0x04, 0x00, 0x1e, 0x03, 0x00];

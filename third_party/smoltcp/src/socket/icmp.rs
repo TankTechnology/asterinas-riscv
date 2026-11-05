@@ -2,19 +2,18 @@ use core::cmp;
 #[cfg(feature = "async")]
 use core::task::Waker;
 
-use crate::phy::ChecksumCapabilities;
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::socket::{Context, PollAt};
-
-use crate::storage::Empty;
-use crate::wire::IcmpRepr;
 #[cfg(feature = "proto-ipv4")]
 use crate::wire::{Icmpv4Packet, Icmpv4Repr, Ipv4Repr};
 #[cfg(feature = "proto-ipv6")]
 use crate::wire::{Icmpv6Packet, Icmpv6Repr, Ipv6Repr};
-use crate::wire::{IpAddress, IpListenEndpoint, IpProtocol, IpRepr};
-use crate::wire::{UdpPacket, UdpRepr};
+use crate::{
+    phy::ChecksumCapabilities,
+    socket::{Context, PollAt},
+    storage::Empty,
+    wire::{IcmpRepr, IpAddress, IpListenEndpoint, IpProtocol, IpRepr, UdpPacket, UdpRepr},
+};
 
 /// Error returned by [`Socket::bind`]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -426,12 +425,7 @@ impl<'a> Socket<'a> {
     /// Accepted packets are enqueued into the socket's receive buffer.
     #[cfg(feature = "proto-ipv4")]
     #[inline]
-    pub fn accepts_v4(
-        &self,
-        cx: &mut Context,
-        ip_repr: &Ipv4Repr,
-        icmp_repr: &Icmpv4Repr,
-    ) -> bool {
+    pub fn accepts_v4(&self, cx: &mut Context, ip_repr: &Ipv4Repr, icmp_repr: &Icmpv4Repr) -> bool {
         match (&self.endpoint, icmp_repr) {
             // If we are bound to ICMP errors associated to a UDP port, only
             // accept Destination Unreachable or Time Exceeded messages with
@@ -468,12 +462,7 @@ impl<'a> Socket<'a> {
     /// Accepted packets are enqueued into the socket's receive buffer.
     #[cfg(feature = "proto-ipv6")]
     #[inline]
-    pub fn accepts_v6(
-        &self,
-        cx: &mut Context,
-        ip_repr: &Ipv6Repr,
-        icmp_repr: &Icmpv6Repr,
-    ) -> bool {
+    pub fn accepts_v6(&self, cx: &mut Context, ip_repr: &Ipv6Repr, icmp_repr: &Icmpv6Repr) -> bool {
         match (&self.endpoint, icmp_repr) {
             // If we are bound to ICMP errors associated to a UDP port, only
             // accept Destination Unreachable or Time Exceeded messages with
@@ -507,12 +496,7 @@ impl<'a> Socket<'a> {
     }
 
     #[cfg(feature = "proto-ipv4")]
-    pub fn process_v4(
-        &mut self,
-        _cx: &mut Context,
-        ip_repr: &Ipv4Repr,
-        icmp_repr: &Icmpv4Repr,
-    ) {
+    pub fn process_v4(&mut self, _cx: &mut Context, ip_repr: &Ipv4Repr, icmp_repr: &Icmpv4Repr) {
         net_trace!("icmp: receiving {} octets", icmp_repr.buffer_len());
 
         match self
@@ -533,12 +517,7 @@ impl<'a> Socket<'a> {
     }
 
     #[cfg(feature = "proto-ipv6")]
-    pub fn process_v6(
-        &mut self,
-        _cx: &mut Context,
-        ip_repr: &Ipv6Repr,
-        icmp_repr: &Icmpv6Repr,
-    ) {
+    pub fn process_v6(&mut self, _cx: &mut Context, ip_repr: &Ipv6Repr, icmp_repr: &Icmpv6Repr) {
         net_trace!("icmp: receiving {} octets", icmp_repr.buffer_len());
 
         match self
@@ -681,12 +660,14 @@ mod tests_common {
 
 #[cfg(all(test, feature = "proto-ipv4"))]
 mod test_ipv4 {
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
     use super::tests_common::*;
-    use crate::wire::{Icmpv4DstUnreachable, IpEndpoint, Ipv4Address};
+    use crate::{
+        phy::Medium,
+        tests::setup,
+        wire::{Icmpv4DstUnreachable, IpEndpoint, Ipv4Address},
+    };
 
     const REMOTE_IPV4: Ipv4Address = Ipv4Address::new(192, 168, 1, 2);
     const LOCAL_IPV4: Ipv4Address = Ipv4Address::new(192, 168, 1, 1);
@@ -942,13 +923,14 @@ mod test_ipv4 {
 
 #[cfg(all(test, feature = "proto-ipv6"))]
 mod test_ipv6 {
-    use crate::phy::Medium;
-    use crate::tests::setup;
     use rstest::*;
 
     use super::tests_common::*;
-
-    use crate::wire::{Icmpv6DstUnreachable, IpEndpoint, Ipv6Address};
+    use crate::{
+        phy::Medium,
+        tests::setup,
+        wire::{Icmpv6DstUnreachable, IpEndpoint, Ipv6Address},
+    };
 
     const REMOTE_IPV6: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 2);
     const LOCAL_IPV6: Ipv6Address = Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);

@@ -1,11 +1,15 @@
-use std::cell::RefCell;
-use std::io;
-use std::os::unix::io::{AsRawFd, RawFd};
-use std::rc::Rc;
-use std::vec::Vec;
+use std::{
+    cell::RefCell,
+    io,
+    os::unix::io::{AsRawFd, RawFd},
+    rc::Rc,
+    vec::Vec,
+};
 
-use crate::phy::{self, sys, Device, DeviceCapabilities, Medium};
-use crate::time::Instant;
+use crate::{
+    phy::{self, sys, Device, DeviceCapabilities, Medium},
+    time::Instant,
+};
 
 /// A socket that captures or transmits the complete frame.
 #[derive(Debug)]
@@ -59,10 +63,12 @@ impl RawSocket {
 }
 
 impl Device for RawSocket {
-    type RxToken<'a> = RxToken
+    type RxToken<'a>
+        = RxToken
     where
         Self: 'a;
-    type TxToken<'a> = TxToken
+    type TxToken<'a>
+        = TxToken
     where
         Self: 'a;
 

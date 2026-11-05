@@ -136,16 +136,17 @@ mod test {
 
     use ostd::{
         io::IoMem,
-        mm::{
-            FrameAllocOptions, PageProperty, VmSpace, io::util::HasVmReaderWriter,
-        },
+        mm::{FrameAllocOptions, PageProperty, VmSpace, io::util::HasVmReaderWriter},
         prelude::*,
     };
 
     use super::*;
     use crate::vm::{
         perms::VmPerms,
-        vmar::{PageFaultInfo, vm_mapping::{MappedMemory, VmMapping}},
+        vmar::{
+            PageFaultInfo,
+            vm_mapping::{MappedMemory, VmMapping},
+        },
     };
 
     fn expected_iomem_flags(flags: PageFlags) -> PageFlags {

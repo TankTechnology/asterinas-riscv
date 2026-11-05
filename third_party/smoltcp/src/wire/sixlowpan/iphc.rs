@@ -3,11 +3,12 @@
 //!
 //! [RFC 6282 § 3.1]: https://datatracker.ietf.org/doc/html/rfc6282#section-3.1
 
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{
     AddressContext, AddressMode, Error, NextHeader, Result, UnresolvedAddress, DISPATCH_IPHC_HEADER,
 };
 use crate::wire::{ieee802154::Address as LlAddress, ipv6, ipv6::AddressExt, IpProtocol};
-use byteorder::{ByteOrder, NetworkEndian};
 
 mod field {
     use crate::wire::field::*;

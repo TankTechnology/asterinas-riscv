@@ -1,16 +1,19 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::{cmp, fmt};
 
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{Error, Result};
-use crate::phy::ChecksumCapabilities;
-use crate::wire::ip::checksum;
-use crate::wire::MldRepr;
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 use crate::wire::NdiscRepr;
 #[cfg(feature = "proto-rpl")]
 use crate::wire::RplRepr;
-use crate::wire::{IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr};
-use crate::wire::{IPV6_HEADER_LEN, IPV6_MIN_MTU};
+use crate::{
+    phy::ChecksumCapabilities,
+    wire::{
+        ip::checksum, IpProtocol, Ipv6Address, Ipv6Packet, Ipv6Repr, MldRepr, IPV6_HEADER_LEN,
+        IPV6_MIN_MTU,
+    },
+};
 
 /// Error packets must not exceed min MTU
 const MAX_ERROR_PACKET_LEN: usize = IPV6_MIN_MTU - IPV6_HEADER_LEN;

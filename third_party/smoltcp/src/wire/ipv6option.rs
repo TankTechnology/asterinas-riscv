@@ -1,9 +1,10 @@
+use core::fmt;
+
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{Error, Result};
 #[cfg(feature = "proto-rpl")]
 use super::{RplHopByHopPacket, RplHopByHopRepr};
-
-use byteorder::{ByteOrder, NetworkEndian};
-use core::fmt;
 
 enum_with_unknown! {
     /// IPv6 Extension Header Option Type

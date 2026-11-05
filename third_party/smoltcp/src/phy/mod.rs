@@ -111,26 +111,27 @@ mod tracer;
 ))]
 mod tuntap_interface;
 
+#[cfg(feature = "alloc")]
+pub use self::fuzz_injector::{FuzzInjector, Fuzzer};
+#[cfg(feature = "alloc")]
+pub use self::loopback::Loopback;
+#[cfg(all(feature = "phy-raw_socket", unix))]
+pub use self::raw_socket::RawSocket;
 #[cfg(all(
     any(feature = "phy-raw_socket", feature = "phy-tuntap_interface"),
     unix
 ))]
 pub use self::sys::wait;
-
-pub use self::fault_injector::FaultInjector;
-#[cfg(feature = "alloc")]
-pub use self::fuzz_injector::{FuzzInjector, Fuzzer};
-#[cfg(feature = "alloc")]
-pub use self::loopback::Loopback;
-pub use self::pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter};
-#[cfg(all(feature = "phy-raw_socket", unix))]
-pub use self::raw_socket::RawSocket;
-pub use self::tracer::Tracer;
 #[cfg(all(
     feature = "phy-tuntap_interface",
     any(target_os = "linux", target_os = "android")
 ))]
 pub use self::tuntap_interface::TunTapInterface;
+pub use self::{
+    fault_injector::FaultInjector,
+    pcap_writer::{PcapLinkType, PcapMode, PcapSink, PcapWriter},
+    tracer::Tracer,
+};
 
 /// Metadata associated to a packet.
 ///

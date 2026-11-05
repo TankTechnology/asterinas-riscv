@@ -1,10 +1,12 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::{cmp, fmt};
 
+use byteorder::{ByteOrder, NetworkEndian};
+
 use super::{Error, Result};
-use crate::phy::ChecksumCapabilities;
-use crate::wire::ip::checksum;
-use crate::wire::{Ipv4Packet, Ipv4Repr};
+use crate::{
+    phy::ChecksumCapabilities,
+    wire::{ip::checksum, Ipv4Packet, Ipv4Repr},
+};
 
 enum_with_unknown! {
     /// Internet protocol control message type.

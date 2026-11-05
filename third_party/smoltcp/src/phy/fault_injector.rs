@@ -1,7 +1,8 @@
-use crate::phy::{self, Device, DeviceCapabilities};
-use crate::time::{Duration, Instant};
-
 use super::PacketMeta;
+use crate::{
+    phy::{self, Device, DeviceCapabilities},
+    time::{Duration, Instant},
+};
 
 // We use our own RNG to stay compatible with #![no_std].
 // The use of the RNG below has a slight bias, but it doesn't matter.
@@ -196,10 +197,12 @@ impl<D: Device> FaultInjector<D> {
 }
 
 impl<D: Device> Device for FaultInjector<D> {
-    type RxToken<'a> = RxToken<'a>
+    type RxToken<'a>
+        = RxToken<'a>
     where
         Self: 'a;
-    type TxToken<'a> = TxToken<'a, D::TxToken<'a>>
+    type TxToken<'a>
+        = TxToken<'a, D::TxToken<'a>>
     where
         Self: 'a;
 

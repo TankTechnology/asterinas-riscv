@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+use core::{iter, iter::Iterator};
+
 use bitflags::bitflags;
 use byteorder::{ByteOrder, NetworkEndian};
-use core::iter;
-use core::iter::Iterator;
 
 use super::{Error, Result};
 #[cfg(feature = "proto-ipv4")]
@@ -435,8 +435,9 @@ impl<'a> Repr<'a> {
 #[cfg(feature = "proto-ipv4")] // tests assume ipv4
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::vec::Vec;
+
+    use super::*;
 
     #[test]
     fn test_parse_name() {

@@ -9,7 +9,7 @@ use core::{
 };
 
 use device_id::{DeviceId, MinorId};
-use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
+use ostd::{io::IoMem, mm::VmIoOnce};
 use spin::Once;
 
 use super::{

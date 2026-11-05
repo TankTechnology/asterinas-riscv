@@ -881,8 +881,7 @@ fn test_solicited_node_addrs(#[case] medium: Medium) {
 #[case(Medium::Ieee802154)]
 #[cfg(all(feature = "socket-udp", feature = "medium-ieee802154"))]
 fn test_icmp_reply_size(#[case] medium: Medium) {
-    use crate::wire::Icmpv6DstUnreachable;
-    use crate::wire::IPV6_MIN_MTU as MIN_MTU;
+    use crate::wire::{Icmpv6DstUnreachable, IPV6_MIN_MTU as MIN_MTU};
     const MAX_PAYLOAD_LEN: usize = 1192;
 
     let (mut iface, mut sockets, _device) = setup(medium);

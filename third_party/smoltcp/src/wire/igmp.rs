@@ -1,11 +1,12 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
-use crate::time::Duration;
-use crate::wire::ip::checksum;
+use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::wire::{Ipv4Address, Ipv4AddressExt};
+use super::{Error, Result};
+use crate::{
+    time::Duration,
+    wire::{ip::checksum, Ipv4Address, Ipv4AddressExt},
+};
 
 enum_with_unknown! {
     /// Internet Group Management Protocol v1/v2 message version/type.

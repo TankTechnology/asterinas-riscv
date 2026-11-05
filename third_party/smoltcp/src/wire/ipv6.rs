@@ -1,10 +1,10 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
 
-use super::{Error, Result};
-use crate::wire::ip::pretty_print_ip_payload;
+use byteorder::{ByteOrder, NetworkEndian};
 
 pub use super::IpProtocol as Protocol;
+use super::{Error, Result};
+use crate::wire::ip::pretty_print_ip_payload;
 
 /// Minimum MTU required of all links supporting IPv6. See [RFC 8200 § 5].
 ///

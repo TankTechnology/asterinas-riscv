@@ -49,11 +49,7 @@ pub fn sys_rt_tgsigqueueinfo(
     Ok(SyscallReturn::Return(0))
 }
 
-fn queued_signal(
-    sig_num: u8,
-    info_ptr: Vaddr,
-    ctx: &Context,
-) -> Result<Option<Box<dyn Signal>>> {
+fn queued_signal(sig_num: u8, info_ptr: Vaddr, ctx: &Context) -> Result<Option<Box<dyn Signal>>> {
     if sig_num == 0 {
         return Ok(None);
     }

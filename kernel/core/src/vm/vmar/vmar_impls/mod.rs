@@ -674,13 +674,7 @@ mod tests {
     fn remove_mapping_across_vma_boundaries_splits_at_edges() {
         let vmar = Vmar::new_for_test();
         map_fixed(&vmar, 0x10000, 2 * PAGE_SIZE, VmPerms::READ).unwrap();
-        map_fixed(
-            &vmar,
-            0x12000,
-            PAGE_SIZE,
-            VmPerms::READ | VmPerms::WRITE,
-        )
-        .unwrap();
+        map_fixed(&vmar, 0x12000, PAGE_SIZE, VmPerms::READ | VmPerms::WRITE).unwrap();
         map_fixed(&vmar, 0x13000, 2 * PAGE_SIZE, VmPerms::READ).unwrap();
 
         // The range cuts the first mapping's tail, removes the middle mapping
@@ -692,13 +686,7 @@ mod tests {
             .read()
             .vm_mappings
             .iter()
-            .map(|m| {
-                (
-                    m.map_to_addr(),
-                    m.map_end(),
-                    m.perms() & VmPerms::ALL_PERMS,
-                )
-            })
+            .map(|m| (m.map_to_addr(), m.map_end(), m.perms() & VmPerms::ALL_PERMS))
             .collect();
         remaining.sort_by_key(|(start, _, _)| *start);
         assert_eq!(
@@ -721,18 +709,13 @@ mod tests {
             .unwrap();
 
         // A plain WRITE request has no matching MAY_WRITE capability.
-        let err = vmar
-            .protect(VmPerms::WRITE, 0x10000..0x11000)
-            .unwrap_err();
+        let err = vmar.protect(VmPerms::WRITE, 0x10000..0x11000).unwrap_err();
         assert_eq!(err.error(), Errno::EACCES);
 
         let inner = vmar.inner.read();
         assert_eq!(inner.vm_mappings.iter().count(), 1);
         let mapping = inner.vm_mappings.iter().next().unwrap();
-        assert_eq!(
-            mapping.perms() & VmPerms::ALL_PERMS,
-            VmPerms::READ
-        );
+        assert_eq!(mapping.perms() & VmPerms::ALL_PERMS, VmPerms::READ);
     }
 
     #[ktest]
@@ -760,5 +743,4 @@ mod tests {
         assert_eq!(mapping.map_end(), 0x12000);
         assert_eq!(inner.total_vm, 2 * PAGE_SIZE);
     }
-
 }

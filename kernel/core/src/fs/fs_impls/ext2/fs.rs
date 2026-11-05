@@ -21,12 +21,12 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use aster_block::bio::{BioCompleteFn, BioStatus};
+use aster_block::bio::BioCompleteFn;
 use device_id::DeviceId;
-use ostd::mm::{HasSize, VmReader, VmWriter};
+use ostd::mm::HasSize;
 
 use super::{
-    block_group::{BlockGroup, RawBlockGroup},
+    block_group::BlockGroup,
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     journal::{
         JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,

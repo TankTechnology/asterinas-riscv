@@ -57,10 +57,7 @@ impl ProcFileOps for SysRqTriggerFileOps {
             return_errno_with_message!(Errno::EINVAL, "no command was given");
         };
         if text.trim().chars().count() != 1 {
-            return_errno_with_message!(
-                Errno::EINVAL,
-                "sysrq-trigger takes exactly one character"
-            );
+            return_errno_with_message!(Errno::EINVAL, "sysrq-trigger takes exactly one character");
         }
 
         // Deliberately no `sync`: a caller that reaches for this has a

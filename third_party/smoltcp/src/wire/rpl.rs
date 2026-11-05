@@ -5,8 +5,10 @@
 use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
-use crate::wire::icmpv6::Packet;
-use crate::wire::ipv6::{Address, AddressExt};
+use crate::wire::{
+    icmpv6::Packet,
+    ipv6::{Address, AddressExt},
+};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -2229,8 +2231,9 @@ pub mod options {
 }
 
 pub mod data {
-    use super::{InstanceId, Result};
     use byteorder::{ByteOrder, NetworkEndian};
+
+    use super::{InstanceId, Result};
 
     mod field {
         use crate::wire::field::*;
@@ -2391,11 +2394,14 @@ pub mod data {
 
 #[cfg(test)]
 mod tests {
-    use super::options::{Packet as OptionPacket, Repr as OptionRepr};
-    use super::Repr as RplRepr;
-    use super::*;
-    use crate::phy::ChecksumCapabilities;
-    use crate::wire::{icmpv6::*, *};
+    use super::{
+        options::{Packet as OptionPacket, Repr as OptionRepr},
+        Repr as RplRepr, *,
+    };
+    use crate::{
+        phy::ChecksumCapabilities,
+        wire::{icmpv6::*, *},
+    };
 
     #[test]
     fn dis_packet() {

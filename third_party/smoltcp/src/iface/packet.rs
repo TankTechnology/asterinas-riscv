@@ -1,5 +1,4 @@
-use crate::phy::DeviceCapabilities;
-use crate::wire::*;
+use crate::{phy::DeviceCapabilities, wire::*};
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
@@ -70,12 +69,7 @@ impl<'p> Packet<'p> {
         }
     }
 
-    pub fn emit_payload(
-        &self,
-        _ip_repr: &IpRepr,
-        payload: &mut [u8],
-        caps: &DeviceCapabilities,
-    ) {
+    pub fn emit_payload(&self, _ip_repr: &IpRepr, payload: &mut [u8], caps: &DeviceCapabilities) {
         match self.payload() {
             #[cfg(feature = "proto-ipv4")]
             IpPayload::Icmpv4(icmpv4_repr) => {

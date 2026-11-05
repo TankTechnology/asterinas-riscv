@@ -34,7 +34,11 @@ impl ProcFileOps for CorePatternFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let pattern = CORE_PATTERN.lock();
         let mut printer = VmPrinter::new_skip(writer, offset);
-        writeln!(printer, "{}", if pattern.is_empty() { "core" } else { &pattern })?;
+        writeln!(
+            printer,
+            "{}",
+            if pattern.is_empty() { "core" } else { &pattern }
+        )?;
         Ok(printer.bytes_written())
     }
 

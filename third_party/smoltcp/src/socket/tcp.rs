@@ -2,19 +2,20 @@
 // the parts of RFC 1122 that discuss TCP, as well as RFC 7323 for some of the TCP options.
 // Consult RFC 7414 when implementing a new feature.
 
-use core::fmt::Display;
 #[cfg(feature = "async")]
 use core::task::Waker;
-use core::{fmt, mem};
+use core::{fmt, fmt::Display, mem};
 
 #[cfg(feature = "async")]
 use crate::socket::WakerRegistration;
-use crate::socket::{Context, PollAt};
-use crate::storage::{Assembler, RingBuffer};
-use crate::time::{Duration, Instant};
-use crate::wire::{
-    IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, TcpControl, TcpRepr, TcpSeqNumber,
-    TcpTimestampGenerator, TcpTimestampRepr, TCP_HEADER_LEN,
+use crate::{
+    socket::{Context, PollAt},
+    storage::{Assembler, RingBuffer},
+    time::{Duration, Instant},
+    wire::{
+        IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpRepr, TcpControl, TcpRepr,
+        TcpSeqNumber, TcpTimestampGenerator, TcpTimestampRepr, TCP_HEADER_LEN,
+    },
 };
 
 mod congestion;
@@ -2622,10 +2623,13 @@ impl<'a> fmt::Write for Socket<'a> {
 // tests in here, which I didn't had the time for at the moment.
 #[cfg(all(test, feature = "medium-ip"))]
 mod test {
+    use std::{
+        ops::{Deref, DerefMut},
+        vec::Vec,
+    };
+
     use super::*;
     use crate::wire::IpRepr;
-    use std::ops::{Deref, DerefMut};
-    use std::vec::Vec;
 
     // =========================================================================================//
     // Constants

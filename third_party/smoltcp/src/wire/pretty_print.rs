@@ -40,8 +40,7 @@ assert_eq!(
 ```
 */
 
-use core::fmt;
-use core::marker::PhantomData;
+use core::{fmt, marker::PhantomData};
 
 /// Indentation state.
 #[derive(Debug)]

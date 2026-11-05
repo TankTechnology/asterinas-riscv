@@ -9,14 +9,13 @@ mod processor;
 pub mod scheduler;
 mod utils;
 
-use core::sync::atomic::Ordering;
 use core::{
     any::Any,
     borrow::Borrow,
     cell::{Cell, SyncUnsafeCell},
     ops::Deref,
     ptr::NonNull,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use kernel_stack::KernelStack;

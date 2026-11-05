@@ -24,29 +24,30 @@ mod tcp;
 #[cfg(any(feature = "socket-udp", feature = "socket-dns"))]
 mod udp;
 
-use super::packet::*;
-
 use core::result::Result;
+
 use heapless::Vec;
 
 #[cfg(feature = "_proto-fragmentation")]
 use super::fragmentation::FragKey;
 #[cfg(any(feature = "proto-ipv4", feature = "proto-sixlowpan"))]
 use super::fragmentation::PacketAssemblerSet;
-use super::fragmentation::{Fragmenter, FragmentsBuffer};
-
 #[cfg(any(feature = "medium-ethernet", feature = "medium-ieee802154"))]
 use super::neighbor::{Answer as NeighborAnswer, Cache as NeighborCache};
-use super::socket_set::SocketSet;
-use crate::config::{IFACE_MAX_ADDR_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT};
-use crate::iface::Routes;
-use crate::phy::PacketMeta;
-use crate::phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken};
-use crate::rand::Rand;
-use crate::socket::*;
-use crate::time::{Duration, Instant};
-
-use crate::wire::*;
+use super::{
+    fragmentation::{Fragmenter, FragmentsBuffer},
+    packet::*,
+    socket_set::SocketSet,
+};
+use crate::{
+    config::{IFACE_MAX_ADDR_COUNT, IFACE_MAX_SIXLOWPAN_ADDRESS_CONTEXT_COUNT},
+    iface::Routes,
+    phy::{ChecksumCapabilities, Device, DeviceCapabilities, Medium, PacketMeta, RxToken, TxToken},
+    rand::Rand,
+    socket::*,
+    time::{Duration, Instant},
+    wire::*,
+};
 
 macro_rules! check {
     ($e:expr) => {

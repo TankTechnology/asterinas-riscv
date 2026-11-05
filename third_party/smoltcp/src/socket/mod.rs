@@ -11,8 +11,7 @@ The interface implemented by this module uses explicit buffering: you decide on 
 size for a buffer, allocate it, and let the networking stack use it.
 */
 
-use crate::iface::Context;
-use crate::time::Instant;
+use crate::{iface::Context, time::Instant};
 
 #[cfg(feature = "socket-dhcpv4")]
 pub mod dhcpv4;

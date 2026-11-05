@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ostd::{mm::PAGE_SIZE, sync::WaitQueue};
+use ostd::sync::WaitQueue;
 
 use crate::{
     dispatch_ioctl,
@@ -355,9 +355,12 @@ impl PipeObj {
     /// The size is rounded up to a power of two, which the ring buffer
     /// requires and which matches Linux's page-based rounding.
     fn resize(&self, requested: usize) -> Result<usize> {
-        let new_capacity = requested.max(PAGE_SIZE).checked_next_power_of_two().ok_or_else(
-            || Error::with_message(Errno::EINVAL, "the requested pipe size is too large"),
-        )?;
+        let new_capacity = requested
+            .max(PAGE_SIZE)
+            .checked_next_power_of_two()
+            .ok_or_else(|| {
+                Error::with_message(Errno::EINVAL, "the requested pipe size is too large")
+            })?;
 
         // Reading and writing take only one of these locks at a time, so
         // holding both here is the same discipline as a concurrent reader and
@@ -384,8 +387,8 @@ impl PipeObj {
             debug_assert_eq!(read, buffered);
         }
 
-        let Some((new_producer, new_consumer)) = RingBuffer::try_new(new_capacity)
-            .map(|buffer| buffer.split())
+        let Some((new_producer, new_consumer)) =
+            RingBuffer::try_new(new_capacity).map(|buffer| buffer.split())
         else {
             return_errno_with_message!(Errno::ENOMEM, "cannot allocate the new pipe buffer");
         };

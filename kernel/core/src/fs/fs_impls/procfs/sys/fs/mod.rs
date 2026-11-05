@@ -6,8 +6,7 @@ use crate::{
         procfs::{
             ProcDir, StaticEntry,
             sys::fs::{
-                file_max::FileMaxFileOps, nr_open::NrOpenFileOps,
-                pipe_max_size::PipeMaxSizeFileOps,
+                file_max::FileMaxFileOps, nr_open::NrOpenFileOps, pipe_max_size::PipeMaxSizeFileOps,
             },
             template::{
                 ProcDirOps, ReaddirEntry, listed_entries_from_table, lookup_child_from_table,
@@ -37,7 +36,11 @@ impl FsDirOps {
     const STATIC_ENTRIES: &'static [StaticEntry] = &[
         ("nr_open", InodeType::File, NrOpenFileOps::new_inode),
         ("file-max", InodeType::File, FileMaxFileOps::new_inode),
-        ("pipe-max-size", InodeType::File, PipeMaxSizeFileOps::new_inode),
+        (
+            "pipe-max-size",
+            InodeType::File,
+            PipeMaxSizeFileOps::new_inode,
+        ),
     ];
 }
 

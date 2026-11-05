@@ -376,8 +376,9 @@ impl<'a> Iterator for AssemblerIter<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::vec::Vec;
+
+    use super::*;
 
     impl From<Vec<(usize, usize)>> for Assembler {
         fn from(vec: Vec<(usize, usize)>) -> Assembler {

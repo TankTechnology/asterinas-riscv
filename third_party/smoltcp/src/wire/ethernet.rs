@@ -1,5 +1,6 @@
-use byteorder::{ByteOrder, NetworkEndian};
 use core::fmt;
+
+use byteorder::{ByteOrder, NetworkEndian};
 
 use super::{Error, Result};
 
