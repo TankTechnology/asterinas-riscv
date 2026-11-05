@@ -6,7 +6,14 @@ Nothing here is required to build `osdk` itself; it exists so that a contributor
 "checkout" to "booted on hardware" without re-deriving commands.
 
 > Convention: every script starts with an SPDX header (MPL-2.0) and resolves the repository
-> root from `BASH_SOURCE` instead of hard-coding paths.
+> root by sourcing [`lib/shell.sh`](lib/README.md) and calling `repo_root()` instead of
+> hard-coding paths.
+
+Where to start:
+
+- RISC-V/Megrez tooling map: [`riscv/LAYOUT.md`](riscv/LAYOUT.md).
+- Board network settings (never committed): [`docs/porting/board-addresses.md`](../docs/porting/board-addresses.md).
+- Staged-secret check before a commit: [`check_secrets.sh`](check_secrets.sh).
 
 ## Top-level scripts
 
@@ -26,6 +33,7 @@ Nothing here is required to build `osdk` itself; it exists so that a contributor
 
 | Directory | Contents |
 | --- | --- |
+| `lib/` | `shell.sh`: `repo_root()`, `die()`, `require_cmd()`, `log_step()` shared by every tooling script. |
 | `riscv/` | **The bulk of the tree.** RISC-V/Megrez board bring-up, Debian image, QEMU runners, perf and DRM gates (159 shell + 350 Python files). |
 | `github_workflows/` | Helpers invoked from `.github/workflows`. |
 | `verification/` | Focused verification drivers (scheduler hand-off, fair yield, signal/job control, local migration…). |

@@ -1,6 +1,8 @@
 # RISC-V firmware boot validation
 
 Where files live, and where new ones belong: [LAYOUT.md](LAYOUT.md).
+Board network settings that are never committed: [board-addresses.md](../../docs/porting/board-addresses.md).
+The tools tree index: [tools/README.md](../README.md).
 
 This directory validates the firmware-to-kernel handoff without modeling a single development board in QEMU.
 The same runner describes a machine contract, a boot flow, and the observable milestones expected from the guest.

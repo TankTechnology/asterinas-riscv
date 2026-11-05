@@ -4,6 +4,12 @@
 > [`tools/riscv/README.md`](../../tools/riscv/README.md)；冻结结果只维护在
 > [证据索引](evidence/megrez-history-index.md)及其日期页中。任何“当前通过”
 > 结论仍须绑定完整 commit、日期、镜像身份和保留的 result/evidence 路径。
+>
+> **状态时效：** 下面“当前状态 / 最后真机边界”等小节是 2026-09 的验收边界，
+> 不代表今天。当前入口见 [tools/README.md](../../tools/README.md)、
+> [tools/riscv/LAYOUT.md](../../tools/riscv/LAYOUT.md) 与
+> [board-addresses.md](board-addresses.md)；真机性能基线见
+> [docs/performance/](../performance/)。
 
 ## 2026-10-29 板级更新
 
