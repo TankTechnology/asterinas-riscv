@@ -8,6 +8,25 @@ This directory validates the firmware-to-kernel handoff without modeling a singl
 The same runner describes a machine contract, a boot flow, and the observable milestones expected from the guest.
 The registered profiles currently cover QEMU `virt`, SiFive U, Sv39, and the Sv48/Svade/Svadu envelope used by the Megrez integration.
 
+## Index
+
+Start here: [LAYOUT.md](LAYOUT.md) (where files live) ·
+[board-addresses.md](../../docs/porting/board-addresses.md) (network settings) ·
+[Unit tests](#unit-tests) · [Dependencies](#dependencies).
+
+| Theme | Sections |
+| --- | --- |
+| QEMU / U-Boot and display | [reboot writeback](#qemu-reboot-writeback-gate) · [generic `booti`](#generic-u-boot-booti) · [SiFive U](#sifive-u) · [framebuffer boot](#qemu-framebuffer-display-boot) · [LVGL](#lvgl-desktop-gui-framebuffer-interactive-demo) |
+| Megrez board | [boot menu](#megrez-selectable-boot-menu) · [bounded desktop](#bounded-megrez-desktop-startup) · [persistent shell](#megrez-persistent-debian-shell) · [debug attempt](#simulation-first-megrez-debug-attempt) · [physical graphics](#current-main-megrez-physical-graphics) · [Firefox daily use](#physical-firefox-daily-use-baseline) · [fast probes](#megrez-fast-kernel-probes) · [boot stability](#megrez-unattended-boot-stability) · [one-command diagnosis](#one-command-megrez-desktop-and-firefox-diagnosis) · [SDHCI evidence](#megrez-sdhci-read-only-evidence) · [framebuffer handoff](#megrez-firmware-framebuffer-handoff) · [root serial console](#opt-in-asterinas-root-serial-console) |
+| Kernel regressions | [SMP4 icache](#smp4-cross-hart-instruction-cache-regression) · [IP netns](#ip-socket-network-namespace-regression) · [netlink netns](#netlink-socket-namespace-regression) · [unit tests](#unit-tests) |
+| Benchmarks | [LMBench smoke](#basic-lmbench-compatibility-smoke) · [native LMBench](#native-lmbench-make-results) |
+| Conformance | [LTP syscall gate](#linux-test-project-syscall-gate) |
+| Image and devices | [xHCI keyboard](#pci-xhci-usb-keyboard-gate) · [Debian persistent root](#debian-persistent-root) |
+| DRM | [cursor](#virtio-gpu-hardware-cursor-gate) · [GEM](#gem-object-space-gate) · [render node](#render-node-gate) · [virgl](#virgl-capability-gate) |
+
+Sections that report a frozen run keep their date and commit in the text;
+they are evidence, not the current status.
+
 The checks are evidence, not hardware emulation.
 A passing profile proves the declared CPU, MMU, DTB, U-Boot `booti`, and userspace contracts.
 It does not claim that QEMU reproduces unmodeled clocks, resets, cache controllers, or board peripherals.
