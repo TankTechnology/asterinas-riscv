@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- guest-side syscall/IPC benchmark pushed by megrez_desktop_baseline.py. See tools/riscv/LAYOUT.md.
 """Measure syscall and IPC cost on the Megrez guest, self-timed.
 
 Each family is timed in the guest so the only thing crossing the serial line is

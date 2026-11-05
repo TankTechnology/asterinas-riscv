@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- serial file-transfer helper; see megrez-board-session-commands.md. See tools/riscv/LAYOUT.md.
 """Serial console bridge for the Megrez board: exclusive open, RX log, paced TX.
 
 The board's U-Boot drops characters when a whole line is written at once, and a

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- guest-side gdk-pixbuf/wallpaper probe. See tools/riscv/LAYOUT.md.
 """Ask the guest's gdk-pixbuf to load an image, without a compiler or headers.
 
     python3 gdk_pixbuf_probe.py /usr/share/asterinas/desktop-wallpaper.bmp

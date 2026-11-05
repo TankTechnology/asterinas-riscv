@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- boot-chain simulation check; see drm/verify_megrez_drm_sim.sh. See tools/riscv/LAYOUT.md.
 
 # verify_megrez_sim.sh — 上板前在模拟环境复验 Megrez 启动链（一键）
 #

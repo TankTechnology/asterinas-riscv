@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- board recovery entry; see docs/porting/board-addresses.md. See tools/riscv/LAYOUT.md.
 
 """Bring the Megrez board back to a usable desktop in one command.
 

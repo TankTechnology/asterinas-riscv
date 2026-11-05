@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- QEMU reboot writeback gate; documented in the RISC-V README. See tools/riscv/LAYOUT.md.
 
 """Check that software reboots persist ext2 changes across a QEMU restart.
 

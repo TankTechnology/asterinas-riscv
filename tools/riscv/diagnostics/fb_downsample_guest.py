@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- guest-side framebuffer downsample probe. See tools/riscv/LAYOUT.md.
 """Downsample the Megrez framebuffer and print it as a base64 PPM.
 
 A full 1920x1080 BGRA capture is 8 MiB, and the console link has no flow

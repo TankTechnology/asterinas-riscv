@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- guest-side DHCP probe. See tools/riscv/LAYOUT.md.
 """Minimal DHCP client, enough to learn which network the wired port is on.
 
 The image never ships a DHCP client (the board normally boots with a static

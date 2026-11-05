@@ -1,5 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MPL-2.0
+# Status: active -- invoked by the Makefile's Megrez kernel-test target. See tools/riscv/LAYOUT.md.
 #
 # Kernel-mode tests for the components the Megrez board depends on most:
 # the GMAC driver (PHY negotiation and port selection), the MMC driver (error

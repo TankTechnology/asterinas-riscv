@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- RockOS control-chain protocol; no live caller or document reference -- confirm before removal. See tools/riscv/LAYOUT.md.
 
 """Fail-closed host protocol for the Megrez RockOS control-chain check.
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
+# Status: legacy -- NixOS PM1 gate; kept to reproduce the dated reports. See tools/riscv/LAYOUT.md.
 
 # One-command POLISH-M1 gate: build the seccomp BPF smoke initramfs, re-pack the
 # U-Boot boot disk with the current kernel + initramfs + DTB, then boot it in

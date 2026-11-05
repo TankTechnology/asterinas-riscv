@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
+# Status: legacy -- NixOS FOUNDATION-M3 gate; kept to reproduce the dated report. See tools/riscv/LAYOUT.md.
 
 # One-command FOUNDATION-M3 gate: build the fm3 smoke initramfs, re-pack the
 # U-Boot boot disk with the current kernel + initramfs + DTB, then boot it in

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- board image packaging; see megrez-board-session-commands.md. See tools/riscv/LAYOUT.md.
 #
 # make_megrez_package.sh -- build the Megrez board boot package in one command.
 #

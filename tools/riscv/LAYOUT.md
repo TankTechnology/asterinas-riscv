@@ -50,6 +50,43 @@ is the entry-point and runner set: `host_test_runner.py`, `ltp_gate.py`,
 
 Only shell scripts listed in `tooling_surface.json` may sit at the top level.
 
+## Script status
+
+Scripts with no test reference carry a `# Status:` line in their header and a
+row here. The categories are:
+
+- **active** — a current Makefile target or gate invokes it;
+- **manual** — run by hand for a documented workflow; no automated caller;
+- **legacy** — historical milestone entry point; kept to reproduce a dated
+  report, not part of the current workflow.
+
+| Script | Status | Why / replacement |
+| --- | --- | --- |
+| `gate_ktests.sh` | active | invoked by the Makefile's Megrez kernel-test target |
+| `demo-all.sh` | manual | one-command demo; see `README-DEMO.md` |
+| `eic7700_isolation.sh` | manual | board isolation check referenced by the status page |
+| `firefox_kernel_static_check.sh` | manual | static compile/lint gate; also py_compiled by `firefox_fast_check.sh` |
+| `make_megrez_package.sh` | manual | board image packaging; see `docs/porting/megrez-board-session-commands.md` |
+| `paced_serial_bridge.py` | manual | serial file-transfer helper; see `megrez-board-session-commands.md` |
+| `reboot_sync_gate.py` | manual | QEMU reboot writeback gate; documented in the RISC-V README |
+| `verify_megrez_sim.sh` | manual | boot-chain simulation check; see `drm/verify_megrez_drm_sim.sh` |
+| `megrez/board/megrez_recover.py` | manual | board recovery entry; see `docs/porting/board-addresses.md` |
+| `megrez/board/megrez_control_chain.py` | manual | RockOS control-chain protocol; no live caller or document reference — confirm before removal |
+| `megrez/desktop/megrez_desktop_baseline.py` | manual | one-shot desktop performance baseline |
+| `diagnostics/dhcp_probe.py` | manual | guest-side DHCP probe |
+| `diagnostics/fb_downsample_guest.py` | manual | guest-side framebuffer downsample probe |
+| `diagnostics/gdk_pixbuf_probe.py` | manual | guest-side gdk-pixbuf/wallpaper probe |
+| `diagnostics/syscall_ipc_bench_guest.py` | manual | guest-side syscall/IPC benchmark pushed by `megrez_desktop_baseline.py` |
+| `fm3-gate.sh` | legacy | NixOS FOUNDATION-M3 gate; kept to reproduce the dated report |
+| `fm4-gate.sh` | legacy | NixOS FOUNDATION-M4 gate; kept to reproduce the dated report |
+| `pm1-gate.sh` | legacy | NixOS PM1 gate; kept to reproduce the dated reports |
+
+Counts: 1 active, 14 manual, 3 legacy (18 scripts).
+
+`diagnostics/firefox_checkpoint_baseline.py` is not marked: the tested
+`firefox_dmesg_experiment.py` pins its SHA-256, so its content is part of
+that experiment and cannot carry an editable header.
+
 ## Historical documents
 
 Evidence and plan documents under `docs/porting`, `docs/performance` and

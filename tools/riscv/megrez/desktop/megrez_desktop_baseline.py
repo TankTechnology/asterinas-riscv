@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- one-shot desktop performance baseline. See tools/riscv/LAYOUT.md.
 
 """One-shot desktop performance baseline for the Megrez board.
 

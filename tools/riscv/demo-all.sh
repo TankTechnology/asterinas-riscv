@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- one-command demo; see README-DEMO.md. See tools/riscv/LAYOUT.md.
 
 # DEMO-M1: one-click demo of the full Asterinas RISC-V system.
 #

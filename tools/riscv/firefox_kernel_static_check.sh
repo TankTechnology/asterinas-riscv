@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
+# Status: manual -- static compile/lint gate; also py_compiled by firefox_fast_check.sh. See tools/riscv/LAYOUT.md.
 
 set -euo pipefail
 
