@@ -20,6 +20,7 @@ Nothing here is required to build `osdk` itself; it exists so that a contributor
 | `bump_version.sh` | Bump workspace version metadata. |
 | `print_workspace_members.sh` | Print the workspace member list (used by CI and scripts). |
 | `sctrace.sh` | syscall trace helper. |
+| `check_secrets.sh` | Reject staged credentials and real public IPv4 addresses (`xaj_vibenote.md` §7). |
 
 ## Subdirectories
 
