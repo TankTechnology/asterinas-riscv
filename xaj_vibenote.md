@@ -52,3 +52,14 @@
 | 过期分支（`backup/*`、`archive/*`、`feat/*-on-main`） | 6 个 | 打 tag 后删 |
 | `tools/riscv/` 顶层散落脚本 | 61 py + 13 sh | 吸收后归组/删除 |
 | zellij EXITED 会话 | 26 个 | 清理 |
+
+## 七、敏感信息：一律不允许进 git
+
+- **绝不提交**：API key / access token / 密码 / 私钥 / 真实公网 IP 与主机名 / 内网地址 / 带签名的下载 URL。
+- 示例与文档一律用占位符：`REDACTED`、`<your-key>`、`192.0.2.10`（RFC 5737 文档地址）。
+- 配置只提交 `*.example`；真实值放仓库外，或用 `.gitignore` 排除的本地文件。
+- 提交前自查：
+  ```bash
+  git diff --cached | grep -nEi "api[_-]?key|token|passw|secret|BEGIN .*PRIVATE KEY|AKIA|ghp_|sk-"
+  ```
+- 一旦已经提交过：**不要只删工作树**——先用 `git filter-repo` 清历史，然后立即轮换那组凭据。
