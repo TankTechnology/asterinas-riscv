@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tools.riscv import megrez_desktop as desktop
+from tools.riscv.megrez.desktop import megrez_desktop as desktop
 
 
 MMC_ARTIFACTS = {
@@ -1870,18 +1870,18 @@ class DesktopCliTests(unittest.TestCase):
             mock.patch.object(desktop.DesktopBundle, "from_path", return_value=bundle),
             mock.patch.object(desktop, "_read_plan", return_value=_start_plan()),
             mock.patch(
-                "tools.riscv.megrez_firefox_browse.RealFirefoxBrowsePublisher"
+                "tools.riscv.megrez.desktop.megrez_firefox_browse.RealFirefoxBrowsePublisher"
             ) as publisher,
             mock.patch(
-                "tools.riscv.megrez_firefox_browse.RealFirefoxBrowseOperations"
+                "tools.riscv.megrez.desktop.megrez_firefox_browse.RealFirefoxBrowseOperations"
             ) as operations,
             mock.patch(
-                "tools.riscv.megrez_firefox_browse.run_firefox_browse",
+                "tools.riscv.megrez.desktop.megrez_firefox_browse.run_firefox_browse",
                 return_value=result,
             ) as run,
-            mock.patch("tools.riscv.megrez_proxy_bridge.ProxyBridge") as bridge,
+            mock.patch("tools.riscv.megrez.network.megrez_proxy_bridge.ProxyBridge") as bridge,
             mock.patch(
-                "tools.riscv.megrez_proxy_bridge.ProxyBridgeConfig"
+                "tools.riscv.megrez.network.megrez_proxy_bridge.ProxyBridgeConfig"
             ) as bridge_config,
             mock.patch("sys.stdout", io.StringIO()),
         ):

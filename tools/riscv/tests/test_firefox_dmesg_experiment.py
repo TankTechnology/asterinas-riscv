@@ -257,7 +257,7 @@ class RunnerConstructionTests(unittest.TestCase):
                 experiment.load_baseline(changed)
 
     def test_generated_serial_command_is_bounded_and_has_one_replacement(self):
-        from tools.riscv.megrez_physical_graphics import physical_cycle_command
+        from tools.riscv.megrez.desktop.megrez_physical_graphics import physical_cycle_command
 
         original = physical_cycle_command(
             1,

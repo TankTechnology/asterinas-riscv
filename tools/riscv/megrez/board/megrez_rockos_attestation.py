@@ -22,21 +22,21 @@ import time
 from typing import Any, Protocol
 
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv import megrez_boot_stability as gate
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board import megrez_boot_stability as gate
+from tools.riscv.megrez.board.megrez_board_session import (
     BoardSession,
     open_serial,
     safe_artifact_name,
 )
-from tools.riscv.megrez_boot_manifest import (
+from tools.riscv.megrez.board.megrez_boot_manifest import (
     ExtlinuxGeneration,
     MAX_EXTLINUX_BYTES,
     publication_manifest_bytes,
     rockos_publication_commands,
 )
-from tools.riscv.megrez_debug_board import _lock_serial
-from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
-from tools.riscv.megrez_physical_graphics import (
+from tools.riscv.megrez.board.megrez_debug_board import _lock_serial
+from tools.riscv.megrez.board.megrez_debug_contract import DebugContractError, DebugPlan
+from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     HostGateError,
     _positive_seconds,
     _read_plan,
@@ -332,7 +332,7 @@ class RealRockOsAttestationPublisher:
         self._repository = (
             repository.absolute()
             if repository is not None
-            else Path(__file__).resolve().parents[2]
+            else Path(__file__).resolve().parents[4]
         )
         self._output: PinnedOutputDirectory | None = None
 
@@ -406,7 +406,7 @@ class RealRockOsPublicationPublisher:
         self._repository = (
             repository.absolute()
             if repository is not None
-            else Path(__file__).resolve().parents[2]
+            else Path(__file__).resolve().parents[4]
         )
         self._output: PinnedOutputDirectory | None = None
 

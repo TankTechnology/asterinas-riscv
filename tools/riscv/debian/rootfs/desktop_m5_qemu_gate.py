@@ -42,7 +42,7 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.network.megrez_network_fixture import (
     FIXTURE_PATH,
     PAYLOAD_SHA256,
     PAYLOAD_SIZE,
@@ -50,7 +50,7 @@ from tools.riscv.megrez_network_fixture import (
     FixtureServer,
     is_successful_summary,
 )
-from tools.riscv.megrez_proxy_bridge import (
+from tools.riscv.megrez.network.megrez_proxy_bridge import (
     ProxyBridge,
     proxy_bridge_config_from_environment,
 )

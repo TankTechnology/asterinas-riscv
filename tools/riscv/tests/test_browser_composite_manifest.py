@@ -19,7 +19,7 @@ from tools.riscv.debian.rootfs.browser_workload_contract import (
     PHASES,
     expected_phase_metrics,
 )
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.network.megrez_network_fixture import (
     BROWSER_IMAGE,
     WORKLOAD_RESOURCE_SIZE,
 )

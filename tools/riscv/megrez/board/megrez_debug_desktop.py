@@ -24,19 +24,19 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     classify_desktop_m7_baidu,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     BROWSER_ROOT_IMAGE_BYTES,
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_physical_graphics import (
+from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     HostGateError,
     PointerEvidenceMode,
     classify_interaction_hash_transcript,
 )
-from tools.riscv.megrez_debug_simulation import (
+from tools.riscv.megrez.board.megrez_debug_simulation import (
     SimulationError,
     _load_guarded_result,
     _remove_stale,
@@ -470,7 +470,7 @@ def simulate_desktop(
     repository = (
         repository_root.absolute()
         if repository_root is not None
-        else Path(__file__).resolve().parents[2]
+        else Path(__file__).resolve().parents[4]
     )
     output, native_output = _safe_output(output_directory, repository_root=repository)
     try:

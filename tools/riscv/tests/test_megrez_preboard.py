@@ -12,9 +12,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tools.riscv import megrez_preboard as preboard_module
+from tools.riscv.megrez.board import megrez_preboard as preboard_module
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     ROOT_IMAGE_BYTES,
@@ -22,8 +22,8 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_gmac_gate import physical_bootargs
-from tools.riscv.megrez_preboard import (
+from tools.riscv.megrez.network.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez.board.megrez_preboard import (
     PreboardError,
     PreboardPermit,
     RecoveryEvidence,
@@ -374,7 +374,7 @@ class MegrezPreboardTests(unittest.TestCase):
         self.assertEqual(protected.read_text(), "keep")
 
     def test_unified_cli_translates_recovery_then_issues_permit(self) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         plan_path = self.repository / "plan.json"
         plan_path.write_bytes(self.plan.canonical_bytes())
@@ -467,7 +467,7 @@ class MegrezPreboardTests(unittest.TestCase):
     def test_git_identity_rejects_tracked_drift_but_ignores_untracked_files(
         self,
     ) -> None:
-        from tools.riscv import megrez_preboard
+        from tools.riscv.megrez.board import megrez_preboard
 
         responses = (
             SimpleNamespace(stdout="c" * 40 + "\n"),

@@ -28,7 +28,7 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
-from tools.riscv.megrez_network_fixture import BROWSER_DOWNLOAD_SHA256
+from tools.riscv.megrez.network.megrez_network_fixture import BROWSER_DOWNLOAD_SHA256
 
 
 DESKTOP_M8_FIXTURE_MARKER = (

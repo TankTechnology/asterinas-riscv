@@ -20,7 +20,7 @@ from typing import Any
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.debian.rootfs.rootfs_gate import verify_four_hart_dtb
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     SHELL_ARTIFACT_ORDER,
     FrozenArtifact,
     PersistentShellPlan,

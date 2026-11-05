@@ -23,7 +23,7 @@ from tools.riscv.debian.rootfs.gate_runtime import (
     SerialConsole,
     launch_process,
 )
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     FINAL_MILESTONE_MARKERS,
     BoardSession,
     boot_loaded_artifacts,
@@ -31,13 +31,13 @@ from tools.riscv.megrez_board_session import (
     run_debian_shell_phase,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_debian_install import _crc32, _publish_lzma
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.image.megrez_debian_install import _crc32, _publish_lzma
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     FrozenArtifact,
     PersistentShellPlan,
 )
-from tools.riscv.megrez_debian_shell_evidence import ShellPermit
-from tools.riscv.megrez_debian_shell_physical import (
+from tools.riscv.megrez.image.megrez_debian_shell_evidence import ShellPermit
+from tools.riscv.megrez.image.megrez_debian_shell_physical import (
     PhysicalBoot,
     PhysicalShellResult,
     dnsmasq_tftp_argv,

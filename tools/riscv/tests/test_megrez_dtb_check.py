@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Tests for tools/riscv/megrez_dtb_check.py.
+"""Tests for tools/riscv/megrez/image/megrez_dtb_check.py.
 
 The fixtures are compiled from DTS text with `dtc`, because the point of the
 tool is to read a real device tree blob; the tests then assert on the findings,
@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.riscv import megrez_dtb_check as check
+from tools.riscv.megrez.image import megrez_dtb_check as check
 
 DTC = shutil.which("dtc")
 
@@ -228,7 +228,7 @@ class MegrezDtbCheckTests(unittest.TestCase):
     def test_cli_json_reports_ok_and_findings(self) -> None:
         dtb = compile_dts(BOARD_DTS, self.tmp)
         completed = subprocess.run(
-            [sys.executable, "tools/riscv/megrez_dtb_check.py", str(dtb), "--json"],
+            [sys.executable, "tools/riscv/megrez/image/megrez_dtb_check.py", str(dtb), "--json"],
             check=True, capture_output=True, text=True,
         )
         payload = json.loads(completed.stdout)
@@ -240,7 +240,7 @@ class MegrezDtbCheckTests(unittest.TestCase):
         text = BOARD_DTS.replace('        stdout-path = "/soc/serial@50440000";\n', "")
         dtb = compile_dts(text, self.tmp)
         completed = subprocess.run(
-            [sys.executable, "tools/riscv/megrez_dtb_check.py", str(dtb)],
+            [sys.executable, "tools/riscv/megrez/image/megrez_dtb_check.py", str(dtb)],
             capture_output=True, text=True,
         )
         self.assertEqual(completed.returncode, 1)

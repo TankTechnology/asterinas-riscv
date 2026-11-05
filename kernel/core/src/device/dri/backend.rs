@@ -1099,7 +1099,7 @@ mod tests {
     #[ktest]
     fn firmware_layout_accepts_the_megrez_board_mode() {
         // The board's own numbers, from `MEGREZ_FRAMEBUFFER` in
-        // tools/riscv/megrez_board_session.py: 1920x1080 at 0xfd800000, a
+        // tools/riscv/megrez/board/megrez_board_session.py: 1920x1080 at 0xfd800000, a
         // stride of exactly one row, `x8r8g8b8` — which is `BgrReserved`.
         //
         // This is the one board fact that can be checked without a board, and

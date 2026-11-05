@@ -24,7 +24,7 @@ from typing import Protocol, TextIO
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     CRC_RESULT_PATTERN,
     MEGREZ_FRAMEBUFFER,
     MEGREZ_USB_HOST_COMMAND,
@@ -34,12 +34,12 @@ from tools.riscv.megrez_board_session import (
     read_available,
     validate_writable_recovery,
 )
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     ArtifactIdentity,
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_xmodem import (
+from tools.riscv.megrez.board.megrez_xmodem import (
     INITIAL_BAUD,
     read_artifact,
     transfer_payload_fd,
@@ -365,7 +365,7 @@ class RealBoardOperations:
         self._repository = (
             repository_root.absolute()
             if repository_root is not None
-            else Path(__file__).resolve().parents[2]
+            else Path(__file__).resolve().parents[4]
         )
         self._open_device = open_device
         self._lock_device = lock_device

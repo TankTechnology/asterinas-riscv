@@ -52,9 +52,9 @@ python3 -m py_compile \
   tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
   tools/riscv/debian/rootfs/browser_web_trust_check.py \
   tools/riscv/debian/rootfs/firefox_jit_overlay.py \
-  tools/riscv/megrez_physical_graphics.py \
-  tools/riscv/megrez_firefox_daily_use.py \
-  tools/riscv/megrez_firefox_daily_use_report.py
+  tools/riscv/megrez/desktop/megrez_physical_graphics.py \
+  tools/riscv/megrez/desktop/megrez_firefox_daily_use.py \
+  tools/riscv/megrez/desktop/megrez_firefox_daily_use_report.py
 
 bash -n \
   tools/qemu_args.sh \

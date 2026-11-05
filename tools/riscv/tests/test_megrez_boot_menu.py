@@ -12,10 +12,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from tools.riscv import megrez_boot_menu as menu
-from tools.riscv import megrez_menu_board as board
-from tools.riscv import megrez_menu_qemu as qemu
-from tools.riscv.megrez_hardware_probe import (
+from tools.riscv.megrez.board import megrez_boot_menu as menu
+from tools.riscv.megrez.board import megrez_menu_board as board
+from tools.riscv.megrez.board import megrez_menu_qemu as qemu
+from tools.riscv.megrez.board.megrez_hardware_probe import (
     PROBE_SPECS,
     ProbeContractError,
     ProbeResult,
@@ -626,7 +626,7 @@ class BootMenuTests(unittest.TestCase):
                 [
                     sys.executable,
                     "-m",
-                    "tools.riscv.megrez_boot_menu",
+                    "tools.riscv.megrez.board.megrez_boot_menu",
                     "prepare",
                     "--vendor",
                     str(vendor),

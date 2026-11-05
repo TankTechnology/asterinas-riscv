@@ -18,7 +18,7 @@ from typing import Any
 import zlib
 
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
+from tools.riscv.megrez.board.megrez_debug_contract import DebugContractError, DebugPlan
 
 
 MAX_EXTLINUX_BYTES = 16 * 1024

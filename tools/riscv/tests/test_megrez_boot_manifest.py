@@ -13,7 +13,7 @@ import tempfile
 import unittest
 import zlib
 
-from tools.riscv import megrez_boot_manifest as manifest
+from tools.riscv.megrez.board import megrez_boot_manifest as manifest
 
 
 ARTIFACT_BYTES = {

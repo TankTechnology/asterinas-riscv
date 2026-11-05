@@ -12,7 +12,7 @@ import zlib
 
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
-from tools.riscv.megrez_network_fixture import BROWSER_PNG_CAPTURE_PATH
+from tools.riscv.megrez.network.megrez_network_fixture import BROWSER_PNG_CAPTURE_PATH
 
 
 MAX_WEB_SCREENSHOT_PIXELS_BYTES = 64 * 1024 * 1024

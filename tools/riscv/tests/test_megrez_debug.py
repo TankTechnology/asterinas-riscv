@@ -21,8 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tools.riscv import megrez_debug as debug_module
-from tools.riscv import megrez_debug_board as board_module
+from tools.riscv.megrez.board import megrez_debug as debug_module
+from tools.riscv.megrez.board import megrez_debug_board as board_module
 from tools.riscv.debian.rootfs.desktop_m4_gate import DESKTOP_M4_MILESTONES
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
     DESKTOP_M5_MEGREZ_MILESTONES,
@@ -35,7 +35,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     MAX_ARTIFACT_BYTES,
@@ -50,15 +50,15 @@ from tools.riscv.megrez_contract import (
     ROOTFS_ARTIFACT_NAMES,
     ROOTFS_METADATA_ARTIFACT_NAMES,
 )
-from tools.riscv.megrez_debian_shell_contract import SHELL_ARTIFACT_ORDER
-from tools.riscv.megrez_gmac_gate import physical_bootargs
-from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
-from tools.riscv.megrez_debug_probe import (
+from tools.riscv.megrez.image.megrez_debian_shell_contract import SHELL_ARTIFACT_ORDER
+from tools.riscv.megrez.network.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez.board.megrez_debug_simulation import SimulationError, simulate_fast
+from tools.riscv.megrez.board.megrez_debug_probe import (
     PROBE_STRESS_BYTES,
     PROBE_STRESS_SIZES,
     ProbeServer,
 )
-from tools.riscv.megrez_debug_board import (
+from tools.riscv.megrez.board.megrez_debug_board import (
     BoardRunConfig,
     BoardRunFailure,
     BoardTermination,
@@ -69,8 +69,8 @@ from tools.riscv.megrez_debug_board import (
     ensure_board_artifacts,
     run_board,
 )
-from tools.riscv.megrez_board_session import MEGREZ_USB_HOST_COMMAND
-from tools.riscv.megrez_preboard import RecoveryEvidence
+from tools.riscv.megrez.board.megrez_board_session import MEGREZ_USB_HOST_COMMAND
+from tools.riscv.megrez.board.megrez_preboard import RecoveryEvidence
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 
@@ -1208,7 +1208,7 @@ class MegrezDebugSimulationTests(unittest.TestCase):
             plan_sha256=self.plan.plan_sha256,
             evidence=("serial.log",),
         )
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         events: list[str] = []
 
@@ -1898,7 +1898,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
         )
 
     def test_board_cli_accepts_only_the_bounded_desktop_recovery_budget(self) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         try:
             desktop_timeout = megrez_debug._board_timeout("900")
@@ -1909,7 +1909,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
             megrez_debug._board_timeout("901")
 
     def test_board_cli_runs_one_physical_adapter_after_all_prechecks(self) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         expected = StageResult(
             schema_version=1,
@@ -1972,7 +1972,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
     def test_board_cli_rejects_missing_output_and_artifact_drift_pre_serial(
         self,
     ) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         with mock.patch.object(megrez_debug, "run_physical_board") as run:
             missing_output = megrez_debug.main(self._arguments())
@@ -1988,7 +1988,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
     def test_board_cli_rejects_missing_or_mismatched_recovery_pre_serial(
         self,
     ) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         missing = self.recovery.with_name("missing-recovery.json")
         wrong = RecoveryEvidence.from_bytes(self.recovery.read_bytes())
@@ -2012,7 +2012,7 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_board_cli_maps_termination_to_signal_exit_status(self) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         with mock.patch.object(
             megrez_debug,
@@ -2292,7 +2292,7 @@ class MegrezDebugCliTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "tools.riscv.megrez_debug",
+                "tools.riscv.megrez.board.megrez_debug",
                 *(str(value) for value in arguments),
             ],
             cwd=self.directory,

@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     ArtifactIdentity,
     DebugContractError,
     DebugPlan,
@@ -198,7 +198,7 @@ def simulate_fast(
     repository = (
         repository_root.absolute()
         if repository_root is not None
-        else Path(__file__).resolve().parents[2]
+        else Path(__file__).resolve().parents[4]
     )
     output = _safe_work_directory(
         output_directory, repository_root=repository, label="simulation-output"

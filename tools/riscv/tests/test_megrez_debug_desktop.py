@@ -27,7 +27,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
@@ -36,11 +36,11 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_debug_desktop import (
+from tools.riscv.megrez.board.megrez_debug_desktop import (
     DesktopSimulationError,
     simulate_desktop,
 )
-from tools.riscv.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez.network.megrez_gmac_gate import physical_bootargs
 
 
 class MegrezDebugDesktopSimulationTests(unittest.TestCase):
@@ -624,7 +624,7 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             )
 
     def test_unified_cli_dispatches_desktop_without_probe_or_uboot_build(self) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         plan_path = self.repository / "plan.json"
         plan_path.write_bytes(self.plan.canonical_bytes())

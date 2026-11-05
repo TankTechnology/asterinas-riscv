@@ -21,7 +21,7 @@ from tools.riscv.debian.rootfs.browser_workload_contract import (
     validate_run_id,
     validate_workload_snapshot,
 )
-from tools.riscv.megrez_network_fixture import is_successful_workload_summary
+from tools.riscv.megrez.network.megrez_network_fixture import is_successful_workload_summary
 
 
 class EvidenceManifestError(ValueError):

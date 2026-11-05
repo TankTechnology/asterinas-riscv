@@ -16,9 +16,9 @@ import sys
 import zlib
 
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_boot_manifest import BootManifestError, MAX_EXTLINUX_BYTES
-from tools.riscv.megrez_board_session import MEGREZ_FRAMEBUFFER
-from tools.riscv.megrez_hardware_probe import PROBE_SPECS, probe_menu_args
+from tools.riscv.megrez.board.megrez_boot_manifest import BootManifestError, MAX_EXTLINUX_BYTES
+from tools.riscv.megrez.board.megrez_board_session import MEGREZ_FRAMEBUFFER
+from tools.riscv.megrez.board.megrez_hardware_probe import PROBE_SPECS, probe_menu_args
 
 
 PROBE_MODES = tuple(PROBE_SPECS)

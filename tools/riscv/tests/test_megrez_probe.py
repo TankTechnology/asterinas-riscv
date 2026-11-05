@@ -22,8 +22,8 @@ import unittest
 import zlib
 from unittest import mock
 
-from tools.riscv import megrez_probe as probe
-from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan
+from tools.riscv.megrez.board import megrez_probe as probe
+from tools.riscv.megrez.board.megrez_debug_contract import ArtifactIdentity, DebugPlan
 
 
 SERIAL_DEVICE = "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_TEST-if00-port0"
@@ -1501,7 +1501,7 @@ class ProbeCliTests(unittest.TestCase):
         os.mkfifo(fifo)
         script = (
             "from pathlib import Path; "
-            "from tools.riscv.megrez_probe import _read_bounded_regular; "
+            "from tools.riscv.megrez.board.megrez_probe import _read_bounded_regular; "
             f"_read_bounded_regular(Path({str(fifo)!r}), 1024, 'bundle')"
         )
         process = __import__("subprocess").Popen(

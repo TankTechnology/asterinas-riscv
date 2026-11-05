@@ -29,7 +29,14 @@ DEFAULT_TIMEOUT_SECONDS = 300.0
 # import the top-level tooling modules (`megrez_*`, `qemu_*`). Put both
 # directories on the path here so an isolated worker imports them the same way
 # the Makefile targets do.
-for _tooling_dir in (REPO_ROOT / "tools" / "riscv", REPO_ROOT / "tools" / "riscv" / "qemu"):
+for _tooling_dir in (
+    REPO_ROOT / "tools" / "riscv",
+    REPO_ROOT / "tools" / "riscv" / "qemu",
+    REPO_ROOT / "tools" / "riscv" / "megrez" / "board",
+    REPO_ROOT / "tools" / "riscv" / "megrez" / "desktop",
+    REPO_ROOT / "tools" / "riscv" / "megrez" / "image",
+    REPO_ROOT / "tools" / "riscv" / "megrez" / "network",
+):
     if os.fspath(_tooling_dir) not in sys.path:
         sys.path.insert(0, os.fspath(_tooling_dir))
 del _tooling_dir

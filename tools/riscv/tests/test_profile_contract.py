@@ -12,9 +12,9 @@ import sys
 import unittest
 
 from tools.riscv.debian.rootfs import profiles
-from tools.riscv import megrez_debug_contract as debug_contract
-from tools.riscv import megrez_debian_shell_board as shell_board
-from tools.riscv import megrez_debian_shell_contract as shell_contract
+from tools.riscv.megrez.board import megrez_debug_contract as debug_contract
+from tools.riscv.megrez.image import megrez_debian_shell_board as shell_board
+from tools.riscv.megrez.image import megrez_debian_shell_contract as shell_contract
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

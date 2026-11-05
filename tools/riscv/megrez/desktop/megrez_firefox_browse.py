@@ -26,11 +26,11 @@ from tools.riscv.debian.rootfs.physical_graphics_gate import (
     GateError as GuestGateError,
     validate_png_screenshot,
 )
-from tools.riscv.megrez_boot_stability import (
+from tools.riscv.megrez.board.megrez_boot_stability import (
     BootReadinessEvidence,
     RealBootCycleOperations,
 )
-from tools.riscv.megrez_physical_graphics import HostGateError
+from tools.riscv.megrez.desktop.megrez_physical_graphics import HostGateError
 
 
 MAX_PAGE_JSON_BYTES = 1024 * 1024

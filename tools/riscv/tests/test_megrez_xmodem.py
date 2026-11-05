@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools.riscv import megrez_xmodem as xmodem
+from tools.riscv.megrez.board import megrez_xmodem as xmodem
 
 
 class MegrezXmodemTests(unittest.TestCase):

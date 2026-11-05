@@ -24,12 +24,12 @@ from tools.riscv.debian.rootfs.contract import (
 )
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.debian.rootfs.rootfs_gate import verify_four_hart_dtb
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     ArtifactIdentity,
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
+from tools.riscv.megrez.board.megrez_debug_simulation import _validate_current_artifacts
 
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -580,7 +580,7 @@ def issue_preboard_permit(
     repository = (
         repository_root.absolute()
         if repository_root is not None
-        else Path(__file__).resolve().parents[2]
+        else Path(__file__).resolve().parents[4]
     )
     with _PinnedPermitOutput(output, repository) as publication:
         publication.invalidate()

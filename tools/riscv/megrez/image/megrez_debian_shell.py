@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     P2_NR_SECTORS,
     P2_START_LBA,
     SHELL_ARTIFACT_ORDER,
@@ -25,21 +25,21 @@ from tools.riscv.megrez_debian_shell_contract import (
     ShellContractError,
     validate_rootfs_identity,
 )
-from tools.riscv.megrez_debian_shell_evidence import (
+from tools.riscv.megrez.image.megrez_debian_shell_evidence import (
     QemuShellEvidence,
     ShellPermit,
     ShellPermitError,
     issue_shell_permit,
     validate_qemu_result,
 )
-from tools.riscv.megrez_debian_shell_board import InventoryError, InventoryResult
-from tools.riscv.megrez_debian_shell_physical import (
+from tools.riscv.megrez.image.megrez_debian_shell_board import InventoryError, InventoryResult
+from tools.riscv.megrez.image.megrez_debian_shell_physical import (
     PhysicalShellError,
     PhysicalShellResult,
 )
 
 
-_REPOSITORY = Path(__file__).resolve().parents[2]
+_REPOSITORY = Path(__file__).resolve().parents[4]
 _TARGET = _REPOSITORY / "target"
 _INTERFACE_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}\Z")
 _DEVICE_RE = re.compile(r"\A/dev/[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}\Z")
@@ -311,19 +311,19 @@ def _prepare_directory(path: Path) -> Path:
 
 
 def run_inventory_from_cli(values: argparse.Namespace) -> object:
-    from tools.riscv.megrez_debian_shell_cli_io import run_inventory_command
+    from tools.riscv.megrez.image.megrez_debian_shell_cli_io import run_inventory_command
 
     return run_inventory_command(values)
 
 
 def install_from_cli(values: argparse.Namespace) -> object:
-    from tools.riscv.megrez_debian_shell_cli_io import run_install_command
+    from tools.riscv.megrez.image.megrez_debian_shell_cli_io import run_install_command
 
     return run_install_command(values)
 
 
 def run_gate_from_cli(values: argparse.Namespace) -> object:
-    from tools.riscv.megrez_debian_shell_physical_io import run_physical_board_gate
+    from tools.riscv.megrez.image.megrez_debian_shell_physical_io import run_physical_board_gate
 
     return run_physical_board_gate(
         load_plan(values.plan),
@@ -336,7 +336,7 @@ def run_gate_from_cli(values: argparse.Namespace) -> object:
 
 
 def handoff_physical_shell(values: argparse.Namespace) -> object:
-    from tools.riscv.megrez_debian_shell_cli_io import run_handoff_command
+    from tools.riscv.megrez.image.megrez_debian_shell_cli_io import run_handoff_command
 
     return run_handoff_command(values)
 

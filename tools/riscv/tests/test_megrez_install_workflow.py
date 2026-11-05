@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     ROOT_IMAGE_BYTES,
@@ -22,15 +22,15 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv import megrez_debian_install
-from tools.riscv.megrez_debian_install import (
+from tools.riscv.megrez.image import megrez_debian_install
+from tools.riscv.megrez.image.megrez_debian_install import (
     InstallError,
     NetworkInstallRequest,
     run_network_install,
 )
-from tools.riscv.megrez_board_session import validate_recovery_epoch
-from tools.riscv.megrez_gmac_gate import physical_bootargs
-from tools.riscv.megrez_preboard import PreboardPermit
+from tools.riscv.megrez.board.megrez_board_session import validate_recovery_epoch
+from tools.riscv.megrez.network.megrez_gmac_gate import physical_bootargs
+from tools.riscv.megrez.board.megrez_preboard import PreboardPermit
 
 
 class MegrezInstallWorkflowTests(unittest.TestCase):
@@ -148,7 +148,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
         command = events[2][1]
         self.assertEqual(
             command[:3],
-            (sys.executable, "-m", "tools.riscv.megrez_board_session"),
+            (sys.executable, "-m", "tools.riscv.megrez.board.megrez_board_session"),
         )
         self.assertIn("--require-recovery", command)
         installer_name = command[command.index("--initrd") + 1]
@@ -452,7 +452,7 @@ class MegrezInstallWorkflowTests(unittest.TestCase):
                 validate_recovery_epoch(invalid)
 
     def test_unified_cli_dispatches_the_permit_bound_installer(self) -> None:
-        from tools.riscv import megrez_debug
+        from tools.riscv.megrez.board import megrez_debug
 
         plan_path = self.repository / "plan.json"
         plan_path.write_bytes(self.plan.canonical_bytes())

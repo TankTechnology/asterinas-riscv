@@ -14,7 +14,7 @@
 | `PORTAL_IP` | 校园门户的 IPv4 | `192.0.2.20` |
 | `PORTAL_HOST` | 门户主机名 | `auth.zgclab.edu.cn` |
 
-`tools/riscv/megrez_recover.py` 在导入时读取这四个变量；未设置就回落到上表
+`tools/riscv/megrez/board/megrez_recover.py` 在导入时读取这四个变量；未设置就回落到上表
 的 RFC 5737 地址，并向 stderr 打印一行 `warning: <变量> is not set; using the
 documentation address …`。其它脚本（门户登录示例、`megrez_boot_cmd.txt`）只把
 地址当参数或占位符，不保存真实值。
@@ -34,13 +34,13 @@ asterinas.net=<设备>,<板子ip>/<前缀长度>,<网关>
 ## 用法
 
 ```sh
-BOARD_IP=… BOARD_GW=… python3 tools/riscv/megrez_recover.py
+BOARD_IP=… BOARD_GW=… python3 tools/riscv/megrez/board/megrez_recover.py
 python3 tools/riscv/board portal --expect-ip "$BOARD_IP"
 ```
 
 ## 相关文件
 
-- `tools/riscv/megrez_recover.py` —— 地址变量与兜底 warning。
+- `tools/riscv/megrez/board/megrez_recover.py` —— 地址变量与兜底 warning。
 - `tools/riscv/board/megrez_portal_login.py` —— 门户登录（凭据来自
   NetworkManager，不入库）。
 - `tools/riscv/debian/rootfs/asterinas_net_watchdog.sh` —— 板上网关来源。

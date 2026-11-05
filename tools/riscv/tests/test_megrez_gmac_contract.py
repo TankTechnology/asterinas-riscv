@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 import zlib
 
-from tools.riscv import megrez_gmac_contract as gmac
+from tools.riscv.megrez.network import megrez_gmac_contract as gmac
 
 
 def _port(alias_index: int) -> dict[str, object]:

@@ -26,7 +26,7 @@ from tools.riscv.debian.rootfs.gate_runtime import (
     SerialConsole,
     launch_process,
 )
-from tools.riscv.megrez_probe import (
+from tools.riscv.megrez.board.megrez_probe import (
     classify_probe_transcript,
     encode_probe_request,
     qemu_probe_argv,

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    bridge: Any = importlib.import_module("tools.riscv.megrez_proxy_bridge")
+    bridge: Any = importlib.import_module("tools.riscv.megrez.network.megrez_proxy_bridge")
 except ModuleNotFoundError:
     bridge = None
 

@@ -16,14 +16,14 @@ import unittest
 from unittest import mock
 
 from tools.riscv.debian.rootfs.browser_daily_use_contract import FUNCTION_GROUPS
-from tools.riscv.megrez_firefox_daily_use import (
+from tools.riscv.megrez.desktop.megrez_firefox_daily_use import (
     DailyUsePhysicalConfig,
     RealDailyUsePhysicalOperations,
     daily_use_physical_bootargs,
     main,
     run_firefox_daily_use,
 )
-from tools.riscv.megrez_physical_graphics import DailyUseTerminalStatus
+from tools.riscv.megrez.desktop.megrez_physical_graphics import DailyUseTerminalStatus
 from tools.riscv.tests.test_browser_daily_use_contract import (
     complete_result,
     set_group,
@@ -462,7 +462,7 @@ class DailyUseRunnerTests(unittest.TestCase):
         self.assertEqual(operations.calls[-2:], ["fixture-close", "close"])
 
     def test_daily_bootargs_are_separate_from_normal_physical_bootargs(self) -> None:
-        from tools.riscv.megrez_physical_graphics import physical_bootargs
+        from tools.riscv.megrez.desktop.megrez_physical_graphics import physical_bootargs
 
         normal = physical_bootargs(self.plan).split()
         daily = daily_use_physical_bootargs(self.plan).split()
@@ -521,15 +521,15 @@ class DailyUseRunnerTests(unittest.TestCase):
         opened = []
         with (
             mock.patch(
-                "tools.riscv.megrez_firefox_daily_use._read_plan",
+                "tools.riscv.megrez.desktop.megrez_firefox_daily_use._read_plan",
                 return_value=self.plan,
             ),
             mock.patch(
-                "tools.riscv.megrez_firefox_daily_use._validate_physical_artifacts",
+                "tools.riscv.megrez.desktop.megrez_firefox_daily_use._validate_physical_artifacts",
                 return_value={},
             ),
             mock.patch(
-                "tools.riscv.megrez_firefox_daily_use.RealDailyUsePhysicalOperations",
+                "tools.riscv.megrez.desktop.megrez_firefox_daily_use.RealDailyUsePhysicalOperations",
                 side_effect=lambda *args, **kwargs: opened.append((args, kwargs)),
             ),
             mock.patch("builtins.print") as printed,
@@ -591,7 +591,7 @@ class DailyUseEntryPointTests(unittest.TestCase):
             "MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL",
             "MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS",
             "MEGREZ_FIREFOX_DAILY_USE_MMC_DTB",
-            "tools.riscv.megrez_firefox_daily_use",
+            "tools.riscv.megrez.desktop.megrez_firefox_daily_use",
             "--prepare-only",
         ):
             self.assertIn(fragment, target)

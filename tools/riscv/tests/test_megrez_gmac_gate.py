@@ -37,7 +37,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_READY_MARKER,
     DESKTOP_M7_SEARCH_MARKER,
 )
-from tools.riscv.megrez_gmac_gate import (
+from tools.riscv.megrez.network.megrez_gmac_gate import (
     BOARD_ADDRESS,
     PHYSICAL_DESKTOP_MILESTONES,
     PHYSICAL_MILESTONES,
@@ -55,7 +55,7 @@ from tools.riscv.megrez_gmac_gate import (
     physical_bootargs,
     run_gate,
 )
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.network.megrez_network_fixture import (
     BROWSER_IMAGE,
     BROWSER_PNG_CAPTURE_PATH,
     FIXTURE_PATH,
@@ -64,7 +64,7 @@ from tools.riscv.megrez_network_fixture import (
     FixtureConfig,
     FixtureServer,
 )
-from tools.riscv import megrez_gmac_gate as gmac_gate
+from tools.riscv.megrez.network import megrez_gmac_gate as gmac_gate
 
 
 EXPECTED_PHYSICAL_MILESTONES = (

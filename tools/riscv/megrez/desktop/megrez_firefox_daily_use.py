@@ -30,14 +30,14 @@ from tools.riscv.debian.rootfs.browser_daily_use_upload import (
     parse_bundle,
 )
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_debug_contract import DebugPlan
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.board.megrez_debug_contract import DebugPlan
+from tools.riscv.megrez.network.megrez_network_fixture import (
     PAYLOAD_SHA256,
     PAYLOAD_SIZE,
     FixtureConfig,
     FixtureServer,
 )
-from tools.riscv.megrez_physical_graphics import (
+from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     DisplayEvidenceMode,
     DailyUseTerminalStatus,
     GraphicalReadinessEvidence,
@@ -302,7 +302,7 @@ def _plan_deployment(plan: DebugPlan) -> dict[str, object]:
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=Path(__file__).resolve().parents[2],
+            cwd=Path(__file__).resolve().parents[4],
             check=True,
             capture_output=True,
             text=True,
@@ -663,7 +663,7 @@ def _non_prepare_command(options: argparse.Namespace) -> str:
     arguments = [
         "python3",
         "-m",
-        "tools.riscv.megrez_firefox_daily_use",
+        "tools.riscv.megrez.desktop.megrez_firefox_daily_use",
         str(options.device),
         "--plan",
         str(options.plan),

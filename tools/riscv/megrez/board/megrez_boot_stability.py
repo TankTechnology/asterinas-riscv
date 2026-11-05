@@ -26,13 +26,13 @@ from tools.riscv.debian.rootfs.debug_console_protocol import (
     DEBUG_CONSOLE_READY,
 )
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     TERMINAL_ESCAPE_PATTERN,
     safe_artifact_name,
     validate_debug_console_readiness,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_physical_graphics import (
+from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     HostGateError,
     PHYSICAL_REBOOT_AFTER,
     RealPhysicalGraphicsOperations,
@@ -963,7 +963,7 @@ class RealBootStabilityPublisher:
         self._repository = (
             repository.absolute()
             if repository is not None
-            else Path(__file__).resolve().parents[2]
+            else Path(__file__).resolve().parents[4]
         )
         self._output: PinnedOutputDirectory | None = None
 
@@ -1110,7 +1110,7 @@ def _read_deployment_attestation(path: Path) -> DeploymentAttestation:
 def _invalidate_boot_stability_output(output_directory: Path) -> None:
     """Remove a stale terminal result before reading any new deployment input."""
 
-    repository = Path(__file__).resolve().parents[2]
+    repository = Path(__file__).resolve().parents[4]
     output_path = _safe_output_directory(output_directory, repository)
     with PinnedOutputDirectory(output_path) as output:
         try:

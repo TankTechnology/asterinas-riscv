@@ -30,18 +30,18 @@ from tools.riscv.debian.rootfs.gate_runtime import (
     SerialConsole,
     launch_process,
 )
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     BoardSession,
     open_serial,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_boot_manifest import (
+from tools.riscv.megrez.board.megrez_boot_manifest import (
     BootManifestError,
     ExtlinuxGeneration,
     MAX_EXTLINUX_BYTES,
 )
-from tools.riscv.megrez_debug_board import _lock_serial, _uboot_bootargs_commands
-from tools.riscv.megrez_debug_contract import DebugContractError, DebugPlan
+from tools.riscv.megrez.board.megrez_debug_board import _lock_serial, _uboot_bootargs_commands
+from tools.riscv.megrez.board.megrez_debug_contract import DebugContractError, DebugPlan
 
 
 _BUNDLE_V1_FIELDS = frozenset(

@@ -38,22 +38,22 @@ from tools.riscv.debian.rootfs.gate_runtime import (
     PinnedOutputDirectory,
     SerialConsole,
 )
-from tools.riscv.megrez_boot_menu import validate_prepared_dtb
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_boot_menu import validate_prepared_dtb
+from tools.riscv.megrez.board.megrez_board_session import (
     BoardSession,
     open_serial,
     safe_artifact_name,
     validate_debug_console_readiness,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_debug_board import (
+from tools.riscv.megrez.board.megrez_debug_board import (
     BOARD_ARTIFACT_NAMES,
     BoardTransport,
     _lock_serial,
     _uboot_bootargs_commands,
 )
-from tools.riscv.megrez_debug_contract import DebugPlan
-from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
+from tools.riscv.megrez.board.megrez_debug_contract import DebugPlan
+from tools.riscv.megrez.board.megrez_debug_simulation import _validate_current_artifacts
 from tools.riscv.hdmi_pixel_oracle import PixelComparison, PixelMismatch, compare_hdmi_pixels
 from tools.riscv.physical_boot_contract import (
     PHYSICAL_REBOOT_AFTER,
@@ -1506,7 +1506,7 @@ class RealPhysicalGraphicsOperations:
         self._repository = (
             repository.absolute()
             if repository is not None
-            else Path(__file__).resolve().parents[2]
+            else Path(__file__).resolve().parents[4]
         )
         self._open_device = open_device
         self._lock_device = lock_device

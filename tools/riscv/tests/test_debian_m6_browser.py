@@ -85,7 +85,7 @@ class DebianDesktopM6BrowserContractTests(unittest.TestCase):
         )
 
     def test_debug_aggregate_uses_the_m6_owner_markers(self) -> None:
-        from tools.riscv.megrez_debug_contract import DEBIAN_BROWSER_MARKERS
+        from tools.riscv.megrez.board.megrez_debug_contract import DEBIAN_BROWSER_MARKERS
 
         self.assertIn(DESKTOP_M6_REMOTE_MARKER, DEBIAN_BROWSER_MARKERS)
         self.assertIn(DESKTOP_M6_JAVASCRIPT_PREFIX, DEBIAN_BROWSER_MARKERS)

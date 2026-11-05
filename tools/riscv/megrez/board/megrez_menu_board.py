@@ -16,8 +16,8 @@ import secrets
 import threading
 import time
 
-from tools.riscv import megrez_boot_menu as menu
-from tools.riscv.megrez_hardware_probe import (
+from tools.riscv.megrez.board import megrez_boot_menu as menu
+from tools.riscv.megrez.board.megrez_hardware_probe import (
     PROBE_SPECS,
     ProbeContractError,
     classify_probe_timeout,
@@ -26,9 +26,9 @@ from tools.riscv.megrez_hardware_probe import (
     validate_probe_timeout_evidence,
 )
 from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
-from tools.riscv.megrez_board_session import BoardSession, open_serial
-from tools.riscv.megrez_debug_board import RealBoardOperations, _lock_serial
-from tools.riscv.megrez_rockos_attestation import (
+from tools.riscv.megrez.board.megrez_board_session import BoardSession, open_serial
+from tools.riscv.megrez.board.megrez_debug_board import RealBoardOperations, _lock_serial
+from tools.riscv.megrez.board.megrez_rockos_attestation import (
     RealRockOsAttestationOperations,
     ROCKOS_PROMPT,
     _read_password,

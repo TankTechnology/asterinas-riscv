@@ -130,8 +130,8 @@ are for changing/qualifying a generation, not commands to repeat each boot:
 
 ```bash
 tools/docker/run_dev_container.sh -- make test_riscv_megrez_boot_menu_unit
-tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_boot_menu --help
-tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_menu_board --help
+tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez.board.megrez_boot_menu --help
+tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez.board.megrez_menu_board --help
 ```
 
 `megrez_boot_menu prepare-dtb` moves the existing framebuffer/USB fixups to
@@ -197,7 +197,7 @@ bridge carries its queries instead; start it beside the proxy and leave it
 running:
 
 ```bash
-python3 -m tools.riscv.megrez_proxy_bridge --dns
+python3 -m tools.riscv.megrez.network.megrez_proxy_bridge --dns
 ```
 
 It listens on `10.100.19.216:15354` and forwards each query to a resolver that
@@ -512,20 +512,20 @@ Use one stable evidence directory:
 
 ```bash
 RUN="$PWD/target/megrez-debian-shell/$(git rev-parse --short=12 HEAD)"
-python3 -m tools.riscv.megrez_debian_shell check "$RUN/plan.json"
-sudo -E python3 -m tools.riscv.megrez_debian_shell qemu \
+python3 -m tools.riscv.megrez.image.megrez_debian_shell check "$RUN/plan.json"
+sudo -E python3 -m tools.riscv.megrez.image.megrez_debian_shell qemu \
   "$RUN/plan.json" --output "$RUN/qemu"
-python3 -m tools.riscv.megrez_debian_shell permit \
+python3 -m tools.riscv.megrez.image.megrez_debian_shell permit \
   "$RUN/plan.json" --qemu-evidence "$RUN/qemu/qemu-evidence.json" \
   --output "$RUN/permit.json"
-sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+sudo -E python3 -m tools.riscv.megrez.image.megrez_debian_shell inventory \
   "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
   --output "$RUN/inventory-before" --yes
-sudo -E python3 -m tools.riscv.megrez_debian_shell install-if-needed \
+sudo -E python3 -m tools.riscv.megrez.image.megrez_debian_shell install-if-needed \
   "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
   --inventory "$RUN/inventory-before/result.json" --output "$RUN/install" --yes
 if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
-  sudo -E python3 -m tools.riscv.megrez_debian_shell inventory \
+  sudo -E python3 -m tools.riscv.megrez.image.megrez_debian_shell inventory \
     "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
     --prior-inventory "$RUN/inventory-before/result.json" \
     --install-result "$RUN/install/result.json" \
@@ -534,11 +534,11 @@ if jq -e '.status == "needs-install"' "$RUN/inventory-before/result.json"; then
 else
   cp "$RUN/inventory-before/result.json" "$RUN/inventory-current.json"
 fi
-sudo -E python3 -m tools.riscv.megrez_debian_shell gate \
+sudo -E python3 -m tools.riscv.megrez.image.megrez_debian_shell gate \
   "$RUN/plan.json" /dev/ttyUSB0 --permit "$RUN/permit.json" \
   --inventory "$RUN/inventory-current.json" --output "$RUN/physical" \
   --host-interface enp12s0 --yes
-sudo -E python3 -m tools.riscv.megrez_debian_shell handoff \
+sudo -E python3 -m tools.riscv.megrez.image.megrez_debian_shell handoff \
   "$RUN/plan.json" /dev/ttyUSB0 --result "$RUN/physical/result.json" \
   --host-interface enp12s0 --yes
 picocom --baud 115200 --flow n --parity n --databits 8 /dev/ttyUSB0
@@ -791,7 +791,7 @@ For a diagnostic boot that may hang before Asterinas can arm
 pre-boot recovery option, not the desktop default:
 
 ```bash
-PYTHONPATH="$PWD" python3 -m tools.riscv.megrez_debug board \
+PYTHONPATH="$PWD" python3 -m tools.riscv.megrez.board.megrez_debug board \
   /absolute/path/to/plan.json /dev/ttyUSB0 \
   --simulation-result /absolute/path/to/fast/result.json \
   --output-directory /absolute/path/to/physical-evidence \
@@ -1069,17 +1069,17 @@ Run exactly one profile per boot. These are three distinct one-shot commands;
 do not reuse an output directory or combine profiles in one guest lifetime:
 
 ```bash
-python3 -m tools.riscv.megrez_firefox_daily_use \
+python3 -m tools.riscv.megrez.desktop.megrez_firefox_daily_use \
   /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
   --plan target/firefox-daily-use-physical/plan.json \
   --output-directory target/firefox-daily-use-physical/run-a1 \
   --fixture-bind 10.100.19.216 --fixture-port 17894 --board-peer 10.100.19.200
-python3 -m tools.riscv.megrez_firefox_daily_use \
+python3 -m tools.riscv.megrez.desktop.megrez_firefox_daily_use \
   /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
   --plan target/firefox-daily-use-physical/plan.json \
   --output-directory target/firefox-daily-use-physical/run-a2 \
   --fixture-bind 10.100.19.216 --fixture-port 17894 --board-peer 10.100.19.200
-python3 -m tools.riscv.megrez_firefox_daily_use \
+python3 -m tools.riscv.megrez.desktop.megrez_firefox_daily_use \
   /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
   --plan target/firefox-daily-use-physical/plan.json \
   --output-directory target/firefox-daily-use-physical/run-a3 \
@@ -1093,7 +1093,7 @@ deployment identity. The reporter validates every private manifest and never
 repairs evidence:
 
 ```bash
-python3 -m tools.riscv.megrez_firefox_daily_use_report \
+python3 -m tools.riscv.megrez.desktop.megrez_firefox_daily_use_report \
   target/firefox-daily-use-physical/run-a1 \
   target/firefox-daily-use-physical/run-a2 \
   target/firefox-daily-use-physical/run-a3 \
@@ -1155,7 +1155,7 @@ Routine runs use only the immutable bundle and the files already on MMC
 partition 1:
 
 ```bash
-python3 -m tools.riscv.megrez_probe boot syscall213
+python3 -m tools.riscv.megrez.board.megrez_probe boot syscall213
 ```
 
 The default bundle is `target/megrez-probe/current.json`; private evidence is
@@ -1195,7 +1195,7 @@ Render that configuration atomically from the frozen plan and the three
 partition-relative paths:
 
 ```bash
-python3 -m tools.riscv.megrez_boot_manifest render \
+python3 -m tools.riscv.megrez.board.megrez_boot_manifest render \
   --plan "$PWD/target/megrez-debug/current/plan.json" \
   --mmc-kernel /asterinas-KERNEL_SHA12.booti \
   --mmc-initramfs /stage1-INITRAMFS_SHA12.cpio \
@@ -1207,7 +1207,7 @@ With that directory already served read-only on the private board network,
 publish it once through RockOS:
 
 ```bash
-python3 -m tools.riscv.megrez_rockos_attestation publish \
+python3 -m tools.riscv.megrez.board.megrez_rockos_attestation publish \
   /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
   --plan "$PWD/target/megrez-debug/current/plan.json" \
   --extlinux-config "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf" \
@@ -1234,7 +1234,7 @@ and the 1024-byte serial command bound.
 After the RockOS receipt succeeds, select exactly those persistent bytes once:
 
 ```bash
-python3 -m tools.riscv.megrez_probe configure \
+python3 -m tools.riscv.megrez.board.megrez_probe configure \
   --plan "$PWD/target/megrez-debug/current/plan.json" \
   --device /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
   --mmc-kernel asterinas-KERNEL_SHA12.booti \
@@ -1306,7 +1306,7 @@ password prompt is read from the terminal and is never placed in argv, an
 environment variable, or the retained transcript:
 
 ```bash
-python3 -m tools.riscv.megrez_rockos_attestation \
+python3 -m tools.riscv.megrez.board.megrez_rockos_attestation \
   /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
   --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
   --output-directory "$PWD/target/current-main-physical-graphics/physical/rockos-attestation" \
@@ -1332,7 +1332,7 @@ and recovery epochs using the frozen plan and the filenames already verified
 on MMC:
 
 ```bash
-python3 -m tools.riscv.megrez_boot_stability \
+python3 -m tools.riscv.megrez.board.megrez_boot_stability \
   /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
   --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
   --output-directory "$PWD/target/current-main-physical-graphics/physical/boot-stability" \
@@ -1404,7 +1404,7 @@ and measurement-log fields record their exact byte SHA-256 identities; loading
 the bundle cross-validates all three before opening the serial device.
 
 ```bash
-python3 -m tools.riscv.megrez_desktop configure \
+python3 -m tools.riscv.megrez.desktop.megrez_desktop configure \
   --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
   --device /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
   --deployment-attestation "$PWD/target/current-main-physical-graphics/physical/rockos-attestation-isolated-resolved/deployment-attestation.json" \
@@ -1419,7 +1419,7 @@ python3 -m tools.riscv.megrez_desktop configure \
 After that one-time configuration, the routine desktop boot is one command:
 
 ```bash
-python3 -m tools.riscv.megrez_desktop start
+python3 -m tools.riscv.megrez.desktop.megrez_desktop start
 ```
 
 `start` reads only the three named files already on MMC partition 1, verifies
@@ -1435,7 +1435,7 @@ software cannot recover that state remotely.
 For one unattended real-web check, use the same configured bundle:
 
 ```bash
-python3 -m tools.riscv.megrez_desktop browse-firefox
+python3 -m tools.riscv.megrez.desktop.megrez_desktop browse-firefox
 ```
 
 `browse-firefox` owns a temporary host bridge from `10.100.19.216:17893` to
@@ -1467,7 +1467,7 @@ partition 2.
 Use the heavier action only for one explicitly falsifiable Firefox experiment:
 
 ```bash
-python3 -m tools.riscv.megrez_desktop diagnose-firefox \
+python3 -m tools.riscv.megrez.desktop.megrez_desktop diagnose-firefox \
   --hypothesis "The physical Firefox Marionette greeting completes and WebDriver:NewSession is fully sent but produces no response-header byte before the fixed 300-second deadline." \
   --contrary-outcome "The listener does not become ready, NewSession is not fully sent, a response is partial or rejected, or NewSession returns a valid session."
 ```
@@ -1543,7 +1543,7 @@ After a real Asterinas board run has completed the bounded read, publish the
 complete log and atomic JSON result with the U-Boot CRC32 bound explicitly:
 
 ```bash
-python3 tools/riscv/megrez_sdhci_gate.py \
+python3 tools/riscv/megrez/board/megrez_sdhci_gate.py \
   --transcript /absolute/path/to/megrez.serial.log \
   --output-dir /absolute/path/to/evidence \
   --expected-crc32 5f85f90e
@@ -1568,7 +1568,7 @@ observed the kernel register the handoff; Debian/systemd output after that is
 expected on HDMI rather than on the serial console.
 
 ```bash
-PYTHONPATH=tools/riscv:tools/riscv/qemu python3 tools/riscv/megrez_board_session.py /dev/ttyUSB0 \
+PYTHONPATH=tools/riscv:tools/riscv/qemu python3 tools/riscv/megrez/board/megrez_board_session.py /dev/ttyUSB0 \
   --booti ASTERINAS_IMAGE_ON_BOOT_FS \
   --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
   --dtb DTB_ON_BOOT_FS \
@@ -1619,7 +1619,7 @@ recovery timer, and require a fresh U-Boot epoch:
 
 ```bash
 SERIAL=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
-PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+PYTHONPATH=. python3 tools/riscv/megrez/board/megrez_board_session.py "$SERIAL" \
   --booti ASTERINAS_IMAGE_ON_BOOT_FS \
   --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
   --dtb DTB_ON_BOOT_FS \
@@ -1642,7 +1642,7 @@ timer and `--require-recovery`. The runner closes its descriptor after the
 fixed probes, so the same root prompt can then be opened interactively:
 
 ```bash
-PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+PYTHONPATH=. python3 tools/riscv/megrez/board/megrez_board_session.py "$SERIAL" \
   --booti ASTERINAS_IMAGE_ON_BOOT_FS \
   --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
   --dtb DTB_ON_BOOT_FS \

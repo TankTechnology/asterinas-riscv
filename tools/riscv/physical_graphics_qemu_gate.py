@@ -34,7 +34,7 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
-from tools.riscv.megrez_physical_graphics import (
+from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     HostGateError,
     InteractionCycleEvidence,
     PHYSICAL_BROWSER_START_MARKER,

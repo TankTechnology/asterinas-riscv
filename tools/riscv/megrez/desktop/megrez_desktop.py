@@ -26,16 +26,16 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol
 
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
-from tools.riscv.megrez_board_session import safe_artifact_name
-from tools.riscv.megrez_boot_stability import (
+from tools.riscv.megrez.board.megrez_board_session import safe_artifact_name
+from tools.riscv.megrez.board.megrez_boot_stability import (
     BootReadinessEvidence,
     DeploymentAttestation,
     RealBootCycleOperations,
     boot_stability_bootargs,
     contains_fatal_diagnostics,
 )
-from tools.riscv.megrez_debug_contract import DebugPlan
-from tools.riscv.megrez_physical_graphics import (
+from tools.riscv.megrez.board.megrez_debug_contract import DebugPlan
+from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     HostGateError,
     _read_plan,
     physical_bootargs,
@@ -2497,7 +2497,7 @@ def parse_args(arguments: list[str] | tuple[str, ...]) -> argparse.Namespace:
 def _resolved_bundle_path(path: Path) -> Path:
     if path.is_absolute():
         return path
-    repository = Path(__file__).resolve().parents[2]
+    repository = Path(__file__).resolve().parents[4]
     return (repository / path).absolute()
 
 
@@ -2583,13 +2583,13 @@ def main(arguments: list[str] | tuple[str, ...] | None = None) -> int:
                 },
             )
         else:
-            from tools.riscv.megrez_firefox_browse import (
+            from tools.riscv.megrez.desktop.megrez_firefox_browse import (
                 FirefoxBrowseConfig,
                 RealFirefoxBrowseOperations,
                 RealFirefoxBrowsePublisher,
                 run_firefox_browse,
             )
-            from tools.riscv.megrez_proxy_bridge import ProxyBridge, ProxyBridgeConfig
+            from tools.riscv.megrez.network.megrez_proxy_bridge import ProxyBridge, ProxyBridgeConfig
 
             publisher = RealFirefoxBrowsePublisher(bundle, run_directory)
             operations = RealFirefoxBrowseOperations(

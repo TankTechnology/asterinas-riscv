@@ -54,7 +54,7 @@ from tools.riscv.debian.rootfs.gate_runtime import (
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure, parse_gate_args
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
-from tools.riscv.megrez_proxy_bridge import (
+from tools.riscv.megrez.network.megrez_proxy_bridge import (
     ProxyBridge,
     proxy_bridge_config_from_environment,
 )

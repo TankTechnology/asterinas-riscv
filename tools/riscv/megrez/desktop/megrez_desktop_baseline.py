@@ -25,11 +25,11 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "board"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "board"))
 
 from megrez_console import Console  # noqa: E402
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parents[2]
 GUEST_SCRIPTS = (
     (HERE / "diagnostics" / "syscall_ipc_bench_guest.py", "/tmp/w1_guest.py"),
     (HERE / "diagnostics" / "x11_bench_guest.sh", "/tmp/w1_x11.sh"),

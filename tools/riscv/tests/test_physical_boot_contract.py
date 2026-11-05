@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import unittest
 
 from tools.riscv import physical_boot_contract as contract
-from tools.riscv import megrez_boot_stability as stability
-from tools.riscv import megrez_desktop as desktop
-from tools.riscv import megrez_physical_graphics as graphics
+from tools.riscv.megrez.board import megrez_boot_stability as stability
+from tools.riscv.megrez.desktop import megrez_desktop as desktop
+from tools.riscv.megrez.desktop import megrez_physical_graphics as graphics
 
 
 ROOTFS = Path(__file__).resolve().parents[1]
@@ -85,9 +85,9 @@ class PhysicalBootContractTests(unittest.TestCase):
 
     def test_physical_modules_do_not_redefine_the_base_tokens(self) -> None:
         for path in (
-            ROOTFS / "megrez_physical_graphics.py",
-            ROOTFS / "megrez_boot_stability.py",
-            ROOTFS / "megrez_desktop.py",
+            ROOTFS / "megrez/desktop/megrez_physical_graphics.py",
+            ROOTFS / "megrez/board/megrez_boot_stability.py",
+            ROOTFS / "megrez/desktop/megrez_desktop.py",
         ):
             with self.subTest(module=path.name):
                 source = path.read_text(encoding="utf-8")

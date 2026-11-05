@@ -22,7 +22,7 @@ from tools.riscv.debian.rootfs.contract import (
     load_package_checksums,
     validate_frozen_root,
 )
-from tools.riscv.megrez_debug_contract import (
+from tools.riscv.megrez.board.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     DEBIAN_BROWSER_MIN_REBOOT_AFTER,
@@ -31,24 +31,24 @@ from tools.riscv.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_debug_board import (
+from tools.riscv.megrez.board.megrez_debug_board import (
     BoardRunFailure,
     BoardTermination,
     MAX_BOARD_TIMEOUT,
     run_physical_board,
 )
-from tools.riscv.megrez_debug_desktop import (
+from tools.riscv.megrez.board.megrez_debug_desktop import (
     DesktopSimulationError,
     simulate_desktop,
 )
-from tools.riscv.megrez_debug_simulation import SimulationError, simulate_fast
-from tools.riscv.megrez_debug_probe import (
+from tools.riscv.megrez.board.megrez_debug_simulation import SimulationError, simulate_fast
+from tools.riscv.megrez.board.megrez_debug_probe import (
     PROBE_STRESS_SIZES,
     ProbeServer,
     ProbeServerError,
 )
-from tools.riscv.megrez_debian_install import InstallError, run_network_install
-from tools.riscv.megrez_preboard import (
+from tools.riscv.megrez.image.megrez_debian_install import InstallError, run_network_install
+from tools.riscv.megrez.board.megrez_preboard import (
     PreboardError,
     RecoveryEvidence,
     create_recovery_evidence,

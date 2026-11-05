@@ -711,12 +711,12 @@ MEGREZ_PROBE_INITRAMFS ?= target/megrez-probe/build/initramfs.cpio
 
 .PHONY: test_riscv_megrez_probe_qemu
 test_riscv_megrez_probe_qemu:
-	@python3 -m tools.riscv.megrez_probe boot syscall213 \
+	@python3 -m tools.riscv.megrez.board.megrez_probe boot syscall213 \
 		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
 		--output-directory target/megrez-probe/qemu-normal \
 		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
 		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)"
-	@python3 -m tools.riscv.megrez_probe boot \
+	@python3 -m tools.riscv.megrez.board.megrez_probe boot \
 		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
 		--output-directory target/megrez-probe/qemu-deadline \
 		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
@@ -745,7 +745,7 @@ prepare_riscv_megrez_desktop_boot:
 		{ echo "MEGREZ_DESKTOP_BOOT_PLAN must name a regular file" >&2; exit 2; }
 	@test ! -e "$(MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT)" || \
 		{ echo "MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT already exists" >&2; exit 2; }
-	@python3 -m tools.riscv.megrez_desktop_boot prepare \
+	@python3 -m tools.riscv.megrez.desktop.megrez_desktop_boot prepare \
 		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
 		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
 		--host-address "$(MEGREZ_DESKTOP_BOOT_HOST_ADDRESS)" \
@@ -759,7 +759,7 @@ run_riscv_megrez_desktop:
 		{ echo "MEGREZ_DESKTOP_BOOT_PLAN must name a regular file" >&2; exit 2; }
 	@test ! -e "$(MEGREZ_DESKTOP_BOOT_START_OUTPUT)" || \
 		{ echo "MEGREZ_DESKTOP_BOOT_START_OUTPUT already exists" >&2; exit 2; }
-	@python3 -m tools.riscv.megrez_desktop_boot start \
+	@python3 -m tools.riscv.megrez.desktop.megrez_desktop_boot start \
 		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
 		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
 		--device-profile "$(MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE)" \
@@ -782,7 +782,7 @@ test_riscv_megrez_install_unit:
 test_riscv_megrez_debug_fast: test_riscv_megrez_debug_unit
 	@test -n "$(MEGREZ_DEBUG_PLAN)" || \
 		{ echo "MEGREZ_DEBUG_PLAN is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez_debug simulate \
+	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez.board.megrez_debug simulate \
 		"$(MEGREZ_DEBUG_PLAN)" --tier fast \
 		--output-directory "$(MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE)" \
 		--uboot-build-directory "$(MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE)"
@@ -795,7 +795,7 @@ test_riscv_megrez_debug_board: test_riscv_megrez_debug_unit
 		{ echo "MEGREZ_DEBUG_DEVICE is required" >&2; exit 2; }
 	@test -n "$(MEGREZ_DEBUG_SIMULATION_RESULT)" || \
 		{ echo "MEGREZ_DEBUG_SIMULATION_RESULT is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez_debug board \
+	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez.board.megrez_debug board \
 		"$(MEGREZ_DEBUG_PLAN)" "$(MEGREZ_DEBUG_DEVICE)" \
 		--simulation-result "$(MEGREZ_DEBUG_SIMULATION_RESULT)" \
 		--output-directory "$(MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE)" \
@@ -836,10 +836,10 @@ prepare_riscv_megrez_physical_graphics:
 	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)" || \
 		{ echo "MEGREZ_PHYSICAL_GRAPHICS_OUTPUT is required" >&2; exit 2; }
 	@PYTHONPATH="$(CURDIR)" python3 -c \
-		'from pathlib import Path; import sys; from tools.riscv.megrez_debug_simulation import _validate_current_artifacts; from tools.riscv.megrez_physical_graphics import _read_plan; _validate_current_artifacts(_read_plan(Path(sys.argv[1])))' \
+		'from pathlib import Path; import sys; from tools.riscv.megrez.board.megrez_debug_simulation import _validate_current_artifacts; from tools.riscv.megrez.desktop.megrez_physical_graphics import _read_plan; _validate_current_artifacts(_read_plan(Path(sys.argv[1])))' \
 		"$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)"
 	@set -eu; printf '%q ' env "PYTHONPATH=$(CURDIR)" python3 -m \
-		tools.riscv.megrez_physical_graphics \
+		tools.riscv.megrez.desktop.megrez_physical_graphics \
 		"$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" \
 		--plan "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" \
 		--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)"; \
@@ -889,7 +889,7 @@ prepare_riscv_megrez_firefox_daily_use:
 	test "$$count" -eq 0 -o "$$count" -eq 3 || \
 		{ echo "all three MEGREZ_FIREFOX_DAILY_USE_MMC_* values are required together" >&2; exit 2; }
 	@set -eu; set -- env "PYTHONPATH=$(CURDIR)" python3 -m \
-		tools.riscv.megrez_firefox_daily_use \
+		tools.riscv.megrez.desktop.megrez_firefox_daily_use \
 		"$(MEGREZ_FIREFOX_DAILY_USE_DEVICE)" \
 		--plan "$(MEGREZ_FIREFOX_DAILY_USE_PLAN)" \
 		--output-directory "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)" \

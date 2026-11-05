@@ -19,14 +19,14 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(REPO_ROOT))
     sys.path.insert(0, str(REPO_ROOT / "tools" / "riscv"))
 
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     BoardSession,
     boot_loaded_artifacts,
     open_serial,
     parse_args,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_debug_board import _lock_serial
+from tools.riscv.megrez.board.megrez_debug_board import _lock_serial
 
 
 def validate_boot_kernel(bundle: Path, kernel: Path, compressed: Path) -> None:

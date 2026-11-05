@@ -14,20 +14,20 @@ import re
 from typing import Any, Protocol
 
 from tools.riscv.debian.rootfs.profiles import get_profile
-from tools.riscv.megrez_board_session import PartitionGeometry
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.board.megrez_board_session import PartitionGeometry
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     P2_NR_SECTORS,
     P2_START_LBA,
     FrozenArtifact,
     PersistentShellPlan,
 )
-from tools.riscv.megrez_debian_shell_evidence import ShellPermit
-from tools.riscv.megrez_debug_contract import StageResult
-from tools.riscv.megrez_debian_install import (
+from tools.riscv.megrez.image.megrez_debian_shell_evidence import ShellPermit
+from tools.riscv.megrez.board.megrez_debug_contract import StageResult
+from tools.riscv.megrez.image.megrez_debian_install import (
     INSTALLER_FILENAME,
     NetworkInstallRequest,
 )
-from tools.riscv.megrez_preboard import _PinnedPermitOutput
+from tools.riscv.megrez.board.megrez_preboard import _PinnedPermitOutput
 
 
 _MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024

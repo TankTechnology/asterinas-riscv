@@ -23,7 +23,7 @@ from tools.riscv.debian.rootfs.megrez_installer import (
     build_network_archive,
     build_verify_archive,
 )
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     FINAL_MILESTONE_MARKERS,
     BoardSession,
     boot_loaded_artifacts,
@@ -31,34 +31,34 @@ from tools.riscv.megrez_board_session import (
     read_partition_geometry,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_debian_install import (
+from tools.riscv.megrez.image.megrez_debian_install import (
     ROOT_ARCHIVE_FILENAME,
     SERVER_ADDRESS,
     SERVER_PORT,
     _root_server,
     _run_network_install_request,
 )
-from tools.riscv.megrez_debian_shell_board import (
+from tools.riscv.megrez.image.megrez_debian_shell_board import (
     InventoryError,
     InventoryResult,
     install_if_needed,
     run_inventory,
 )
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     FrozenArtifact,
     PersistentShellPlan,
 )
-from tools.riscv.megrez_debian_shell_evidence import ShellPermit
-from tools.riscv.megrez_debian_shell_physical import PhysicalShellResult
-from tools.riscv.megrez_debian_shell_physical_io import (
+from tools.riscv.megrez.image.megrez_debian_shell_evidence import ShellPermit
+from tools.riscv.megrez.image.megrez_debian_shell_physical import PhysicalShellResult
+from tools.riscv.megrez.image.megrez_debian_shell_physical_io import (
     _copy_verified,
     prepare_ymodem_kernel,
     ymodem_boot_arguments,
 )
-from tools.riscv.megrez_debug_contract import StageResult
+from tools.riscv.megrez.board.megrez_debug_contract import StageResult
 
 
-_REPOSITORY = Path(__file__).resolve().parents[2]
+_REPOSITORY = Path(__file__).resolve().parents[4]
 _STAGE1 = "stage1.cpio"
 _READY = b"__DEBIAN_ROOTFS_SHELL_READY__"
 
@@ -209,7 +209,7 @@ class InventoryBoardOperations:
 
 
 def run_inventory_command(values: object) -> InventoryResult:
-    from tools.riscv.megrez_debian_shell import (
+    from tools.riscv.megrez.image.megrez_debian_shell import (
         _load_permit,
         _prepare_directory,
         load_plan,
@@ -235,7 +235,7 @@ def run_inventory_command(values: object) -> InventoryResult:
 
 
 def run_install_command(values: object) -> StageResult:
-    from tools.riscv.megrez_debian_shell import (
+    from tools.riscv.megrez.image.megrez_debian_shell import (
         _load_inventory,
         _load_permit,
         _prepare_directory,
@@ -273,7 +273,7 @@ def run_install_command(values: object) -> StageResult:
 
 
 def run_handoff_command(values: object) -> None:
-    from tools.riscv.megrez_debian_shell import load_plan
+    from tools.riscv.megrez.image.megrez_debian_shell import load_plan
 
     plan = load_plan(values.plan)
     result = PhysicalShellResult.from_bytes(_read_regular(values.result))

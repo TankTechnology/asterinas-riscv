@@ -22,12 +22,12 @@ from tools.riscv.debian.rootfs.gate_protocol import (
     shell_commands,
 )
 from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     P2_NR_SECTORS,
     P2_START_LBA,
     PersistentShellPlan,
 )
-from tools.riscv.megrez_debian_shell_evidence import ShellPermit
+from tools.riscv.megrez.image.megrez_debian_shell_evidence import ShellPermit
 
 
 _READY_MARKER = b"__DEBIAN_ROOTFS_SHELL_READY__"

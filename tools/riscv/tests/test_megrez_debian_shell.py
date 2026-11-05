@@ -20,7 +20,7 @@ import unittest
 from unittest import mock
 import zlib
 
-from tools.riscv.megrez_debian_shell_contract import (
+from tools.riscv.megrez.image.megrez_debian_shell_contract import (
     P2_NR_SECTORS,
     P2_START_LBA,
     SHELL_ARTIFACT_ORDER,
@@ -29,16 +29,16 @@ from tools.riscv.megrez_debian_shell_contract import (
     ShellContractError,
     validate_rootfs_identity,
 )
-from tools.riscv.megrez_debian_shell_evidence import (
+from tools.riscv.megrez.image.megrez_debian_shell_evidence import (
     QemuShellEvidence,
     ShellPermit,
     ShellPermitError,
     issue_shell_permit,
     validate_qemu_result,
 )
-from tools.riscv.megrez_debian_shell import _parser, main, qemu_gate_argv, run_qemu_gate
+from tools.riscv.megrez.image.megrez_debian_shell import _parser, main, qemu_gate_argv, run_qemu_gate
 from tools.riscv.debian.rootfs.gate_protocol import shell_commands
-from tools.riscv.megrez_debian_shell_board import (
+from tools.riscv.megrez.image.megrez_debian_shell_board import (
     InventoryError,
     InventoryResult,
     classify_inventory_log,
@@ -47,18 +47,18 @@ from tools.riscv.megrez_debian_shell_board import (
     run_inventory,
     verifier_bootargs,
 )
-from tools.riscv.megrez_board_session import PartitionGeometry
-from tools.riscv.megrez_debug_contract import StageResult
-from tools.riscv.megrez_preboard import PreboardError
-from tools.riscv import megrez_debian_shell_physical_io as physical_io
-from tools.riscv import megrez_debian_shell_cli_io as shell_cli_io
-from tools.riscv.megrez_debian_shell_physical import (
+from tools.riscv.megrez.board.megrez_board_session import PartitionGeometry
+from tools.riscv.megrez.board.megrez_debug_contract import StageResult
+from tools.riscv.megrez.board.megrez_preboard import PreboardError
+from tools.riscv.megrez.image import megrez_debian_shell_physical_io as physical_io
+from tools.riscv.megrez.image import megrez_debian_shell_cli_io as shell_cli_io
+from tools.riscv.megrez.image.megrez_debian_shell_physical import (
     PhysicalBoot,
     PhysicalShellResult,
     dnsmasq_tftp_argv,
     run_physical_gate,
 )
-from tools.riscv.megrez_debian_shell_physical_io import (
+from tools.riscv.megrez.image.megrez_debian_shell_physical_io import (
     PhysicalBoardOperations,
     TftpOnlyServer,
     _copy_verified,
@@ -301,7 +301,7 @@ class PersistentShellContractTests(unittest.TestCase):
         path.write_bytes(payload)
 
         with mock.patch(
-            "tools.riscv.megrez_debian_shell_contract.os.lstat",
+            "tools.riscv.megrez.image.megrez_debian_shell_contract.os.lstat",
             side_effect=AssertionError("path was reopened after hashing"),
         ):
             artifact = FrozenArtifact.from_path("stage1", path)
@@ -330,15 +330,15 @@ class PersistentShellContractTests(unittest.TestCase):
 
         with (
             mock.patch(
-                "tools.riscv.megrez_debian_shell_contract.load_manifest",
+                "tools.riscv.megrez.image.megrez_debian_shell_contract.load_manifest",
                 return_value=manifest,
             ) as load_manifest_mock,
             mock.patch(
-                "tools.riscv.megrez_debian_shell_contract.validate_frozen_root",
+                "tools.riscv.megrez.image.megrez_debian_shell_contract.validate_frozen_root",
                 return_value=manifest,
             ) as validate_root_mock,
             mock.patch(
-                "tools.riscv.megrez_debian_shell_contract.load_package_checksums",
+                "tools.riscv.megrez.image.megrez_debian_shell_contract.load_package_checksums",
                 return_value=downloaded_packages,
             ) as load_checksums_mock,
         ):
@@ -381,15 +381,15 @@ class PersistentShellContractTests(unittest.TestCase):
             with (
                 self.subTest(values=values),
                 mock.patch(
-                    "tools.riscv.megrez_debian_shell_contract.load_manifest",
+                    "tools.riscv.megrez.image.megrez_debian_shell_contract.load_manifest",
                     return_value=manifest,
                 ),
                 mock.patch(
-                    "tools.riscv.megrez_debian_shell_contract.validate_frozen_root",
+                    "tools.riscv.megrez.image.megrez_debian_shell_contract.validate_frozen_root",
                     return_value=manifest,
                 ),
                 mock.patch(
-                    "tools.riscv.megrez_debian_shell_contract.load_package_checksums",
+                    "tools.riscv.megrez.image.megrez_debian_shell_contract.load_package_checksums",
                     return_value=downloaded_packages,
                 ),
             ):
@@ -399,15 +399,15 @@ class PersistentShellContractTests(unittest.TestCase):
         manifest = SimpleNamespace(**valid)
         with (
             mock.patch(
-                "tools.riscv.megrez_debian_shell_contract.load_manifest",
+                "tools.riscv.megrez.image.megrez_debian_shell_contract.load_manifest",
                 return_value=manifest,
             ),
             mock.patch(
-                "tools.riscv.megrez_debian_shell_contract.validate_frozen_root",
+                "tools.riscv.megrez.image.megrez_debian_shell_contract.validate_frozen_root",
                 return_value=manifest,
             ),
             mock.patch(
-                "tools.riscv.megrez_debian_shell_contract.load_package_checksums",
+                "tools.riscv.megrez.image.megrez_debian_shell_contract.load_package_checksums",
                 return_value=(("dash", "riscv64", "1", "b" * 64),),
             ),
         ):
@@ -1533,7 +1533,7 @@ class PersistentShellCliTests(unittest.TestCase):
 
     def test_check_loads_one_canonical_plan_without_side_effects(self) -> None:
         with mock.patch(
-            "tools.riscv.megrez_debian_shell.validate_rootfs_identity"
+            "tools.riscv.megrez.image.megrez_debian_shell.validate_rootfs_identity"
         ) as validate_rootfs:
             self.assertEqual(main(["check", str(self.plan_path)]), 0)
         validate_rootfs.assert_called_once_with(self.plan)
@@ -1589,7 +1589,7 @@ class PersistentShellCliTests(unittest.TestCase):
         result_path.write_bytes(result.canonical_bytes())
         with (
             mock.patch(
-                "tools.riscv.megrez_debian_shell.handoff_physical_shell"
+                "tools.riscv.megrez.image.megrez_debian_shell.handoff_physical_shell"
             ) as handoff,
             mock.patch("sys.stderr", new_callable=io.StringIO),
         ):

@@ -39,11 +39,11 @@ import time
 from dataclasses import asdict, dataclass
 from typing import TextIO
 
-from tools.riscv.megrez_debian_shell_physical import (
+from tools.riscv.megrez.image.megrez_debian_shell_physical import (
     run_debian_shell_phase as run_debian_shell_phase,
     shell_commands as shell_commands,
 )
-from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
+from tools.riscv.megrez.image.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
 from tools.riscv.debian.rootfs.debug_console_protocol import (
     DEBUG_CONSOLE_READY,
     MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,

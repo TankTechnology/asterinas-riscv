@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.riscv import megrez_rockos_attestation as rockos
-from tools.riscv.megrez_boot_manifest import ExtlinuxGeneration
-from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan
+from tools.riscv.megrez.board import megrez_rockos_attestation as rockos
+from tools.riscv.megrez.board.megrez_boot_manifest import ExtlinuxGeneration
+from tools.riscv.megrez.board.megrez_debug_contract import ArtifactIdentity, DebugPlan
 
 
 MMC_ARTIFACTS = {

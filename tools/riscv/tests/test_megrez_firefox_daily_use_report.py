@@ -12,7 +12,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.riscv.megrez_firefox_daily_use_report import (
+from tools.riscv.megrez.desktop.megrez_firefox_daily_use_report import (
     ReportError,
     build_report,
     main,

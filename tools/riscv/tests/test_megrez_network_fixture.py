@@ -14,7 +14,7 @@ import threading
 import unittest
 
 from tools.riscv.debian.rootfs.browser_workload_contract import MODES
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.network.megrez_network_fixture import (
     BROWSER_API,
     BROWSER_API_PATH,
     BROWSER_AUDIO,

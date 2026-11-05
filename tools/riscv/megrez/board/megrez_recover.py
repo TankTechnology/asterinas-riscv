@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "board"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "board"))
 
 from megrez_console import Console  # noqa: E402
 

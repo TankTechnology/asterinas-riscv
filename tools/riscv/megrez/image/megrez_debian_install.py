@@ -26,9 +26,9 @@ from tools.riscv.debian.rootfs.megrez_installer import (
     _canonical_root_url,
     build_network_archive,
 )
-from tools.riscv.megrez_debug_contract import ArtifactIdentity, DebugPlan, StageResult
-from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
-from tools.riscv.megrez_preboard import (
+from tools.riscv.megrez.board.megrez_debug_contract import ArtifactIdentity, DebugPlan, StageResult
+from tools.riscv.megrez.board.megrez_debug_simulation import _validate_current_artifacts
+from tools.riscv.megrez.board.megrez_preboard import (
     PreboardPermit,
     _git_identity,
     _PinnedPermitOutput,
@@ -289,7 +289,7 @@ def _board_command(
     return [
         sys.executable,
         "-m",
-        "tools.riscv.megrez_board_session",
+        "tools.riscv.megrez.board.megrez_board_session",
         device,
         "--booti",
         KERNEL_FILENAME,
@@ -432,7 +432,7 @@ def run_network_install(
     repository = (
         repository_root.absolute()
         if repository_root is not None
-        else Path(__file__).resolve().parents[2]
+        else Path(__file__).resolve().parents[4]
     )
     output = _safe_directory(output_directory, repository=repository)
     with _PinnedPermitOutput(output / "result.json", repository) as publication:

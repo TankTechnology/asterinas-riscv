@@ -811,8 +811,8 @@ class RealStartOperations:
         self._phase_tail = combined[-tail_length:]
 
     def open(self, timeout: float) -> None:
-        from tools.riscv.megrez_board_session import BoardSession, open_serial
-        from tools.riscv.megrez_debug_board import _lock_serial
+        from tools.riscv.megrez.board.megrez_board_session import BoardSession, open_serial
+        from tools.riscv.megrez.board.megrez_debug_board import _lock_serial
 
         fd = open_serial(self._device)
         try:
@@ -834,7 +834,7 @@ class RealStartOperations:
         return self._session
 
     def load(self, manifest: DesktopBootManifest, timeout: float) -> dict[str, int]:
-        from tools.riscv.megrez_board_session import LOAD_RESULT_PATTERN
+        from tools.riscv.megrez.board.megrez_board_session import LOAD_RESULT_PATTERN
 
         session = self._require_session()
         deadline = time.monotonic() + timeout
@@ -855,7 +855,7 @@ class RealStartOperations:
                 raise DesktopBootError(
                     f"generation {manifest.generation_sha256[:16]} unavailable "
                     "on partition 3; run `python3 -m "
-                    "tools.riscv.megrez_desktop_boot prepare`: "
+                    "tools.riscv.megrez.desktop.megrez_desktop_boot prepare`: "
                     f"{error}"
                 ) from error
             sizes[name] = session._verify_loaded_artifact(
@@ -868,7 +868,7 @@ class RealStartOperations:
         return sizes
 
     def boot(self, manifest: DesktopBootManifest, timeout: float) -> None:
-        from tools.riscv.megrez_board_session import uboot_bootargs_commands
+        from tools.riscv.megrez.board.megrez_board_session import uboot_bootargs_commands
         from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 
         session = self._require_session()
@@ -1064,7 +1064,7 @@ def _read_password(descriptor: int | None, factory_login: bool) -> str:
 
 
 def _prepare_main(args: argparse.Namespace) -> int:
-    from tools.riscv.megrez_rockos_attestation import (
+    from tools.riscv.megrez.board.megrez_rockos_attestation import (
         RealRockOsAttestationOperations,
     )
 

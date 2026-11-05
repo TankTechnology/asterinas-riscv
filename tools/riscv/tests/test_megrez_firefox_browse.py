@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tools.riscv import megrez_firefox_browse as browse
-from tools.riscv.megrez_boot_stability import BootReadinessEvidence
+from tools.riscv.megrez.desktop import megrez_firefox_browse as browse
+from tools.riscv.megrez.board.megrez_boot_stability import BootReadinessEvidence
 
 
 def _plan() -> SimpleNamespace:

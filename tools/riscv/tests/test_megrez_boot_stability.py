@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tools.riscv import megrez_boot_stability as gate
+from tools.riscv.megrez.board import megrez_boot_stability as gate
 
 
 class _Publisher:
@@ -944,7 +944,7 @@ class BootStabilityPublicationTests(unittest.TestCase):
                 / "boot-stability"
             )
             output.mkdir(parents=True)
-            module = repository / "tools/riscv/megrez_boot_stability.py"
+            module = repository / "tools/riscv/megrez/board/megrez_boot_stability.py"
             module.parent.mkdir(parents=True)
             stale = output / "result.json"
             stale.write_text('{"passed":true}\n')
@@ -1012,8 +1012,8 @@ class BootStabilityDocumentationTests(unittest.TestCase):
             "RockOS",
             "partition 2 is never written",
             "test_riscv_megrez_boot_stability_unit",
-            "tools.riscv.megrez_boot_stability",
-            "tools.riscv.megrez_rockos_attestation",
+            "tools.riscv.megrez.board.megrez_boot_stability",
+            "tools.riscv.megrez.board.megrez_rockos_attestation",
             "deployment-measurement.serial.log",
             "deployment trust boundary",
             "cycle-1.diagnostics.log",

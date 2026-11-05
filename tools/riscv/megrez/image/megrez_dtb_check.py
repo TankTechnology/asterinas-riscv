@@ -24,9 +24,9 @@ The checks mirror the kernel, not the specification:
 
 Usage:
 
-    python3 tools/riscv/megrez_dtb_check.py board.dtb
-    python3 tools/riscv/megrez_dtb_check.py board.dtb --json
-    python3 tools/riscv/megrez_dtb_check.py board.dts --verbose
+    python3 tools/riscv/megrez/image/megrez_dtb_check.py board.dtb
+    python3 tools/riscv/megrez/image/megrez_dtb_check.py board.dtb --json
+    python3 tools/riscv/megrez/image/megrez_dtb_check.py board.dts --verbose
 
 Exit status is 0 when nothing is missing at `fail` level, 1 otherwise. `warn`
 findings do not fail the check: they are things the kernel can boot without

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tools.riscv.debian.rootfs.megrez_installer import parse_newc
 
-from tools.riscv.megrez_sdhci_gate import (
+from tools.riscv.megrez.board.megrez_sdhci_gate import (
     MAX_TRANSCRIPT_BYTES,
     READ_PROBE_BYTES,
     classify,

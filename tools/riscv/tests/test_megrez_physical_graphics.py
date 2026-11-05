@@ -24,7 +24,7 @@ from unittest import mock
 import zlib
 
 
-MODULE_PATH = Path(__file__).parents[1] / "megrez_physical_graphics.py"
+MODULE_PATH = Path(__file__).parents[1] / "megrez/desktop/megrez_physical_graphics.py"
 REPOSITORY_ROOT = Path(__file__).parents[3]
 MAKEFILE_PATH = REPOSITORY_ROOT / "Makefile"
 README_PATH = Path(__file__).parents[1] / "README.md"
@@ -51,7 +51,7 @@ def png_payload(*, width: int = 1920, height: int = 1080, value: int = 0x35) -> 
 
 def load_gate(test: unittest.TestCase):
     test.assertTrue(MODULE_PATH.is_file(), "Megrez physical graphics gate is missing")
-    return importlib.import_module("tools.riscv.megrez_physical_graphics")
+    return importlib.import_module("tools.riscv.megrez.desktop.megrez_physical_graphics")
 
 
 class HumanCodeTests(unittest.TestCase):
@@ -1595,7 +1595,7 @@ class PhysicalCommandTests(unittest.TestCase):
         )
 
     def test_rejects_command_exit_before_pass_without_waiting(self) -> None:
-        from tools.riscv import megrez_physical_graphics as gate
+        from tools.riscv.megrez.desktop import megrez_physical_graphics as gate
 
         ready = (
             "ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256="
@@ -2579,7 +2579,7 @@ class DocumentationTests(unittest.TestCase):
             '--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)"',
             prepare_recipe,
         )
-        self.assertNotIn("tools.riscv.megrez_debug board", prepare_recipe)
+        self.assertNotIn("tools.riscv.megrez.board.megrez_debug board", prepare_recipe)
         self.assertNotIn("run_physical_graphics", prepare_recipe)
 
     def test_operator_guide_freezes_source_inputs_and_physical_boundaries(self) -> None:

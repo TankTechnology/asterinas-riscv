@@ -46,7 +46,7 @@ from tools.riscv.debian.rootfs.browser_web_contract import (
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure as RootfsGateFailure
-from tools.riscv.megrez_board_session import (
+from tools.riscv.megrez.board.megrez_board_session import (
     BoardSession,
     boot_loaded_artifacts,
     crc32_value,
@@ -59,7 +59,7 @@ from tools.riscv.megrez_board_session import (
     safe_ipv4_netmask,
     validate_recovery_epoch,
 )
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.network.megrez_network_fixture import (
     FIXTURE_PATH,
     PAYLOAD_SHA256,
     PAYLOAD_SIZE,
@@ -67,7 +67,7 @@ from tools.riscv.megrez_network_fixture import (
     FixtureServer,
     is_successful_summary,
 )
-from tools.riscv.megrez_proxy_bridge import (
+from tools.riscv.megrez.network.megrez_proxy_bridge import (
     ProxyBridge,
     proxy_bridge_config_from_environment,
 )

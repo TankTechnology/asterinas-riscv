@@ -39,7 +39,7 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
 from tools.riscv.debian.rootfs.contract import ContractError, load_manifest
 from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig as RootfsGateConfig
-from tools.riscv.megrez_network_fixture import (
+from tools.riscv.megrez.network.megrez_network_fixture import (
     BROWSER_DOWNLOAD,
     BROWSER_DOWNLOAD_PATH,
     BROWSER_DOWNLOAD_SHA256,

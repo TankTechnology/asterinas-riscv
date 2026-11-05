@@ -13,8 +13,8 @@ import time
 import tty
 
 from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
-from tools.riscv.megrez_probe import qemu_probe_argv
-from tools.riscv.megrez_boot_menu import MODE_ARGS
+from tools.riscv.megrez.board.megrez_probe import qemu_probe_argv
+from tools.riscv.megrez.board.megrez_boot_menu import MODE_ARGS
 
 
 def run(kernel: Path, initramfs: Path, mode: str, output: Path) -> dict:

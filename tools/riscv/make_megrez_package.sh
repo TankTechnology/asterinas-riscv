@@ -125,7 +125,7 @@ if [ -n "${DTB}" ]; then
     echo "== [3/5] board DTB check =="
     # Runs before packaging: a DTB the kernel cannot boot with makes the
     # package useless, so it stops here.
-    python3 tools/riscv/megrez_dtb_check.py "${DTB}" --verbose \
+    python3 tools/riscv/megrez/image/megrez_dtb_check.py "${DTB}" --verbose \
         || { echo "board DTB check failed; not packaging" >&2; exit 1; }
 fi
 
@@ -189,7 +189,7 @@ booti 0x80200000 0x83000000:${initrd_size}
 
 ## 仍然缺的
 
-- 板级 DTB：从板子 SD 的 `/boot` 取，用 `tools/riscv/megrez_patch_dtb.py` 修补。
+- 板级 DTB：从板子 SD 的 `/boot` 取，用 `tools/riscv/megrez/image/megrez_patch_dtb.py` 修补。
 - 主机有线网卡（当前只有 WiFi）。
 - 真机首启验证：main 这条支线尚未在 EIC7700 上跑过。
 TEXT
