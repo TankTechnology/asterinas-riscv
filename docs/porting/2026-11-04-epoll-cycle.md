@@ -51,8 +51,27 @@ DFS 遍历时先收集弱引用并释放被遍历集合的锁再递归，不会�
 - `epoll_ctl05` 此前在 `test/initramfs/.../all.txt` 里被注释掉；本次启用，
   套件计数 767 → 768。它构造五层链后把最外层加回最内层，走的就是新的
   `reaches` 路径，返回 `ELOOP`，说明 DFS 在真实内核路径上生效。
-- 板子上旧内核的"环被接受 + 挂死"已复现（见上）；修复后内核的 2-环对照
-  实验因板上被挂死进程拖住、需要一次物理复位后补做。
+- 板子上旧内核的"环被接受 + 挂死"已复现（见上）。
+- 2026-11-05 板子物理重启后补做了 2-环对照：修复内核
+  `0d8360d5…`（`/root/kernel-epollfix.img`）由 U-Boot 直接加载，
+  `/root/epoll-cycle-check` 输出
+
+  ```text
+  EPCYCLE add(a<-b)=0 errno=0
+  EPCYCLE add(b<-a)=-1 errno=40 (ELOOP=40)
+  EPCYCLE wait n=1 errno=0
+  EPCYCLE busy_returns=1000/1000
+  ```
+
+  第二次 `EPOLL_CTL_ADD` 返回 `ELOOP`，带 200 ms 超时的 `epoll_wait`
+  正常返回（旧内核在这里挂死），修复在该板的真实内核路径上成立。
+  `busy_returns=1000/1000` 是因为管道始终可读、用例没有读走数据，属预期。
+- 注意：该修复内核在 2026-11-05 的两次启动中，有一次停在 systemd 早期
+  （内核时间 1.7 s）不再输出，由 721 s 看门狗复位后经 U-Boot 手工引导恢复；
+  同镜像第二次启动正常并在 ~7 s 进入 debug console。是否与已知的
+  first-process spawn 竞态有关尚未定位，因此板子的默认 `kernel-rel.img`
+  仍保留验证更充分的 `e2d537…`（alloc 性能版），修复内核先按需从 U-Boot
+  加载。
 
 ## 影响面
 
