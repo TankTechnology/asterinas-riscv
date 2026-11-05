@@ -128,19 +128,43 @@ sampled-PC 只有在"缺的是指令区域归因"时才被准入，且其设计�
 证据目录：
 ```
 
-## 文档地图与历史归档
+## 文档地图：活文档 / 日期报告 / 证据 / 历史快照
 
-- [唯一可执行命令来源](../../tools/riscv/README.md)
-- [合并后 main 的 QEMU 与真机验证（本次）](evidence/2026-09-20-merged-main-physical-validation.md)
-- [Firefox 唤醒均衡 A/B](../../performance/2026-09-19-firefox-wake-balance-physical-ab.md)
-- [Firefox daily-use 门禁状态](../../performance/2026-09-17-firefox-daily-use-gate.md)
-- [Megrez 网络硬件研究契约](evidence/megrez-network-hardware-research-contract.md)
-- [Megrez/EIC7700 网络硬件资料账本](evidence/megrez-network-hardware-source-ledger.md)
-- [QEMU framebuffer 显示链（已验证）](riscv-qemu-desktop.md)
-- [追加式证据索引](evidence/megrez-history-index.md)
-- [历史启动指南快照](megrez-asterinas-boot-guide.md)
-- [历史启动流程可视化快照](megrez-boot-flow.html)
-- [`docs/superpowers/` 设计、计划与审查史](../superpowers/)
+规则：新结论进“活文档”；一次性实验进按日期命名的报告；原始输出进
+`evidence/`；历史快照不再修改，只用于理解当时的决策与失败模式。
 
-长指南和 HTML 只用于理解概念、历史决策与失败模式，不维护当前状态或当前
-命令。协作者应始终从本页开始，再按需要进入命令页或某一条冻结证据。
+### 活文档（随代码更新）
+
+- [工具总索引](../../tools/README.md) · [RISC-V 工具布局](../../tools/riscv/LAYOUT.md)
+  · [RISC-V 命令手册](../../tools/riscv/README.md)
+- [板子网络地址约定](board-addresses.md)
+- [单镜像 / 单启动流程目标](board-image-current.md)
+- [上板命令速查](megrez-board-session-commands.md) ·
+  [真机运行检查清单](megrez-board-handoff-checklist.md)
+- [下游总览](asterinas-riscv-status.md)
+- [真机 release 内核与 syscall 基线](../performance/2026-11-05-board-release-baseline.md)
+
+### 按日期报告（只读）
+
+- 本目录 `2026-*.md` 与 `20261029-*.md`：每次实验的冻结记录，命令可复跑，
+  结论绑定当时的 commit 与镜像。
+- [KE-M2…M7 报告](reports/)：知识工程（KE）阶段的结论与判定日志链接。
+
+### 证据
+
+- [追加式证据索引](evidence/megrez-history-index.md)：按阶段列出已验证边界。
+- `evidence/<日期>-<主题>/`：截图、串口日志、result JSON 等原始输出。
+- [命名空间运行日志归档](evidence/2026-11-05-namespace-run-logs/)：从
+  `tools/` 移出的 14 份判定日志。
+
+### 历史快照（不再更新）
+
+- [启动指南与工程复盘](megrez-asterinas-boot-guide.md) ·
+  [启动流程可视化](megrez-boot-flow.html)
+- [QEMU 桌面显示链](riscv-qemu-desktop.md) ·
+  [真机验证回填设计](riscv-physical-backfill.md) ·
+  [`/dev/snd` 设计提案](snd-device-model.md) ·
+  [Debian browser M5 准入](debian-browser-m5.md)
+- `docs/superpowers/`：设计、计划与审查史。
+
+协作者应始终从本页开始，再按需要进入工具命令页或某一条冻结证据。
