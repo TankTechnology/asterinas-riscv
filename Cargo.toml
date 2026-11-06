@@ -30,6 +30,7 @@ members = [
     "kernel/comps/block",
     "kernel/comps/cmdline",
     "kernel/comps/console",
+    "kernel/comps/device",
     "kernel/comps/dwmac",
     "kernel/comps/framebuffer",
     "kernel/comps/i8042",
@@ -81,6 +82,7 @@ default-members = [
     "kernel/comps/block",
     "kernel/comps/cmdline",
     "kernel/comps/console",
+    "kernel/comps/device",
     "kernel/comps/dwmac",
     "kernel/comps/framebuffer",
     "kernel/comps/i8042",
@@ -159,6 +161,7 @@ ostd-test = { version = "0.18.0", path = "ostd/libs/ostd-test" }
 aster-block = { path = "kernel/comps/block" }
 aster-cmdline = { path = "kernel/comps/cmdline" }
 aster-console = { path = "kernel/comps/console" }
+aster-device = { path = "kernel/comps/device" }
 aster-dwmac = { path = "kernel/comps/dwmac" }
 aster-framebuffer = { path = "kernel/comps/framebuffer" }
 aster-i8042 = { path = "kernel/comps/i8042" }

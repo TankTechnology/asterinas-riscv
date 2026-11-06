@@ -1,0 +1,20 @@
+PROBE_LIST /sys: . .. devices bus class dev fs kernel block
+PROBE_LIST /sys/dev: .. . char block
+PROBE_LIST /sys/dev/char: .. . 226:0 226:128
+PROBE_LIST /sys/class: .. . tty graphics
+PROBE_LIST /sys/bus: .. . platform
+PROBE_LIST /sys/devices: .. . virtual
+PROBE_STAT /sys/dev/char/226:0 ok
+PROBE_LINK /sys/dev/char/226:0/device/subsystem -> ../../../../bus/platform
+PROBE_READ /sys/dev/char/226:0/device/uevent: DRIVER=virtio_gpu
+MODALIAS=virtio:d00000010
+PROBE_READ /sys/dev/char/226:0/uevent: MAJOR=226
+MINOR=0
+DEVNAME=dri/card0
+DEVTYPE=drm_minor
+PROBE_LIST /sys/dev/char/226:0/device/drm: .. . card0 renderD128
+PROBE_STAT /sys/class/tty/tty0 ok
+PROBE_READ /sys/class/tty/tty0/active: tty1
+PROBE_STAT /sys/class/graphics/fb0 ok
+PROBE_LINK /sys/class/graphics/fb0/device/subsystem -> ../../../../bus/platform
+PROBE_DONE
