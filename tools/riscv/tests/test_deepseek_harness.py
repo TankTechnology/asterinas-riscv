@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 from tools.riscv.deepseek import client, runner
+from tools.riscv.deepseek import dsh_board
 from tools.riscv.deepseek.board_tools import BoardTools
 
 
@@ -130,6 +133,67 @@ class BoardToolTests(unittest.TestCase):
     def test_unknown_tool_is_an_error_string(self) -> None:
         tools = BoardTools("/tmp/x.log", "/tmp/x.cmd")
         self.assertIn("unknown tool", tools.call("no_such_tool", {}))
+
+
+class OnBoardHarnessTests(unittest.TestCase):
+    def test_agent_runs_a_shell_tool_and_returns_text(self) -> None:
+        class FakeChat:
+            def __init__(self) -> None:
+                self.calls: list[list[dict]] = []
+                self.responses = [
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "id": "c1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "run_shell",
+                                                "arguments": '{"command": "echo hi"}',
+                                            },
+                                        }
+                                    ],
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "choices": [
+                            {"message": {"role": "assistant", "content": "it said hi"}}
+                        ]
+                    },
+                ]
+
+            def complete(self, messages, tools, max_tokens=2048):
+                self.calls.append(list(messages))
+                return self.responses.pop(0)
+
+        fake = FakeChat()
+        answer = dsh_board.run_agent(fake, "say hi")
+        self.assertEqual(answer, "it said hi")
+        tool_message = fake.calls[1][-1]
+        self.assertEqual(tool_message["role"], "tool")
+        self.assertEqual(tool_message["tool_call_id"], "c1")
+        self.assertIn("hi", tool_message["content"])
+
+    def test_run_shell_reports_exit_code(self) -> None:
+        result = dsh_board.run_shell("echo hello")
+        self.assertIn("exit=0", result)
+        self.assertIn("hello", result)
+
+    def test_key_can_come_from_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            key_path = Path(directory) / "key"
+            key_path.write_text("sk-test\n", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {"DSH_API_KEY": "", "DEEPSEEK_API_KEY": "", "ANTHROPIC_API_KEY": ""},
+            ):
+                self.assertEqual(dsh_board.read_key(key_path), "sk-test")
 
 
 if __name__ == "__main__":

@@ -80,9 +80,57 @@ key or a board.
 
 ## Not included
 
-- Running the harness *on* the board. The board can reach `api.deepseek.com`
-  (see `2026-11-04-remote-access-and-deepseek.md`), but that would put the API
-  key on the guest; the host-side design avoids it.
 - A host shell tool, arbitrary local file reads or network access for the
   model. Add a tool deliberately, with the same restriction pattern as
   `board_push`, if a task needs it.
+
+## On-board variant: dsh inside the OS
+
+`tools/riscv/deepseek/dsh_board.py` is a self-contained, standard-library
+script that runs *on the board* with the system Python. It speaks the OpenAI
+protocol (the campus gateway `https://zgc.apihy.com/v1`, a New API
+deployment) and exposes one tool, `run_shell`, which runs commands on the
+board itself — the harness lives inside the OS it operates.
+
+Deploying it (all over the serial bridge; the key file is transferred with
+the guest's terminal echo off so it never appears in the console log):
+
+```bash
+# host: push the harness
+tools/riscv/board/megrez_console.py push tools/riscv/deepseek/dsh_board.py \
+    /root/dsh_board.py
+
+# host: write the key locally with mode 600, then on the console
+#   stty -echo
+#   cat > /tmp/dsh-key        (push the key file; payload is not echoed)
+#   install -d -m 700 /root/.config/dsh
+#   install -m 600 /tmp/dsh-key /root/.config/dsh/key
+#   rm -f /tmp/dsh-key; stty echo
+```
+
+`dsh_board.py` reads the key from `DSH_API_KEY`, `DEEPSEEK_API_KEY` or
+`ANTHROPIC_API_KEY` first, then from `~/.config/dsh/key`. It never prints the
+key. Endpoint and model come from `DSH_BASE_URL`/`DSH_MODEL` or
+`--base-url`/`--model`.
+
+Verified on the board:
+
+```
+$ python3 /root/dsh_board.py --check
+DSH_ONBOARD_OK model=deepseek-v4.1-flash
+正常
+
+$ python3 /root/dsh_board.py "在板上运行 uname -a 和 df -h /，然后用一句话汇报"
+[tool] run_shell {"command": "uname -a"}
+[tool] exit=0
+Linux asterinas 5.13.0 #1 SMP ... riscv64 GNU/Linux
+[tool] run_shell {"command": "df -h /"}
+[tool] exit=0
+/dev/mmcblk0p2  3.0G  2.7G  130M  96% /
+一句话汇报：板子运行 RISC-V 64 位 Linux（内核 5.13.0），根分区仅剩 130M。
+```
+
+The board reaches the gateway through the campus portal; the clock must be
+correct (systemd-timesyncd handles that) and the portal session current.
+No API key is ever committed to the repository; the board keeps it only in
+`/root/.config/dsh/key` with mode 0600.

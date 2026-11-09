@@ -931,6 +931,9 @@
     "tools.riscv.tests.test_deepseek_harness.EnvironmentTests.test_dry_run_prints_the_endpoint_without_a_key",
     "tools.riscv.tests.test_deepseek_harness.EnvironmentTests.test_missing_key_is_reported",
     "tools.riscv.tests.test_deepseek_harness.EnvironmentTests.test_model_suffix_is_stripped",
+    "tools.riscv.tests.test_deepseek_harness.OnBoardHarnessTests.test_agent_runs_a_shell_tool_and_returns_text",
+    "tools.riscv.tests.test_deepseek_harness.OnBoardHarnessTests.test_key_can_come_from_a_file",
+    "tools.riscv.tests.test_deepseek_harness.OnBoardHarnessTests.test_run_shell_reports_exit_code",
     "tools.riscv.tests.test_drm_cursor_gate.DrmCursorBuilderTests.test_builder_cli_and_failure_preserve_outputs",
     "tools.riscv.tests.test_drm_cursor_gate.DrmCursorBuilderTests.test_builder_is_deterministic_and_has_closed_entries",
     "tools.riscv.tests.test_drm_cursor_gate.DrmCursorClassifierTests.test_requires_ordered_guest_and_host_evidence",
@@ -2562,5 +2565,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2431
+  "tests": 2434
 }
