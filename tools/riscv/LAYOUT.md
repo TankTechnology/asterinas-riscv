@@ -125,6 +125,17 @@ tools/riscv/rt selftest --list
 tools/riscv/rt selftest console net --dry-run
 ```
 
+Debian application compatibility has its own matrix:
+
+```bash
+tools/riscv/rt apps --list
+tools/riscv/rt apps --board --install jq mousepad
+```
+
+The matrix lives in `apps/manifest.py`; the guest probe is
+`apps/guest/probe.sh`. `--install` runs apt, otherwise the guest must already
+have the packages.
+
 Until the guest bundle lands, integration gates run through the transitional
 scenario registry, for example
 `tools/riscv/rt gate browser-web` or `tools/riscv/rt gate daily-use`; the

@@ -1,6 +1,7 @@
 {
   "commit": "318816505aafdfddf6be9f777c1945707303325d",
   "module_names": [
+    "tools.riscv.tests.test_apps_matrix",
     "tools.riscv.tests.test_browser_composite_capture",
     "tools.riscv.tests.test_browser_composite_manifest",
     "tools.riscv.tests.test_browser_daily_use_contract",
@@ -59,7 +60,6 @@
     "tools.riscv.tests.test_ltp_package",
     "tools.riscv.tests.test_ltp_result",
     "tools.riscv.tests.test_ltp_suite",
-    "tools.riscv.tests.test_wiring",
     "tools.riscv.tests.test_marionette_diagnostics",
     "tools.riscv.tests.test_megrez_board_session",
     "tools.riscv.tests.test_megrez_boot_manifest",
@@ -116,9 +116,10 @@
     "tools.riscv.tests.test_tlb_shootdown_probe_timing",
     "tools.riscv.tests.test_tooling_surface",
     "tools.riscv.tests.test_validate_run_kernel_log",
+    "tools.riscv.tests.test_wiring",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 116,
+  "modules": 117,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -128,6 +129,14 @@
     "requires the pinned Firefox archive and cached Node"
   ],
   "test_ids": [
+    "tools.riscv.tests.test_apps_matrix.AppManifestTests.test_gui_entries_have_a_window_and_cli_entries_an_expectation",
+    "tools.riscv.tests.test_apps_matrix.AppManifestTests.test_names_and_packages_are_unique",
+    "tools.riscv.tests.test_apps_matrix.AppManifestTests.test_packages_are_deduplicated_in_order",
+    "tools.riscv.tests.test_apps_matrix.AppManifestTests.test_select_preserves_manifest_order",
+    "tools.riscv.tests.test_apps_matrix.AppManifestTests.test_select_rejects_unknown_application",
+    "tools.riscv.tests.test_apps_matrix.ProbeProtocolTests.test_parse_results_reads_pass_fail_skip",
+    "tools.riscv.tests.test_apps_matrix.ProbeProtocolTests.test_plan_defaults_to_the_whole_matrix",
+    "tools.riscv.tests.test_apps_matrix.ProbeProtocolTests.test_render_tsv_keeps_the_six_fields",
     "tools.riscv.tests.test_browser_composite_capture.BrowserCompositeCaptureTests.test_capture_records_each_completed_phase_once",
     "tools.riscv.tests.test_browser_composite_capture.BrowserCompositeCaptureTests.test_capture_rejects_changed_document_and_keeps_prior_checkpoint",
     "tools.riscv.tests.test_browser_composite_capture.BrowserCompositeCaptureTests.test_capture_rejects_failed_or_reordered_workload",
@@ -2544,5 +2553,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2415
+  "tests": 2423
 }

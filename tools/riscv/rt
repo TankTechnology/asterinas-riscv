@@ -55,6 +55,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     # host tests and kernel tests
     "test": ("module", "tools.riscv.host_test_runner"),
     "selftest": ("module", "tools.riscv.selftests.runner"),
+    "apps": ("module", "tools.riscv.apps.runner"),
     "ktest": ("script", "ktest/kernel_ktest.sh"),
     "ktest-gate": ("script", "ktest/gate_ktests.sh"),
     # kernel log contract
