@@ -136,6 +136,17 @@ The matrix lives in `apps/manifest.py`; the guest probe is
 `apps/guest/probe.sh`. `--install` runs apt, otherwise the guest must already
 have the packages.
 
+A DeepSeek-driven agent can operate the board through the serial bridge:
+
+```bash
+tools/riscv/dsh --dry-run
+tools/riscv/dsh "运行 uname -a 并报告内核版本"
+```
+
+`dsh` reads the API key from the environment and exposes only board tools
+(run, read log, verified push, opt-in reboot); see
+[`docs/porting/2026-11-09-deepseek-harness.md`](../../docs/porting/2026-11-09-deepseek-harness.md).
+
 Until the guest bundle lands, integration gates run through the transitional
 scenario registry, for example
 `tools/riscv/rt gate browser-web` or `tools/riscv/rt gate daily-use`; the

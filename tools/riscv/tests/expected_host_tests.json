@@ -27,6 +27,7 @@
     "tools.riscv.tests.test_debian_m7_baidu",
     "tools.riscv.tests.test_debian_rootfs",
     "tools.riscv.tests.test_debian_signed_sources",
+    "tools.riscv.tests.test_deepseek_harness",
     "tools.riscv.tests.test_drm_cursor_gate",
     "tools.riscv.tests.test_drm_firmware_gate",
     "tools.riscv.tests.test_drm_gem_gate",
@@ -119,7 +120,7 @@
     "tools.riscv.tests.test_wiring",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 117,
+  "modules": 118,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -922,6 +923,14 @@
     "tools.riscv.tests.test_debian_signed_sources.DebianSignedSourcesTests.test_writer_output_cannot_alias_either_signed_inrelease",
     "tools.riscv.tests.test_debian_signed_sources.DebianSignedSourcesTests.test_writer_rejects_a_base_mirror_not_named_in_schema_six",
     "tools.riscv.tests.test_debian_signed_sources.DebianSignedSourcesTests.test_writer_rejects_firefox_from_base",
+    "tools.riscv.tests.test_deepseek_harness.AgentLoopTests.test_runs_a_tool_and_returns_the_final_text",
+    "tools.riscv.tests.test_deepseek_harness.AgentLoopTests.test_stops_after_max_turns",
+    "tools.riscv.tests.test_deepseek_harness.BoardToolTests.test_push_rejects_files_outside_the_allowed_roots",
+    "tools.riscv.tests.test_deepseek_harness.BoardToolTests.test_reboot_tool_is_hidden_until_enabled",
+    "tools.riscv.tests.test_deepseek_harness.BoardToolTests.test_unknown_tool_is_an_error_string",
+    "tools.riscv.tests.test_deepseek_harness.EnvironmentTests.test_dry_run_prints_the_endpoint_without_a_key",
+    "tools.riscv.tests.test_deepseek_harness.EnvironmentTests.test_missing_key_is_reported",
+    "tools.riscv.tests.test_deepseek_harness.EnvironmentTests.test_model_suffix_is_stripped",
     "tools.riscv.tests.test_drm_cursor_gate.DrmCursorBuilderTests.test_builder_cli_and_failure_preserve_outputs",
     "tools.riscv.tests.test_drm_cursor_gate.DrmCursorBuilderTests.test_builder_is_deterministic_and_has_closed_entries",
     "tools.riscv.tests.test_drm_cursor_gate.DrmCursorClassifierTests.test_requires_ordered_guest_and_host_evidence",
@@ -2553,5 +2562,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2423
+  "tests": 2431
 }
