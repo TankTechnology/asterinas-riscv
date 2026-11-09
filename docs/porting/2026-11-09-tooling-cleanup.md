@@ -110,6 +110,18 @@ subcommands, implementation in domain packages.
   experiment imports it by its top-level name.
 - The Makefile now invokes `tools/riscv/rt <command>` for every tool target.
 
+## Retired gates
+
+Three milestone gates whose scenarios the browser-web path replaced were
+deleted along with their tests and Makefile targets:
+`browser_m5_qemu_gate` (the M5 offline probe is covered by the browser-web
+gate), `desktop_m9_software_gate` (the M8/M9 software matrix is covered by
+the daily-use path), and the systemd-m2 target (the cross-built systemd image
+is gone; `orchestrate_systemd_m2_gate` remains as the boot helper used by the
+physical-graphics gate). The M5 milestone tuple stays inlined in the browser-web
+test for the non-overlap assertion; the `browser-m5` and
+`desktop-m9-software` rootfs profiles themselves remain buildable.
+
 ## What was deliberately kept
 
 - `tools/riscv/pidns/`, `nsmatrix/`: the C sources are the reproducible part of

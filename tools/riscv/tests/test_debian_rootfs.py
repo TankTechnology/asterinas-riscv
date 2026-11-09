@@ -7279,38 +7279,6 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                     ["close", "cleanup", "drain"],
                 )
 
-    def test_make_target_is_explicit_and_networkless(self) -> None:
-        variables = (
-            "DEBIAN_KERNEL",
-            "DEBIAN_UBOOT",
-            "DEBIAN_DTB",
-            "DEBIAN_STAGE1_INITRAMFS",
-            "DEBIAN_ROOT_IMAGE",
-            "DEBIAN_ROOT_MANIFEST",
-            "DEBIAN_PACKAGES_LOCK",
-            "DEBIAN_PACKAGE_CHECKSUMS",
-            "DEBIAN_SYSTEMD_M2_GATE_OUTPUT",
-        )
-        dry_run = subprocess.run(
-            [
-                "make",
-                "--no-print-directory",
-                "-n",
-                "test_riscv_debian_systemd_m2_gate",
-                *(f"{name}=/tmp/{name.lower()}" for name in variables),
-            ],
-            cwd=REPOSITORY_ROOT,
-            check=True,
-            text=True,
-            capture_output=True,
-        ).stdout
-
-        self.assertIn("tools/riscv/rt image-m2-gate", dry_run)
-        for value in variables:
-            self.assertIn(f"/tmp/{value.lower()}", dry_run)
-        for forbidden in ("curl", "wget", "debootstrap", "http://", "https://"):
-            self.assertNotIn(forbidden, dry_run)
-
     def test_concrete_protocol_drives_asterinas_twice_without_saved_environment(
         self,
     ) -> None:

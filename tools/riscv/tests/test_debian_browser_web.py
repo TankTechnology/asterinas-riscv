@@ -23,7 +23,21 @@ import zlib
 from tools.riscv.debian.rootfs import browser_web_desktop_shell_qemu_gate as shell_gate
 from tools.riscv.debian.rootfs import browser_web_marionette_gate as web_gate
 from tools.riscv.debian.rootfs import browser_web_qemu_gate as web_qemu_gate
-from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
+# The old M5 browser milestones; kept here only to assert the browser-web
+# milestone set does not overlap the retired ones.
+BROWSER_M5_MILESTONES = (
+    "DEBIAN_BROWSER_M5_NETNS firefox=private initial=distinct",
+    "DEBIAN_BROWSER_M5_UDEV state=active",
+    "DEBIAN_BROWSER_M5_LOGIND state=active",
+    "DEBIAN_BROWSER_M5_SESSION user=asterinas tty=tty1",
+    "DEBIAN_BROWSER_M5_INPUT keyboard=evdev pointer=evdev",
+    "DEBIAN_BROWSER_M5_XORG framebuffer=fbdev display=:0",
+    "DEBIAN_BROWSER_M5_CLIENTS window-manager=matchbox browser=firefox-esr terminal=xterm",
+    "DEBIAN_BROWSER_M5_WORKLOAD mode=offline scheme=file network=private-loopback",
+    "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass "
+    "network_mode=private-loopback source=file direct_nonloopback_ip=unavailable",
+    "DEBIAN_BROWSER_M5_READY user=asterinas display=:0",
+)
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     GateError,
     MAX_SCREENSHOT_COMMAND_SECONDS,
