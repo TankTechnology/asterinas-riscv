@@ -44,6 +44,7 @@ impl MessageHeader {
 pub(crate) enum ControlMessage {
     Unix(UnixControlMessage),
     Netlink(NetlinkControlMessage),
+    Socket(SocketControlMessage),
 }
 
 impl ControlMessage {
@@ -92,6 +93,12 @@ impl ControlMessage {
 
         match level {
             CSocketOptionLevel::SOL_SOCKET => {
+                // Timestamp control messages are produced by the kernel on
+                // receive; a sender that supplies them has nothing to do here.
+                if matches!(header.type_(), SCM_TIMESTAMP | SCM_TIMESTAMPNS) {
+                    reader.skip(header.payload_len());
+                    return Ok(None);
+                }
                 // Linux manual pages say (https://man7.org/linux/man-pages/man7/unix.7.html):
                 // "For historical reasons, the ancillary message types listed below are specified
                 // with a SOL_SOCKET type even though they are AF_UNIX specific."
@@ -138,8 +145,53 @@ impl ControlMessage {
         match self {
             Self::Unix(msg) => msg.write_to(writer),
             Self::Netlink(msg) => msg.write_to(writer),
+            Self::Socket(msg) => msg.write_to(writer),
         }
     }
+}
+
+/// A socket-level control message produced by the kernel on receive.
+#[derive(Debug)]
+pub enum SocketControlMessage {
+    Timestamp(CTimeval),
+    TimestampNs(CTimespec),
+}
+
+impl SocketControlMessage {
+    fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
+        let (type_, payload_len) = match self {
+            Self::Timestamp(_) => (SCM_TIMESTAMP, size_of::<CTimeval>()),
+            Self::TimestampNs(_) => (SCM_TIMESTAMPNS, size_of::<CTimespec>()),
+        };
+        if writer.avail() < size_of::<CControlHeader>() + payload_len {
+            return_errno_with_message!(Errno::EINVAL, "the control message buffer is too small");
+        }
+
+        let header = CControlHeader::new(CSocketOptionLevel::SOL_SOCKET, type_, payload_len);
+        writer.write_val(&header)?;
+        match self {
+            Self::Timestamp(value) => writer.write_val(value)?,
+            Self::TimestampNs(value) => writer.write_val(value)?,
+        }
+
+        Ok((header, RecvFlags::empty()))
+    }
+}
+
+/// `struct timeval` as carried by `SCM_TIMESTAMP`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct CTimeval {
+    pub sec: i64,
+    pub usec: i64,
+}
+
+/// `struct timespec` as carried by `SCM_TIMESTAMPNS`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct CTimespec {
+    pub sec: i64,
+    pub nsec: i64,
 }
 
 /// `cmsghdr` in Linux.
@@ -160,6 +212,10 @@ pub(crate) struct CControlHeader {
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.13/source/include/linux/socket.h#L119>.
 const CMSG_ALIGN: usize = size_of::<usize>();
+
+/// Ancillary message types carried at `SOL_SOCKET`.
+const SCM_TIMESTAMP: i32 = 29;
+const SCM_TIMESTAMPNS: i32 = 35;
 
 impl CControlHeader {
     /// Creates a control message header with the level, type, and payload length.

@@ -13,6 +13,7 @@ macro_rules! import_generic_syscall_entries {
         use $crate::syscall::{
             accept::{sys_accept, sys_accept4},
             access::{sys_faccessat, sys_faccessat2},
+            adjtimex::{sys_adjtimex, sys_clock_adjtime},
             bind::sys_bind,
             bpf::sys_bpf,
             brk::sys_brk,
@@ -389,6 +390,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_GETCPU = 168                 => sys_getcpu(args[..3]);
             SYS_GETTIMEOFDAY = 169           => sys_gettimeofday(args[..2]);
             SYS_SETTIMEOFDAY = 170           => sys_settimeofday(args[..2]);
+            SYS_ADJTIMEX = 171               => sys_adjtimex(args[..1]);
             SYS_GETPID = 172                 => sys_getpid(args[..0]);
             SYS_GETPPID = 173                => sys_getppid(args[..0]);
             SYS_GETUID = 174                 => sys_getuid(args[..0]);
@@ -447,6 +449,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_FANOTIFY_MARK = 263          => sys_fanotify_mark(args[..5]);
             SYS_NAME_TO_HANDLE_AT = 264      => sys_name_to_handle_at(args[..5]);
             SYS_OPEN_BY_HANDLE_AT = 265      => sys_open_by_handle_at(args[..3]);
+            SYS_CLOCK_ADJTIME = 266          => sys_clock_adjtime(args[..2]);
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);

@@ -17,7 +17,7 @@ use crate::{
         options::{
             AcceptConn, Broadcast, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
             RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-            SendTimeout, SocketOption, SocketType, Timestamp,
+            SendTimeout, SocketOption, SocketType, Timestamp, TimestampNs,
             macros::{sock_option_mut, sock_option_ref},
         },
         unix::{CUserCred, UNIX_DATAGRAM_DEFAULT_BUF_SIZE, UNIX_STREAM_DEFAULT_BUF_SIZE},
@@ -41,6 +41,8 @@ pub(crate) struct SocketOptionSet {
     linger: LingerOption,
     reuse_port: bool,
     pass_cred: bool,
+    timestamp: bool,
+    timestamp_ns: bool,
 }
 
 impl Default for SocketOptionSet {
@@ -55,6 +57,8 @@ impl Default for SocketOptionSet {
             linger: LingerOption::default(),
             reuse_port: false,
             pass_cred: false,
+            timestamp: false,
+            timestamp_ns: false,
         }
     }
 }
@@ -183,6 +187,12 @@ impl SocketOptionSet {
             _socket_peer_groups @ PeerGroups => {
                 return_errno_with_message!(Errno::ENODATA, "the socket does not have peer groups");
             }
+            socket_timestamp @ Timestamp => {
+                socket_timestamp.set(self.timestamp());
+            }
+            socket_timestamp_ns @ TimestampNs => {
+                socket_timestamp_ns.set(self.timestamp_ns());
+            }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,
                 "the socket option to get is unknown"
@@ -275,12 +285,12 @@ impl SocketOptionSet {
                 }
             }
             socket_timestamp @ Timestamp => {
-                // SO_TIMESTAMP is accepted but has no observable effect: the
-                // kernel does not attach SCM_TIMESTAMP cmsgs to recvmsg().
-                // Consumers (e.g. systemd-journald) set this and fall back to
-                // their own clock when the timestamp cmsg is absent. Returning
-                // ENOPROTOOPT here aborts those consumers at startup.
-                let _ = socket_timestamp.get().unwrap();
+                let timestamp = socket_timestamp.get().unwrap();
+                self.set_timestamp(*timestamp);
+            }
+            socket_timestamp_ns @ TimestampNs => {
+                let timestamp_ns = socket_timestamp_ns.get().unwrap();
+                self.set_timestamp_ns(*timestamp_ns);
             }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,

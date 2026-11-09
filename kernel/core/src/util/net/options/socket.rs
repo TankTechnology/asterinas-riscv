@@ -11,7 +11,7 @@ use crate::{
         AcceptConn, AttachFilter, Broadcast, DetachFilter, Error, KeepAlive, Linger, PassCred,
         PeerCred, PeerGroups, Priority, RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort,
         SendBuf, SendBufForce, SendTimeout, SockDomain, SockProtocol, SocketOption, SocketType,
-        Timestamp,
+        Timestamp, TimestampNs,
     },
     prelude::*,
     process::Gid,
@@ -48,6 +48,7 @@ enum CSocketOptionName {
     ATTACH_FILTER = 26,
     DETACH_FILTER = 27,
     TIMESTAMP = 29,
+    TIMESTAMPNS = 35,
     ACCPETCONN = 30,
     PEERSEC = 31,
     SNDBUFFORCE = 32,
@@ -88,6 +89,7 @@ pub(crate) fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CSocketOptionName::RCVBUFFORCE => Ok(Box::new(RecvBufForce::new())),
         CSocketOptionName::PEERGROUPS => Ok(Box::new(PeerGroups::new())),
         CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
+        CSocketOptionName::TIMESTAMPNS => Ok(Box::new(TimestampNs::new())),
         CSocketOptionName::ATTACH_FILTER => Ok(Box::new(AttachFilter::new())),
         CSocketOptionName::DETACH_FILTER => Ok(Box::new(DetachFilter::new())),
         CSocketOptionName::PROTOCOL => Ok(Box::new(SockProtocol::new())),
@@ -156,6 +158,7 @@ impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
 impl_raw_socket_option!(RecvBufForce);
 impl_raw_socket_option!(Timestamp);
+impl_raw_socket_option!(TimestampNs);
 impl_raw_sock_option_get_only!(SockDomain);
 impl_raw_sock_option_get_only!(SockProtocol);
 
