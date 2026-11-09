@@ -64,7 +64,7 @@ cp "${CROSS_USR}/lib/xorg/modules/input/evdev_drv.so" "${ROOTFS}/usr/lib/xorg/mo
 # Desktop session clients (statically-linked riscv64 X11 apps).
 # pcmanfm (file manager) and xterm (terminal) are bundled as well; they cross
 # compile but previously pushed the initramfs past the kernel's ~20 MB
-# early-memory limit (fixed in the OSTD RISC-V boot path, see GTK-M3-report.md).
+# early-memory limit (fixed in the OSTD RISC-V boot path).
 for cli in gtk-hello matchbox-window-manager xpanel pcmanfm xterm; do
     if [ -f "${CROSS_USR}/bin/${cli}" ]; then
         cp "${CROSS_USR}/bin/${cli}" "${ROOTFS}/usr/bin/${cli}"

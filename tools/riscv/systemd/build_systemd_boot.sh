@@ -4,9 +4,8 @@
 # SYSTEMD-BOOT-M1: assemble an initramfs that boots systemd (v257.5, riscv64
 # glibc) as PID 1 on Asterinas RISC-V.
 #
-# The systemd binaries were cross-compiled in the sibling tree
-# /home/arch-anjie/Program/asterinas-riscv (see that tree's
-# tools/riscv/systemd/SYSTEMD-M2-report.md — 878/878 targets). The output is
+# The systemd binaries were cross-compiled in a sibling tree of the same
+# project (878/878 targets). The output is
 # dynamically-linked PIE, so this script also copies the glibc runtime
 # (ld-linux + libc.so.6 + libm/libdl/libpthread/librt/libgcc_s) from the proven
 # xorg-rootfs dynamic-glibc image in that same tree. systemd's internal shared
@@ -202,7 +201,7 @@ mkdir -p "${ROOTFS}/etc/systemd/system/getty.target.wants"
 ln -sf ../getty@.service "${ROOTFS}/etc/systemd/system/getty.target.wants/getty@ttyS0.service"
 
 # 8. Pack as newc cpio (raw, no gzip — the kernel's zune-inflate decoder hangs
-#    non-deterministically on >16 MB gzip inputs; see M3-report.md).
+#    non-deterministically on >16 MB gzip inputs).
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null > "${OUTPUT}" )
 
 echo "built ${OUTPUT}"

@@ -61,7 +61,6 @@ Where to start:
 | `concurrency-models/` | 1 | 1 | Rust/TLA+ concurrency models; build output is gitignored (1.4 GB on disk). |
 | `board/` | 0 | 6 | Board-side helpers (serial, flashing). |
 | `xhci/` | 1 | 1 | xHCI input gates. |
-| `legacy/` | 7 | 5 | Historical demos and experiments (game, lvgl, xfce, compat); not in the current workflow. |
 | `ltp/` | 5 | 1 | LTP manifests, baselines, and the guest builders under `guest/`. |
 | `nsmatrix/`, `pidns/`, `xorg/` | — | — | Smaller or one-shot drivers. |
 

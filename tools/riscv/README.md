@@ -16,7 +16,7 @@ Start here: [LAYOUT.md](LAYOUT.md) (where files live) ·
 
 | Theme | Sections |
 | --- | --- |
-| QEMU / U-Boot and display | [reboot writeback](#qemu-reboot-writeback-gate) · [generic `booti`](#generic-u-boot-booti) · [SiFive U](#sifive-u) · [framebuffer boot](#qemu-framebuffer-display-boot) · [LVGL](#lvgl-desktop-gui-framebuffer-interactive-demo) |
+| QEMU / U-Boot and display | [reboot writeback](#qemu-reboot-writeback-gate) · [generic `booti`](#generic-u-boot-booti) · [SiFive U](#sifive-u) · [framebuffer boot](#qemu-framebuffer-display-boot) |
 | Megrez board | [boot menu](#megrez-selectable-boot-menu) · [bounded desktop](#bounded-megrez-desktop-startup) · [persistent shell](#megrez-persistent-debian-shell) · [debug attempt](#simulation-first-megrez-debug-attempt) · [physical graphics](#current-main-megrez-physical-graphics) · [Firefox daily use](#physical-firefox-daily-use-baseline) · [fast probes](#megrez-fast-kernel-probes) · [boot stability](#megrez-unattended-boot-stability) · [one-command diagnosis](#one-command-megrez-desktop-and-firefox-diagnosis) · [SDHCI evidence](#megrez-sdhci-read-only-evidence) · [framebuffer handoff](#megrez-firmware-framebuffer-handoff) · [root serial console](#opt-in-asterinas-root-serial-console) |
 | Kernel regressions | [SMP4 icache](#smp4-cross-hart-instruction-cache-regression) · [IP netns](#ip-socket-network-namespace-regression) · [netlink netns](#netlink-socket-namespace-regression) · [unit tests](#unit-tests) |
 | Benchmarks | [LMBench smoke](#basic-lmbench-compatibility-smoke) · [native LMBench](#native-lmbench-make-results) |
@@ -1747,26 +1747,6 @@ python3 tools/riscv/qemu/make_qemu_uboot_initramfs.py target/qemu-uboot/initramf
 python3 tools/riscv/qemu/qemu_desktop_boot.py             # headless + screendump
 python3 tools/riscv/qemu/qemu_desktop_boot.py --display-gtk  # open a window
 ```
-
-## LVGL desktop GUI (framebuffer interactive demo)
-
-Build a static riscv64 `/init` that renders an interactive keyboard-navigable
-desktop through LVGL on `/dev/fb0` (Home screen with three app cards, arrow
-keys move focus, Enter opens, ESC returns), then packs it into the marker
-initramfs. Verified on the QEMU virt display chain (bochs ->
-simple-framebuffer -> VT -> userspace fbdev).
-
-```bash
-python3 tools/riscv/legacy/lvgl/build_lvgl_initramfs.sh   # -> target/qemu-uboot/initramfs-lvgl.cpio.gz
-```
-
-Then rebuild the boot disk with that initramfs and run the display boot
-(see the "QEMU framebuffer display boot" section). The build clones LVGL
-`v8.3.9` + lv_drivers `v8.3.0` into `target/lvgl` and applies the needed
-patches (32-bit colors, resolution caps, fonts, enabled fbdev/evdev,
-non-fatal FBIOBLANK). Compile in one gcc invocation to avoid
-stale-object-color-depth mismatches. See `docs/porting/riscv-qemu-desktop.md`
-for the interactive-GUI input verification status.
 
 ## Dependencies
 

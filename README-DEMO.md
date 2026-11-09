@@ -107,6 +107,6 @@ milestone). It needs these to already exist:
 - the systemd + desktop cross-build in `target/riscv-cross/` and the nix
   products in the sibling `asterinas-riscv-nixos` tree (`NIXOS_REPO=` to override).
 
-Full assembly details are in
-[`tools/riscv/systemd/DEMO-M1-report.md`](tools/riscv/systemd/DEMO-M1-report.md)
-and the milestone reports next to it.
+Full assembly details live in the build scripts under
+`tools/riscv/systemd/`; the milestone reports they used to point at are
+preserved in git history.

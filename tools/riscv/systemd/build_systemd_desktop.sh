@@ -40,9 +40,8 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# systemd was cross-compiled into this tree (878/878 targets, see
-# tools/riscv/systemd/SYSTEMD-M2-report.md). The desktop binaries and their
-# runtime data live in the same cross prefix.
+# systemd was cross-compiled into this tree (878/878 targets). The desktop
+# binaries and their runtime data live in the same cross prefix.
 SD_BUILD="${REPO_ROOT}/target/riscv-cross/src/systemd-257.5/build-riscv"
 CROSS_USR="${REPO_ROOT}/target/riscv-cross/usr"
 GLIBC_LIB="/usr/riscv64-linux-gnu/lib"   # glibc 2.41 runtime from cross toolchain sysroot

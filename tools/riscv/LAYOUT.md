@@ -19,7 +19,6 @@ shell entry points and the production file ceilings.
 | `drm/`, `xorg/`, `wayland/` | Graphics bring-up, per milestone |
 | `diagnostics/` | One-shot probes and guest-side diagnostics |
 | `perf/` | Host-side benchmarks and sampling helpers |
-| `legacy/` | Historical demos and experiments moved out of the active tree on 2026-11-09: `game/`, `lvgl/`, `xfce/`, `compat/`; see `legacy/README.md` |
 | `concurrency-models/` | loom crates, TLA+ specs and the Kani proof harness |
 | `systemd/` | systemd image experiments and the boot driver used by the xorg render gates |
 | `nsmatrix/`, `pidns/`, `xhci/` | Namespace and USB bring-up |

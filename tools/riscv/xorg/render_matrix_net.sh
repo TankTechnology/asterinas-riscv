@@ -46,8 +46,8 @@ LOGLEVEL="${LOGLEVEL:-warn}"
 #
 # NOTE: wikipedia / hackernews / lite.duckduckgo.com are intentionally NOT listed:
 # they time out from *this host's* network (both IPv4 and IPv6), so a guest boot
-# against them always reads code7 for a reason unrelated to the kernel or slirp
-# (see BROWSER-M10-report.md §3.4). The wiki/search/news archetypes are covered by
+# against them always reads code7 for a reason unrelated to the kernel or slirp.
+# The wiki/search/news archetypes are covered by
 # wiki.archlinux.org / text.npr.org / lite.cnn.com instead.
 ALL_SITES=(
   "home|file:///usr/share/netsurf/netsurf-home.html"
