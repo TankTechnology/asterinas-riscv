@@ -95,7 +95,9 @@ rewritten when a path moves: a command in a dated document may name
 `tools/riscv/qemu_uboot_booti.py` or `tools/riscv/megrez_debug.py`, while
 the live files are `tools/riscv/qemu/qemu_uboot_booti.py` and
 `tools/riscv/megrez/board/megrez_debug.py`. Use this page (or the code) as
-the current answer.
+the current answer. Dead files removed from this tree are listed in
+[`docs/porting/2026-11-09-tooling-cleanup.md`](../../docs/porting/2026-11-09-tooling-cleanup.md);
+the page also names the archive ref that still contains them.
 
 ## Verifying a change
 
