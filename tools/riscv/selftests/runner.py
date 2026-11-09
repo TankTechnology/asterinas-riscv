@@ -64,6 +64,24 @@ def parse_results(text: str) -> list[dict[str, str]]:
     ]
 
 
+def missing_cases(
+    plan: dict[str, object], results: list[dict[str, str]]
+) -> list[tuple[str, str]]:
+    """Return planned (subsystem, case) pairs with no result line.
+
+    A catalog entry can exist before its guest bundle does; that must fail the
+    run instead of passing silently with zero checks.
+    """
+
+    seen = {(result["subsystem"], result["case"]) for result in results}
+    expected = [
+        (str(item["name"]), str(case))
+        for item in plan["subsystems"]
+        for case in item["cases"]
+    ]
+    return [pair for pair in expected if pair not in seen]
+
+
 def _print_catalog() -> None:
     for subsystem in catalog.SUBSYSTEMS:
         print(f"{subsystem.name:10s} target={subsystem.target}")
@@ -123,18 +141,26 @@ def run_board(args: argparse.Namespace, plan: dict[str, object]) -> int:
         time.sleep(0.5)
 
     results = parse_results(text)
+    # A case with no result line is a failure, not silence: during the
+    # migration some subsystems have a catalog entry but no guest bundle yet.
+    missing = missing_cases(plan, results)
+
     for result in results:
         detail = f" {result['detail']}" if result["detail"] else ""
         print(
             f"{result['status']:4} {result['subsystem']:8s} "
             f"{result['case']:14s}{detail}"
         )
+    for subsystem, case in missing:
+        print(f"FAIL {subsystem:8s} {case:14s} no result from the guest")
     passed = sum(1 for result in results if result["status"] == "PASS")
-    failed = sum(1 for result in results if result["status"] == "FAIL")
     skipped = sum(1 for result in results if result["status"] == "SKIP")
-    complete = bool(DONE_LINE.search(text))
+    failed = (
+        sum(1 for result in results if result["status"] == "FAIL") + len(missing)
+    )
+    complete = bool(DONE_LINE.search(text)) and not missing
     print(
-        f"SELFTEST total={len(results)} pass={passed} fail={failed} "
+        f"SELFTEST total={len(results) + len(missing)} pass={passed} fail={failed} "
         f"skip={skipped} complete={complete}"
     )
     return 0 if complete and failed == 0 else 1
@@ -163,7 +189,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run over the Megrez serial bridge instead of only planning",
     )
-    parser.add_argument("--device", default="/dev/ttyUSB0")
     parser.add_argument("--log", default="/tmp/board3.log")
     parser.add_argument("--fifo", default="/tmp/board3.cmd")
     parser.add_argument("--http-url", default="")

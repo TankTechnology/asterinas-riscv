@@ -69,6 +69,26 @@ class SelftestRunnerTests(unittest.TestCase):
             ["console", "browser"],
         )
 
+    def test_missing_results_are_reported_per_case(self) -> None:
+        plan = runner.build_plan(["console", "display"], "browser-web")
+        results = runner.parse_results(
+            "SELFTEST console identity PASS host=board os=Debian\n"
+            "SELFTEST_DONE\n"
+        )
+        missing = runner.missing_cases(plan, results)
+        self.assertIn(("console", "clock"), missing)
+        self.assertIn(("display", "xorg"), missing)
+        self.assertNotIn(("console", "identity"), missing)
+
+    def test_a_complete_plan_has_no_missing_cases(self) -> None:
+        plan = runner.build_plan(["power"], "browser-web")
+        results = runner.parse_results(
+            "SELFTEST power reboot SKIP terminal case\n"
+            "SELFTEST power poweroff SKIP terminal case\n"
+            "SELFTEST_DONE\n"
+        )
+        self.assertEqual(runner.missing_cases(plan, results), [])
+
 
 if __name__ == "__main__":
     unittest.main()

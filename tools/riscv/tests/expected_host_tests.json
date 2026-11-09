@@ -2453,6 +2453,8 @@
     "tools.riscv.tests.test_selftest_catalog.SelftestCatalogTests.test_select_preserves_catalog_order",
     "tools.riscv.tests.test_selftest_catalog.SelftestCatalogTests.test_select_rejects_unknown_subsystem",
     "tools.riscv.tests.test_selftest_catalog.SelftestCatalogTests.test_subsystems_are_unique_and_have_cases",
+    "tools.riscv.tests.test_selftest_catalog.SelftestRunnerTests.test_a_complete_plan_has_no_missing_cases",
+    "tools.riscv.tests.test_selftest_catalog.SelftestRunnerTests.test_missing_results_are_reported_per_case",
     "tools.riscv.tests.test_selftest_catalog.SelftestRunnerTests.test_parse_results_reads_pass_fail_and_skip",
     "tools.riscv.tests.test_selftest_catalog.SelftestRunnerTests.test_plan_uses_one_boot_target_for_the_selection",
     "tools.riscv.tests.test_stage1_root_labels.Stage1RootLabelTests.test_every_profile_label_is_matched_by_stage1",
@@ -2541,5 +2543,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2412
+  "tests": 2414
 }

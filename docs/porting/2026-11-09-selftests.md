@@ -16,7 +16,9 @@ rt selftest [subsystem ...]        # host runner
 
 The host decides the boot target: `multi-user` when only console, block, net
 or power are selected; `graphical` as soon as display, input, browser, apps or
-drm is requested. A run never boots once per case.
+drm is requested. A run never boots once per case. A planned case that produces
+no result line fails the run, so a catalog entry whose guest bundle has not
+landed yet (the graphical subsystems) cannot pass as an empty run.
 
 The guest side is a selftest bundle (`/usr/lib/asterinas/selftests/run.sh`
 plus one script per subsystem) selected by a kernel command-line/env value.
