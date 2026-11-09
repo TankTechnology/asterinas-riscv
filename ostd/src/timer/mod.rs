@@ -17,12 +17,12 @@ use crate::{
 
 /// The timer frequency in Hz.
 ///
-/// Here we choose 1000Hz since 1000Hz is easier for unit conversion and convenient for timer.
-/// What's more, the frequency cannot be set too high or too low, 1000Hz is a modest choice.
-///
-/// For system performance reasons, this rate cannot be set too high, otherwise most of the time is
-/// spent in executing timer code.
-pub const TIMER_FREQ: u64 = 1000;
+/// 250 Hz is enough for scheduler preemption and keeps the per-CPU periodic
+/// interrupt cost low: at 1000 Hz an idle four-hart board took ~4,000 timer
+/// interrupts and about a tenth of one core in system time every second.
+/// Sub-tick wakeups still use the RISC-V one-shot deadline
+/// (`request_interrupt_after`), so timer precision is unchanged.
+pub const TIMER_FREQ: u64 = 250;
 
 type InterruptCallback = Box<dyn Fn() + Sync + Send>;
 

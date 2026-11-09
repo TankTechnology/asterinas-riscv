@@ -41,7 +41,12 @@ impl WaitOptions {
             | WaitOptions::WSTOPPED
             | WaitOptions::WCONTINUED
             | WaitOptions::WEXITED
-            | WaitOptions::WNOWAIT;
+            | WaitOptions::WNOWAIT
+            // `__WALL` only widens the child set to every clone type; this
+            // implementation already considers all children, so it is honored.
+            // glibc's waitpid and ptrace (strace, gdb) pass it on every call,
+            // and warning here wrote a line to the serial console per wait.
+            | WaitOptions::WALL;
         if !supported_args.contains(*self) {
             warn!(
                 "unsupported wait options are found: {:?}",

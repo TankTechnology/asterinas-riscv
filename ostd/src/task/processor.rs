@@ -124,8 +124,11 @@ fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
     {
         // The previous CPU may still be completing its context switch. Report
         // this handoff once, rather than logging on every failed spin attempt.
+        // Migrations happen routinely, and this runs with IRQs disabled: a
+        // console write here stalls the CPU for milliseconds, so keep it at
+        // debug level instead of warning on every migration.
         if !warned {
-            crate::warn!("Switching to a task already running in the foreground");
+            crate::debug!("Switching to a task already running in the foreground");
             warned = true;
         }
         core::hint::spin_loop();
