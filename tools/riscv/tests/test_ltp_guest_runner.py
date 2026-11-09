@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 TOOLS = Path(__file__).resolve().parents[1]
-LTP = TOOLS / "nixos" / "ltp"
+LTP = TOOLS / "ltp" / "guest"
 RUNNER_SOURCE = LTP / "ltp_runner.c"
 INIT_SOURCE = LTP / "init_ltp.c"
 BUILD_SCRIPT = LTP / "build_ltp.sh"
@@ -413,7 +413,7 @@ class LtpBuildScriptContractTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
-            builder = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
+            builder = repo / "tools/riscv/ltp/guest/build_ltp.sh"
             builder.parent.mkdir(parents=True)
             shutil.copy2(BUILD_SCRIPT, builder)
             for module in (

@@ -67,7 +67,7 @@ commands. Build the pinned BusyBox artifact in the same cross image before
 packaging LTP, and verify that it was published at the expected path:
 
 ```bash
-tools/riscv/nixos/build_busybox.sh
+tools/riscv/ltp/build_busybox.sh
 test -x target/nixos/busybox
 ```
 
@@ -90,14 +90,14 @@ docker run --rm --network=host \
     restore_owner() { chown -R --reference=/root/asterinas \
       /root/asterinas/target/ltp 2>/dev/null || true; }; \
     trap restore_owner EXIT; \
-    tools/riscv/nixos/ltp/build_ltp.sh --suite syscalls'
+    tools/riscv/ltp/guest/build_ltp.sh --suite syscalls'
 ```
 
 To repackage the reviewed RISC-V architecture suite from existing LTP build
 outputs, change the final command inside the same pinned container to:
 
 ```bash
-tools/riscv/nixos/ltp/build_ltp.sh --skip-compile --suite arch-riscv64
+tools/riscv/ltp/guest/build_ltp.sh --skip-compile --suite arch-riscv64
 ```
 
 The build fails unless the selected runtime manifest and omission evidence
@@ -162,7 +162,7 @@ Before switching from the architecture examples below to a `syscalls` run,
 repackage inside the pinned cross container with:
 
 ```bash
-tools/riscv/nixos/ltp/build_ltp.sh --skip-compile --suite syscalls
+tools/riscv/ltp/guest/build_ltp.sh --skip-compile --suite syscalls
 ```
 
 For the full syscall suite, start with the five-test SMP=4 smoke run:

@@ -628,7 +628,7 @@ def _dry_run(
     profile: str,
     suite: LtpSuite,
 ) -> int:
-    build_script = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
+    build_script = repo / "tools/riscv/ltp/guest/build_ltp.sh"
     if not args.skip_build:
         _print_command([str(build_script), "--suite", suite.name])
     selected_initramfs = paths.result_dir / "ltp-initramfs.cpio.gz"
@@ -673,7 +673,7 @@ def _execute_run_gate(
     package_identity_evidence = paths.result_dir / "package.json"
     with ExitStack() as stack:
         stack.enter_context(_package_lock(repo))
-        build_script = repo / "tools/riscv/nixos/ltp/build_ltp.sh"
+        build_script = repo / "tools/riscv/ltp/guest/build_ltp.sh"
         if not args.skip_build:
             build_environment = os.environ.copy()
             build_environment["ASTERINAS_LTP_PACKAGE_LOCK_HELD"] = "1"
@@ -796,7 +796,7 @@ def main(argv: Sequence[str] | None = None, *, repo: Path = REPO_ROOT) -> int:
     resolved_repo = repo.resolve()
     if args.command == "build":
         command = [
-            str(resolved_repo / "tools/riscv/nixos/ltp/build_ltp.sh"),
+            str(resolved_repo / "tools/riscv/ltp/guest/build_ltp.sh"),
             "--suite",
             args.suite,
         ]

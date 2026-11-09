@@ -51,7 +51,6 @@ Where to start:
 | Directory | sh | py | Notes |
 | --- | ---: | ---: | --- |
 | `debian/` | 44 | 60 | Debian image build, daily-use image, apt/fixture checks. |
-| `nixos/` | 29 | 25 | NixOS image experiments. |
 | `perf/` | 21 | 3 | Benchmark harnesses and syscall/perf baselines. |
 | `systemd/` | 16 | 8 | systemd component builders (dbus, agetty, libcap…). |
 | `drm/` | 8 | 16 | DRM gates: firmware, GEM, cursor, page-flip. |
@@ -63,9 +62,10 @@ Where to start:
 | `board/` | 0 | 6 | Board-side helpers (serial, flashing). |
 | `xhci/` | 1 | 1 | xHCI input gates. |
 | `legacy/` | 7 | 5 | Historical demos and experiments (game, lvgl, xfce, compat); not in the current workflow. |
-| `ltp/`, `nsmatrix/`, `pidns/`, `xorg/` | — | — | Smaller or one-shot drivers. |
+| `ltp/` | 5 | 1 | LTP manifests, baselines, and the guest builders under `guest/`. |
+| `nsmatrix/`, `pidns/`, `xorg/` | — | — | Smaller or one-shot drivers. |
 
-13 shell and 61 Python scripts also live directly in `tools/riscv/`; they predate the
+10 shell and 19 Python scripts also live directly in `tools/riscv/`; they predate the
 subdirectory split and are kept at that level so existing command lines keep working.
 
 ## Ground rules

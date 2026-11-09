@@ -55,6 +55,27 @@ module spelling). Dated commands in `docs/porting/riscv-qemu-desktop.md` and in
 the XFCE-M2/M3 reports keep the old paths on purpose; `LAYOUT.md` is the
 current answer.
 
+## NixOS milestone tree
+
+The `track/nixos` milestone experiment was deleted from `tools/riscv/nixos/`:
+the FOUNDATION, M2–M9, N1/N3, PM1, mlock, shm, etexec and audio directories,
+their smoke scripts, and the POLISH/TRACK-ADMISSION reports. The same change
+removed the three legacy gates (`fm3-gate.sh`, `fm4-gate.sh`, `pm1-gate.sh`),
+`nixos_track_audit.py`, the `test_nixos_m7_assets` and `test_nixos_track_audit`
+modules, the systemd ALSA trio (`build_systemd_alsa.sh`,
+`boot_systemd_alsa.py`, `gate_alsa.sh`), and `ACCELERATION.md`.
+
+Kept because current code still uses them:
+
+- `tools/riscv/ltp/guest/` (moved from `nixos/ltp/`) and
+  `tools/riscv/ltp/build_busybox.sh`: the active LTP gate invokes
+  `build_ltp.sh` and the tests require the busybox builder.
+- `tools/riscv/systemd/` core (`boot_systemd_desktop.py`, `units/`,
+  `build_systemd_desktop*.sh`): the xorg render matrices and `demo-all.sh`
+  drive these.
+- `tools/nixos/`: a separate Nix image toolchain covered by
+  `test_nixos_riscv_preflight`.
+
 ## What was deliberately kept
 
 - `tools/riscv/pidns/`, `nsmatrix/`: the C sources are the reproducible part of

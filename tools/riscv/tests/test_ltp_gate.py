@@ -35,7 +35,7 @@ from ltp_suite import suite_by_name
 REPO = Path(__file__).resolve().parents[3]
 OPERATOR_GUIDE = REPO / "tools/riscv/ltp/README.md"
 ARCH_REPORT = REPO / "tools/riscv/ltp/ARCH-RISCV64-M1-report.md"
-BUSYBOX_BUILDER = REPO / "tools/riscv/nixos/build_busybox.sh"
+BUSYBOX_BUILDER = REPO / "tools/riscv/ltp/build_busybox.sh"
 REPO_MAKEFILE = REPO / "Makefile"
 IMPLEMENTATION_PLAN = (
     REPO / "docs/superpowers/plans/2026-08-20-riscv-ltp-gate-baseline.md"
@@ -582,7 +582,7 @@ class LtpGateDocumentationTests(unittest.TestCase):
         self.assertIn("ASH", builder)
         self.assertIn("CAT", builder)
         self.assertIn("TRUE", builder)
-        self.assertIn("tools/riscv/nixos/build_busybox.sh", source)
+        self.assertIn("tools/riscv/ltp/build_busybox.sh", source)
         self.assertIn("target/nixos/busybox", source)
 
     def test_operator_guide_binds_skip_build_to_the_packaged_suite(self) -> None:

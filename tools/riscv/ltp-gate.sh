@@ -3,7 +3,7 @@
 
 # One-command LTP syscall gate for Asterinas on RISC-V (issue #14).
 #
-# Cross-compiles the LTP syscall subset (tools/riscv/nixos/ltp/build_ltp.sh),
+# Cross-compiles the LTP syscall subset (tools/riscv/ltp/guest/build_ltp.sh),
 # re-packs the U-Boot boot disk with the freshly built initramfs + kernel Image,
 # then boots it in QEMU at SMP=1 and SMP=4 and reports pass/fail per tier.
 #
@@ -22,7 +22,7 @@ unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"
 
-LTP_DIR="${REPO_ROOT}/tools/riscv/nixos/ltp"
+LTP_DIR="${REPO_ROOT}/tools/riscv/ltp/guest"
 BOOT_DRIVER="${LTP_DIR}/boot_ltp_gate.py"
 BUILD_SCRIPT="${LTP_DIR}/build_ltp.sh"
 

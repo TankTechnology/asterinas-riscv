@@ -15,13 +15,13 @@ shell entry points and the production file ceilings.
 | `megrez/network/` | GMAC contracts/gates, network fixture, proxy bridge |
 | `qemu/` | QEMU `virt` + U-Boot runner: profiles, device sets, dtb/artifact checks, QMP, framebuffer capture, the initramfs builder and the prepared-boot script |
 | `debian/` | Debian image build, rootfs profiles, and the M1–M9 daily-use/desktop/browser gates |
-| `ltp/` | LTP manifests, baselines, and suite data |
+| `ltp/` | LTP manifests, baselines, suite data, and the guest builders under `ltp/guest/` |
 | `drm/`, `xorg/`, `wayland/` | Graphics bring-up, per milestone |
 | `diagnostics/` | One-shot probes and guest-side diagnostics |
 | `perf/` | Host-side benchmarks and sampling helpers |
 | `legacy/` | Historical demos and experiments moved out of the active tree on 2026-11-09: `game/`, `lvgl/`, `xfce/`, `compat/`; see `legacy/README.md` |
 | `concurrency-models/` | loom crates, TLA+ specs and the Kani proof harness |
-| `systemd/`, `nixos/` | Runtime and OS-image experiments |
+| `systemd/` | systemd image experiments and the boot driver used by the xorg render gates |
 | `nsmatrix/`, `pidns/`, `xhci/` | Namespace and USB bring-up |
 | `tests/` | The host test suite; every gate above has a contract test here |
 
@@ -77,11 +77,12 @@ row here. The categories are:
 | `diagnostics/fb_downsample_guest.py` | manual | guest-side framebuffer downsample probe |
 | `diagnostics/gdk_pixbuf_probe.py` | manual | guest-side gdk-pixbuf/wallpaper probe |
 | `diagnostics/syscall_ipc_bench_guest.py` | manual | guest-side syscall/IPC benchmark pushed by `megrez_desktop_baseline.py` |
-| `fm3-gate.sh` | legacy | NixOS FOUNDATION-M3 gate; kept to reproduce the dated report |
-| `fm4-gate.sh` | legacy | NixOS FOUNDATION-M4 gate; kept to reproduce the dated report |
-| `pm1-gate.sh` | legacy | NixOS PM1 gate; kept to reproduce the dated reports |
 
-Counts: 1 active, 14 manual, 3 legacy (18 scripts).
+Counts: 1 active, 14 manual, 0 legacy (15 scripts).
+
+The NixOS milestone entry points (`fm3-gate.sh`, `fm4-gate.sh`, `pm1-gate.sh`)
+and the `nixos/` milestone tree were removed on 2026-11-09; see
+`docs/porting/2026-11-09-tooling-cleanup.md` and the archive ref it names.
 
 `diagnostics/firefox_checkpoint_baseline.py` is not marked: the tested
 `firefox_dmesg_experiment.py` pins its SHA-256, so its content is part of
