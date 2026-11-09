@@ -118,7 +118,15 @@ make test_riscv_host_all          # both tiers
 ./tools/format_all.sh --check     # rustfmt
 ```
 
-Integration gates run through the scenario registry, for example
+System validation is moving to the subsystem catalog:
+
+```bash
+tools/riscv/rt selftest --list
+tools/riscv/rt selftest console net --dry-run
+```
+
+Until the guest bundle lands, integration gates run through the transitional
+scenario registry, for example
 `tools/riscv/rt gate browser-web` or `tools/riscv/rt gate daily-use`; the
 Makefile targets `test_riscv_*` are the supported spellings. The suite count,
 tiers and expected skips live in `tests/expected_host_tests.json` and

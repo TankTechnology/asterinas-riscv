@@ -49,8 +49,10 @@ the workloads, and `desktop-drm` is separate only because it needs a different
 QEMU device stack.
 
 The registry lives in `tools/riscv/rt` (`GATES`), and the Makefile targets
-call `rt gate <name>`. A gate implementation keeps its own arguments, so the
-scenario name is the only interface the build file needs to know.
+call `rt gate <name>`. These entries are transitional: the target model is
+`rt selftest <subsystem>`, one boot with the catalog in
+`tools/riscv/selftests/catalog.py`; see
+[`2026-11-09-selftests.md`](2026-11-09-selftests.md).
 
 ## Wiring contract
 
