@@ -103,7 +103,6 @@ COMMANDS: dict[str, tuple[str, str]] = {
     # browser host checks and the one-command demo
     "firefox-check": ("script", "debian/rootfs/firefox_fast_check.sh"),
     "firefox-static": ("script", "debian/rootfs/firefox_kernel_static_check.sh"),
-    "demo": ("script", "systemd/demo-all.sh"),
 }
 
 

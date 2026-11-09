@@ -1,5 +1,0 @@
-[Unit]
-Description=Emergency Mode
-Requires=emergency.service
-After=emergency.service
-AllowIsolate=yes

@@ -118,8 +118,8 @@ class QemuTlsFixture:
         if self._process is not None and self._process.poll() is None:
             return
         repository = Path(__file__).resolve().parents[4]
-        generator = repository / "tools/riscv/xorg/gen_tls_certs.py"
-        server = repository / "tools/riscv/xorg/tls_cert_server.py"
+        generator = repository / "tools/riscv/debian/rootfs/gen_tls_certs.py"
+        server = repository / "tools/riscv/debian/rootfs/tls_cert_server.py"
         temporary = tempfile.TemporaryDirectory(prefix="asterinas-qemu-tls-")
         self._temporary = temporary
         root = Path(temporary.name)

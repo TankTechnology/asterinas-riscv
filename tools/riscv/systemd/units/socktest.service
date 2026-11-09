@@ -1,6 +1,0 @@
-[Unit]
-Description=Socket activation test service
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/socktest

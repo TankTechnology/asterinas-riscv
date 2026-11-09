@@ -13,7 +13,7 @@ command works from any directory and from a container. `rt --list` prints the
 command set, and `rt <command> --help` shows that command's own arguments.
 
 Implementation lives in the domain packages (`board/`, `qemu/`, `debian/`,
-`ltp/`, `megrez/`, `drm/`, `perf/`, `ktest/`, `diagnostics/`, `systemd/`).
+`ltp/`, `megrez/`, `drm/`, `perf/`, `ktest/`, `diagnostics/`).
 Only `rt` is a top-level executable; two top-level modules remain for
 compatibility: `host_test_runner.py` (the test runner itself) and
 `physical_graphics_qemu_gate.py` (a SHA-256-pinned experiment imports it by
@@ -31,12 +31,11 @@ its top-level name).
 | `qemu/` | QEMU `virt` + U-Boot runner: profiles, device sets, dtb/artifact checks, QMP, framebuffer capture, the initramfs builder and the prepared-boot script |
 | `debian/` | Debian image build, rootfs profiles, and the M1–M9 daily-use/desktop/browser gates |
 | `ltp/` | LTP manifests, baselines, suite data, the `ltp-gate.sh` one-command driver, and the guest builders under `ltp/guest/` |
-| `drm/`, `xorg/`, `wayland/` | Graphics bring-up, per milestone |
+| `drm/` | DRM gates and pixel-oracle helpers |
 | `diagnostics/` | One-shot probes and guest-side diagnostics |
 | `perf/` | Host-side benchmarks and sampling helpers |
 | `ktest/` | Focused kernel-test runners (`kernel_ktest.sh`, `gate_ktests.sh`) |
 | `concurrency-models/` | loom crates, TLA+ specs and the Kani proof harness |
-| `systemd/` | systemd image experiments and the boot driver used by the xorg render gates |
 | `nsmatrix/`, `pidns/`, `xhci/` | Namespace and USB bring-up |
 | `tests/` | The host test suite; every gate above has a contract test here |
 
@@ -77,7 +76,6 @@ row here. The categories are:
 | Script | Status | Why / replacement |
 | --- | --- | --- |
 | `ktest/gate_ktests.sh` | active | invoked by the Makefile's Megrez kernel-test target (`rt ktest-gate`) |
-| `systemd/demo-all.sh` | manual | one-command demo (`rt demo`); see `README-DEMO.md` |
 | `qemu/eic7700_isolation.sh` | manual | board isolation check (`rt isolation`), referenced by the status page |
 | `debian/rootfs/firefox_kernel_static_check.sh` | manual | static compile/lint gate (`rt firefox-static`); also py_compiled by `firefox_fast_check.sh` |
 | `board/make_megrez_package.sh` | manual | board image packaging (`rt package`); see `docs/porting/megrez-board-session-commands.md` |
@@ -92,7 +90,7 @@ row here. The categories are:
 | `diagnostics/gdk_pixbuf_probe.py` | manual | guest-side gdk-pixbuf/wallpaper probe |
 | `diagnostics/syscall_ipc_bench_guest.py` | manual | guest-side syscall/IPC benchmark pushed by `megrez_desktop_baseline.py` |
 
-Counts: 1 active, 14 manual, 0 legacy (15 scripts).
+Counts: 1 active, 13 manual, 0 legacy (14 scripts).
 
 The NixOS milestone entry points (`fm3-gate.sh`, `fm4-gate.sh`, `pm1-gate.sh`)
 and the `nixos/` milestone tree were removed on 2026-11-09; see

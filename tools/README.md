@@ -54,19 +54,17 @@ reached as `rt <command>`. The counts are implementation files.
 
 | Directory | sh | py | Notes |
 | --- | ---: | ---: | --- |
-| `debian/` | 44 | 63 | Debian image build, daily-use image, apt/fixture checks, browser gates. |
+| `debian/` | 44 | 62 | Debian image build, daily-use image, apt/fixture checks, browser gates. |
 | `megrez/` | 0 | 43 | Megrez board/desktop/image/network helpers. |
 | `qemu/` | 5 | 22 | QEMU runners, U-Boot pieces, GDB probes, live samplers. |
 | `drm/` | 8 | 17 | DRM gates: firmware, GEM, cursor, page-flip. |
 | `perf/` | 17 | 5 | Benchmark harnesses and syscall/perf baselines. |
-| `systemd/` | 13 | 4 | systemd component builders and the boot driver. |
 | `diagnostics/` | 2 | 14 | klog/X11/bench diagnostics. |
-| `xorg/` | 11 | 3 | X11 build and render-matrix scripts. |
 | `ltp/` | 6 | 6 | LTP manifests, baselines, the driver, and the guest builders. |
 | `board/` | 2 | 7 | Board serial/flash helpers (the `board` CLI). |
 | `ktest/` | 2 | 0 | Focused kernel-test runners. |
-| `tests/` | 0 | 127 | Python test drivers for the RISC-V paths. |
-| `wayland/`, `xhci/`, `nsmatrix/`, `pidns/`, `concurrency-models/` | — | — | Smaller drivers and the concurrency models. |
+| `tests/` | 0 | 126 | Python test drivers for the RISC-V paths. |
+| `xhci/`, `nsmatrix/`, `pidns/`, `concurrency-models/` | — | — | Smaller drivers and the concurrency models. |
 
 Two Python modules remain at the top level for compatibility:
 `host_test_runner.py` and `physical_graphics_qemu_gate.py` (a SHA-256-pinned
@@ -81,5 +79,5 @@ experiment imports the latter by its top-level name).
 - **One directory per concern.** Add new work under the closest existing subdirectory; only
   put a script at `tools/` or `tools/riscv/` top level if it is a general entry point.
 - **Document the entry point.** If a subdirectory has more than one script, add a short
-  `README.md` next to it (currently only `concurrency-models/`, `ltp/`, `perf/`, `wayland/`
+  `README.md` next to it (currently only `concurrency-models/`, `ltp/`, `perf/`
   and `xhci/` have one).

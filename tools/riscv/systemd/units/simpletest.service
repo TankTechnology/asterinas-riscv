@@ -1,6 +1,0 @@
-[Unit]
-Description=Simple lifecycle test service (Type=simple)
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/simpletest
