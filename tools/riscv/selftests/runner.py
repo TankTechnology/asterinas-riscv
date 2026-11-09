@@ -18,7 +18,6 @@ next stage.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -113,57 +112,13 @@ def _wait_quiet(console, log_offset: int, gap: float = 4.0, timeout: float = 120
     return offset
 
 
-def _remote_digest(console, log_path: str, remote: str) -> str | None:
-    """Return the sha256 of a guest file, or None if the query got no answer."""
-
-    start = os.path.getsize(log_path)
-    console.type_line(
-        f"echo R_DIGEST_BEGIN; sha256sum {remote} 2>/dev/null; echo R_DIGEST_END"
-    )
-    text = ""
-    offset = start
-    end = time.time() + 30
-    while time.time() < end:
-        chunk, offset = console.read_since(offset)
-        text += chunk
-        # The echoed command also contains the marker; only a marker alone on
-        # its own line means the guest has finished computing the digest.
-        if re.search(r"^R_DIGEST_END\r?$", text, re.MULTILINE):
-            break
-        time.sleep(0.3)
-    # The echoed command contains both markers but no digest; the real pair
-    # follows it (with the bridge's own raw-mode lines interleaved).
-    for match in re.finditer(r"R_DIGEST_BEGIN(.*?)R_DIGEST_END", text, re.S):
-        digest = re.search(r"\b([0-9a-f]{64})\b", match.group(1))
-        if digest:
-            return digest.group(1)
-    return None
-
-
-def _push_guest(console, log_path: str) -> bool:
-    """Push the guest bundle and verify it arrived byte for byte.
-
-    The console has no flow control: under desktop load the guest's line
-    discipline silently drops characters, and the push marker still appears.
-    Retry at slower paces until the guest reports the host hash.
-    """
-
-    expected = hashlib.sha256(GUEST_RUNNER.read_bytes()).hexdigest()
-    for pace in (2.0, 6.0, 12.0):
-        if not console.push(str(GUEST_RUNNER), REMOTE_RUNNER, pace_ms=pace):
-            continue
-        if _remote_digest(console, log_path, REMOTE_RUNNER) == expected:
-            return True
-    return False
-
-
 def run_board(args: argparse.Namespace, plan: dict[str, object]) -> int:
     from tools.riscv.board.megrez_console import Console
 
     console = Console(args.log, args.fifo)
     offset = _wait_quiet(console, os.path.getsize(args.log))
 
-    if not _push_guest(console, args.log):
+    if not console.push_verified(str(GUEST_RUNNER), REMOTE_RUNNER):
         print(
             "rt selftest: guest bundle push failed or arrived truncated",
             file=sys.stderr,

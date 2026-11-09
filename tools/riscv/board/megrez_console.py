@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import select
@@ -45,7 +46,6 @@ import threading
 import time
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-EOF_MARKER = "ZZEOF"
 # Fastest pace that survives repeated multi-KiB pushes on the 115200 line.
 PUSH_PACE_MS = 0.15
 # At or above this pace the bridge hands over one byte per write, which keeps
@@ -291,34 +291,42 @@ class Console:
 
     def push(self, local: str, remote: str, pace_ms: float) -> bool:
         payload = open(local, "rb").read()
-        if EOF_MARKER.encode() in payload:
-            raise SystemExit("payload contains the heredoc delimiter")
         marker = f"ZZPUSH{os.getpid()}"
         offset = os.path.getsize(self.log)
-        # Do not reuse type_line here: it also sends a blank line to wake the
-        # shell, which would land in the heredoc. The CRLF is needed anyway:
-        # the bridge only flushes its FIFO buffer on LF, so a bare CR would
-        # fold the next control line into the command text. The LF that
-        # flushes the buffer is consumed by the heredoc as one empty first
-        # line, which the sed below removes.
+        # Do not push through a heredoc: bash reads heredoc lines through its
+        # own line handling, which drops tabs (readline-style completion) and
+        # mangles other control bytes. `cat` reads the bytes verbatim.
+        #
+        # The command is terminated with LF, not CRLF: the bridge only flushes
+        # its FIFO buffer on LF, and that single LF both flushes the buffer and
+        # ends the command line. CRLF would leave an extra empty line in the
+        # file because cat is already reading by then.
         self.send_line("!RAW 1")
         time.sleep(0.4)
-        for char in f"cat > {remote} <<'{EOF_MARKER}'; echo {marker}":
+        for char in f"cat > {remote}":
             self.send_raw(char.encode())
             time.sleep(DEFAULT_CHAR_PAUSE)
-        self.send_raw(b"\r\n")
+        self.send_raw(b"\n")
         time.sleep(0.4)
         self.send_line(f"!PACE {pace_ms}")
         time.sleep(0.4)
         self.send_line("!RAW 1")
         time.sleep(0.4)
         self.send_raw(payload)
+        # An empty line is EOF in canonical mode. A payload that ends without
+        # a newline first needs one ^D to flush the partial line.
+        self.send_raw(b"\x04")
+        if not payload.endswith(b"\n"):
+            time.sleep(0.3)
+            self.send_raw(b"\x04")
         time.sleep(0.3)
-        self.send_raw((EOF_MARKER + "\r\n").encode())
-        time.sleep(1.5)
         self.send_line("!RAW 0")
         self.send_line(f"!PACE {TYPING_PACE_MS}")
-        collected = ""
+        time.sleep(0.5)
+        start = os.path.getsize(self.log)
+        self.type_line(f"echo {marker}")
+        text = ""
+        offset = start
         # The bridge writes the payload at the requested pace, so the marker
         # cannot arrive before the transfer itself has had time to finish.
         transfer_seconds = len(payload) * pace_ms / 1000.0
@@ -326,15 +334,53 @@ class Console:
         while time.time() < deadline:
             time.sleep(0.5)
             chunk, offset = self.read_since(offset)
-            collected += chunk
-            if marker in collected:
+            text += chunk
+            if re.search(rf"^{marker}\r?$", text, re.MULTILINE):
+                return True
+        return False
+
+    def remote_digest(self, remote: str, timeout: float = 30.0) -> str | None:
+        """Return the guest's sha256 of `remote`, or None if it did not answer."""
+
+        start = os.path.getsize(self.log)
+        self.type_line(
+            f"echo R_DIGEST_BEGIN; sha256sum {remote} 2>/dev/null; echo R_DIGEST_END"
+        )
+        text = ""
+        offset = start
+        end = time.time() + timeout
+        while time.time() < end:
+            chunk, offset = self.read_since(offset)
+            text += chunk
+            # The echoed command contains the marker too; only a marker alone
+            # on its line means the guest has finished computing the digest.
+            if re.search(r"^R_DIGEST_END\r?$", text, re.MULTILINE):
                 break
-        if marker not in collected:
-            return False
-        # Drop the empty line the flushing LF adds. `1{/^$/d;}` touches only
-        # the first line and leaves every other byte alone.
-        self.type_line(f"sed -i '1{{/^$/d;}}' {remote}")
-        return True
+            time.sleep(0.3)
+        for match in re.finditer(r"R_DIGEST_BEGIN(.*?)R_DIGEST_END", text, re.S):
+            digest = re.search(r"\b([0-9a-f]{64})\b", match.group(1))
+            if digest:
+                return digest.group(1)
+        return None
+
+    def push_verified(
+        self, local: str, remote: str, paces: tuple[float, ...] = (2.0, 6.0, 12.0)
+    ) -> bool:
+        """Push a file and require the guest's digest to match the host's.
+
+        The console has no flow control and drops bytes under load, so a
+        successful push marker proves nothing about the file. Retry at slower
+        paces until the content matches.
+        """
+
+        with open(local, "rb") as source:
+            expected = hashlib.sha256(source.read()).hexdigest()
+        for pace in paces:
+            if not self.push(local, remote, pace_ms=pace):
+                continue
+            if self.remote_digest(remote) == expected:
+                return True
+        return False
 
 
 def cmd_run(args: argparse.Namespace) -> int:

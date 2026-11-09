@@ -113,17 +113,21 @@ implement `/proc/net/route`.
 
 ## Guest bundle transfer
 
-The bundle is pushed over the console as a heredoc, and the push is verified
-before it runs: the guest's `sha256sum` must match the host file, with retries
-at 2, 6 and 12 ms/byte. Two protocol details matter:
+The bundle is pushed over the console as raw bytes and verified before it
+runs: the guest's `sha256sum` must match the host file, with retries at 2, 6
+and 12 ms/byte. The push types `cat > <remote>`, streams the payload and ends
+it with `^D` (an empty line in canonical mode), so the bytes go to `cat`
+verbatim. Two protocol details matter:
 
-- The bridge only flushes its FIFO buffer on LF, so the command must be
-  submitted with CRLF. The LF reaches the heredoc as an empty first line; the
-  push strips exactly that line with `sed -i '1{/^$/d;}'` on the guest.
-- The echoed command contains the digest markers too, so the collector must
-  wait for a marker alone on its own line before reading the hash.
+- Do not push through a shell heredoc. bash reads heredoc bodies through its
+  own line handling, which drops tabs and other control bytes (observed:
+  `a\tb` arrived as `ab`, and a tab-separated manifest lost every field
+  separator). `cat` has no such interpretation.
+- The echoed digest command contains the digest markers too, so the collector
+  must wait for a marker alone on its own line before reading the hash; the
+  bridge's own raw-mode lines are interleaved in the same console log.
 
-Without the verification, a character dropped under desktop load leaves a
+Without the verification, a byte dropped under desktop load leaves a
 syntactically broken bundle that still prints the push marker (observed:
 `elif have python3` became `ython3`, and the run failed with `"then"` unexpected).
 
