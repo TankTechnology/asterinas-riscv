@@ -74,12 +74,38 @@ PASS net      http       http=200
 SELFTEST total=11 pass=9 fail=1 skip=1 complete=True
 ```
 
-The DNS failure is environmental: the campus portal was not authenticated in
-that run, so the configured resolvers (223.5.5.5, 114.114.114.114) were
-unreachable. The `http` case was validated against a board-local endpoint;
-the same case accepts `--http-url` for the host or an external endpoint once
-the portal is up. The `route` case prefers `ip route` because Asterinas does
-not implement `/proc/net/route`.
+That first run was before the portal session existed. Two findings:
+
+- **Portal state.** Before the reboot even the gateway dropped unicast
+  (DHCP and the default route were fine); after a reboot the board reached the
+  gateway and portal again, then the recorded board-side `srun` login
+  succeeded with `login: ok` (the strict checker exits 1 on the portal's
+  `"res":"ok"`, so connectivity was the confirmation). The rerun with the
+  authenticated network gives `PASS net` 4/4 and the full run below.
+- **Clock gap.** The image does not ship `asterinas-clock-sync.service`
+  (`systemctl status` says the unit is missing), so after a reboot the clock
+  was at 2026-04-13. The `clock` case now compares against the host epoch
+  (`SELFTEST_EXPECT_EPOCH`), and the run below uses `date -s @<host epoch>`.
+  The image should gain the unit before the next board image.
+
+```
+PASS console  identity   host=asterinas os=Asterinas 13
+PASS console  clock      epoch=1794208985 delta=2s
+PASS console  tty        tty=/dev/ttyS0
+PASS console  sudo       running as root
+PASS block    rootfs-rw  root is writable
+SKIP block    fsck       root filesystem is mounted; offline image check owns fsck
+PASS block    space      avail_kb=325104
+PASS net      loopback   tcp connect
+PASS net      route      default route present
+PASS net      dns        resolved www.baidu.com
+PASS net      http       http=200
+SELFTEST total=11 pass=10 fail=0 skip=1 complete=True
+```
+
+The `http` case accepts `--http-url`; the run above points it at the host's
+18080 server. The `route` case prefers `ip route` because Asterinas does not
+implement `/proc/net/route`.
 
 ## Status and next stage
 

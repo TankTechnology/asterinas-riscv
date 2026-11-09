@@ -40,7 +40,7 @@ SUBSYSTEMS: tuple[Subsystem, ...] = (
         MULTI_USER,
         (
             Case("identity", "hostname and os-release name the test image"),
-            Case("clock", "system time advances and can be set from the host"),
+            Case("clock", "system time matches the host within a day"),
             Case("tty", "serial getty accepts a login and a command"),
             Case("sudo", "passwordless privilege escalation works"),
         ),

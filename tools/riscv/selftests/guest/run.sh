@@ -34,7 +34,21 @@ console_clock() {
     before=$(date +%s)
     sleep 1
     after=$(date +%s)
-    if [ "$before" -gt 1700000000 ] && [ "$after" -gt "$before" ]; then
+    if [ "$after" -le "$before" ]; then
+        report console clock FAIL "clock does not advance: $before..$after"
+        return
+    fi
+    if [ -n "${SELFTEST_EXPECT_EPOCH:-}" ]; then
+        delta=$((after - SELFTEST_EXPECT_EPOCH))
+        if [ "$delta" -lt 0 ]; then delta=$((-delta)); fi
+        if [ "$delta" -le 86400 ]; then
+            report console clock PASS "epoch=$after delta=${delta}s"
+        else
+            report console clock FAIL "epoch=$after expected~$SELFTEST_EXPECT_EPOCH delta=${delta}s"
+        fi
+        return
+    fi
+    if [ "$after" -gt 1700000000 ]; then
         report console clock PASS "epoch=$after"
     else
         report console clock FAIL "epoch=$before..$after"

@@ -105,7 +105,7 @@ def run_board(args: argparse.Namespace, plan: dict[str, object]) -> int:
         return 2
 
     subsystems = " ".join(str(item["name"]) for item in plan["subsystems"])
-    env = []
+    env = [f"SELFTEST_EXPECT_EPOCH={int(time.time())}"]
     if args.http_url:
         env.append(f"SELFTEST_HTTP_URL={args.http_url}")
     if args.dns_host:
