@@ -108,3 +108,56 @@ Two scheduler defects caused this:
 The changes did not regress the other numbers: idle stays at ~1,100
 interrupts/s and ~130 context switches/s, the X round trip is 0.34 ms, and a
 200-click burst still costs ~68 context switches per click (unchanged).
+
+## Follow-up: where a page fault spends its 30 microseconds
+
+The next bottleneck is the minor page fault: a first touch costs 29-31 us
+(best of several rounds; plain wall-clock averages are dominated by desktop
+background load), while a userspace 4K memset on populated pages is 0.44 us
+and memcpy is 0.76 us. Reading data is not slow; this is kernel work.
+
+The RISC-V time CSR is the 1 MHz timebase, so one tick is one microsecond.
+Temporary phase counters around the fault path (removed after measuring)
+reported, for a single anonymous fault:
+
+| Phase | Cost |
+| --- | ---: |
+| exception entry + return to user | ~10 us |
+| VMAR mapping lookup | 1 us |
+| cursor creation + page-table query | 3 us |
+| prepare (frame allocation + metadata + clear) | 12-13 us |
+| page-table insert + RSS accounting | 1-2 us |
+| total | ~29-31 us |
+
+File-backed read faults are amortized differently: `handle_page_faults_around`
+maps up to 16 pages per fault, which is why touching 280 mapped pages of
+`/bin/bash` costs only 2.8 us/page even though each fault itself costs ~43 us.
+
+Two hypotheses were checked and rejected:
+
+- **Slow glibc memset.** A per-page memset looked 40x slower than memcpy in
+  one binary, but that binary's initial fill had been eliminated as a dead
+  store, so the timed loop was faulting every page. With a read-back, memset
+  is 0.44 us/4K (9 GB/s) and the "slow memset" disappears.
+- **Slow compiler-builtin memset in the frame clearer.** Replacing
+  `write_bytes` with volatile 64-bit stores did not reduce the prepare phase
+  (12 us vs 13 us), so clearing is not where the time goes; the change was
+  reverted.
+
+So ~12 us of the fault is frame allocation and metadata, not zeroing. The
+per-CPU frame cache holds only 12 single frames, and every allocation also
+runs the pool balancer; a 512-page burst misses the cache almost every time.
+
+### Next steps for the fault path
+
+1. Split `prepare` into pool allocation, metadata initialization and clearing
+   with the same timer technique; then optimise the dominant part. Candidate
+   fixes: enlarge the per-CPU single-frame cache, batch pool refills, and skip
+   `balancing::balance` on the single-frame fast path.
+2. Batch anonymous faults the way file faults are batched (map a run of
+   pages per fault) behind a sequential-touch heuristic, so the ~10 us trap
+   and ~4 us cursor/map overhead are amortised.
+3. Measure the exception entry/exit cost separately; it is ~10 us, versus
+   ~4 us for an `ecall` syscall, and worth understanding before optimising.
+4. The desktop stack remains the other half: a click still wakes five
+   processes for ~14-20 ms of CPU, which is userspace architecture work.
