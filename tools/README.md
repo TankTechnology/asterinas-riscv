@@ -58,14 +58,12 @@ Where to start:
 | `tests/` | 0 | 128 | Python test drivers for the RISC-V paths. |
 | `qemu/` | 3 | 19 | QEMU runners, GDB probes, live samplers. |
 | `diagnostics/` | 2 | 14 | klog/X11/bench diagnostics. |
-| `xfce/` | 5 | 1 | XFCE/X11 session assets. |
 | `wayland/` | 3 | 0 | Wayland bring-up. |
-| `compat/` | 1 | 4 | Guest workflow compatibility checks. |
 | `concurrency-models/` | 1 | 1 | Rust/TLA+ concurrency models; build output is gitignored (1.4 GB on disk). |
 | `board/` | 0 | 6 | Board-side helpers (serial, flashing). |
 | `xhci/` | 1 | 1 | xHCI input gates. |
-| `lvgl/` | 1 | 0 | LVGL sample. |
-| `game/`, `ltp/`, `nsmatrix/`, `pidns/`, `xorg/` | — | — | Smaller or one-shot drivers. |
+| `legacy/` | 7 | 5 | Historical demos and experiments (game, lvgl, xfce, compat); not in the current workflow. |
+| `ltp/`, `nsmatrix/`, `pidns/`, `xorg/` | — | — | Smaller or one-shot drivers. |
 
 13 shell and 61 Python scripts also live directly in `tools/riscv/`; they predate the
 subdirectory split and are kept at that level so existing command lines keep working.

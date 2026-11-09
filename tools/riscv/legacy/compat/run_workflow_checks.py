@@ -8,7 +8,7 @@ summary, and exits non-zero when a check reports FAIL. Network checks report
 SKIP when the guest cannot reach the package source.
 
     # board over the network (key already authorized in ~asterinas/.ssh)
-    python3 -m tools.riscv.compat.run_workflow_checks \\
+    python3 -m tools.riscv.legacy.compat.run_workflow_checks \\
         --host 192.0.2.10 --key ~/.ssh/asterinas-gate
 
 `192.0.2.10` is an RFC 5737 documentation address. The board's real
@@ -17,7 +17,7 @@ address is site configuration: set `BOARD_IP` (and `BOARD_GW` /
 commit it.
 
     # one check at a time while debugging
-    python3 -m tools.riscv.compat.run_workflow_checks --host ... --only gcc
+    python3 -m tools.riscv.legacy.compat.run_workflow_checks --host ... --only gcc
 
 The guest-side checks live in guest_workflow_checks.sh next to this file; the
 host-side ones (ssh, pty, scp, rsync) run from here because they need the

@@ -1757,7 +1757,7 @@ initramfs. Verified on the QEMU virt display chain (bochs ->
 simple-framebuffer -> VT -> userspace fbdev).
 
 ```bash
-python3 tools/riscv/lvgl/build_lvgl_initramfs.sh   # -> target/qemu-uboot/initramfs-lvgl.cpio.gz
+python3 tools/riscv/legacy/lvgl/build_lvgl_initramfs.sh   # -> target/qemu-uboot/initramfs-lvgl.cpio.gz
 ```
 
 Then rebuild the boot disk with that initramfs and run the display boot

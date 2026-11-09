@@ -17,7 +17,7 @@
 # especially dangerous for a desktop rootfs overlay: a successful build could
 # package libraries that were never produced from the current sources.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-ROOT="${ASTERINAS_REPOSITORY_ROOT:-$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)}"
+ROOT="${ASTERINAS_REPOSITORY_ROOT:-$(cd -- "$SCRIPT_DIR/../../../.." && pwd -P)}"
 CROSSDIR="$ROOT/target/riscv-cross"
 PREFIX="$CROSSDIR/usr"
 SRC="$CROSSDIR/src"

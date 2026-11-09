@@ -16,7 +16,7 @@ Verification is two-layered:
      the xfce4-panel bar (top, dark) and xfdesktop backdrop must render.
 
 Usage:
-    python3 tools/riscv/xfce/boot_xfce_desktop.py \
+    python3 tools/riscv/legacy/xfce/boot_xfce_desktop.py \
         [--initramfs PATH] [--collect-timeout 300] [--settle 90]
 """
 
@@ -35,7 +35,7 @@ from pathlib import Path
 
 ANSI_RE = re.compile(rb"\x1b\[[0-9;]*[A-Za-z]")
 
-REPO = Path(__file__).resolve().parent.parent.parent.parent
+REPO = Path(__file__).resolve().parents[4]
 UBOOT = REPO / "target/qemu-uboot/cache/u-boot-build/u-boot"
 DTB = REPO / "target/qemu-uboot/current/qemu-virt.dtb"
 KERNEL_IMAGE = REPO / "target/osdk/aster-kernel-osdk-bin.Image"

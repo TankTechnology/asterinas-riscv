@@ -11,7 +11,7 @@ root and starts systemd). The guest gets a slirp NIC with `hostfwd` for port
 key over the serial debug console, because the image ships no
 authorized_keys.
 
-    python3 -m tools.riscv.compat.run_qemu_workflow_checks --only tar_xz
+    python3 -m tools.riscv.legacy.compat.run_qemu_workflow_checks --only tar_xz
 """
 
 from __future__ import annotations
@@ -28,9 +28,9 @@ import sys
 import time
 from pathlib import Path
 
-from tools.riscv.compat import run_workflow_checks
+from tools.riscv.legacy.compat import run_workflow_checks
 
-REPO = Path(__file__).resolve().parents[3]
+REPO = Path(__file__).resolve().parents[4]
 UBOOT = REPO / "target/qemu-uboot/cache/u-boot-build/u-boot"
 DTB = REPO / "target/qemu-uboot/current/qemu-virt.dtb"
 STAGE1 = REPO / "target/debian-riscv/stage1-qemu.cpio"

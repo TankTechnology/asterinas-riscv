@@ -16,10 +16,10 @@ shell entry points and the production file ceilings.
 | `qemu/` | QEMU `virt` + U-Boot runner: profiles, device sets, dtb/artifact checks, QMP, framebuffer capture, the initramfs builder and the prepared-boot script |
 | `debian/` | Debian image build, rootfs profiles, and the M1–M9 daily-use/desktop/browser gates |
 | `ltp/` | LTP manifests, baselines, and suite data |
-| `drm/`, `xorg/`, `wayland/`, `xfce/`, `lvgl/`, `game/` | Graphics bring-up, per milestone |
+| `drm/`, `xorg/`, `wayland/` | Graphics bring-up, per milestone |
 | `diagnostics/` | One-shot probes and guest-side diagnostics |
 | `perf/` | Host-side benchmarks and sampling helpers |
-| `compat/` | Developer-workflow and API acceptance checks |
+| `legacy/` | Historical demos and experiments moved out of the active tree on 2026-11-09: `game/`, `lvgl/`, `xfce/`, `compat/`; see `legacy/README.md` |
 | `concurrency-models/` | loom crates, TLA+ specs and the Kani proof harness |
 | `systemd/`, `nixos/` | Runtime and OS-image experiments |
 | `nsmatrix/`, `pidns/`, `xhci/` | Namespace and USB bring-up |

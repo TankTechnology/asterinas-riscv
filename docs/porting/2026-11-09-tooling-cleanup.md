@@ -36,6 +36,25 @@ Also removed from the working tree (all gitignored, none tracked):
 Build output under `target/`, `osdk/target/` and `test/initramfs/build/` is
 intentionally kept: it is cheap to keep and expensive to rebuild.
 
+## Archived directories
+
+Four directories moved to `tools/riscv/legacy/`; nothing in the Makefile, the
+host test suite, or the current gates referenced them:
+
+| Old path | New path |
+| --- | --- |
+| `tools/riscv/game/` | `tools/riscv/legacy/game/` |
+| `tools/riscv/lvgl/` | `tools/riscv/legacy/lvgl/` |
+| `tools/riscv/xfce/` | `tools/riscv/legacy/xfce/` |
+| `tools/riscv/compat/` | `tools/riscv/legacy/compat/` |
+
+Paths inside the moved code were adjusted for the extra directory level
+(`../../../lib/shell.sh` in the LVGL build, `parents[4]` in the Python root
+resolution, four `..` in `xfce_cross_env.sh`, and the `tools.riscv.legacy.compat`
+module spelling). Dated commands in `docs/porting/riscv-qemu-desktop.md` and in
+the XFCE-M2/M3 reports keep the old paths on purpose; `LAYOUT.md` is the
+current answer.
+
 ## What was deliberately kept
 
 - `tools/riscv/pidns/`, `nsmatrix/`: the C sources are the reproducible part of
