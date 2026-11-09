@@ -653,7 +653,6 @@
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_web_network_tls_override_remains_strict",
     "tools.riscv.tests.test_debian_m5_network.DebianDesktopM5NetworkTests.test_web_network_uses_owned_fixture_when_neighbor_dump_is_unobservable",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6AdapterTests.test_adapter_reuses_m5_identity_network_and_remote_stop_marker",
-    "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6AdapterTests.test_make_target_uses_distinct_output_and_cold_boot_budget",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6AdapterTests.test_protocol_captures_javascript_after_inherited_remote_screenshot",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6AdapterTests.test_protocol_preserves_failure_frame_without_claiming_remote_evidence",
     "tools.riscv.tests.test_debian_m6_browser.DebianDesktopM6AdapterTests.test_publish_records_status_and_both_screenshot_metadata",
@@ -2539,5 +2538,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2409
+  "tests": 2408
 }

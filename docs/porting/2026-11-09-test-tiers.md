@@ -31,16 +31,22 @@ Integration gates are no longer spelled as one `rt` command per milestone.
 `rt` exposes one command group with a scenario registry:
 
 ```bash
-rt gate rootfs
-rt gate desktop-m5
-rt gate desktop-drm
-rt gate debug-console
-rt gate browser-web
-rt gate daily-use
-rt gate desktop-m6
-rt gate desktop-m7
-rt gate graphics-physical
+rt gate rootfs           # image boot, no desktop
+rt gate desktop          # boot to graphical.target + session clients
+rt gate browser-web      # desktop + browser workload
+rt gate daily-use        # desktop + application matrix + recovery
+rt gate desktop-drm      # desktop on the DRM/3D stack
+rt gate debug-console    # serial console variant
+rt gate graphics-physical # Megrez physical display path
 ```
+
+Desktop gates are capability-shaped, not milestone-shaped. The M5/M6/M7
+modules that used to be separate gates are now internal libraries: M6/M7 are
+the marker tables and classifiers used by the Megrez debug workflow, and the
+`desktop_m5_qemu_gate` module implements the `desktop` scenario. One boot
+answers "did the desktop come up"; the `browser-web` and `daily-use` gates add
+the workloads, and `desktop-drm` is separate only because it needs a different
+QEMU device stack.
 
 The registry lives in `tools/riscv/rt` (`GATES`), and the Makefile targets
 call `rt gate <name>`. A gate implementation keeps its own arguments, so the

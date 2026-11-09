@@ -516,14 +516,6 @@ class DebianDesktopM7BaiduAdapterTests(unittest.TestCase):
         self.assertEqual(result["failure_screenshot"], {"width": 1024})
         inherited.assert_called_once()
 
-        makefile = MAKEFILE.read_text(encoding="utf-8")
-        target = makefile.split(".PHONY: test_riscv_debian_desktop_m7_baidu_gate", 1)[
-            1
-        ].split(".PHONY:", 1)[0]
-        self.assertIn("desktop_m7_baidu_gate", target)
-        self.assertIn("DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT", target)
-        self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
-
 
 if __name__ == "__main__":
     unittest.main()

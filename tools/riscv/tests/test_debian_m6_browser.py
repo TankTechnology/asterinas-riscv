@@ -570,16 +570,6 @@ class DebianDesktopM6AdapterTests(unittest.TestCase):
         )
         inherited.assert_called_once()
 
-    def test_make_target_uses_distinct_output_and_cold_boot_budget(self) -> None:
-        target = (
-            MAKEFILE.read_text(encoding="utf-8")
-            .split(".PHONY: test_riscv_debian_desktop_m6_browser_gate", 1)[1]
-            .split(".PHONY:", 1)[0]
-        )
-
-        self.assertIn("DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT", target)
-        self.assertIn("desktop_m6_browser_gate", target)
-        self.assertIn('--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"', target)
 
 
 if __name__ == "__main__":

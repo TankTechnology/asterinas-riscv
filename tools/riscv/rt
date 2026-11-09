@@ -41,9 +41,7 @@ _IMPORT_DIRS = (
 # their own arguments; `rt gate <name>` is the only public spelling.
 GATES: dict[str, str] = {
     "rootfs": "tools.riscv.debian.rootfs.rootfs_gate",
-    "desktop-m5": "tools.riscv.debian.rootfs.desktop_m5_qemu_gate",
-    "desktop-m6": "tools.riscv.debian.rootfs.desktop_m6_browser_gate",
-    "desktop-m7": "tools.riscv.debian.rootfs.desktop_m7_baidu_gate",
+    "desktop": "tools.riscv.debian.rootfs.desktop_m5_qemu_gate",
     "desktop-drm": "tools.riscv.debian.rootfs.desktop_drm_gate",
     "debug-console": "tools.riscv.debian.rootfs.debug_console_qemu_gate",
     "browser-web": "tools.riscv.debian.rootfs.browser_web_qemu_gate",
