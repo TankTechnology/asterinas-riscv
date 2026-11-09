@@ -112,9 +112,16 @@ the page also names the archive ref that still contains them.
 ## Verifying a change
 
 ```bash
-make test_riscv_host            # the contract suite
-./tools/format_all.sh --check   # rustfmt
+make test_riscv_host              # unit tier, a few seconds (default)
+make test_riscv_host_integration  # process-spawning tier, also nightly
+make test_riscv_host_all          # both tiers
+./tools/format_all.sh --check     # rustfmt
 ```
 
-The suite count and expected skips live in `tests/expected_host_tests.json`;
-see `MAINTAINABILITY.md` for the rules on updating them.
+Integration gates run through the scenario registry, for example
+`tools/riscv/rt gate browser-web` or `tools/riscv/rt gate daily-use`; the
+Makefile targets `test_riscv_*` are the supported spellings. The suite count,
+tiers and expected skips live in `tests/expected_host_tests.json` and
+`tests/tiers.json`; see `MAINTAINABILITY.md` and
+[`docs/porting/2026-11-09-test-tiers.md`](../../docs/porting/2026-11-09-test-tiers.md)
+for the rules on updating them.

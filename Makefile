@@ -558,14 +558,22 @@ build_riscv_rootfs_image:
 		-f "$(RISCV_ROOTFS_DOCKERFILE)" \
 		-t "$(RISCV_ROOTFS_IMAGE)" .
 
-.PHONY: test_riscv_host test_riscv_host_list
+.PHONY: test_riscv_host test_riscv_host_list test_riscv_host_integration test_riscv_host_all
 test_riscv_host:
 	@tools/riscv/rt test \
 		--jobs "$(HOST_TEST_JOBS)"
 
+test_riscv_host_integration:
+	@tools/riscv/rt test --tier integration \
+		--jobs "$(HOST_TEST_JOBS)"
+
+test_riscv_host_all:
+	@tools/riscv/rt test --tier all \
+		--jobs "$(HOST_TEST_JOBS)"
+
 test_riscv_host_list:
 	@tools/riscv/rt test \
-		--list --json --jobs "$(HOST_TEST_JOBS)"
+		--list --json --tier all --jobs "$(HOST_TEST_JOBS)"
 
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:
@@ -922,7 +930,7 @@ test_riscv_debian_rootfs_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-rootfs-gate \
+	@tools/riscv/rt gate rootfs \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -955,7 +963,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-desktop-m5 \
+	@tools/riscv/rt gate desktop-m5 \
 		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
 		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
@@ -991,7 +999,7 @@ DEBIAN_DRM_GRAPHICS_DEVICE ?= virtio-gpu-gl-device
 
 .PHONY: test_riscv_debian_desktop_drm_gate
 test_riscv_debian_desktop_drm_gate:
-	@tools/riscv/rt image-desktop-drm \
+	@tools/riscv/rt gate desktop-drm \
 		--kernel "$(DEBIAN_DRM_KERNEL)" \
 		--uboot "$(DEBIAN_DRM_UBOOT)" \
 		--dtb "$(DEBIAN_DRM_DTB)" \
@@ -1024,7 +1032,7 @@ test_riscv_debian_debug_console_qemu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-debug-console \
+	@tools/riscv/rt gate debug-console \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1059,7 +1067,7 @@ test_riscv_debian_browser_web_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-browser-web \
+	@tools/riscv/rt gate browser-web \
 		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
@@ -1078,7 +1086,7 @@ test_riscv_physical_graphics_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" || { echo "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt graphics-physical \
+	@tools/riscv/rt gate graphics-physical \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" --stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
@@ -1106,7 +1114,7 @@ test_riscv_debian_desktop_m6_browser_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-desktop-m6 \
+	@tools/riscv/rt gate desktop-m6 \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1138,7 +1146,7 @@ test_riscv_debian_desktop_m7_baidu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-desktop-m7 \
+	@tools/riscv/rt gate desktop-m7 \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1783,7 +1791,7 @@ test_riscv_debian_daily_use_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DAILY_USE_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DAILY_USE_GATE_OUTPUT is required" >&2; exit 2; }
-	@tools/riscv/rt image-daily-use \
+	@tools/riscv/rt gate daily-use \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \

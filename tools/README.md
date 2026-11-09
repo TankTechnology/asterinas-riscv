@@ -78,6 +78,7 @@ experiment imports the latter by its top-level name).
   print what they verified instead of assuming success.
 - **One directory per concern.** Add new work under the closest existing subdirectory; only
   put a script at `tools/` or `tools/riscv/` top level if it is a general entry point.
+- **Tests are tiered.** `make test_riscv_host` is the unit tier; modules that spawn host processes are listed in `tests/tiers.json` and run with `make test_riscv_host_integration`.
 - **Document the entry point.** If a subdirectory has more than one script, add a short
   `README.md` next to it (currently only `concurrency-models/`, `ltp/`, `perf/`
   and `xhci/` have one).

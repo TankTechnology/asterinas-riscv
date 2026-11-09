@@ -8,7 +8,7 @@ refactoring work is tracked separately.
 
 - Source: `origin/main` at `3ceeccd04` before the maintainability branch.
 - Host modules: **122**
-- Host tests: **2,435**
+- Host tests: **2,438**
 - Expected environment skips: **11**
 - Production Python files: **175**
 - Production shell files: **87**
@@ -39,6 +39,28 @@ The canonical unittest command remains available:
 PYTHONPATH="$PWD" python3 -W error::ResourceWarning \
   -m unittest discover -s tools/riscv/tests -t . -p 'test_*.py' -v
 ```
+
+
+## Tiers
+
+The suite has two tiers. The default target runs the unit tier; the
+integration tier is explicit.
+
+| Command | Tier | Size | Purpose |
+| --- | --- | --- | --- |
+| `make test_riscv_host` | unit | 63 modules / 698 tests | pure logic and contracts; the development loop (a few seconds) |
+| `make test_riscv_host_integration` | integration | 59 modules / 1740 tests | process-spawning orchestration tests; also nightly |
+| `make test_riscv_host_all` | both | 122 modules / 2,438 tests | release and full validation |
+
+Membership lives in `tests/tiers.json` (the `integration` list). The runner
+filters both discovery and the baseline check, so each tier stays green on
+its own.
+
+`tests/test_wiring.py` is the single place that may read the Makefile: it
+checks that every `rt` command and `rt gate` name in the build file resolves,
+and that every referenced test module exists. It also freezes the list of
+modules that still assert on raw Makefile text; that list may shrink, not
+grow.
 
 ## Expected skips
 

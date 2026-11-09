@@ -37,6 +37,20 @@ _IMPORT_DIRS = (
     TOOLS / "megrez" / "network",
 )
 
+# Integration gates: one entry per scenario. The implementation modules keep
+# their own arguments; `rt gate <name>` is the only public spelling.
+GATES: dict[str, str] = {
+    "rootfs": "tools.riscv.debian.rootfs.rootfs_gate",
+    "desktop-m5": "tools.riscv.debian.rootfs.desktop_m5_qemu_gate",
+    "desktop-m6": "tools.riscv.debian.rootfs.desktop_m6_browser_gate",
+    "desktop-m7": "tools.riscv.debian.rootfs.desktop_m7_baidu_gate",
+    "desktop-drm": "tools.riscv.debian.rootfs.desktop_drm_gate",
+    "debug-console": "tools.riscv.debian.rootfs.debug_console_qemu_gate",
+    "browser-web": "tools.riscv.debian.rootfs.browser_web_qemu_gate",
+    "daily-use": "tools.riscv.debian.rootfs.daily_use_gate",
+    "graphics-physical": "tools.riscv.physical_graphics_qemu_gate",
+}
+
 # command -> ("module", dotted module that runs as __main__)
 #            ("script", path relative to this directory)
 COMMANDS: dict[str, tuple[str, str]] = {
@@ -55,14 +69,6 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "ltp-gate": ("script", "ltp/ltp-gate.sh"),
     # Debian image gates
     "image-dev-overlay": ("module", "tools.riscv.debian.rootfs.dev_overlay"),
-    "image-rootfs-gate": ("module", "tools.riscv.debian.rootfs.rootfs_gate"),
-    "image-desktop-m5": ("module", "tools.riscv.debian.rootfs.desktop_m5_qemu_gate"),
-    "image-desktop-m6": ("module", "tools.riscv.debian.rootfs.desktop_m6_browser_gate"),
-    "image-desktop-m7": ("module", "tools.riscv.debian.rootfs.desktop_m7_baidu_gate"),
-    "image-desktop-drm": ("module", "tools.riscv.debian.rootfs.desktop_drm_gate"),
-    "image-debug-console": ("module", "tools.riscv.debian.rootfs.debug_console_qemu_gate"),
-    "image-browser-web": ("module", "tools.riscv.debian.rootfs.browser_web_qemu_gate"),
-    "image-daily-use": ("module", "tools.riscv.debian.rootfs.daily_use_gate"),
     "image-build": ("script", "debian/rootfs/build_rootfs.sh"),
     "fs-ext2": ("module", "tools.riscv.debian.rootfs.ext2_durability_gate"),
     "firefox-debug": ("module", "tools.riscv.debian.rootfs.firefox_debug_tool"),
@@ -87,7 +93,6 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "package": ("script", "board/make_megrez_package.sh"),
     "sdhci-probe": ("script", "board/build_megrez_sdhci_probe.sh"),
     # graphics
-    "graphics-physical": ("module", "tools.riscv.physical_graphics_qemu_gate"),
     "hdmi-oracle": ("module", "tools.riscv.drm.hdmi_pixel_oracle"),
     "drm-cursor": ("module", "drm.cursor_gate"),
     "drm-gem": ("module", "drm.gem_gate"),
@@ -104,11 +109,11 @@ COMMANDS: dict[str, tuple[str, str]] = {
 
 
 def _usage() -> str:
-    groups: dict[str, list[str]] = {}
-    for name in COMMANDS:
-        groups.setdefault(name.split("-", 1)[0], []).append(name)
     lines = ["usage: rt <command> [args...]", "", "commands:"]
     for name in sorted(COMMANDS):
+        lines.append(f"  {name}")
+    lines += ["", "gates (rt gate <name> [args...]):"]
+    for name in sorted(GATES):
         lines.append(f"  {name}")
     return "\n".join(lines)
 
@@ -130,10 +135,27 @@ def main(argv: list[str] | None = None) -> int:
         print(_usage())
         return 0 if args else 2
     if args[0] in ("-l", "--list"):
-        print("\n".join(sorted(COMMANDS)))
+        names = [*sorted(COMMANDS), *(f"gate {name}" for name in sorted(GATES))]
+        print("\n".join(names))
         return 0
 
     command = args[0]
+    if command == "gate":
+        if len(args) < 2 or args[1] in ("-h", "--help"):
+            print("gates:")
+            for name in sorted(GATES):
+                print(f"  {name}")
+            return 0 if len(args) >= 2 else 2
+        gate = args[1]
+        module = GATES.get(gate)
+        if module is None:
+            print(f"rt: unknown gate: {gate}\n\n{_usage()}", file=sys.stderr)
+            return 2
+        _prepare_environment()
+        sys.argv = [module, *args[2:]]
+        runpy.run_module(module, run_name="__main__", alter_sys=True)
+        return 0
+
     entry = COMMANDS.get(command)
     if entry is None:
         print(f"rt: unknown command: {command}\n\n{_usage()}", file=sys.stderr)

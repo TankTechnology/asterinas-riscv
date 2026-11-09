@@ -7051,7 +7051,7 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             text=True,
             capture_output=True,
         ).stdout
-        self.assertIn("tools/riscv/rt image-rootfs-gate", dry_run)
+        self.assertIn("tools/riscv/rt gate rootfs", dry_run)
         for forbidden in ("build_rootfs.sh", "debootstrap", "http://", "https://"):
             self.assertNotIn(forbidden, dry_run)
 

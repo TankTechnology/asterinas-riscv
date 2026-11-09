@@ -59,7 +59,7 @@
     "tools.riscv.tests.test_ltp_package",
     "tools.riscv.tests.test_ltp_result",
     "tools.riscv.tests.test_ltp_suite",
-    "tools.riscv.tests.test_makefile_test_targets",
+    "tools.riscv.tests.test_wiring",
     "tools.riscv.tests.test_marionette_diagnostics",
     "tools.riscv.tests.test_megrez_board_session",
     "tools.riscv.tests.test_megrez_boot_manifest",
@@ -1276,8 +1276,6 @@
     "tools.riscv.tests.test_ltp_result.LtpSerialParserTests.test_parse_requires_exact_selected_manifest_order",
     "tools.riscv.tests.test_ltp_suite.LtpSuiteTests.test_describe_cli_emits_shell_line_fields_from_the_registry",
     "tools.riscv.tests.test_ltp_suite.LtpSuiteTests.test_named_suites_have_closed_count_contracts",
-    "tools.riscv.tests.test_makefile_test_targets.MakefileTestTargetTests.test_every_makefile_test_reference_resolves",
-    "tools.riscv.tests.test_makefile_test_targets.MakefileTestTargetTests.test_extraction_distinguishes_modules_and_classes",
     "tools.riscv.tests.test_marionette_diagnostics.MarionetteDiagnosticsTests.test_closed_diagnostic_sink_does_not_replace_transport_failure",
     "tools.riscv.tests.test_marionette_diagnostics.MarionetteDiagnosticsTests.test_fragmentation_does_not_reset_deadline_or_add_records",
     "tools.riscv.tests.test_marionette_diagnostics.MarionetteDiagnosticsTests.test_invalid_frame_and_json_report_the_original_error",
@@ -1440,10 +1438,10 @@
     "tools.riscv.tests.test_megrez_clock_bootstrap.MegrezClockBootstrapTests.test_far_future_boot_clock_is_replaced_by_build_time",
     "tools.riscv.tests.test_megrez_clock_bootstrap.MegrezClockBootstrapTests.test_missing_build_time_is_reported_without_failing",
     "tools.riscv.tests.test_megrez_clock_bootstrap.MegrezClockBootstrapTests.test_plausible_clock_is_not_moved",
+    "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_desktop_service_gates_the_clock_sync_on_the_kernel_command_line",
     "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_http_proxy_date_is_validated_and_applied_without_https",
     "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_invalid_or_missing_date_never_changes_the_clock",
     "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_offline_desktop_skips_network_clock_sync",
-    "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_desktop_service_gates_the_clock_sync_on_the_kernel_command_line",
     "tools.riscv.tests.test_megrez_debian_installer.MegrezDebianInstallerTests.test_build_archive_accepts_absolute_internal_runtime_symlink",
     "tools.riscv.tests.test_megrez_debian_installer.MegrezDebianInstallerTests.test_build_archive_is_reproducible_and_replaces_init",
     "tools.riscv.tests.test_megrez_debian_installer.MegrezDebianInstallerTests.test_build_archive_preserves_existing_output_on_failure",
@@ -2520,6 +2518,11 @@
     "tools.riscv.tests.test_validate_run_kernel_log.ValidateRunKernelLogTests.test_rejects_missing_or_duplicate_terminal_marker",
     "tools.riscv.tests.test_validate_run_kernel_log.ValidateRunKernelLogTests.test_rejects_skip_duplicate_cpus_or_wrong_topology",
     "tools.riscv.tests.test_validate_run_kernel_log.ValidateRunKernelLogTests.test_udp_user_buffer_prefault_gate_is_wired_into_make_and_guest",
+    "tools.riscv.tests.test_wiring.MakefileTestTargetTests.test_every_makefile_test_reference_resolves",
+    "tools.riscv.tests.test_wiring.MakefileTestTargetTests.test_extraction_distinguishes_modules_and_classes",
+    "tools.riscv.tests.test_wiring.WiringTests.test_makefile_readers_do_not_grow",
+    "tools.riscv.tests.test_wiring.WiringTests.test_rt_commands_in_makefile_exist",
+    "tools.riscv.tests.test_wiring.WiringTests.test_rt_targets_resolve",
     "tools.riscv.tests.test_xhci_input_gate.XhciGuestProbeTests.test_builder_declares_exact_tools_and_entries",
     "tools.riscv.tests.test_xhci_input_gate.XhciGuestProbeTests.test_builder_is_reproducible_and_normalizes_newc_metadata",
     "tools.riscv.tests.test_xhci_input_gate.XhciGuestProbeTests.test_builder_rejects_unsafe_output_and_epoch",
@@ -2536,5 +2539,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2406
+  "tests": 2409
 }

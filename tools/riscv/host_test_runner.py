@@ -21,6 +21,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TESTS_DIR = REPO_ROOT / "tools" / "riscv" / "tests"
 DEFAULT_BASELINE = DEFAULT_TESTS_DIR / "expected_host_tests.json"
+DEFAULT_TIERS = DEFAULT_TESTS_DIR / "tiers.json"
 DEFAULT_LOG_DIR = REPO_ROOT / "target" / "host-tests"
 MODULE_PREFIX = "tools.riscv.tests."
 DEFAULT_TIMEOUT_SECONDS = 300.0
@@ -63,8 +64,51 @@ def discover_modules(
     return sorted(modules)
 
 
-def shard_modules(
-    modules: Sequence[str], shard_index: int, shard_count: int
+def load_integration_modules(path: Path = DEFAULT_TIERS) -> set[str]:
+    """Return the modules that belong to the integration tier."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(value, dict):
+        return set()
+    return {str(module) for module in value.get("integration", [])}
+
+
+def select_tier(
+    modules: Sequence[str], tier: str, integration: set[str]
+) -> list[str]:
+    """Select the unit, integration or complete module set."""
+
+    if tier == "all":
+        return list(modules)
+    if tier == "integration":
+        return [module for module in modules if module in integration]
+    return [module for module in modules if module not in integration]
+
+
+def baseline_for_modules(
+    baseline: Mapping[str, Any], modules: Sequence[str]
+) -> dict[str, Any]:
+    """Restrict a baseline to the modules scheduled in this run."""
+
+    scheduled = set(modules)
+    expected_ids = [
+        test_id
+        for test_id in baseline.get("test_ids", [])
+        if any(
+            test_id == module or test_id.startswith(module + ".")
+            for module in scheduled
+        )
+    ]
+    filtered = dict(baseline)
+    filtered["test_ids"] = expected_ids
+    filtered["tests"] = len(expected_ids)
+    return filtered
+
+
+def shard_modules(    modules: Sequence[str], shard_index: int, shard_count: int
 ) -> list[str]:
     """Select a deterministic, non-overlapping slice of the module list."""
 
@@ -410,6 +454,8 @@ def _print_run(results: Sequence[dict[str, Any]], baseline_path: Path, no_baseli
         problems.append(f"{len(failures)} modules failed")
     baseline = None if no_baseline else _load_baseline(baseline_path)
     if baseline is not None:
+        scheduled = [str(result["module"]) for result in results]
+        baseline = baseline_for_modules(baseline, scheduled)
         problems.extend(baseline_disagreements(baseline, set(all_ids), skip_reasons))
     summary = {
         "modules": len(results),
@@ -461,6 +507,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--module", action="append", default=[])
+    parser.add_argument(
+        "--tier",
+        choices=("unit", "integration", "all"),
+        default="unit",
+        help="run the unit tier (default), the integration tier, or everything",
+    )
+    parser.add_argument("--tiers", type=Path, default=DEFAULT_TIERS)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--no-baseline", action="store_true")
     values = parser.parse_args(argv)
@@ -477,6 +530,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if unknown:
             parser.error(f"unknown modules: {unknown}")
         modules = [module for module in modules if module in requested]
+    integration = load_integration_modules(values.tiers)
+    modules = select_tier(modules, values.tier, integration)
     try:
         modules = shard_modules(modules, values.shard_index, values.shard_count)
     except ValueError as error:
