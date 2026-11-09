@@ -295,7 +295,18 @@ class Console:
             raise SystemExit("payload contains the heredoc delimiter")
         marker = f"ZZPUSH{os.getpid()}"
         offset = os.path.getsize(self.log)
-        self.type_line(f"cat > {remote} <<'{EOF_MARKER}'; echo {marker}")
+        # Do not reuse type_line here: it also sends a blank line to wake the
+        # shell, which would land in the heredoc. The CRLF is needed anyway:
+        # the bridge only flushes its FIFO buffer on LF, so a bare CR would
+        # fold the next control line into the command text. The LF that
+        # flushes the buffer is consumed by the heredoc as one empty first
+        # line, which the sed below removes.
+        self.send_line("!RAW 1")
+        time.sleep(0.4)
+        for char in f"cat > {remote} <<'{EOF_MARKER}'; echo {marker}":
+            self.send_raw(char.encode())
+            time.sleep(DEFAULT_CHAR_PAUSE)
+        self.send_raw(b"\r\n")
         time.sleep(0.4)
         self.send_line(f"!PACE {pace_ms}")
         time.sleep(0.4)
@@ -308,14 +319,22 @@ class Console:
         self.send_line("!RAW 0")
         self.send_line(f"!PACE {TYPING_PACE_MS}")
         collected = ""
-        deadline = time.time() + 30
+        # The bridge writes the payload at the requested pace, so the marker
+        # cannot arrive before the transfer itself has had time to finish.
+        transfer_seconds = len(payload) * pace_ms / 1000.0
+        deadline = time.time() + 30 + transfer_seconds
         while time.time() < deadline:
             time.sleep(0.5)
             chunk, offset = self.read_since(offset)
             collected += chunk
             if marker in collected:
                 break
-        return marker in collected
+        if marker not in collected:
+            return False
+        # Drop the empty line the flushing LF adds. `1{/^$/d;}` touches only
+        # the first line and leaves every other byte alone.
+        self.type_line(f"sed -i '1{{/^$/d;}}' {remote}")
+        return True
 
 
 def cmd_run(args: argparse.Namespace) -> int:

@@ -111,6 +111,22 @@ The `http` case accepts `--http-url`; the run above points it at the host's
 18080 server. The `route` case prefers `ip route` because Asterinas does not
 implement `/proc/net/route`.
 
+## Guest bundle transfer
+
+The bundle is pushed over the console as a heredoc, and the push is verified
+before it runs: the guest's `sha256sum` must match the host file, with retries
+at 2, 6 and 12 ms/byte. Two protocol details matter:
+
+- The bridge only flushes its FIFO buffer on LF, so the command must be
+  submitted with CRLF. The LF reaches the heredoc as an empty first line; the
+  push strips exactly that line with `sed -i '1{/^$/d;}'` on the guest.
+- The echoed command contains the digest markers too, so the collector must
+  wait for a marker alone on its own line before reading the hash.
+
+Without the verification, a character dropped under desktop load leaves a
+syntactically broken bundle that still prints the push marker (observed:
+`elif have python3` became `ython3`, and the run failed with `"then"` unexpected).
+
 ## Status and next stage
 
 Landed: the catalog, the runner (plan, `--list`, `--dry-run`, and `--board`),
