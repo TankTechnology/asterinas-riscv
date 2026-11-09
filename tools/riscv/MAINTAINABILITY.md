@@ -10,8 +10,8 @@ refactoring work is tracked separately.
 - Host modules: **122**
 - Host tests: **2,435**
 - Expected environment skips: **11**
-- Production Python files: **178**
-- Production shell files: **88**
+- Production Python files: **175**
+- Production shell files: **87**
 - Top-level shell entrypoints: **0** (everything is behind `tools/riscv/rt`)
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**

@@ -122,6 +122,14 @@ physical-graphics gate). The M5 milestone tuple stays inlined in the browser-web
 test for the non-overlap assertion; the `browser-m5` and
 `desktop-m9-software` rootfs profiles themselves remain buildable.
 
+## One-shot diagnostics
+
+Eight probes with no code or test caller were deleted from
+`tools/riscv/diagnostics/`: `dhcp_probe.py`, `fb_downsample_guest.py`,
+`gdk_pixbuf_probe.py`, `klog_console_probe.c`, `klog_micro_init.sh`,
+`startup_cost_probe.c`, `syscall_bench.c`, `sysv_shm_rmid_probe.c`. The
+probes still used by tests or by the Megrez desktop baseline remain.
+
 ## What was deliberately kept
 
 - `tools/riscv/pidns/`, `nsmatrix/`: the C sources are the reproducible part of

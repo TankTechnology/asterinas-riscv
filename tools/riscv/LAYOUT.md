@@ -85,12 +85,9 @@ row here. The categories are:
 | `megrez/board/megrez_recover.py` | manual | board recovery entry; see `docs/porting/board-addresses.md` |
 | `megrez/board/megrez_control_chain.py` | manual | RockOS control-chain protocol; no live caller or document reference — confirm before removal |
 | `megrez/desktop/megrez_desktop_baseline.py` | manual | one-shot desktop performance baseline |
-| `diagnostics/dhcp_probe.py` | manual | guest-side DHCP probe |
-| `diagnostics/fb_downsample_guest.py` | manual | guest-side framebuffer downsample probe |
-| `diagnostics/gdk_pixbuf_probe.py` | manual | guest-side gdk-pixbuf/wallpaper probe |
 | `diagnostics/syscall_ipc_bench_guest.py` | manual | guest-side syscall/IPC benchmark pushed by `megrez_desktop_baseline.py` |
 
-Counts: 1 active, 13 manual, 0 legacy (14 scripts).
+Counts: 1 active, 10 manual, 0 legacy (11 scripts).
 
 The NixOS milestone entry points (`fm3-gate.sh`, `fm4-gate.sh`, `pm1-gate.sh`)
 and the `nixos/` milestone tree were removed on 2026-11-09; see
