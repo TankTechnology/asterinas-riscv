@@ -51,15 +51,27 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # on this guest), while a failed gate may not persist the writable root.
     # The bounded tail keeps the decisive fbdev/VT error observable in the
     # journal+console stream without changing the Xorg invocation semantics.
-    : >"$HOME/Xorg.0.log"
+    #
+    # The log lives in $HOME, but a damaged inode (EIO/ESTALE) or a read-only
+    # root must not take the whole session down: fall back to the volatile
+    # /tmp path and say so on the service stream.
+    xorg_log="$HOME/Xorg.0.log"
+    if ! : >"$xorg_log" 2>/dev/null; then
+        /usr/bin/rm -f -- "$xorg_log" 2>/dev/null || true
+        if ! : >"$xorg_log" 2>/dev/null; then
+            xorg_log="${TMPDIR:-/tmp}/asterinas-desktop-m5-Xorg.log"
+            : >"$xorg_log"
+            emit_stage xorg-log-fallback 0 "path=$xorg_log"
+        fi
+    fi
     # A failed Xorg can leave its Unix socket behind.  Never advertise that
     # stale endpoint as a live display to Firefox.
     /usr/bin/rm -f -- /tmp/.X11-unix/X0
-    /usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2 &
+    /usr/bin/tail -n 0 -f "$xorg_log" >&2 &
     readonly xorg_log_tailer_pid=$!
     /usr/bin/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX \
         -configdir "$provider_config_directory" \
-        -logfile "$HOME/Xorg.0.log" vt1 &
+        -logfile "$xorg_log" vt1 &
     readonly xorg_pid=$!
     for _ in {1..120}; do
         if [[ -S /tmp/.X11-unix/X0 ]] &&

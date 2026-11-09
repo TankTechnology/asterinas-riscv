@@ -1825,14 +1825,20 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn('-configdir "$provider_config_directory"', desktop_session)
         self.assertIn("display-provider-ready", desktop_session)
         self.assertNotIn("-extension MIT-SHM", desktop_session)
-        self.assertIn('-logfile "$HOME/Xorg.0.log" vt1', desktop_session)
+        self.assertIn('xorg_log="$HOME/Xorg.0.log"', desktop_session)
+        self.assertIn('-logfile "$xorg_log" vt1', desktop_session)
+        self.assertIn("xorg-log-fallback", desktop_session)
+        self.assertIn(
+            'xorg_log="${TMPDIR:-/tmp}/asterinas-desktop-m5-Xorg.log"',
+            desktop_session,
+        )
         self.assertIn("-novtswitch -keeptty", desktop_session)
         self.assertIn(
             "/usr/sbin/runuser --user asterinas --preserve-environment",
             desktop_session,
         )
         self.assertNotIn("/usr/bin/runuser", desktop_session)
-        self.assertIn('/usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2', desktop_session)
+        self.assertIn('/usr/bin/tail -n 0 -f "$xorg_log" >&2', desktop_session)
         self.assertIn("/usr/bin/rm -f -- /tmp/.X11-unix/X0", desktop_session)
         self.assertIn(
             '/usr/bin/timeout 5 /usr/bin/xdpyinfo -display "$DISPLAY"', desktop_session
