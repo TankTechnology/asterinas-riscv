@@ -40,7 +40,7 @@ from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     _read_plan,
     physical_bootargs,
 )
-from tools.riscv.physical_boot_contract import (
+from tools.riscv.megrez.desktop.physical_boot_contract import (
     desktop_start_bootargs as _desktop_start_bootargs,
 )
 

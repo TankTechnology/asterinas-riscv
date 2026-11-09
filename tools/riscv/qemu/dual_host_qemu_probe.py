@@ -566,7 +566,7 @@ def main(arguments: tuple[str, ...] | None = None) -> int:
 
     try:
         values = parse_args(tuple(sys.argv[1:] if arguments is None else arguments))
-        workspace = Path(__file__).resolve().parents[2]
+        workspace = Path(__file__).resolve().parents[3]
         kernel_source = values.kernel.absolute()
         initramfs_source = values.initramfs.absolute()
         kernel = read_identity(kernel_source)

@@ -19,17 +19,17 @@
 # (override with ASTERINAS_RISCV_BOOTI=).
 #
 # Usage:
-#   tools/riscv/demo-all.sh                        # build + boot + screenshot
-#   tools/riscv/demo-all.sh --skip-build           # reuse the existing initramfs
-#   tools/riscv/demo-all.sh --settle-seconds 60    # extra render time before the shot
-#   tools/riscv/demo-all.sh --collect-timeout 300  # boot collection timeout
+#   tools/riscv/systemd/demo-all.sh                        # build + boot + screenshot
+#   tools/riscv/systemd/demo-all.sh --skip-build           # reuse the existing initramfs
+#   tools/riscv/systemd/demo-all.sh --settle-seconds 60    # extra render time before the shot
+#   tools/riscv/systemd/demo-all.sh --collect-timeout 300  # boot collection timeout
 
 set -euo pipefail
 
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"

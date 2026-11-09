@@ -386,9 +386,9 @@ class LtpBuildScriptContractTests(unittest.TestCase):
         self.assertIn('SUITE="syscalls"', source)
         self.assertIn("--suite requires a value", source)
         self.assertIn('SUITE="$2"; shift 2', source)
-        self.assertIn("tools/riscv/ltp_suite.py", source)
-        self.assertIn("tools/riscv/ltp_package.py", source)
-        self.assertIn("tools/riscv/ltp_gate.py", source)
+        self.assertIn("tools/riscv/ltp/ltp_suite.py", source)
+        self.assertIn("tools/riscv/ltp/ltp_package.py", source)
+        self.assertIn("tools/riscv/ltp/ltp_gate.py", source)
         self.assertIn("ASTERINAS_LTP_PACKAGE_LOCK_HELD", source)
         self.assertIn("describe", source)
         self.assertIn("publish", source)
@@ -417,12 +417,14 @@ class LtpBuildScriptContractTests(unittest.TestCase):
             builder.parent.mkdir(parents=True)
             shutil.copy2(BUILD_SCRIPT, builder)
             for module in (
-                "ltp_gate.py",
-                "ltp_manifest.py",
-                "ltp_package.py",
-                "ltp_suite.py",
+                "ltp/ltp_gate.py",
+                "ltp/ltp_manifest.py",
+                "ltp/ltp_package.py",
+                "ltp/ltp_suite.py",
             ):
-                shutil.copy2(TOOLS / module, repo / "tools/riscv" / module)
+                destination = repo / "tools/riscv" / module
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(TOOLS / module, destination)
             target = repo / "target/ltp"
             target.mkdir(parents=True)
             victim = repo / "Makefile"
@@ -451,7 +453,7 @@ class LtpBuildScriptContractTests(unittest.TestCase):
     ) -> None:
         source = BUILD_SCRIPT.read_text()
 
-        self.assertIn("tools/riscv/ltp_manifest.py", source)
+        self.assertIn("tools/riscv/ltp/ltp_manifest.py", source)
         self.assertIn("--unavailable-output", source)
         self.assertIn('--expected-count "${EXPECTED_SELECTED}"', source)
         for tool in ("aclocal", "autoconf", "automake"):

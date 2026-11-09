@@ -8,16 +8,16 @@
 # then boots it in QEMU at SMP=1 and SMP=4 and reports pass/fail per tier.
 #
 # Usage:
-#   tools/riscv/ltp-gate.sh              # build LTP + run SMP=1 and SMP=4
-#   tools/riscv/ltp-gate.sh --smp 1      # only one tier
-#   tools/riscv/ltp-gate.sh --skip-build # reuse the existing initramfs
+#   tools/riscv/ltp/ltp-gate.sh              # build LTP + run SMP=1 and SMP=4
+#   tools/riscv/ltp/ltp-gate.sh --smp 1      # only one tier
+#   tools/riscv/ltp/ltp-gate.sh --skip-build # reuse the existing initramfs
 
 set -euo pipefail
 
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"

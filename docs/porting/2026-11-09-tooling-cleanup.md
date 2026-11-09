@@ -92,6 +92,24 @@ the browser-web session), `systemd/boot_systemd_desktop_vnc.py` (superseded by
 `boot_systemd_desktop.py`), `systemd/gate_desktop.sh`, `systemd/gate_m2.sh`,
 and `xorg/xwm_reparent.c`.
 
+## Single entry point
+
+The tooling was reshaped after the Linux `tools/` model: one executable with
+subcommands, implementation in domain packages.
+
+- `tools/riscv/rt <command>` is the only public entry point; `rt --list` prints
+  the command set. It sets `PYTHONPATH` itself, so commands run from any
+  directory or container.
+- The loose top-level Python modules moved into `ltp/`, `perf/`,
+  `debian/rootfs/`, `drm/`, `qemu/`, `board/`, `megrez/`, and
+  `megrez/desktop/`. The ten top-level shell scripts moved into `ktest/`,
+  `ltp/`, `board/`, `qemu/`, `systemd/`, and `debian/rootfs/`.
+- `tooling_surface.json` now caps top-level shell scripts at zero. The only
+  top-level Python modules left are `host_test_runner.py` and
+  `physical_graphics_qemu_gate.py`, the latter because a SHA-256-pinned
+  experiment imports it by its top-level name.
+- The Makefile now invokes `tools/riscv/rt <command>` for every tool target.
+
 ## What was deliberately kept
 
 - `tools/riscv/pidns/`, `nsmatrix/`: the C sources are the reproducible part of

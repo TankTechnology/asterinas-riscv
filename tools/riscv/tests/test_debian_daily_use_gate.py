@@ -390,7 +390,7 @@ class DailyUseMakefileTests(unittest.TestCase):
         ).stdout
 
         self.assertIn(
-            "python3 -m tools.riscv.debian.rootfs.daily_use_gate", dry_run
+            "tools/riscv/rt image-daily-use", dry_run
         )
         for value in variables:
             self.assertIn(f"/tmp/{value.lower()}", dry_run)

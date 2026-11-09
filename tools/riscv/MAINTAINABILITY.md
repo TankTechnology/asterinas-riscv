@@ -12,7 +12,7 @@ refactoring work is tracked separately.
 - Expected environment skips: **11**
 - Production Python files: **188**
 - Production shell files: **115**
-- Top-level shell entrypoints: **10**
+- Top-level shell entrypoints: **0** (everything is behind `tools/riscv/rt`)
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**
 - Canonical command:

@@ -24,7 +24,7 @@ from tools.riscv.debian.rootfs.contract import (
     validate_frozen_root,
 )
 from tools.riscv.debian.rootfs.profiles import get_profile
-from tools.riscv.megrez_contract import (
+from tools.riscv.megrez.megrez_contract import (
     ROOTFS_ARTIFACT_NAMES,
     ROOTFS_METADATA_ARTIFACT_NAMES,
 )

@@ -291,7 +291,7 @@ def verify_archive(archive: Path) -> dict:
 
 
 def package(output: Path) -> None:
-    repo = Path(__file__).resolve().parents[2]
+    repo = Path(__file__).resolve().parents[3]
     expression = repo / 'test/initramfs/nix/default.nix'
     packages = {}
     for name in ('lmbench', 'make', 'rpcbind', 'nettools', 'source'):

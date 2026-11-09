@@ -7051,7 +7051,7 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             text=True,
             capture_output=True,
         ).stdout
-        self.assertIn("python3 -m tools.riscv.debian.rootfs.rootfs_gate", dry_run)
+        self.assertIn("tools/riscv/rt image-rootfs-gate", dry_run)
         for forbidden in ("build_rootfs.sh", "debootstrap", "http://", "https://"):
             self.assertNotIn(forbidden, dry_run)
 
@@ -7305,7 +7305,7 @@ class DebianSystemdM2GateTests(unittest.TestCase):
             capture_output=True,
         ).stdout
 
-        self.assertIn("python3 -m tools.riscv.debian.rootfs.systemd_m2_gate", dry_run)
+        self.assertIn("tools/riscv/rt image-m2-gate", dry_run)
         for value in variables:
             self.assertIn(f"/tmp/{value.lower()}", dry_run)
         for forbidden in ("curl", "wget", "debootstrap", "http://", "https://"):

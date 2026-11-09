@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools.riscv.browser_composite_manifest import (
+from tools.riscv.debian.rootfs.browser_composite_manifest import (
     EvidenceManifestError,
     create_manifest,
     verify_manifest,

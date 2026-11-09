@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from ltp_suite import suite_names
+from tools.riscv.ltp.ltp_suite import suite_names
 
 
 VERDICT_RE = re.compile(r"^\[(PASS|FAIL|CONF|CRASH|TIMEOUT)\] ([^\s]+)$")

@@ -13,14 +13,17 @@ from typing import Sequence
 import os
 import sys
 
-# This module lives in a subdirectory after the qemu/ regroup, but still imports
-# the top-level megrez_* modules. Put tools/riscv back on the path when the
-# file is run directly (python3 tools/riscv/qemu/...), where sys.path[0] is qemu/.
+# This module lives in a subdirectory and imports both sibling qemu_* modules
+# and package-qualified tools.riscv modules. When it is run directly
+# (python3 tools/riscv/qemu/...), sys.path[0] is qemu/, so put the repository
+# root and tools/riscv on the path.
 _TOOLS_RISCV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _TOOLS_RISCV not in sys.path:
-    sys.path.insert(0, _TOOLS_RISCV)
+_REPO_ROOT = os.path.dirname(os.path.dirname(_TOOLS_RISCV))
+for _path in (_REPO_ROOT, _TOOLS_RISCV):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-from megrez_contract import load_contract
+from tools.riscv.megrez.megrez_contract import load_contract
 from qemu_uboot_artifacts import (
     ArtifactExpectations as ArtifactExpectations,
     artifact_expectations_from_paths,

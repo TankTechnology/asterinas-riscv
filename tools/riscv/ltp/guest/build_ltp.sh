@@ -62,7 +62,7 @@ done
 
 if [[ "${ASTERINAS_LTP_PACKAGE_LOCK_HELD:-0}" != 1 ]]; then
     gate=(
-        python3 "${REPO_ROOT}/tools/riscv/ltp_gate.py" build
+        python3 "${REPO_ROOT}/tools/riscv/ltp/ltp_gate.py" build
         --suite "${SUITE}"
     )
     if [[ "${SKIP_COMPILE}" -eq 1 ]]; then
@@ -72,7 +72,7 @@ if [[ "${ASTERINAS_LTP_PACKAGE_LOCK_HELD:-0}" != 1 ]]; then
 fi
 
 mapfile -t SUITE_FIELDS < <(
-    python3 "${REPO_ROOT}/tools/riscv/ltp_suite.py" describe \
+    python3 "${REPO_ROOT}/tools/riscv/ltp/ltp_suite.py" describe \
         --repo "${REPO_ROOT}" --suite "${SUITE}"
 )
 if [[ "${#SUITE_FIELDS[@]}" -ne 3 ]]; then
@@ -188,7 +188,7 @@ install -m 0644 "${SRC_DIR}/etc-group" "${ROOTFS}/etc/group"
 FILTERED="${ROOTFS}/opt/ltp/runtest/syscalls"
 UNAVAILABLE="${REPO_ROOT}/target/ltp/unavailable-tests.json"
 rm -f "${FILTERED}" "${UNAVAILABLE}"
-python3 "${REPO_ROOT}/tools/riscv/ltp_manifest.py" select \
+python3 "${REPO_ROOT}/tools/riscv/ltp/ltp_manifest.py" select \
     --enabled "${ENABLED_TESTS}" \
     --runtest "${LTP_SRC}/runtest/syscalls" \
     --bin-dir "${STAGE}/opt/ltp/testcases/bin" \
@@ -269,7 +269,7 @@ echo "=== build /init and /ltp_runner (static musl) ==="
 
 echo "=== pack initramfs ==="
 ( cd "${ROOTFS}" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "${OUTPUT}" )
-python3 "${REPO_ROOT}/tools/riscv/ltp_package.py" publish \
+python3 "${REPO_ROOT}/tools/riscv/ltp/ltp_package.py" publish \
     --suite "${SUITE}" \
     --initramfs "${OUTPUT}" \
     --manifest "${FILTERED}" \

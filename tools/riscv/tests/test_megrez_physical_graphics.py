@@ -2550,7 +2550,7 @@ class DocumentationTests(unittest.TestCase):
             "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT",
         ):
             self.assertIn(f"$({variable})", qemu_recipe)
-        self.assertIn("tools.riscv.physical_graphics_qemu_gate", qemu_recipe)
+        self.assertIn("tools/riscv/rt graphics-physical", qemu_recipe)
         self.assertIn("--command-timeout 300", qemu_recipe)
 
         prepare_recipe = makefile.split("prepare_riscv_megrez_physical_graphics:", 1)[

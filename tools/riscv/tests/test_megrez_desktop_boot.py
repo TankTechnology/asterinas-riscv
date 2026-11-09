@@ -280,7 +280,7 @@ class DesktopBootMakefileTests(unittest.TestCase):
 
     def test_makefile_start_is_only_the_bounded_start_action(self) -> None:
         recipe = self._recipe("run_riscv_megrez_desktop")
-        self.assertIn("tools.riscv.megrez.desktop.megrez_desktop_boot start", recipe)
+        self.assertIn("tools/riscv/rt megrez-desktop start", recipe)
         for variable in (
             "MEGREZ_DESKTOP_BOOT_PLAN",
             "MEGREZ_DESKTOP_BOOT_DEVICE",
@@ -304,7 +304,7 @@ class DesktopBootMakefileTests(unittest.TestCase):
 
     def test_makefile_prepare_is_explicit_and_overridable(self) -> None:
         recipe = self._recipe("prepare_riscv_megrez_desktop_boot")
-        self.assertIn("tools.riscv.megrez.desktop.megrez_desktop_boot prepare", recipe)
+        self.assertIn("tools/riscv/rt megrez-desktop prepare", recipe)
         for variable in (
             "MEGREZ_DESKTOP_BOOT_PLAN",
             "MEGREZ_DESKTOP_BOOT_DEVICE",

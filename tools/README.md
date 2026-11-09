@@ -11,6 +11,7 @@ Nothing here is required to build `osdk` itself; it exists so that a contributor
 
 Where to start:
 
+- RISC-V/Megrez entry point: [`riscv/rt`](riscv/rt) (`rt --list`).
 - RISC-V/Megrez tooling map: [`riscv/LAYOUT.md`](riscv/LAYOUT.md).
 - Board network settings (never committed): [`docs/porting/board-addresses.md`](../docs/porting/board-addresses.md).
 - Staged-secret check before a commit: [`check_secrets.sh`](check_secrets.sh).
@@ -48,24 +49,28 @@ Where to start:
 
 ## `tools/riscv/` at a glance
 
+`tools/riscv/rt` is the only top-level entry point: every tool below is
+reached as `rt <command>`. The counts are implementation files.
+
 | Directory | sh | py | Notes |
 | --- | ---: | ---: | --- |
-| `debian/` | 44 | 60 | Debian image build, daily-use image, apt/fixture checks. |
-| `perf/` | 21 | 3 | Benchmark harnesses and syscall/perf baselines. |
-| `systemd/` | 16 | 8 | systemd component builders (dbus, agetty, libcap…). |
-| `drm/` | 8 | 16 | DRM gates: firmware, GEM, cursor, page-flip. |
-| `tests/` | 0 | 128 | Python test drivers for the RISC-V paths. |
-| `qemu/` | 3 | 19 | QEMU runners, GDB probes, live samplers. |
+| `debian/` | 44 | 63 | Debian image build, daily-use image, apt/fixture checks, browser gates. |
+| `megrez/` | 0 | 43 | Megrez board/desktop/image/network helpers. |
+| `qemu/` | 5 | 22 | QEMU runners, U-Boot pieces, GDB probes, live samplers. |
+| `drm/` | 8 | 17 | DRM gates: firmware, GEM, cursor, page-flip. |
+| `perf/` | 17 | 5 | Benchmark harnesses and syscall/perf baselines. |
+| `systemd/` | 13 | 4 | systemd component builders and the boot driver. |
 | `diagnostics/` | 2 | 14 | klog/X11/bench diagnostics. |
-| `wayland/` | 3 | 0 | Wayland bring-up. |
-| `concurrency-models/` | 1 | 1 | Rust/TLA+ concurrency models; build output is gitignored (1.4 GB on disk). |
-| `board/` | 0 | 6 | Board-side helpers (serial, flashing). |
-| `xhci/` | 1 | 1 | xHCI input gates. |
-| `ltp/` | 5 | 1 | LTP manifests, baselines, and the guest builders under `guest/`. |
-| `nsmatrix/`, `pidns/`, `xorg/` | — | — | Smaller or one-shot drivers. |
+| `xorg/` | 11 | 3 | X11 build and render-matrix scripts. |
+| `ltp/` | 6 | 6 | LTP manifests, baselines, the driver, and the guest builders. |
+| `board/` | 2 | 7 | Board serial/flash helpers (the `board` CLI). |
+| `ktest/` | 2 | 0 | Focused kernel-test runners. |
+| `tests/` | 0 | 127 | Python test drivers for the RISC-V paths. |
+| `wayland/`, `xhci/`, `nsmatrix/`, `pidns/`, `concurrency-models/` | — | — | Smaller drivers and the concurrency models. |
 
-10 shell and 19 Python scripts also live directly in `tools/riscv/`; they predate the
-subdirectory split and are kept at that level so existing command lines keep working.
+Two Python modules remain at the top level for compatibility:
+`host_test_runner.py` and `physical_graphics_qemu_gate.py` (a SHA-256-pinned
+experiment imports the latter by its top-level name).
 
 ## Ground rules
 

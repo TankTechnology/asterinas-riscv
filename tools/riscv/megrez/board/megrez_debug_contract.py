@@ -29,7 +29,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.debian.rootfs.profiles import PROFILE_NAMES, get_profile
-from tools.riscv.megrez_contract import (
+from tools.riscv.megrez.megrez_contract import (
     ROOTFS_ARTIFACT_NAMES,
     ROOTFS_METADATA_ARTIFACT_NAMES,
 )

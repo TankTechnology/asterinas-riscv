@@ -20,7 +20,7 @@ from unittest.mock import patch
 class DualHostQemuCommandTests(unittest.TestCase):
     def probe_module(self):
         try:
-            return importlib.import_module("tools.riscv.dual_host_qemu_probe")
+            return importlib.import_module("tools.riscv.qemu.dual_host_qemu_probe")
         except ModuleNotFoundError as error:
             self.fail(f"dual-host QEMU probe module is missing: {error}")
 
@@ -98,7 +98,7 @@ class DualHostQemuCommandTests(unittest.TestCase):
 
 class RockOsArtifactCacheTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.probe = importlib.import_module("tools.riscv.dual_host_qemu_probe")
+        self.probe = importlib.import_module("tools.riscv.qemu.dual_host_qemu_probe")
 
     def fake_transport(self, initial: dict[Path, object]):
         probe = self.probe
@@ -252,7 +252,7 @@ if reboot != f"ASTERINAS_PROBE_REBOOT v=1 nonce={nonce}\n":
 
 class DualHostQemuSessionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.probe = importlib.import_module("tools.riscv.dual_host_qemu_probe")
+        self.probe = importlib.import_module("tools.riscv.qemu.dual_host_qemu_probe")
 
     def test_nonce_bound_probe_and_reboot_require_clean_exit(self) -> None:
         result = self.probe.run_session(
@@ -364,7 +364,7 @@ class DualHostQemuSessionTests(unittest.TestCase):
 
 class DualHostQemuCliTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.probe = importlib.import_module("tools.riscv.dual_host_qemu_probe")
+        self.probe = importlib.import_module("tools.riscv.qemu.dual_host_qemu_probe")
 
     def test_cli_requires_explicit_artifacts_and_rockos_target(self) -> None:
         with redirect_stderr(io.StringIO()):

@@ -28,8 +28,8 @@ READ_PASS = (
     "MEGREZ_SDHCI_READ_PASS bytes=33554432 crc32=5f85f90e start=42.125 end=42.375"
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/megrez_sdhci_probe_init.c"
-PROBE_BUILDER = REPOSITORY_ROOT / "tools/riscv/build_megrez_sdhci_probe.sh"
+PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/board/megrez_sdhci_probe_init.c"
+PROBE_BUILDER = REPOSITORY_ROOT / "tools/riscv/board/build_megrez_sdhci_probe.sh"
 
 
 class MegrezSdhciGateTests(unittest.TestCase):

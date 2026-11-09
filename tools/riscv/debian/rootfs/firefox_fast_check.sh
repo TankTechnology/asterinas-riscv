@@ -5,10 +5,10 @@ set -euo pipefail
 
 # Host-side checks for the Firefox/Asterinas workflow.  This intentionally does
 # not build the kernel, start QEMU, touch binfmt, or access external websites.
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"
@@ -35,8 +35,8 @@ python3 -m unittest \
   -q
 
 python3 -m py_compile \
-  tools/riscv/firefox_debug_tool.py \
-  tools/riscv/browser_composite_manifest.py \
+  tools/riscv/debian/rootfs/firefox_debug_tool.py \
+  tools/riscv/debian/rootfs/browser_composite_manifest.py \
   tools/riscv/debian/rootfs/browser_interaction_perf.py \
   tools/riscv/debian/rootfs/browser_workload_contract.py \
   tools/riscv/debian/rootfs/browser_composite_capture.py \
@@ -60,8 +60,8 @@ bash -n \
   tools/qemu_args.sh \
   tools/riscv/qemu/qemu_live_pc_sampler.sh \
   tools/riscv/qemu/qemu_system_gdb_probe.sh \
-  tools/riscv/firefox_kernel_static_check.sh \
-  tools/riscv/kernel_ktest.sh \
+  tools/riscv/debian/rootfs/firefox_kernel_static_check.sh \
+  tools/riscv/ktest/kernel_ktest.sh \
   tools/riscv/debian/rootfs/build_rootfs.sh \
   tools/riscv/debian/rootfs/browser_web_evidence.sh \
   tools/riscv/debian/rootfs/browser_web_firefox.sh \

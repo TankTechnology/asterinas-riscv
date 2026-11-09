@@ -11,7 +11,7 @@ a time with a delay in between.
 
 Usage:
 
-    python3 tools/riscv/paced_serial_bridge.py /dev/ttyUSB0 /tmp/megrez-session.serial.log
+    python3 tools/riscv/board/paced_serial_bridge.py /dev/ttyUSB0 /tmp/megrez-session.serial.log
 
 Options:
 

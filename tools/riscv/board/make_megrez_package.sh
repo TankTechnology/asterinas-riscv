@@ -19,7 +19,7 @@
 # comes from the development container because it is a Nix build.
 #
 # Usage:
-#   tools/riscv/make_megrez_package.sh [--out DIR] [--no-preflight]
+#   tools/riscv/board/make_megrez_package.sh [--out DIR] [--no-preflight]
 #                                      [--initramfs FILE] [--image FILE]
 #
 #   --out DIR         output directory (default: target/megrez-package)
@@ -31,10 +31,10 @@
 
 set -euo pipefail
 
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"
@@ -185,7 +185,7 @@ crc32 0x83000000 ${initrd_size}         # 与上表 CRC32 核对
 booti 0x80200000 0x83000000:${initrd_size}
 ```
 
-没有网线时用 `tools/riscv/paced_serial_bridge.py` + `loady`，或
+没有网线时用 `tools/riscv/board/paced_serial_bridge.py` + `loady`，或
 `megrez_board_session.py`（自带 YMODEM）。**绝不 `saveenv`。**
 
 ## 仍然缺的
@@ -201,7 +201,7 @@ if [ "${RUN_PREFLIGHT}" = "1" ]; then
     echo "== [5/5] QEMU U-Boot preflight =="
     QEMU_UBOOT_PROFILE=megrez-sv48-svade-fast \
     ASTERINAS_RISCV_BOOTI="${OUT_DIR}/${BOOTI_NAME}" \
-        tools/riscv/verify_megrez_sim.sh
+        tools/riscv/qemu/verify_megrez_sim.sh
 else
     echo "== [5/5] preflight skipped (--no-preflight) =="
 fi

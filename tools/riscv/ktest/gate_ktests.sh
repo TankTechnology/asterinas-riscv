@@ -6,8 +6,8 @@
 # the GMAC driver (PHY negotiation and port selection), the MMC driver (error
 # decoding and recovery) and the TCP/IP glue.
 #
-#   tools/riscv/gate_ktests.sh              # all of them
-#   tools/riscv/gate_ktests.sh aster-mmc    # just one
+#   tools/riscv/ktest/gate_ktests.sh              # all of them
+#   tools/riscv/ktest/gate_ktests.sh aster-mmc    # just one
 #
 # Each crate runs in QEMU with KVM when it is available. The whole gate is a
 # few minutes with a warm build, which is the point: it is cheap enough to run
@@ -15,10 +15,10 @@
 
 set -uo pipefail
 
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "$REPO_ROOT" || exit 2

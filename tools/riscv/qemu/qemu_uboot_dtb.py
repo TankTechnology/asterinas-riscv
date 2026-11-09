@@ -25,7 +25,7 @@ _TOOLS_RISCV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _TOOLS_RISCV not in sys.path:
     sys.path.insert(0, _TOOLS_RISCV)
 
-from megrez_contract import ArtifactIdentity, artifact_identity, load_contract
+from tools.riscv.megrez.megrez_contract import ArtifactIdentity, artifact_identity, load_contract
 from qemu_uboot_profiles import (
     DtbProvider,
     Fidelity,

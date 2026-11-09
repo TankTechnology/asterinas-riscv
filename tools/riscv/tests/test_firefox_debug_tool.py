@@ -10,7 +10,7 @@ import tempfile
 import unittest
 import subprocess
 
-from tools.riscv.firefox_debug_tool import manifest, summarize
+from tools.riscv.debian.rootfs.firefox_debug_tool import manifest, summarize
 from tools.riscv.debian.rootfs import firefox_startup_profile
 from tools.riscv.debian.rootfs.firefox_startup_profile import (
     _UBOOT_COMMAND_SAFE_LIMIT,
@@ -210,7 +210,7 @@ class FirefoxDebugToolTests(unittest.TestCase):
         self.assertIn(f"id=x1,file={repo_root}/test/initramfs/build/exfat.img", injected)
 
     def test_kernel_ktest_wrapper_isolated_and_persistent(self) -> None:
-        wrapper = Path("tools/riscv/kernel_ktest.sh")
+        wrapper = Path("tools/riscv/ktest/kernel_ktest.sh")
         subprocess.run(["bash", "-n", wrapper], check=True)
         source = wrapper.read_text(encoding="utf-8")
         self.assertIn('cd "$KERNEL_DIR"', source)

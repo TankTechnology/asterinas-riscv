@@ -13,7 +13,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from ltp_suite import suite_names
+from tools.riscv.ltp.ltp_suite import suite_names
 
 
 def _sha256(path: Path) -> str:

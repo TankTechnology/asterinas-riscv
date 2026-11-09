@@ -3,7 +3,7 @@
 import sys
 import unittest
 
-from tools.riscv.lmbench_smoke import Case, parse_measurement, run_case
+from tools.riscv.perf.lmbench_smoke import Case, parse_measurement, run_case
 
 
 class LmbenchSmokeTests(unittest.TestCase):

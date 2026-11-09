@@ -41,7 +41,7 @@ from tools.riscv.megrez.desktop.megrez_physical_graphics import (
     _safe_output_directory,
     physical_bootargs,
 )
-from tools.riscv.physical_boot_contract import (
+from tools.riscv.megrez.desktop.physical_boot_contract import (
     boot_stability_bootargs as _boot_stability_bootargs,
 )
 

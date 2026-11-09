@@ -26,12 +26,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
-from ltp_manifest import select_manifest
-from ltp_package import publish_package_identity, validate_package_identity
-from ltp_suite import LtpSuite, suite_by_name, suite_names
+from tools.riscv.ltp.ltp_manifest import select_manifest
+from tools.riscv.ltp.ltp_package import publish_package_identity, validate_package_identity
+from tools.riscv.ltp.ltp_suite import LtpSuite, suite_by_name, suite_names
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 _PROFILES_BY_SMP = {
     1: "generic-sv39-ltp-smp1",
     4: "generic-sv39-ltp-smp4",
@@ -281,7 +281,8 @@ def package_subset(
         staged_manifest.unlink()
         command = [
             sys.executable,
-            str(Path(__file__).with_name("ltp_manifest.py")),
+            "-m",
+            "tools.riscv.ltp.ltp_manifest",
             "select",
             "--enabled",
             str(selected_suite.enabled),
@@ -296,7 +297,11 @@ def package_subset(
         ]
         for tag in tags:
             command.extend(("--tag", tag))
-        subprocess.run(command, cwd=resolved_repo, check=True)
+        child_env = dict(os.environ)
+        child_env["PYTHONPATH"] = os.pathsep.join(
+            filter(None, (str(resolved_repo), child_env.get("PYTHONPATH", "")))
+        )
+        subprocess.run(command, cwd=resolved_repo, check=True, env=child_env)
         if staged_manifest.read_text().splitlines() != list(selection.lines):
             raise RuntimeError("staged subset manifest changed during selection")
         _pack_initramfs(staged_rootfs, initramfs)
@@ -461,7 +466,7 @@ def _normalizer_command(
 ):
     return [
         sys.executable,
-        str(repo / "tools/riscv/ltp_result.py"),
+        str(repo / "tools/riscv/ltp/ltp_result.py"),
         "write",
         "--serial",
         str(paths.result_dir / "serial.log"),

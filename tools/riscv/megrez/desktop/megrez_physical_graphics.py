@@ -54,8 +54,8 @@ from tools.riscv.megrez.board.megrez_debug_board import (
 )
 from tools.riscv.megrez.board.megrez_debug_contract import DebugPlan
 from tools.riscv.megrez.board.megrez_debug_simulation import _validate_current_artifacts
-from tools.riscv.hdmi_pixel_oracle import PixelComparison, PixelMismatch, compare_hdmi_pixels
-from tools.riscv.physical_boot_contract import (
+from tools.riscv.drm.hdmi_pixel_oracle import PixelComparison, PixelMismatch, compare_hdmi_pixels
+from tools.riscv.megrez.desktop.physical_boot_contract import (
     PHYSICAL_REBOOT_AFTER,
     physical_bootargs as _physical_bootargs,
 )

@@ -15,7 +15,7 @@ import subprocess
 import time
 
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 PAYLOAD = "asterinas-durability-cut-v1\n"
 CUT_MARKER = "ASTERINAS_EXT2_CUT_READY stage=directory_fsync"
 EIO_MARKER = "ASTERINAS_EXT2_FLUSH_EIO_OK errno=5"

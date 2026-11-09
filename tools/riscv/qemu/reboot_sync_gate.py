@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 INIT_SOURCE = Path(__file__).with_name("reboot_sync_init.c")
 PAYLOAD = "asterinas-reboot-sync-v1\n"
 

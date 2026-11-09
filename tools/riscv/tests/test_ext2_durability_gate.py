@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-from tools.riscv import ext2_durability_gate as gate
+from tools.riscv.debian.rootfs import ext2_durability_gate as gate
 
 
 class KillGuestTests(unittest.TestCase):

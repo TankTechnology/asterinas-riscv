@@ -72,7 +72,7 @@ from qemu_uboot_dtb import (  # noqa: E402
     load_generated_dtb_audit,
     remove_rng_seed_if_present,
 )
-from megrez_contract import artifact_identity  # noqa: E402
+from tools.riscv.megrez.megrez_contract import artifact_identity  # noqa: E402
 from qemu_uboot_artifacts import (  # noqa: E402
     artifact_expectations_from_paths,
     verify_boot_disk_artifacts,

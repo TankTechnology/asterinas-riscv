@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ltp_suite import main, suite_by_name, suite_names
+from tools.riscv.ltp.ltp_suite import main, suite_by_name, suite_names
 
 
 REPO = Path(__file__).resolve().parents[3]

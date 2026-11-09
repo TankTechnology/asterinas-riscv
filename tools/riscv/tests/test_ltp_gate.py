@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from ltp_gate import (
+from tools.riscv.ltp.ltp_gate import (
     _git_commit,
     _parse_args,
     _package_lock,
@@ -28,8 +28,8 @@ from ltp_gate import (
     run_paths,
     tree_sha256,
 )
-from ltp_package import publish_package_identity
-from ltp_suite import suite_by_name
+from tools.riscv.ltp.ltp_package import publish_package_identity
+from tools.riscv.ltp.ltp_suite import suite_by_name
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -142,10 +142,10 @@ class LtpGatePolicyTests(unittest.TestCase):
 
             with (
                 patch(
-                    "ltp_gate._validate_packaged_suite",
+                    "tools.riscv.ltp.ltp_gate._validate_packaged_suite",
                     return_value=(manifest, unavailable),
                 ),
-                patch("ltp_gate.subprocess.run", side_effect=failed_commands),
+                patch("tools.riscv.ltp.ltp_gate.subprocess.run", side_effect=failed_commands),
             ):
                 status = main(
                     [
@@ -208,10 +208,10 @@ class LtpGatePolicyTests(unittest.TestCase):
 
             with (
                 patch(
-                    "ltp_gate._validate_packaged_suite",
+                    "tools.riscv.ltp.ltp_gate._validate_packaged_suite",
                     return_value=(manifest, unavailable),
                 ),
-                patch("ltp_gate.subprocess.run", side_effect=fail_prepare),
+                patch("tools.riscv.ltp.ltp_gate.subprocess.run", side_effect=fail_prepare),
                 self.assertRaises(subprocess.CalledProcessError),
             ):
                 main(
@@ -271,7 +271,7 @@ class LtpGatePolicyTests(unittest.TestCase):
 
     def test_git_commit_marks_the_bound_repository_as_safe(self) -> None:
         completed = Mock(stdout="a" * 40)
-        with patch("ltp_gate.subprocess.run", return_value=completed) as run:
+        with patch("tools.riscv.ltp.ltp_gate.subprocess.run", return_value=completed) as run:
             commit = _git_commit(REPO)
 
         self.assertEqual(commit, "a" * 40)
@@ -287,7 +287,7 @@ class LtpGatePolicyTests(unittest.TestCase):
         )
 
     def test_explicit_source_commit_supports_a_containerized_worktree(self) -> None:
-        with patch("ltp_gate._git_commit") as git_commit:
+        with patch("tools.riscv.ltp.ltp_gate._git_commit") as git_commit:
             commit = _source_commit(REPO, "b" * 40)
 
         self.assertEqual(commit, "b" * 40)
@@ -376,7 +376,7 @@ class LtpGatePolicyTests(unittest.TestCase):
             output = io.StringIO()
 
             with (
-                patch("ltp_gate.subprocess.run") as run,
+                patch("tools.riscv.ltp.ltp_gate.subprocess.run") as run,
                 contextlib.redirect_stdout(output),
             ):
                 status = main(
@@ -407,7 +407,7 @@ class LtpGatePolicyTests(unittest.TestCase):
             output = io.StringIO()
 
             with (
-                patch("ltp_gate.subprocess.run") as run,
+                patch("tools.riscv.ltp.ltp_gate.subprocess.run") as run,
                 contextlib.redirect_stdout(output),
             ):
                 status = main(

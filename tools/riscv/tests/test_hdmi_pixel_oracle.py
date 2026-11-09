@@ -41,7 +41,7 @@ def pattern_png(*, width: int = 64, height: int = 36, wrong: bool = False) -> by
 )
 class HdmiPixelOracleTests(unittest.TestCase):
     def test_accepts_matching_external_pixels(self) -> None:
-        from tools.riscv.hdmi_pixel_oracle import compare_hdmi_pixels
+        from tools.riscv.drm.hdmi_pixel_oracle import compare_hdmi_pixels
 
         image = pattern_png()
         evidence = compare_hdmi_pixels(image, image, expected_dimensions=(64, 36))
@@ -49,7 +49,7 @@ class HdmiPixelOracleTests(unittest.TestCase):
         self.assertEqual(evidence.mean_absolute_error, 0.0)
 
     def test_rejects_a_fresh_but_wrong_or_black_capture(self) -> None:
-        from tools.riscv.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
+        from tools.riscv.drm.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
 
         with self.assertRaises(PixelMismatch):
             compare_hdmi_pixels(
@@ -57,7 +57,7 @@ class HdmiPixelOracleTests(unittest.TestCase):
             )
 
     def test_rejects_wrong_capture_geometry(self) -> None:
-        from tools.riscv.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
+        from tools.riscv.drm.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
 
         with self.assertRaises(PixelMismatch):
             compare_hdmi_pixels(
@@ -65,14 +65,14 @@ class HdmiPixelOracleTests(unittest.TestCase):
             )
 
     def test_rejects_two_identical_black_images_as_a_false_success(self) -> None:
-        from tools.riscv.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
+        from tools.riscv.drm.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
 
         blank = pattern_png(wrong=True)
         with self.assertRaises(PixelMismatch):
             compare_hdmi_pixels(blank, blank, expected_dimensions=(64, 36))
 
     def test_rejects_invalid_capture_without_hanging(self) -> None:
-        from tools.riscv.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
+        from tools.riscv.drm.hdmi_pixel_oracle import PixelMismatch, compare_hdmi_pixels
 
         with self.assertRaises(PixelMismatch):
             compare_hdmi_pixels(

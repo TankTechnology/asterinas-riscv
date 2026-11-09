@@ -27,8 +27,8 @@ SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-0}
     exit 2
 }
 
-REPOSITORY_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-SOURCE=$REPOSITORY_ROOT/tools/riscv/megrez_sdhci_probe_init.c
+REPOSITORY_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+SOURCE=$REPOSITORY_ROOT/tools/riscv/board/megrez_sdhci_probe_init.c
 RISC_V_CC=${RISC_V_CC:-riscv64-linux-gnu-gcc}
 for tool in "$RISC_V_CC" cpio mktemp mv touch chmod; do
     command -v "$tool" >/dev/null || {

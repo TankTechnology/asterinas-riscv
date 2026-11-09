@@ -560,11 +560,11 @@ build_riscv_rootfs_image:
 
 .PHONY: test_riscv_host test_riscv_host_list
 test_riscv_host:
-	@PYTHONPATH="$(CURDIR)" python3 tools/riscv/host_test_runner.py \
+	@tools/riscv/rt test \
 		--jobs "$(HOST_TEST_JOBS)"
 
 test_riscv_host_list:
-	@PYTHONPATH="$(CURDIR)" python3 tools/riscv/host_test_runner.py \
+	@tools/riscv/rt test \
 		--list --json --jobs "$(HOST_TEST_JOBS)"
 
 .PHONY: test_riscv_ltp_unit
@@ -596,14 +596,14 @@ test_riscv_debian_debug_console:
 
 .PHONY: build_riscv_debian_browser_web_dev_overlay
 build_riscv_debian_browser_web_dev_overlay:
-	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
+	@tools/riscv/rt image-dev-overlay materialize \
 		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
 		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
 		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
 .PHONY: build_riscv_debian_systemd_ext4
 build_riscv_debian_systemd_ext4:
-	@tools/riscv/debian/rootfs/build_rootfs.sh \
+	@tools/riscv/rt image-build \
 		--profile systemd-ext4-m3 \
 		--output-dir "$(CURDIR)/target/debian-riscv/systemd-ext4-m3/rootfs"
 
@@ -711,12 +711,12 @@ MEGREZ_PROBE_INITRAMFS ?= target/megrez-probe/build/initramfs.cpio
 
 .PHONY: test_riscv_megrez_probe_qemu
 test_riscv_megrez_probe_qemu:
-	@python3 -m tools.riscv.megrez.board.megrez_probe boot syscall213 \
+	@tools/riscv/rt megrez-probe boot syscall213 \
 		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
 		--output-directory target/megrez-probe/qemu-normal \
 		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
 		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)"
-	@python3 -m tools.riscv.megrez.board.megrez_probe boot \
+	@tools/riscv/rt megrez-probe boot \
 		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
 		--output-directory target/megrez-probe/qemu-deadline \
 		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
@@ -729,7 +729,7 @@ ROCKOS_SSH ?=
 
 .PHONY: test_riscv_dual_host_probe
 test_riscv_dual_host_probe:
-	@python3 -m tools.riscv.dual_host_qemu_probe \
+	@tools/riscv/rt qemu-dual-host \
 		--kernel "$(DUAL_HOST_PROBE_KERNEL)" \
 		--initramfs "$(DUAL_HOST_PROBE_INITRAMFS)" \
 		--rockos "$(ROCKOS_SSH)"
@@ -745,7 +745,7 @@ prepare_riscv_megrez_desktop_boot:
 		{ echo "MEGREZ_DESKTOP_BOOT_PLAN must name a regular file" >&2; exit 2; }
 	@test ! -e "$(MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT)" || \
 		{ echo "MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT already exists" >&2; exit 2; }
-	@python3 -m tools.riscv.megrez.desktop.megrez_desktop_boot prepare \
+	@tools/riscv/rt megrez-desktop prepare \
 		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
 		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
 		--host-address "$(MEGREZ_DESKTOP_BOOT_HOST_ADDRESS)" \
@@ -759,7 +759,7 @@ run_riscv_megrez_desktop:
 		{ echo "MEGREZ_DESKTOP_BOOT_PLAN must name a regular file" >&2; exit 2; }
 	@test ! -e "$(MEGREZ_DESKTOP_BOOT_START_OUTPUT)" || \
 		{ echo "MEGREZ_DESKTOP_BOOT_START_OUTPUT already exists" >&2; exit 2; }
-	@python3 -m tools.riscv.megrez.desktop.megrez_desktop_boot start \
+	@tools/riscv/rt megrez-desktop start \
 		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
 		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
 		--device-profile "$(MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE)" \
@@ -782,7 +782,7 @@ test_riscv_megrez_install_unit:
 test_riscv_megrez_debug_fast: test_riscv_megrez_debug_unit
 	@test -n "$(MEGREZ_DEBUG_PLAN)" || \
 		{ echo "MEGREZ_DEBUG_PLAN is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez.board.megrez_debug simulate \
+	@tools/riscv/rt megrez-debug simulate \
 		"$(MEGREZ_DEBUG_PLAN)" --tier fast \
 		--output-directory "$(MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE)" \
 		--uboot-build-directory "$(MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE)"
@@ -795,7 +795,7 @@ test_riscv_megrez_debug_board: test_riscv_megrez_debug_unit
 		{ echo "MEGREZ_DEBUG_DEVICE is required" >&2; exit 2; }
 	@test -n "$(MEGREZ_DEBUG_SIMULATION_RESULT)" || \
 		{ echo "MEGREZ_DEBUG_SIMULATION_RESULT is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)" python3 -m tools.riscv.megrez.board.megrez_debug board \
+	@tools/riscv/rt megrez-debug board \
 		"$(MEGREZ_DEBUG_PLAN)" "$(MEGREZ_DEBUG_DEVICE)" \
 		--simulation-result "$(MEGREZ_DEBUG_SIMULATION_RESULT)" \
 		--output-directory "$(MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE)" \
@@ -838,8 +838,7 @@ prepare_riscv_megrez_physical_graphics:
 	@PYTHONPATH="$(CURDIR)" python3 -c \
 		'from pathlib import Path; import sys; from tools.riscv.megrez.board.megrez_debug_simulation import _validate_current_artifacts; from tools.riscv.megrez.desktop.megrez_physical_graphics import _read_plan; _validate_current_artifacts(_read_plan(Path(sys.argv[1])))' \
 		"$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)"
-	@set -eu; printf '%q ' env "PYTHONPATH=$(CURDIR)" python3 -m \
-		tools.riscv.megrez.desktop.megrez_physical_graphics \
+	@set -eu; printf '%q ' tools/riscv/rt megrez-graphics \
 		"$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" \
 		--plan "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" \
 		--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)"; \
@@ -888,8 +887,7 @@ prepare_riscv_megrez_firefox_daily_use:
 	done; \
 	test "$$count" -eq 0 -o "$$count" -eq 3 || \
 		{ echo "all three MEGREZ_FIREFOX_DAILY_USE_MMC_* values are required together" >&2; exit 2; }
-	@set -eu; set -- env "PYTHONPATH=$(CURDIR)" python3 -m \
-		tools.riscv.megrez.desktop.megrez_firefox_daily_use \
+	@set -eu; set -- tools/riscv/rt megrez-firefox \
 		"$(MEGREZ_FIREFOX_DAILY_USE_DEVICE)" \
 		--plan "$(MEGREZ_FIREFOX_DAILY_USE_PLAN)" \
 		--output-directory "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)" \
@@ -926,7 +924,7 @@ test_riscv_debian_rootfs_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.rootfs_gate \
+	@tools/riscv/rt image-rootfs-gate \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -958,7 +956,7 @@ test_riscv_debian_systemd_m2_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_SYSTEMD_M2_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.systemd_m2_gate \
+	@tools/riscv/rt image-m2-gate \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -990,7 +988,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
+	@tools/riscv/rt image-desktop-m5 \
 		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
 		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
@@ -1026,7 +1024,7 @@ DEBIAN_DRM_GRAPHICS_DEVICE ?= virtio-gpu-gl-device
 
 .PHONY: test_riscv_debian_desktop_drm_gate
 test_riscv_debian_desktop_drm_gate:
-	@python3 -m tools.riscv.debian.rootfs.desktop_drm_gate \
+	@tools/riscv/rt image-desktop-drm \
 		--kernel "$(DEBIAN_DRM_KERNEL)" \
 		--uboot "$(DEBIAN_DRM_UBOOT)" \
 		--dtb "$(DEBIAN_DRM_DTB)" \
@@ -1059,7 +1057,7 @@ test_riscv_debian_debug_console_qemu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.debug_console_qemu_gate \
+	@tools/riscv/rt image-debug-console \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1103,7 +1101,7 @@ test_riscv_debian_browser_m5_qemu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.browser_m5_qemu_gate \
+	@tools/riscv/rt image-browser-m5 \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1126,7 +1124,7 @@ test_riscv_debian_browser_web_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+	@tools/riscv/rt image-browser-web \
 		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
@@ -1145,8 +1143,7 @@ test_riscv_physical_graphics_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" || { echo "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)/tools/riscv/qemu:$(CURDIR)" \
-		python3 -m tools.riscv.physical_graphics_qemu_gate \
+	@tools/riscv/rt graphics-physical \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" --stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
@@ -1174,7 +1171,7 @@ test_riscv_debian_desktop_m6_browser_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m6_browser_gate \
+	@tools/riscv/rt image-desktop-m6 \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1206,7 +1203,7 @@ test_riscv_debian_desktop_m7_baidu_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m7_baidu_gate \
+	@tools/riscv/rt image-desktop-m7 \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1238,7 +1235,7 @@ test_riscv_debian_desktop_m9_software_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m9_software_gate \
+	@tools/riscv/rt image-desktop-m9 \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -1254,7 +1251,7 @@ test_riscv_debian_desktop_m9_software_gate:
 test_riscv_ltp: test_riscv_ltp_unit
 	@test -n "$(ASTERINAS_RISCV_BOOTI)" || \
 		{ echo "ASTERINAS_RISCV_BOOTI is required" >&2; exit 2; }
-	@python3 tools/riscv/ltp_gate.py run \
+	@tools/riscv/rt ltp-run run \
 		--kernel "$(ASTERINAS_RISCV_BOOTI)" --smp "$(RISCV_LTP_SMP)" \
 		--suite "$(RISCV_LTP_SUITE)"
 
@@ -1278,7 +1275,7 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		{ echo "DRM_CURSOR_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_CURSOR_GATE_OUTPUT)" || \
 		{ echo "DRM_CURSOR_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.cursor_gate \
+	@tools/riscv/rt drm-cursor \
 		--uboot "$(DRM_CURSOR_UBOOT)" \
 		--boot-disk "$(DRM_CURSOR_BOOT_DISK)" \
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
@@ -1310,7 +1307,7 @@ test_riscv_drm_gem: test_riscv_drm_gem_unit
 		{ echo "DRM_GEM_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_GEM_GATE_OUTPUT)" || \
 		{ echo "DRM_GEM_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.gem_gate \
+	@tools/riscv/rt drm-gem \
 		--uboot "$(DRM_GEM_UBOOT)" \
 		--boot-disk "$(DRM_GEM_BOOT_DISK)" \
 		--manifest "$(DRM_GEM_MANIFEST)" \
@@ -1331,7 +1328,7 @@ test_riscv_drm_firmware: test_riscv_drm_firmware_unit
 		{ echo "DRM_FIRMWARE_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_FIRMWARE_GATE_OUTPUT)" || \
 		{ echo "DRM_FIRMWARE_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.firmware_gate \
+	@tools/riscv/rt drm-firmware \
 		--uboot "$(DRM_FIRMWARE_UBOOT)" \
 		--boot-disk "$(DRM_FIRMWARE_BOOT_DISK)" \
 		--manifest "$(DRM_FIRMWARE_MANIFEST)" \
@@ -1352,7 +1349,7 @@ test_riscv_drm_render_node: test_riscv_drm_render_node_unit
 		{ echo "DRM_RENDER_NODE_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_RENDER_NODE_GATE_OUTPUT)" || \
 		{ echo "DRM_RENDER_NODE_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.render_node_gate \
+	@tools/riscv/rt drm-render-node \
 		--uboot "$(DRM_RENDER_NODE_UBOOT)" \
 		--boot-disk "$(DRM_RENDER_NODE_BOOT_DISK)" \
 		--manifest "$(DRM_RENDER_NODE_MANIFEST)" \
@@ -1375,7 +1372,7 @@ test_riscv_drm_virgl_param: test_riscv_drm_virgl_param_unit
 		{ echo "DRM_VIRGL_MANIFEST is required" >&2; exit 2; }
 	@test -n "$(DRM_VIRGL_GATE_OUTPUT)" || \
 		{ echo "DRM_VIRGL_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH=tools/riscv:tools/riscv/qemu python3 -m drm.virgl_param_gate \
+	@tools/riscv/rt drm-virgl \
 		--uboot "$(DRM_VIRGL_UBOOT)" \
 		--boot-disk "$(DRM_VIRGL_BOOT_DISK)" \
 		--manifest "$(DRM_VIRGL_MANIFEST)" \
@@ -1395,8 +1392,8 @@ test_riscv_uboot_booti: test_riscv_uboot_booti_unit
 		QEMU_UBOOT_PROFILE="generic-sv39" \
 		QEMU_UBOOT_OUT_DIR="$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)" \
 		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
-		tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
-	@python3 tools/riscv/qemu/qemu_uboot_booti.py run \
+		tools/riscv/rt qemu-prepare prepare
+	@tools/riscv/rt qemu-boot run \
 		--profile "generic-sv39" \
 		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot" \
 		--boot-disk "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/boot.ext4" \
@@ -1430,8 +1427,8 @@ test_riscv_sifive_u test_riscv_sifive_u_linux_reference: test_riscv_uboot_booti_
 		QEMU_UBOOT_PROFILE="$(SIFIVE_U_PROFILE)" \
 		QEMU_UBOOT_OUT_DIR="$(SIFIVE_U_OUT)" \
 		QEMU_UBOOT_BUILD_DIR="$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)" \
-		tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
-	@python3 tools/riscv/qemu/qemu_uboot_booti.py run \
+		tools/riscv/rt qemu-prepare prepare
+	@tools/riscv/rt qemu-boot run \
 		--profile "$(SIFIVE_U_PROFILE)" \
 		--uboot "$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
 		--boot-disk "$(SIFIVE_U_OUT)/boot.ext4" \
@@ -1462,8 +1459,8 @@ test_riscv_third_board: test_riscv_uboot_booti_unit
 		QEMU_UBOOT_PROFILE="$(THIRD_BOARD_PROFILE)" \
 		QEMU_UBOOT_OUT_DIR="$(THIRD_BOARD_OUT)" \
 		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
-		tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare
-	@python3 tools/riscv/qemu/qemu_uboot_booti.py run \
+		tools/riscv/rt qemu-prepare prepare
+	@tools/riscv/rt qemu-boot run \
 		--profile "$(THIRD_BOARD_PROFILE)" \
 		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
 		--boot-disk "$(THIRD_BOARD_OUT)/boot.ext4" \
@@ -1499,101 +1496,101 @@ run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Validate the complete QEMU transcript, including fatal output after success.
 ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
 else ifeq ($(AUTO_TEST), ext4_directory_journal)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext4-directory-journal"
 else ifeq ($(AUTO_TEST), ext4_concurrency)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext4-concurrency"
 else ifeq ($(AUTO_TEST), ext4_semantics)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext4-semantics"
 else ifeq ($(AUTO_TEST), xfstests_ext4)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "xfstests-ext4"
 else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext2-firefox-recovery" \
 		--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"
 else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "exfat-syncfs-eio"
 else ifeq ($(AUTO_TEST), exfat_fsync_eio)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "exfat-fsync-eio"
 else ifeq ($(AUTO_TEST), exfat_sync_clean)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "exfat-sync-clean"
 else ifeq ($(AUTO_TEST), exfat_sync_verify)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "exfat-sync-verify"
 else ifeq ($(AUTO_TEST), ext2_rename_same_inode)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext2-rename-same-inode" \
 		--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"
 else ifeq ($(AUTO_TEST), fs_syscall_compat)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "fs-syscall-compat"
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-dual-stack"
 else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-dual-stack-udp"
 else ifeq ($(AUTO_TEST), ipv6_udp)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-udp"
 else ifeq ($(AUTO_TEST), ifconf)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ifconf"
 else ifeq ($(AUTO_TEST), proc_net_dev)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "proc-net-dev"
 else ifeq ($(AUTO_TEST), ifreq)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ifreq"
 else ifeq ($(AUTO_TEST), ip_socket_netns)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ip-socket-netns"
 else ifeq ($(AUTO_TEST), netlink_route_netns)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "netlink-route-netns"
 else ifeq ($(AUTO_TEST), ifconf_gvisor)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ifconf-gvisor"
 else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "udp-user-buffer-prefault"
 else ifeq ($(AUTO_TEST), udp_msg_dontwait)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "udp-msg-dontwait"
 else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
-	@python3 tools/riscv/validate_run_kernel_log.py \
+	@tools/riscv/rt log-check \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "tcp-msg-dontwait-send"
 else ifeq ($(AUTO_TEST), dynamic_clock)
@@ -1745,7 +1742,7 @@ ktest:
 # crate runs on its own so a failure names the component.
 .PHONY: ktest_megrez_core
 ktest_megrez_core:
-	@tools/riscv/gate_ktests.sh $(KTEST_MEGREZ_CRATES)
+	@tools/riscv/rt ktest-gate $(KTEST_MEGREZ_CRATES)
 
 .PHONY: ktest-local
 ktest-local: CONSOLE = ttyS0
@@ -1883,7 +1880,7 @@ test_riscv_debian_daily_use_gate:
 		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_DAILY_USE_GATE_OUTPUT)" || \
 		{ echo "DEBIAN_DAILY_USE_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.daily_use_gate \
+	@tools/riscv/rt image-daily-use \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \

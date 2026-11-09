@@ -31,7 +31,7 @@ INITRAMFS_BUILDER = SCRIPT.parent / "make_qemu_uboot_initramfs.py"
 INITRAMFS_SOURCE = SCRIPT.parent / "qemu_uboot_init.S"
 sys.path.insert(0, str(SCRIPT.parent))
 sys.path.insert(0, str(SCRIPT.parents[1]))
-from megrez_contract import load_contract  # noqa: E402
+from tools.riscv.megrez.megrez_contract import load_contract  # noqa: E402
 import qemu_uboot_audit  # noqa: E402
 import qemu_uboot_shell as shell_module  # noqa: E402
 from make_qemu_uboot_initramfs import (  # noqa: E402
@@ -7562,8 +7562,8 @@ class RepositoryIntegrationTests(unittest.TestCase):
 
         self.assertIn("test_riscv_uboot_booti_unit:", makefile)
         self.assertIn("test_riscv_uboot_booti:", makefile)
-        self.assertIn("prepare_qemu_uboot_booti.sh prepare", makefile)
-        self.assertIn("qemu_uboot_booti.py run", makefile)
+        self.assertIn("tools/riscv/rt qemu-prepare prepare", makefile)
+        self.assertIn("tools/riscv/rt qemu-boot run", makefile)
         self.assertIn(
             'QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)"',
             makefile,
@@ -7596,10 +7596,11 @@ class RepositoryIntegrationTests(unittest.TestCase):
         ]
         for downloader in ("curl ", "wget "):
             self.assertNotIn(downloader, target_text)
+        self.assertIn("tools/riscv/rt qemu-boot", target_text)
         invoked_python = {
             token for token in target_text.split() if token.endswith(".py")
         }
-        self.assertEqual(invoked_python, {"tools/riscv/qemu/qemu_uboot_booti.py"})
+        self.assertEqual(invoked_python, set())
 
     def test_make_uses_one_nonempty_absolute_path_contract(self) -> None:
         default_out = REPO_ROOT / "target/qemu-uboot/current"

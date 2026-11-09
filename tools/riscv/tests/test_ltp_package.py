@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ltp_package import publish_package_identity, validate_package_identity
+from tools.riscv.ltp.ltp_package import publish_package_identity, validate_package_identity
 
 
 class LtpPackageIdentityTests(unittest.TestCase):

@@ -10,17 +10,17 @@
 #
 #   docker run --rm -v $PWD:/root/asterinas -w /root/asterinas \
 #     asterinas-env:uboot-sim bash -c 'export PATH=/usr/local/qemu/bin:$PATH
-#     tools/riscv/verify_megrez_sim.sh'
+#     tools/riscv/qemu/verify_megrez_sim.sh'
 #
 # 步骤：构建 marker initramfs → prepare（megrez-sv48-svade-fast）→
 # run → 判定 result.json 的 classification=PASS。产物身份一并输出。
 
 set -euo pipefail
 
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 cd "${REPO_ROOT}"

@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ltp_manifest import main, select_manifest
+from tools.riscv.ltp.ltp_manifest import main, select_manifest
 
 
 REPO = Path(__file__).resolve().parents[3]

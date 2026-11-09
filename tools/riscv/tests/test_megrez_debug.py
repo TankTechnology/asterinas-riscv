@@ -46,7 +46,7 @@ from tools.riscv.megrez.board.megrez_debug_contract import (
     DebugPlan,
     StageResult,
 )
-from tools.riscv.megrez_contract import (
+from tools.riscv.megrez.megrez_contract import (
     ROOTFS_ARTIFACT_NAMES,
     ROOTFS_METADATA_ARTIFACT_NAMES,
 )

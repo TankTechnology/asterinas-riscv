@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_rx_liveness_model.rs"
-TX_CACHELINE_MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/dwmac_tx_cacheline_model.rs"
+MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/megrez/network/dwmac_rx_liveness_model.rs"
+TX_CACHELINE_MODEL_SOURCE = REPOSITORY_ROOT / "tools/riscv/megrez/network/dwmac_tx_cacheline_model.rs"
 POLL_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/poll.rs"
 QUEUE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/queue.rs"
 DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"

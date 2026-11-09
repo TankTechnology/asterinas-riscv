@@ -32,7 +32,7 @@ from tools.riscv.tests.test_browser_daily_use_contract import (
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
-FAST_CHECK = REPOSITORY_ROOT / "tools/riscv/firefox_fast_check.sh"
+FAST_CHECK = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/firefox_fast_check.sh"
 README = REPOSITORY_ROOT / "tools/riscv/README.md"
 EXPERIMENT_ID = "fedcba9876543210fedcba9876543210"
 GATE_RUN_ID = "0123456789abcdef0123456789abcdef"
@@ -591,7 +591,7 @@ class DailyUseEntryPointTests(unittest.TestCase):
             "MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL",
             "MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS",
             "MEGREZ_FIREFOX_DAILY_USE_MMC_DTB",
-            "tools.riscv.megrez.desktop.megrez_firefox_daily_use",
+            "tools/riscv/rt megrez-firefox",
             "--prepare-only",
         ):
             self.assertIn(fragment, target)

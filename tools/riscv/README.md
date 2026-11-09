@@ -46,9 +46,9 @@ durability or SD-card cache behavior.
 
 ```bash
 tools/docker/run_dev_container.sh -- make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
-tools/docker/run_dev_container.sh -- python3 tools/riscv/reboot_sync_gate.py \
+tools/docker/run_dev_container.sh -- tools/riscv/rt reboot-sync \
   --output-dir target/reboot-sync-gate-$(date +%Y%m%d-%H%M%S)
-tools/docker/run_dev_container.sh -- python3 tools/riscv/reboot_sync_gate.py \
+tools/docker/run_dev_container.sh -- tools/riscv/rt reboot-sync \
   --watchdog --output-dir target/reboot-sync-watchdog-$(date +%Y%m%d-%H%M%S)
 ```
 
@@ -61,9 +61,9 @@ it from `fsync` or `msync(MS_SYNC)` and then shut down normally. These selected
 cases do not run the separate directory-fsync cut-point experiment.
 
 ```bash
-python3 tools/riscv/ext2_durability_gate.py --case flush-eio \
+tools/riscv/rt fs-ext2 --case flush-eio \
   --output-dir .local-test/ext2-flush-eio-$(date +%Y%m%d-%H%M%S)
-python3 tools/riscv/ext2_durability_gate.py --case msync-eio \
+tools/riscv/rt fs-ext2 --case msync-eio \
   --output-dir .local-test/ext2-msync-eio-$(date +%Y%m%d-%H%M%S)
 ```
 
@@ -364,7 +364,7 @@ our guest entry also accepts `result` as an alias.
 Build a self-contained runtime archive inside the persistent container:
 
 ```sh
-tools/docker/run_dev_container.sh -- python3 tools/riscv/lmbench_native.py \
+tools/docker/run_dev_container.sh -- tools/riscv/rt bench-native \
   package --output target/lmbench-native/runtime.tar.gz
 ```
 
@@ -372,7 +372,7 @@ Before booting a guest with an existing archive, check that it matches the
 current packager and carries both declared script adaptations:
 
 ```sh
-python3 tools/riscv/lmbench_native.py verify \
+tools/riscv/rt bench-native verify \
   --archive target/lmbench-native/runtime.tar.gz
 ```
 
@@ -460,7 +460,7 @@ After building the RISC-V kernel and LTP initramfs,
 record a baseline with:
 
 ```bash
-python3 tools/riscv/ltp_gate.py run \
+tools/riscv/rt ltp-run run \
   --kernel target/osdk/aster-kernel-osdk-bin.Image \
   --smp 1 --run-id baseline-m1-smp1 --skip-build --baseline
 ```

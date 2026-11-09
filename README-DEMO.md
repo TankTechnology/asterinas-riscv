@@ -7,7 +7,7 @@ desktop** (Xorg + matchbox + xpanel + pcmanfm + xterm) *and* activates a
 screendump as evidence.
 
 ```
-$ tools/riscv/demo-all.sh
+$ tools/riscv/rt demo
 ```
 
 That single command builds the rootfs, boots QEMU, and leaves three artifacts
@@ -81,10 +81,10 @@ the profile (symlinks + PATH) rather than hashing it.
 ## One-click command
 
 ```bash
-tools/riscv/demo-all.sh                          # build + boot + screenshot
-tools/riscv/demo-all.sh --skip-build             # reuse the existing initramfs
-tools/riscv/demo-all.sh --settle-seconds 60      # longer render before the shot
-tools/riscv/demo-all.sh --collect-timeout 300    # boot collection timeout
+tools/riscv/rt demo                          # build + boot + screenshot
+tools/riscv/rt demo --skip-build             # reuse the existing initramfs
+tools/riscv/rt demo --settle-seconds 60      # longer render before the shot
+tools/riscv/rt demo --collect-timeout 300    # boot collection timeout
 ```
 
 Options:
@@ -103,7 +103,7 @@ milestone). It needs these to already exist:
 - a Sv39 kernel Image at `target/osdk/aster-kernel-osdk-bin.Image`
   (`make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode`), or set
   `ASTERINAS_RISCV_BOOTI=`;
-- U-Boot and a boot disk (from `tools/riscv/qemu/prepare_qemu_uboot_booti.sh prepare`);
+- U-Boot and a boot disk (from `tools/riscv/rt qemu-prepare prepare`);
 - the systemd + desktop cross-build in `target/riscv-cross/` and the nix
   products in the sibling `asterinas-riscv-nixos` tree (`NIXOS_REPO=` to override).
 

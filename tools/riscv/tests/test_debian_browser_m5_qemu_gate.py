@@ -125,7 +125,7 @@ class DebianBrowserM5QemuGateTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "python3 -m tools.riscv.debian.rootfs.browser_m5_qemu_gate",
+            "tools/riscv/rt image-browser-m5",
             target,
         )
         self.assertIn("DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT", target)
@@ -166,7 +166,7 @@ class DebianBrowserM5QemuGateTests(unittest.TestCase):
             capture_output=True,
         ).stdout
         self.assertIn(
-            "python3 -m tools.riscv.debian.rootfs.browser_m5_qemu_gate",
+            "tools/riscv/rt image-browser-m5",
             dry_run,
         )
         for name in variables:

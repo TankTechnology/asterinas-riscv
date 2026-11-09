@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from tools.riscv import physical_boot_contract as contract
+from tools.riscv.megrez.desktop import physical_boot_contract as contract
 from tools.riscv.megrez.board import megrez_boot_stability as stability
 from tools.riscv.megrez.desktop import megrez_desktop as desktop
 from tools.riscv.megrez.desktop import megrez_physical_graphics as graphics

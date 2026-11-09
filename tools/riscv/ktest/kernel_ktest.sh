@@ -12,10 +12,10 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 TEST_FILTER=$1
-# shellcheck source=../lib/shell.sh
+# shellcheck source=../../lib/shell.sh
 _shell_self_dir=${BASH_SOURCE[0]%/*}
 if [[ ${_shell_self_dir} == "${BASH_SOURCE[0]}" ]]; then _shell_self_dir=.; fi
-source "${_shell_self_dir}/../lib/shell.sh"
+source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 KERNEL_DIR=${REPO_ROOT}/kernel

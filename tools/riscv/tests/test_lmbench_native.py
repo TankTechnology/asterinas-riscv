@@ -14,12 +14,12 @@ import hashlib
 import io
 import tarfile
 
-from tools.riscv.lmbench_native import audit, make_entry, native_command, owned_hello, run_locked, PLATFORM, patch_scripts
+from tools.riscv.perf.lmbench_native import audit, make_entry, native_command, owned_hello, run_locked, PLATFORM, patch_scripts
 
 
 class NativeLmbenchTests(unittest.TestCase):
     def _runtime_archive(self, output: Path, *, include_header_fix: bool) -> None:
-        runner = Path(__file__).resolve().parents[1] / 'lmbench_native.py'
+        runner = Path(__file__).resolve().parents[1] / 'perf' / 'lmbench_native.py'
         adaptations = ['explicit IPv4 loopback server arguments']
         if include_header_fix:
             adaptations.append('skip modern netstat interface-table headers')
@@ -54,7 +54,7 @@ class NativeLmbenchTests(unittest.TestCase):
             archive = Path(tmp) / 'runtime.tar.gz'
             self._runtime_archive(archive, include_header_fix=True)
             result = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve().parents[1] / 'lmbench_native.py'),
+                [sys.executable, str(Path(__file__).resolve().parents[1] / 'perf' / 'lmbench_native.py'),
                  'verify', '--archive', str(archive)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)['revision'],
@@ -65,7 +65,7 @@ class NativeLmbenchTests(unittest.TestCase):
             archive = Path(tmp) / 'runtime.tar.gz'
             self._runtime_archive(archive, include_header_fix=False)
             result = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve().parents[1] / 'lmbench_native.py'),
+                [sys.executable, str(Path(__file__).resolve().parents[1] / 'perf' / 'lmbench_native.py'),
                  'verify', '--archive', str(archive)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn('archive verification failed: runtime archive adaptations',
@@ -167,7 +167,7 @@ class NativeLmbenchTests(unittest.TestCase):
             source = """
 import signal, subprocess, sys, time
 from pathlib import Path
-from tools.riscv.lmbench_native import owned_hello, stop_group, termination_requested
+from tools.riscv.perf.lmbench_native import owned_hello, stop_group, termination_requested
 root = Path(sys.argv[1])
 signal.signal(signal.SIGTERM, termination_requested)
 try:
@@ -206,14 +206,14 @@ except RuntimeError:
             rpc = Mock(pid=123, poll=Mock(return_value=None))
             make = Mock(pid=124, returncode=0)
             packages = {name: tmp for name in ('make', 'rpcbind', 'nettools')}
-            with patch('tools.riscv.lmbench_native.pwd.getpwnam'), \
-                    patch('tools.riscv.lmbench_native.subprocess.run',
+            with patch('tools.riscv.perf.lmbench_native.pwd.getpwnam'), \
+                    patch('tools.riscv.perf.lmbench_native.subprocess.run',
                           return_value=subprocess.CompletedProcess([], 0, 'Hello world\n')), \
-                    patch('tools.riscv.lmbench_native.subprocess.Popen', side_effect=[rpc, make]), \
-                    patch('tools.riscv.lmbench_native.time.sleep'), \
-                    patch('tools.riscv.lmbench_native.stop_group'), \
-                    patch('tools.riscv.lmbench_native.audit', return_value={'passed': True}), \
-                    patch('tools.riscv.lmbench_native.shutil.copy2', side_effect=OSError('disk full')), \
+                    patch('tools.riscv.perf.lmbench_native.subprocess.Popen', side_effect=[rpc, make]), \
+                    patch('tools.riscv.perf.lmbench_native.time.sleep'), \
+                    patch('tools.riscv.perf.lmbench_native.stop_group'), \
+                    patch('tools.riscv.perf.lmbench_native.audit', return_value={'passed': True}), \
+                    patch('tools.riscv.perf.lmbench_native.shutil.copy2', side_effect=OSError('disk full')), \
                     patch('builtins.print'):
                 status = run_locked(root, packages, {'revision': 'fixture'})
             report = json.loads(next(root.rglob('report.json')).read_text())
@@ -271,7 +271,7 @@ except RuntimeError:
             with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 with patch.dict(os.environ, {'LMBENCH_TIMEOUT': value}), \
-                        patch('tools.riscv.lmbench_native.subprocess.Popen') as popen, \
+                        patch('tools.riscv.perf.lmbench_native.subprocess.Popen') as popen, \
                         patch('builtins.print'):
                     self.assertEqual(run_locked(root, {}, {'revision': 'fixture'}), 1)
                     popen.assert_not_called()

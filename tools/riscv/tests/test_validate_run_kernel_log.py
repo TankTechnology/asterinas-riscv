@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.riscv.validate_run_kernel_log import (
+from tools.riscv.qemu.validate_run_kernel_log import (
     ValidationError,
     validate_ext2_image,
     validate_transcript,

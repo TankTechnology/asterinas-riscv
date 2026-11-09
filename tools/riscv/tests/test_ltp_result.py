@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ltp_result import build_result_document, main, parse_ltp_serial, summary_text
+from tools.riscv.ltp.ltp_result import build_result_document, main, parse_ltp_serial, summary_text
 
 
 SERIAL = """\
