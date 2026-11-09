@@ -53,20 +53,48 @@ is the single place that defines what "the system works" means.
 | `rt gate graphics-physical` | `selftest display` on the board |
 | M5/M6/M7 browser modules | browser cases: navigate, render, search |
 
-## Status
+## Board run (2026-11-09)
 
-Landed now: the catalog, the runner's selection/order/target logic, `rt
-selftest --list` and `--dry-run`, and the unit tests that pin the catalog.
+`rt selftest --board console block net` pushed the guest bundle over the
+Megrez serial bridge, ran it once on the booted Debian image, and collected
+the markers:
 
-Next stage (needs one of: a rebuilt Debian image, or the board):
+```
+PASS console  identity   host=asterinas os=Asterinas 13
+PASS console  clock      epoch=1794208155
+PASS console  tty        tty=/dev/ttyS0
+PASS console  sudo       running as root
+PASS block    rootfs-rw  root is writable
+SKIP block    fsck       root filesystem is mounted; offline image check owns fsck
+PASS block    space      avail_kb=331156
+PASS net      loopback   tcp connect
+PASS net      route      default route present
+FAIL net      dns        cannot resolve www.baidu.com
+PASS net      http       http=200
+SELFTEST total=11 pass=9 fail=1 skip=1 complete=True
+```
+
+The DNS failure is environmental: the campus portal was not authenticated in
+that run, so the configured resolvers (223.5.5.5, 114.114.114.114) were
+unreachable. The `http` case was validated against a board-local endpoint;
+the same case accepts `--http-url` for the host or an external endpoint once
+the portal is up. The `route` case prefers `ip route` because Asterinas does
+not implement `/proc/net/route`.
+
+## Status and next stage
+
+Landed: the catalog, the runner (plan, `--list`, `--dry-run`, and `--board`),
+the guest bundle for console/block/net/power, and the unit tests for the
+catalog and marker parser.
+
+Next:
 
 1. add the guest bundle to the rootfs build and the runtime digest;
-2. implement the host collector and the board/QEMU session adapter;
-3. migrate `console`, `block`, `net`, `power` (multi-user boot);
-4. migrate `display`, `input`, `browser`, `apps` (graphical boot);
-5. migrate `drm` (separate device stack);
-6. delete the gate modules, Makefile targets and `rt gate` registry as each
+2. implement the QEMU session adapter (the graphical target);
+3. migrate `display`, `input`, `browser`, `apps` from the host-driven gates;
+4. migrate `drm` (separate device stack);
+5. delete the gate modules, Makefile targets and `rt gate` registry as each
    subsystem lands.
 
-Until step 6 the `rt gate` entries remain as transitional aliases; no new
+Until step 5 the `rt gate` entries remain as transitional aliases; no new
 gate scenario should be added.

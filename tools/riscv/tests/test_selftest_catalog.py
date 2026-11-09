@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import unittest
 
-from tools.riscv.selftests import catalog
+from tools.riscv.selftests import catalog, runner
 
 
 class SelftestCatalogTests(unittest.TestCase):
@@ -40,6 +40,33 @@ class SelftestCatalogTests(unittest.TestCase):
         self.assertEqual(
             catalog.boot_target(catalog.select(["console", "browser"])),
             catalog.GRAPHICAL,
+        )
+
+
+class SelftestRunnerTests(unittest.TestCase):
+    def test_parse_results_reads_pass_fail_and_skip(self) -> None:
+        text = (
+            "noise\n"
+            "SELFTEST console identity PASS host=board os=Debian\n"
+            "SELFTEST net http SKIP no SELFTEST_HTTP_URL\n"
+            "SELFTEST block space FAIL avail_kb=1\n"
+            "SELFTEST_DONE\n"
+        )
+        self.assertEqual(
+            runner.parse_results(text),
+            [
+                {"subsystem": "console", "case": "identity", "status": "PASS", "detail": "host=board os=Debian"},
+                {"subsystem": "net", "case": "http", "status": "SKIP", "detail": "no SELFTEST_HTTP_URL"},
+                {"subsystem": "block", "case": "space", "status": "FAIL", "detail": "avail_kb=1"},
+            ],
+        )
+
+    def test_plan_uses_one_boot_target_for_the_selection(self) -> None:
+        plan = runner.build_plan(["console", "browser"], "browser-web")
+        self.assertEqual(plan["target"], catalog.GRAPHICAL)
+        self.assertEqual(
+            [item["name"] for item in plan["subsystems"]],
+            ["console", "browser"],
         )
 
 

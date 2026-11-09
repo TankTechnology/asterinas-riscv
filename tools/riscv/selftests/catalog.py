@@ -59,8 +59,9 @@ SUBSYSTEMS: tuple[Subsystem, ...] = (
         MULTI_USER,
         (
             Case("loopback", "loopback TCP and UDP work"),
-            Case("slirp", "the host-forwarded HTTP endpoint answers"),
+            Case("route", "a default route exists"),
             Case("dns", "resolver lookup succeeds"),
+            Case("http", "the selected HTTP endpoint answers"),
         ),
     ),
     Subsystem(

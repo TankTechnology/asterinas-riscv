@@ -4,20 +4,35 @@
 
 Linux keeps one boot path and validates subsystems inside it; this runner is
 the host side of that model. It selects the subsystems from the catalog,
-computes the single boot target, and (once the guest bundle exists) boots
-once and collects `SELFTEST <subsystem> <case> PASS|FAIL` lines.
+computes the single boot target, pushes the guest bundle over the serial
+bridge, and collects `SELFTEST <subsystem> <case> PASS|FAIL|SKIP` lines.
 
-Today the guest bundle is not built yet, so `rt selftest` prints the plan and
-`--dry-run` is the supported mode. `--list` shows the catalog.
+    rt selftest --list
+    rt selftest console block net --dry-run
+    rt selftest --board console block net --http-url http://host:18080/
+
+Without `--board` the runner only prints the plan; the QEMU transport is the
+next stage.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
+import time
+from pathlib import Path
 
 from tools.riscv.selftests import catalog
+
+GUEST_RUNNER = Path(__file__).with_name("guest") / "run.sh"
+REMOTE_RUNNER = "/tmp/asterinas-selftest.sh"
+RESULT_LINE = re.compile(
+    r"^SELFTEST (\S+) (\S+) (PASS|FAIL|SKIP)(?: (.*))?$", re.MULTILINE
+)
+DONE_LINE = re.compile(r"^SELFTEST_DONE$", re.MULTILINE)
 
 
 def build_plan(names: list[str], profile: str) -> dict[str, object]:
@@ -37,6 +52,18 @@ def build_plan(names: list[str], profile: str) -> dict[str, object]:
     }
 
 
+def parse_results(text: str) -> list[dict[str, str]]:
+    return [
+        {
+            "subsystem": match.group(1),
+            "case": match.group(2),
+            "status": match.group(3),
+            "detail": (match.group(4) or "").strip(),
+        }
+        for match in RESULT_LINE.finditer(text)
+    ]
+
+
 def _print_catalog() -> None:
     for subsystem in catalog.SUBSYSTEMS:
         print(f"{subsystem.name:10s} target={subsystem.target}")
@@ -51,6 +78,66 @@ def _print_plan(plan: dict[str, object]) -> None:
     print(f"subsystems (in order): {ordered}")
     for item in plan["subsystems"]:
         print(f"  {item['name']}: {', '.join(item['cases'])}")
+
+
+def _wait_quiet(console, log_offset: int, gap: float = 4.0, timeout: float = 120.0) -> int:
+    end = time.time() + timeout
+    last = time.time()
+    offset = log_offset
+    while time.time() < end:
+        chunk, offset = console.read_since(offset)
+        if chunk:
+            last = time.time()
+        elif time.time() - last >= gap:
+            return offset
+        time.sleep(0.5)
+    return offset
+
+
+def run_board(args: argparse.Namespace, plan: dict[str, object]) -> int:
+    from tools.riscv.board.megrez_console import Console
+
+    console = Console(args.log, args.fifo)
+    offset = _wait_quiet(console, os.path.getsize(args.log))
+
+    if not console.push(str(GUEST_RUNNER), REMOTE_RUNNER, pace_ms=2):
+        print("rt selftest: guest bundle push failed", file=sys.stderr)
+        return 2
+
+    subsystems = " ".join(str(item["name"]) for item in plan["subsystems"])
+    env = []
+    if args.http_url:
+        env.append(f"SELFTEST_HTTP_URL={args.http_url}")
+    if args.dns_host:
+        env.append(f"SELFTEST_DNS_HOST={args.dns_host}")
+    command = " ".join([*env, "sh", REMOTE_RUNNER, subsystems]).strip()
+    console.type_line(command)
+
+    text = ""
+    end = time.time() + args.timeout
+    while time.time() < end:
+        chunk, offset = console.read_since(offset)
+        text += chunk
+        if DONE_LINE.search(text):
+            break
+        time.sleep(0.5)
+
+    results = parse_results(text)
+    for result in results:
+        detail = f" {result['detail']}" if result["detail"] else ""
+        print(
+            f"{result['status']:4} {result['subsystem']:8s} "
+            f"{result['case']:14s}{detail}"
+        )
+    passed = sum(1 for result in results if result["status"] == "PASS")
+    failed = sum(1 for result in results if result["status"] == "FAIL")
+    skipped = sum(1 for result in results if result["status"] == "SKIP")
+    complete = bool(DONE_LINE.search(text))
+    print(
+        f"SELFTEST total={len(results)} pass={passed} fail={failed} "
+        f"skip={skipped} complete={complete}"
+    )
+    return 0 if complete and failed == 0 else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,6 +158,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--profile", default="browser-web")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--board",
+        action="store_true",
+        help="run over the Megrez serial bridge instead of only planning",
+    )
+    parser.add_argument("--device", default="/dev/ttyUSB0")
+    parser.add_argument("--log", default="/tmp/board3.log")
+    parser.add_argument("--fifo", default="/tmp/board3.cmd")
+    parser.add_argument("--http-url", default="")
+    parser.add_argument("--dns-host", default="")
+    parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args(argv)
 
     if args.list:
@@ -100,15 +198,18 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         parser.error(str(error))
 
-    if args.json:
+    if args.json and not args.board:
         print(json.dumps(plan, indent=2))
-    else:
+    elif not args.board:
         _print_plan(plan)
+
+    if args.board:
+        return run_board(args, plan)
 
     if not args.dry_run:
         print(
-            "rt selftest: the guest selftest bundle is not built yet; "
-            "use --dry-run. See docs/porting/2026-11-09-selftests.md.",
+            "rt selftest: add --board to run over the serial bridge, or "
+            "--dry-run to only print the plan.",
             file=sys.stderr,
         )
         return 2
