@@ -154,6 +154,11 @@ impl FairAttr {
         self.vruntime.fetch_add(delta, Ordering::Relaxed) + delta
     }
 
+    /// Returns the accumulated virtual runtime of this entity.
+    pub(super) fn vruntime(&self) -> u64 {
+        self.vruntime.load(Ordering::Relaxed)
+    }
+
     fn fetch_weight(&self) -> (u64, u64) {
         // Synchronization is done via the `pending_weight` lock. Therefore, no additional ordering
         // is required to access the atomic variable.
@@ -241,6 +246,17 @@ impl FairClassRq {
             min_vruntime: 0,
             total_weight: 0,
         }
+    }
+
+    /// Returns whether a queued entity has a smaller vruntime than `vruntime`.
+    ///
+    /// Used for wakeup preemption: the queued entity would run before the
+    /// current task in the fair order, so the current task should not be
+    /// allowed to finish its whole time slice first.
+    pub(super) fn has_entity_below(&self, vruntime: u64) -> bool {
+        self.entities
+            .peek()
+            .is_some_and(|Reverse(item)| item.key() < vruntime)
     }
 
     /// The scheduling period is calculated as the maximum of the following two values:

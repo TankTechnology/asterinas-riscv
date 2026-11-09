@@ -280,9 +280,9 @@ impl Scheduler for ClassScheduler {
             });
 
         thread.sched_attr().set_last_cpu(cpu);
-        rq.enqueue_entity((task, thread), Some(flags));
+        let wake_preempt = rq.enqueue_entity((task, thread), Some(flags));
 
-        should_preempt.then_some(cpu)
+        (should_preempt || wake_preempt).then_some(cpu)
     }
 
     fn mut_local_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
@@ -352,10 +352,16 @@ impl ClassScheduler {
         let mut minimum_load = u32::MAX;
 
         // Set `selected` as `candidate` if the candidate's load is smaller.
+        //
+        // Count the currently running task too: a CPU running one task has
+        // `queue_len == 0`, exactly like an idle CPU, so comparing only the
+        // queue length stacks new tasks on busy CPUs and leaves harts idle
+        // (four CPU-bound processes were observed to occupy three harts).
         let test_candidate = |candidate: CpuId| {
-            let PerCpuLoadStats { queue_len, .. } =
-                self.rqs[candidate.as_usize()].lock().load_stats();
-            let load = queue_len;
+            let load = self.rqs[candidate.as_usize()]
+                .lock()
+                .load_stats()
+                .runnable_load();
             if load < minimum_load {
                 minimum_load = load;
                 selected = candidate;
@@ -403,23 +409,41 @@ impl PerCpuClassRqSet {
             })
     }
 
-    fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) {
-        self.enqueue_entity_at((task, thread), flags, sched_clock());
+    fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) -> bool {
+        self.enqueue_entity_at((task, thread), flags, sched_clock())
     }
 
+    /// Enqueues an entity and reports whether it should preempt the current task.
+    ///
+    /// A fair entity whose vruntime is smaller than the current fair task's
+    /// would be picked before it, so it must not wait for the current task to
+    /// exhaust its whole time slice. This is the wakeup preemption rule; without
+    /// it a thread woken on a busy CPU waits up to one scheduling period
+    /// (hundreds of milliseconds were measured for `fork`+`wait`).
     fn enqueue_entity_at(
         &mut self,
         (task, thread): SchedEntity,
         flags: Option<EnqueueFlags>,
         now: u64,
-    ) {
+    ) -> bool {
         thread.sched_attr().sched_info().enqueue_at(now);
+
+        let current_fair_vruntime = self.current.as_ref().and_then(|((_, current), _)| {
+            (current.sched_attr().policy_kind() == SchedPolicyKind::Fair)
+                .then(|| current.sched_attr().fair.vruntime())
+        });
+        let new_is_fair = thread.sched_attr().policy_kind() == SchedPolicyKind::Fair;
+
         match thread.sched_attr().policy_kind() {
             SchedPolicyKind::Stop => self.stop.enqueue(task, flags),
             SchedPolicyKind::RealTime => self.real_time.enqueue(task, flags),
             SchedPolicyKind::Fair => self.fair.enqueue(task, flags),
             SchedPolicyKind::Idle => self.idle.enqueue(task, flags),
         }
+
+        flags.is_some()
+            && new_is_fair
+            && current_fair_vruntime.is_some_and(|current| self.fair.has_entity_below(current))
     }
 
     fn try_pick_next_at(&mut self, now: u64) -> Option<&Arc<Task>> {

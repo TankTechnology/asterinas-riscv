@@ -78,3 +78,33 @@ the desktop stack (Xorg, openbox, fcitx, lxpanel, pcmanfm), not in the kernel.
   panel plugins) may pay more than kernel changes here.
 - **Firefox software rendering** dominates scrolling; it is app-level work,
   not a kernel regression.
+
+## Follow-up: wakeup preemption and placement (same day)
+
+A finer fork probe split the cost into child-start and parent-wakeup and
+showed the real shape of the problem:
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| fork+wait average (unpinned) | 4.5-7.5 ms | 1.0-1.1 ms |
+| fork+wait worst case | 257-461 ms | 17-18 ms |
+| 4 CPU-bound processes | sometimes 3 of 4 harts | all four harts |
+
+Two scheduler defects caused this:
+
+1. **No wakeup preemption.** `ClassScheduler::enqueue` only requested a
+   preemption IPI when the new task's policy class outranked the current one.
+   A fair task woken on a CPU running another fair task therefore waited for
+   the running task to exhaust its whole time slice (the fair class only
+   re-evaluates on the tick), which measured as hundreds of milliseconds for
+   `fork`+`wait`. `enqueue_entity_at` now reports whether a queued fair entity
+   has a smaller vruntime than the current fair task, and `enqueue` requests a
+   preemption IPI in that case, matching Linux's wakeup preemption rule.
+2. **Placement ignored the running task.** The spawn path compared only
+   `queue_len`, which is zero both for an idle CPU and for a CPU running one
+   task; new tasks stacked on busy harts and left others idle. It now compares
+   `runnable_load()` (queued plus running).
+
+The changes did not regress the other numbers: idle stays at ~1,100
+interrupts/s and ~130 context switches/s, the X round trip is 0.34 ms, and a
+200-click burst still costs ~68 context switches per click (unchanged).
