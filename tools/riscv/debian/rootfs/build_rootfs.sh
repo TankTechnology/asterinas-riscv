@@ -1825,8 +1825,6 @@ configure_desktop() {
     # basic.target with DefaultDependencies=no does not run in this image
     # (every such unit on the board stayed inactive), while a pre-start on the
     # desktop service always does.
-    install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
-        "$stage/usr/lib/asterinas/megrez-clock-sync"
     install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
     # An ext2 root that was being written when the board died keeps names whose
     # inodes are gone, and nothing repairs that until an offline fsck. At least
@@ -1944,6 +1942,34 @@ EOF
     install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
     ln -sfn ../asterinas-clock-bootstrap.service \
         "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-bootstrap.service"
+    # NTP: systemd-timesyncd is the standard client. The board has no RTC, so
+    # this is the only source of correct wall-clock time after boot. It is
+    # enabled at sysinit and retries until the network is reachable.
+    if [[ -e "$stage/usr/lib/systemd/system/systemd-timesyncd.service" ]]; then
+        install -d -m 0755 -- "$stage/etc/systemd/timesyncd.conf.d"
+        cat >"$stage/etc/systemd/timesyncd.conf.d/asterinas.conf" <<'EOF'
+[Time]
+NTP=ntp.aliyun.com time.cloudflare.com
+FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org
+# The board clock drifts under desktop load; keep the offset small between
+# polls by polling at least once a minute.
+PollIntervalMinSec=16
+PollIntervalMaxSec=64
+EOF
+        # Asterinas' systemd cannot create the StateDirectory at service start
+        # ("Failed to set up special execution directory in /var/lib: Invalid
+        # argument"), so pre-create it with the package's user.
+        timesync_uid="$(awk -F: '$1 == "systemd-timesync" { print $3; exit }' "$stage/etc/passwd")"
+        timesync_gid="$(awk -F: '$1 == "systemd-timesync" { print $4; exit }' "$stage/etc/passwd")"
+        install -d -m 0755 -- "$stage/var/lib/systemd/timesync"
+        if [[ -n "$timesync_uid" && -n "$timesync_gid" ]]; then
+            chown "$timesync_uid:$timesync_gid" "$stage/var/lib/systemd/timesync"
+        fi
+        install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
+        ln -sfn /usr/lib/systemd/system/systemd-timesyncd.service \
+            "$stage/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service"
+    fi
+
     # sudo (and interactive tools) allocate a pty; debootstrap leaves fstab
     # unconfigured, so /dev/pts is never mounted and sudo fails with
     # "unable to allocate pty". Mount devpts like a normal Debian installation.
@@ -2393,7 +2419,6 @@ ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 # network stack just to set a clock, and the leading '-' keeps a sync failure
 # from stopping the desktop.
 ExecStartPre=-/bin/sh /usr/lib/asterinas/asterinas-resolv
-ExecStartPre=-/bin/sh -c 'case " \$(cat /proc/cmdline 2>/dev/null) " in *" ASTERINAS_DESKTOP_OFFLINE=1 "*) exit 0;; *) exec /usr/lib/asterinas/megrez-clock-sync;; esac'
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
 RestartSec=2s
@@ -2744,7 +2769,6 @@ browser_web_runtime_digest() {
         desktop_m5_network_gate.py
         browser_web_firefox.sh
         browser_web_marionette_gate.py
-        megrez_clock_sync.py
         browser_m5_marionette_gate.py
         browser_web_evidence.sh
         browser_web.service

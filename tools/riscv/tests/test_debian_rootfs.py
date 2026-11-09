@@ -177,7 +177,6 @@ STAGE1_BROWSER_DAILY_USE_GATE = (
 STAGE1_BROWSER_DAILY_USE_UPLOAD = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_daily_use_upload.py"
 )
-STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
 STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
 )
@@ -1515,7 +1514,6 @@ int main(void)
                 "usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "usr/lib/asterinas/browser-daily-use-gate",
                 "usr/lib/asterinas/browser-daily-use-upload",
-                "usr/lib/asterinas/megrez-clock-sync",
                 "usr/lib/asterinas/physical-external-services-quiesce",
                 "usr/lib/asterinas/desktop-input-identity",
                 "usr/lib/asterinas/physical-graphics-control",
@@ -1732,6 +1730,24 @@ int main(void)
         builder = BUILD_SCRIPT.read_text()
         self.assertIn("20-asterinas-no-input.conf", builder)
         self.assertIn('"$script_directory/desktop_fbdev_no_input.conf"', builder)
+
+    def test_browser_web_profile_syncs_the_clock_with_timesyncd(self) -> None:
+        profile = get_profile("browser-web")
+        self.assertIn("systemd-timesyncd", profile.requested_packages)
+        self.assertIn("systemd-timesyncd", profile.identity_packages)
+
+        builder = BUILD_SCRIPT.read_text()
+        self.assertIn("/etc/systemd/timesyncd.conf.d/asterinas.conf", builder)
+        self.assertIn("PollIntervalMinSec=16", builder)
+        self.assertIn("PollIntervalMaxSec=64", builder)
+        self.assertIn(
+            "/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service",
+            builder,
+        )
+        self.assertIn("/var/lib/systemd/timesync", builder)
+        # The gateway clock scrape is gone; timesyncd owns the clock now.
+        self.assertNotIn("megrez-clock-sync", builder)
+        self.assertNotIn("megrez_clock_sync.py", builder)
 
     def test_startup_readiness_uses_one_monotonic_deadline(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
@@ -2215,13 +2231,6 @@ int main(void)
                     1700000000,
                 ),
                 (
-                    "usr/lib/asterinas/megrez-clock-sync",
-                    stat.S_IFREG | 0o755,
-                    0,
-                    0,
-                    1700000000,
-                ),
-                (
                     "usr/lib/asterinas/physical-external-services-quiesce",
                     stat.S_IFREG | 0o755,
                     0,
@@ -2307,19 +2316,18 @@ int main(void)
         self.assertEqual(entries[14][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
         self.assertEqual(entries[15][5], STAGE1_BROWSER_DAILY_USE_GATE.read_bytes())
         self.assertEqual(entries[16][5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
-        self.assertEqual(entries[17][5], STAGE1_CLOCK_SYNC.read_bytes())
         self.assertEqual(
-            entries[18][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+            entries[17][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
-        self.assertEqual(entries[19][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
-        self.assertEqual(entries[20][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
-        self.assertEqual(entries[21][5], STAGE1_SAFE_REBOOT_SOURCE.read_bytes())
-        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
-        self.assertEqual(entries[23][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
-        self.assertEqual(entries[24][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
-        self.assertEqual(entries[25][5], b"physical-graphics-control")
-        self.assertEqual(entries[26][5], b"physical-external-services-quiesce")
-        self.assertEqual(entries[27][5], b"physical-system-probe")
+        self.assertEqual(entries[18][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertEqual(entries[19][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
+        self.assertEqual(entries[20][5], STAGE1_SAFE_REBOOT_SOURCE.read_bytes())
+        self.assertEqual(entries[21][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[23][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[24][5], b"physical-graphics-control")
+        self.assertEqual(entries[25][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[26][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):

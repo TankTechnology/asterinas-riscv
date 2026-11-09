@@ -442,7 +442,6 @@ class FirefoxBrowseTests(unittest.TestCase):
         self.assertIn('"source":"host-serial"', clock_command)
         self.assertIn("ASTERINAS_CLOCK_SYNC_FAILED", clock_command)
         self.assertNotIn("exit 1", clock_command)
-        self.assertNotIn("megrez-clock-sync", clock_command)
         self.assertNotIn("nsenter", clock_command)
         self.assertLess(len((clock_command + "\n").encode()), 768)
         self.assertIn("browser-web-marionette-gate --scope baidu-home", home_command)

@@ -371,13 +371,13 @@ _PROFILES["browser-m5"] = RootfsProfile(
         for package in _PROFILES["desktop-m5-network"].requested_packages
         if package not in {"netsurf-gtk", "xdotool"}
     )
-    + ("firefox-esr", "python3-minimal"),
+    + ("firefox-esr", "python3-minimal", "systemd-timesyncd"),
     identity_packages=tuple(
         package
         for package in _PROFILES["desktop-m5-network"].identity_packages
         if package not in {"netsurf-gtk", "xdotool"}
     )
-    + ("firefox-esr", "python3-minimal"),
+    + ("firefox-esr", "python3-minimal", "systemd-timesyncd"),
 )
 
 _PROFILES["desktop-m9-software"] = RootfsProfile(

@@ -1145,7 +1145,6 @@ class BrowserWebContractTests(unittest.TestCase):
             "desktop_m5_network_gate.py",
             "browser_web_firefox.sh",
             "browser_web_marionette_gate.py",
-            "megrez_clock_sync.py",
             "browser_m5_marionette_gate.py",
             "browser_web_evidence.sh",
             "browser_web.service",

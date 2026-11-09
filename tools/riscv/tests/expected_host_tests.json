@@ -66,7 +66,6 @@
     "tools.riscv.tests.test_megrez_boot_menu",
     "tools.riscv.tests.test_megrez_boot_stability",
     "tools.riscv.tests.test_megrez_clock_bootstrap",
-    "tools.riscv.tests.test_megrez_clock_sync",
     "tools.riscv.tests.test_megrez_debian_installer",
     "tools.riscv.tests.test_megrez_debian_shell",
     "tools.riscv.tests.test_megrez_debug",
@@ -119,7 +118,7 @@
     "tools.riscv.tests.test_validate_run_kernel_log",
     "tools.riscv.tests.test_xhci_input_gate"
   ],
-  "modules": 117,
+  "modules": 116,
   "schema_version": 1,
   "skip_reasons": [
     "RISC-V cross compiler is only required in the development container",
@@ -818,6 +817,7 @@
     "tools.riscv.tests.test_debian_rootfs.DebianRootfsManifestWriterTests.test_writes_schema9_ext4_journal_profile_manifest",
     "tools.riscv.tests.test_debian_rootfs.DebianRootfsManifestWriterTests.test_writes_schema_v2_systemd_profile_manifest",
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_browser_device_access_allows_offline_framebuffer_without_usb",
+    "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_browser_web_profile_syncs_the_clock_with_timesyncd",
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_builder_declares_exact_tools_and_entries",
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_builder_failure_preserves_existing_archive",
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_builder_installs_a_no_input_framebuffer_xorg_profile",
@@ -1437,10 +1437,6 @@
     "tools.riscv.tests.test_megrez_clock_bootstrap.MegrezClockBootstrapTests.test_far_future_boot_clock_is_replaced_by_build_time",
     "tools.riscv.tests.test_megrez_clock_bootstrap.MegrezClockBootstrapTests.test_missing_build_time_is_reported_without_failing",
     "tools.riscv.tests.test_megrez_clock_bootstrap.MegrezClockBootstrapTests.test_plausible_clock_is_not_moved",
-    "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_desktop_service_gates_the_clock_sync_on_the_kernel_command_line",
-    "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_http_proxy_date_is_validated_and_applied_without_https",
-    "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_invalid_or_missing_date_never_changes_the_clock",
-    "tools.riscv.tests.test_megrez_clock_sync.MegrezClockSyncTests.test_offline_desktop_skips_network_clock_sync",
     "tools.riscv.tests.test_megrez_debian_installer.MegrezDebianInstallerTests.test_build_archive_accepts_absolute_internal_runtime_symlink",
     "tools.riscv.tests.test_megrez_debian_installer.MegrezDebianInstallerTests.test_build_archive_is_reproducible_and_replaces_init",
     "tools.riscv.tests.test_megrez_debian_installer.MegrezDebianInstallerTests.test_build_archive_preserves_existing_output_on_failure",
@@ -2545,5 +2541,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2415
+  "tests": 2412
 }

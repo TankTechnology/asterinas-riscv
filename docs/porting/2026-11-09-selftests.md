@@ -29,7 +29,7 @@ Board and QEMU share the same bundle; only the session transport differs
 | --- | --- | --- |
 | `console` | multi-user | identity, clock, tty, sudo |
 | `block` | multi-user | rootfs-rw, fsck, space |
-| `net` | multi-user | loopback, slirp, dns |
+| `net` | multi-user | loopback, route, dns, http |
 | `power` | multi-user | reboot, poweroff |
 | `display` | graphical | xorg, session, screenshot |
 | `input` | graphical | keyboard, pointer |
@@ -82,11 +82,13 @@ That first run was before the portal session existed. Two findings:
   succeeded with `login: ok` (the strict checker exits 1 on the portal's
   `"res":"ok"`, so connectivity was the confirmation). The rerun with the
   authenticated network gives `PASS net` 4/4 and the full run below.
-- **Clock gap.** The image does not ship `asterinas-clock-sync.service`
-  (`systemctl status` says the unit is missing), so after a reboot the clock
-  was at 2026-04-13. The `clock` case now compares against the host epoch
-  (`SELFTEST_EXPECT_EPOCH`), and the run below uses `date -s @<host epoch>`.
-  The image should gain the unit before the next board image.
+- **Clock gap.** The image did not ship a clock service, so after a reboot the
+  clock was at 2026-04-13. The `clock` case compares against the host epoch
+  (`SELFTEST_EXPECT_EPOCH`), and the run below used `date -s @<host epoch>`.
+  This is now closed: the image ships `systemd-timesyncd` and the kernel
+  implements its needs (see [timesync](2026-11-09-timesync.md)). After a normal
+  reboot the same case reports `PASS console clock epoch=... delta=8s` with no
+  manual step.
 
 ```
 PASS console  identity   host=asterinas os=Asterinas 13
@@ -111,7 +113,8 @@ implement `/proc/net/route`.
 
 Landed: the catalog, the runner (plan, `--list`, `--dry-run`, and `--board`),
 the guest bundle for console/block/net/power, and the unit tests for the
-catalog and marker parser.
+catalog and marker parser. The last board run, after the timesync kernel
+landed, is `total=11 pass=10 fail=0 skip=1` (`delta=8s` on the clock case).
 
 Next:
 

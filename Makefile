@@ -686,7 +686,6 @@ test_riscv_megrez_desktop_unit:
 		tools.riscv.tests.test_megrez_desktop \
 		tools.riscv.tests.test_megrez_desktop_boot \
 		tools.riscv.tests.test_megrez_firefox_browse \
-		tools.riscv.tests.test_megrez_clock_sync -v
 
 .PHONY: test_riscv_megrez_dtb_check_unit
 test_riscv_megrez_dtb_check_unit:

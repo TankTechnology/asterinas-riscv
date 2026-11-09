@@ -1,7 +1,6 @@
 [Unit]
 Description=Asterinas wired-port watchdog
-After=basic.target asterinas-clock-sync.service
-Wants=asterinas-clock-sync.service
+After=basic.target
 
 [Service]
 Type=simple

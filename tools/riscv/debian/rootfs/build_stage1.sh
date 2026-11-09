@@ -49,7 +49,6 @@ if (( $# == 1 )); then
                 usr/lib/asterinas/browser_m5_marionette_gate.py \
                 usr/lib/asterinas/browser-daily-use-gate \
                 usr/lib/asterinas/browser-daily-use-upload \
-                usr/lib/asterinas/megrez-clock-sync \
                 usr/lib/asterinas/physical-external-services-quiesce \
                 usr/lib/asterinas/desktop-input-identity \
                 usr/lib/asterinas/physical-graphics-control \
@@ -88,7 +87,6 @@ BROWSER_COMPOSITE_CAPTURE_SOURCE="$SCRIPT_DIR/browser_composite_capture.py"
 BROWSER_M5_MARIONETTE_GATE_SOURCE="$SCRIPT_DIR/browser_m5_marionette_gate.py"
 BROWSER_DAILY_USE_GATE_SOURCE="$SCRIPT_DIR/browser_daily_use_gate.py"
 BROWSER_DAILY_USE_UPLOAD_SOURCE="$SCRIPT_DIR/browser_daily_use_upload.py"
-CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 PHYSICAL_EXTERNAL_SOURCE="$SCRIPT_DIR/physical_external_services_quiesce.sh"
 DESKTOP_INPUT_IDENTITY_SOURCE="$SCRIPT_DIR/desktop_input_identity.py"
 PHYSICAL_GRAPHICS_CONTROL_SOURCE="$SCRIPT_DIR/physical_graphics_control.sh"
@@ -212,8 +210,6 @@ install -D -m 0755 -- "$BROWSER_DAILY_USE_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-gate"
 install -D -m 0755 -- "$BROWSER_DAILY_USE_UPLOAD_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-upload"
-install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
-    "$STAGE/usr/lib/asterinas/megrez-clock-sync"
 install -D -m 0755 -- "$PHYSICAL_EXTERNAL_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce"
 install -D -m 0755 -- "$DESKTOP_INPUT_IDENTITY_SOURCE" \
@@ -254,7 +250,6 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-gate" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-upload" \
-    "$STAGE/usr/lib/asterinas/megrez-clock-sync" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce" \
     "$STAGE/usr/lib/asterinas/desktop-input-identity" \
     "$STAGE/usr/lib/asterinas/physical-graphics-control" \
@@ -288,7 +283,6 @@ printf '%s\n' \
     usr/lib/asterinas/browser_m5_marionette_gate.py \
     usr/lib/asterinas/browser-daily-use-gate \
     usr/lib/asterinas/browser-daily-use-upload \
-    usr/lib/asterinas/megrez-clock-sync \
     usr/lib/asterinas/physical-external-services-quiesce \
     usr/lib/asterinas/desktop-input-identity \
     usr/lib/asterinas/physical-graphics-control \
@@ -326,7 +320,6 @@ EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_web_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_m5_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-daily-use-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-daily-use-upload\n'
-EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-external-services-quiesce\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/desktop-input-identity\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-control\n'
