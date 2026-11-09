@@ -83,6 +83,15 @@ The ignored build trees were removed to reclaim disk: `target/` (7.7 GiB),
 `osdk/target/` (3.0 GiB), `test/initramfs/build/` (551 MiB) and
 `target-ubuntu/`. They are reproducible; the next build recreates them.
 
+## Superseded boot drivers
+
+Six one-off drivers with no caller were deleted as well:
+`systemd/boot_backspace_test.py` (the keyboard milestone is covered by the
+kernel line-discipline fix), `systemd/boot_gtk_interactive.py` (superseded by
+the browser-web session), `systemd/boot_systemd_desktop_vnc.py` (superseded by
+`boot_systemd_desktop.py`), `systemd/gate_desktop.sh`, `systemd/gate_m2.sh`,
+and `xorg/xwm_reparent.c`.
+
 ## What was deliberately kept
 
 - `tools/riscv/pidns/`, `nsmatrix/`: the C sources are the reproducible part of

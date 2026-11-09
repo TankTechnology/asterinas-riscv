@@ -10,8 +10,8 @@ refactoring work is tracked separately.
 - Host modules: **126**
 - Host tests: **2,456**
 - Expected environment skips: **11**
-- Production Python files: **191**
-- Production shell files: **117**
+- Production Python files: **188**
+- Production shell files: **115**
 - Top-level shell entrypoints: **10**
 - Kernel ktest baseline (`make ktest TARGET_ARCH=riscv64 -j32`):
   **777 passed / 0 failed / 32 crates / 257 s**
