@@ -868,6 +868,7 @@
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_stage1_publication_rolls_back_hup_and_term",
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_stage1_publication_rolls_back_second_replace_failure",
     "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_startup_readiness_uses_one_monotonic_deadline",
+    "tools.riscv.tests.test_debian_rootfs.DebianStage1Tests.test_unquoted_heredocs_do_not_run_backticks",
     "tools.riscv.tests.test_debian_rootfs.DebianSystemdM2GateTests.test_classifier_rejects_failure_reorder_duplicates_overflow_and_third_boot",
     "tools.riscv.tests.test_debian_rootfs.DebianSystemdM2GateTests.test_classifier_requires_ordered_two_boot_normal_reboot_evidence",
     "tools.riscv.tests.test_debian_rootfs.DebianSystemdM2GateTests.test_concrete_protocol_drives_asterinas_twice_without_saved_environment",
@@ -2543,5 +2544,5 @@
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_registered_uboot_commands_preserve_expected_output",
     "tools.riscv.tests.test_xhci_input_gate.XhciHostGateTests.test_run_gate_orders_ready_keys_cleanup_and_atomic_evidence"
   ],
-  "tests": 2414
+  "tests": 2415
 }

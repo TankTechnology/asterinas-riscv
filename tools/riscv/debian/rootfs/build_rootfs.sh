@@ -1509,6 +1509,8 @@ EOF
             "../$safe_reboot_service_name.service" \
             "$stage/etc/systemd/system/$safe_reboot_target.target.wants/$safe_reboot_service_name.service"
     done
+    # This heredoc is unquoted so the ordering/Environment lines can be
+    # injected; never put backticks in the body, or the build host runs them.
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence
@@ -1528,7 +1530,7 @@ Restart=no
 # The probe exits 75 when the network fixture itself is missing (no link,
 # address, neighbour, resolver, or unreachable peer).  That is an environment
 # condition, not a failed service: treat it as a clean run so the unit ends
-# inactive instead of parked in `systemctl --failed`.  Evidence mismatches
+# inactive instead of parked in 'systemctl --failed'.  Evidence mismatches
 # still exit 1 and remain visible as failures.
 SuccessExitStatus=75
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence

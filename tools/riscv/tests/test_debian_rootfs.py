@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -1748,6 +1749,31 @@ int main(void)
         # The gateway clock scrape is gone; timesyncd owns the clock now.
         self.assertNotIn("megrez-clock-sync", builder)
         self.assertNotIn("megrez_clock_sync.py", builder)
+
+    def test_unquoted_heredocs_do_not_run_backticks(self) -> None:
+        # An unquoted heredoc expands `command` like $(command). A backtick in
+        # a comment once ran `systemctl --failed` on the build host and pasted
+        # its output into a generated unit, which then warned "Missing '='"
+        # on every boot.
+        heredoc = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+        problems: list[str] = []
+        script_dir = REPOSITORY_ROOT / "tools/riscv/debian/rootfs"
+        for path in sorted(script_dir.glob("*.sh")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            index = 0
+            while index < len(lines):
+                match = heredoc.search(lines[index])
+                if match:
+                    delimiter, quoted = match.group(2), bool(match.group(1))
+                    index += 1
+                    while (
+                        index < len(lines) and lines[index].strip() != delimiter
+                    ):
+                        if not quoted and "`" in lines[index]:
+                            problems.append(f"{path.name}:{index + 1}")
+                        index += 1
+                index += 1
+        self.assertEqual(problems, [])
 
     def test_startup_readiness_uses_one_monotonic_deadline(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
