@@ -30,25 +30,36 @@ pub(super) fn sys_getrusage(
         let rusage = match rusage_target {
             RusageTarget::ForSelf => {
                 let process = ctx.process.as_ref();
+                let (min_flt, maj_flt) = process.io_accounting().faults();
                 rusage_t {
                     ru_utime: process.prof_clock().user_clock().read_time().into(),
                     ru_stime: process.prof_clock().kernel_clock().read_time().into(),
+                    ru_minflt: min_flt,
+                    ru_majflt: maj_flt,
                     ..Default::default()
                 }
             }
             RusageTarget::Thread => {
                 let posix_thread = ctx.posix_thread;
+                // Page faults are accounted per process, not per thread, so
+                // `RUSAGE_THREAD` reports the process-wide counters.
+                let (min_flt, maj_flt) = ctx.process.io_accounting().faults();
                 rusage_t {
                     ru_utime: posix_thread.prof_clock().user_clock().read_time().into(),
                     ru_stime: posix_thread.prof_clock().kernel_clock().read_time().into(),
+                    ru_minflt: min_flt,
+                    ru_majflt: maj_flt,
                     ..Default::default()
                 }
             }
             RusageTarget::Children => {
                 let (user_time, kernel_time) = ctx.process.reaped_children_stats().lock().get();
+                let (min_flt, maj_flt) = ctx.process.reaped_children_stats().lock().faults();
                 rusage_t {
                     ru_utime: user_time.into(),
                     ru_stime: kernel_time.into(),
+                    ru_minflt: min_flt,
+                    ru_majflt: maj_flt,
                     ..Default::default()
                 }
             }

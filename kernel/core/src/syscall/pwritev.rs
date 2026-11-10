@@ -16,6 +16,7 @@ pub(super) fn sys_writev(
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let res = do_sys_writev(raw_fd, io_vec_ptr, io_vec_count, ctx)?;
+    account_write(ctx, res);
     Ok(SyscallReturn::Return(res as _))
 }
 
@@ -39,6 +40,7 @@ pub(super) fn sys_pwritev(
         RWFFlag::empty(),
         ctx,
     )?;
+    account_write(ctx, res);
     Ok(SyscallReturn::Return(res as _))
 }
 
@@ -64,6 +66,7 @@ pub(super) fn sys_pwritev2(
     } else {
         do_sys_pwritev(raw_fd, io_vec_ptr, io_vec_count, offset, flags, ctx)?
     };
+    account_write(ctx, res);
     Ok(SyscallReturn::Return(res as _))
 }
 
@@ -209,6 +212,15 @@ fn do_sys_writev(
     }
 
     Ok(total_len)
+}
+
+/// Accounts one successful writev-family call.
+fn account_write(ctx: &Context, len: usize) {
+    let accounting = ctx.process.io_accounting();
+    accounting.account_write_syscall();
+    if len > 0 {
+        accounting.account_write_chars(len);
+    }
 }
 
 bitflags! {

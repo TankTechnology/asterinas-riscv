@@ -24,7 +24,7 @@ pub(super) fn sys_write(
     // According to <https://man7.org/linux/man-pages/man2/write.2.html>, if
     // the user specified an empty buffer, we should detect errors by checking
     // the file descriptor. If no errors detected, return 0 successfully.
-    let write_len = {
+    let write_result = {
         if user_buf_len != 0 {
             let user_space = ctx.user_space();
             if file.as_socket().is_some() {
@@ -35,11 +35,16 @@ pub(super) fn sys_write(
         } else {
             file.write_bytes(&[])
         }
-    }
-    .map_err(|err| match err.error() {
+    };
+    let io_accounting = ctx.process.io_accounting();
+    io_accounting.account_write_syscall();
+    let write_len = write_result.map_err(|err| match err.error() {
         Errno::EINTR => Error::new(Errno::ERESTARTSYS),
         _ => err,
     })?;
+    if write_len > 0 {
+        io_accounting.account_write_chars(write_len);
+    }
 
     if write_len > 0 {
         fs::vfs::notify::on_modify(&file);

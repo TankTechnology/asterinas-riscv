@@ -11,9 +11,9 @@ use crate::{
             pid::task::{
                 asterinas_syscall::SyscallFileOps, auxv::AuxvFileOps, cgroup::CgroupFileOps,
                 cmdline::CmdlineFileOps, comm::CommFileOps, environ::EnvironFileOps,
-                exe::ExeSymOps, fd::FdDirOps, gid_map::GidMapFileOps, maps::MapsFileOps,
-                mem::MemFileOps, mountinfo::MountInfoFileOps, mounts::MountsFileOps,
-                mountstats::MountStatsFileOps, net::NetDirOps, ns::NsDirOps,
+                exe::ExeSymOps, fd::FdDirOps, gid_map::GidMapFileOps, io::IoFileOps,
+                maps::MapsFileOps, mem::MemFileOps, mountinfo::MountInfoFileOps,
+                mounts::MountsFileOps, mountstats::MountStatsFileOps, net::NetDirOps, ns::NsDirOps,
                 oom_score_adj::OomScoreAdjFileOps, pagemap::PagemapFileOps,
                 schedstat::SchedstatFileOps, setgroups::SetgroupsFileOps, stat::StatFileOps,
                 status::StatusFileOps, timens_offsets::TimeNsOffsetsFileOps,
@@ -41,6 +41,7 @@ mod environ;
 mod exe;
 mod fd;
 mod gid_map;
+mod io;
 mod maps;
 mod mem;
 mod mountinfo;
@@ -132,6 +133,7 @@ impl TidDirOps {
             FdDirOps::<fd::FileInfoOps>::new_inode,
         ),
         ("gid_map", InodeType::File, GidMapFileOps::new_inode),
+        ("io", InodeType::File, IoFileOps::new_inode),
         ("mem", InodeType::File, MemFileOps::new_inode),
         ("mountinfo", InodeType::File, MountInfoFileOps::new_inode),
         ("mountstats", InodeType::File, MountStatsFileOps::new_inode),

@@ -56,6 +56,26 @@ const FAULT_AFTER_COMMIT: u32 = 2;
 const FAULT_BEFORE_HOME_FLUSH: u32 = 3;
 const FAULT_BEFORE_CHECKPOINT: u32 = 4;
 
+/// Charges block I/O to the process on whose behalf it is submitted.
+///
+/// The block layer has no notion of a process, and Linux charges a bio to the
+/// task that submits it, so the charge belongs at the filesystem's submission
+/// points. I/O issued by kernel threads (writeback) is not charged.
+fn account_block_io(bio_segment: &BioSegment, write: bool) {
+    account_block_io_bytes(bio_segment.nbytes(), write);
+}
+
+fn account_block_io_bytes(bytes: usize, write: bool) {
+    let Some(process) = crate::process::Process::current() else {
+        return;
+    };
+    if write {
+        process.io_accounting().account_write_bytes(bytes);
+    } else {
+        process.io_accounting().account_read_bytes(bytes);
+    }
+}
+
 fn inject_journal_fault(stage: u32) {
     if JOURNAL_FAULT_STAGE.swap(0, Ordering::Relaxed) == stage {
         ostd::early_println!("ASTERINAS_EXT4_FAULT_STOP stage={}", stage);
@@ -1067,6 +1087,7 @@ impl Ext2 {
         complete_fn: Option<BioCompleteFn>,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
+        account_block_io(&bio_segment, false);
         self.block_device.read_blocks_async(
             Bid::new(bid as u64),
             vec![bio_segment],
@@ -1078,6 +1099,7 @@ impl Ext2 {
 
     /// Reads blocks synchronously starting at `bid`.
     pub(super) fn read_blocks(&self, bid: Ext2Bid, bio_segment: BioSegment) -> Result<()> {
+        account_block_io(&bio_segment, false);
         let bio_status = self
             .block_device
             .read_blocks(Bid::new(bid as u64), vec![bio_segment])?;
@@ -1097,6 +1119,7 @@ impl Ext2 {
         complete_fn: Option<BioCompleteFn>,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
+        account_block_io(&bio_segment, true);
         self.block_device.write_blocks_async(
             Bid::new(bid as u64),
             vec![bio_segment],

@@ -411,10 +411,18 @@ fn reap_zombie_child(
     let mut child_group_mut = child_process.process_group.lock();
     child_process.clear_old_group_and_session(&mut child_group_mut, &mut pid_table);
 
-    let (mut user_time, mut kernel_time) = child_process.reaped_children_stats().lock().get();
+    let child_stats = child_process.reaped_children_stats().lock();
+    let (mut user_time, mut kernel_time) = child_stats.get();
+    let (mut min_flt, mut maj_flt) = child_stats.faults();
+    drop(child_stats);
     user_time += child_process.prof_clock().user_clock().read_time();
     kernel_time += child_process.prof_clock().kernel_clock().read_time();
-    reaped_children_stats.lock().add(user_time, kernel_time);
+    let (own_min_flt, own_maj_flt) = child_process.io_accounting().faults();
+    min_flt = min_flt.saturating_add(own_min_flt);
+    maj_flt = maj_flt.saturating_add(own_maj_flt);
+    let mut reaped_stats = reaped_children_stats.lock();
+    reaped_stats.add(user_time, kernel_time);
+    reaped_stats.add_faults(min_flt, maj_flt);
 
     child_process.status().exit_code()
 }

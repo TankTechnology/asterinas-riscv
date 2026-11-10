@@ -171,11 +171,10 @@ impl ProcFileOps for StatFileOps {
 
         // Placeholder: kernel flags are not exposed yet.
         let flags = 0;
-        // Placeholder: page-fault counters are not tracked per process/thread yet.
-        let min_flt = 0;
-        let cmin_flt = 0;
-        let maj_flt = 0;
-        let cmaj_flt = 0;
+        // The counters are kept per process, so the per-thread `stat` reports
+        // the process-wide numbers (Linux keeps them per task).
+        let (min_flt, maj_flt) = process.io_accounting().faults();
+        let (cmin_flt, cmaj_flt) = process.reaped_children_stats().lock().faults();
 
         let (utime, stime) = {
             let prof_clock = match self.mode {

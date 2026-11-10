@@ -32,7 +32,12 @@ pub(super) fn sys_pwrite64(
 
     let user_space = ctx.user_space();
     let mut reader = user_space.reader(user_buf_ptr, user_buf_len)?;
+    let io_accounting = ctx.process.io_accounting();
+    io_accounting.account_write_syscall();
     let write_len = file.write_at(offset as _, &mut reader)?;
+    if write_len > 0 {
+        io_accounting.account_write_chars(write_len);
+    }
 
     if write_len > 0 {
         fs::vfs::notify::on_modify(&file);

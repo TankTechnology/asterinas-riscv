@@ -16,6 +16,7 @@ pub(super) fn sys_readv(
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let res = do_sys_readv(raw_fd, io_vec_ptr, io_vec_count, ctx)?;
+    account_read(ctx, res);
     Ok(SyscallReturn::Return(res as _))
 }
 
@@ -39,6 +40,7 @@ pub(super) fn sys_preadv(
         RWFFlag::empty(),
         ctx,
     )?;
+    account_read(ctx, res);
     Ok(SyscallReturn::Return(res as _))
 }
 
@@ -64,6 +66,7 @@ pub(super) fn sys_preadv2(
     } else {
         do_sys_preadv(raw_fd, io_vec_ptr, io_vec_count, offset, flags, ctx)?
     };
+    account_read(ctx, res);
     Ok(SyscallReturn::Return(res as _))
 }
 
@@ -188,6 +191,15 @@ fn do_sys_readv(
     }
 
     Ok(total_len)
+}
+
+/// Accounts one successful readv-family call.
+fn account_read(ctx: &Context, len: usize) {
+    let accounting = ctx.process.io_accounting();
+    accounting.account_read_syscall();
+    if len > 0 {
+        accounting.account_read_chars(len);
+    }
 }
 
 bitflags! {
