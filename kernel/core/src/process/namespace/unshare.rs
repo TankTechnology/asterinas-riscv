@@ -27,6 +27,18 @@ impl ContextUnshareAdminApi for Context<'_> {
         let mut thread_local_file_table_ref = self.thread_local.borrow_file_table_mut();
         let thread_local_file_table = thread_local_file_table_ref.unwrap();
 
+        // Match Linux's `unshare_files()`: keep the table untouched when it is
+        // not shared (`files_struct->count == 1` there). The two references we
+        // always hold are this thread's `RwArc` and its `PosixThread`'s
+        // `RoArc`; more references mean another thread shares the table (for
+        // example via `CLONE_FILES`), and only then is a private copy needed.
+        // This is the common case at exec time, after all sibling threads
+        // have been terminated.
+        const UNIQUE_FILE_TABLE_REFS: usize = 2;
+        if thread_local_file_table.strong_count() == UNIQUE_FILE_TABLE_REFS {
+            return;
+        }
+
         let new_file_table = FileTable::fork_from(&thread_local_file_table.read());
 
         *pthread_file_table = Some(new_file_table.clone_ro());

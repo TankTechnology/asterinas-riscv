@@ -83,6 +83,19 @@ impl<T> RwArc<T> {
     pub fn clone_ro(&self) -> RoArc<T> {
         RoArc(self.0.clone())
     }
+
+    /// Returns the number of strong pointers (both [`RwArc`] and [`RoArc`])
+    /// that point to the same allocation.
+    ///
+    /// This is the analogue of `Arc::strong_count` for this type. The count
+    /// can be used to tell whether an object is exclusively owned by the
+    /// caller as long as all other holders are accounted for: for example,
+    /// a file table has one `RwArc` in the thread-local storage and one
+    /// `RoArc` in the thread's `PosixThread`, so any count above two means
+    /// another thread shares it.
+    pub fn strong_count(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
 }
 
 impl<T> Clone for RwArc<T> {
