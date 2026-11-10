@@ -9,8 +9,20 @@ use crate::{
         vfs::inode::Inode,
     },
     prelude::*,
-    process::posix_thread::{pid_max, set_pid_max},
+    process::posix_thread::{PID_MAX, pid_max, set_pid_max},
 };
+
+/// Validates a raw `pid_max` value against the same range that
+/// [`set_pid_max`] enforces, so the procfs write path rejects values before
+/// touching the allocator.
+pub(super) fn validate_pid_max(value: u64) -> Result<u32> {
+    let value = u32::try_from(value)
+        .map_err(|_| Error::with_message(Errno::EINVAL, "pid_max is out of range"))?;
+    if !(301..=PID_MAX).contains(&value) {
+        return_errno_with_message!(Errno::EINVAL, "pid_max is out of range");
+    }
+    Ok(value)
+}
 
 /// Represents the inode at `/proc/sys/kernel/pid_max`.
 pub(super) struct PidMaxFileOps;
@@ -37,8 +49,7 @@ impl ProcFileOps for PidMaxFileOps {
         }
 
         let (value, count) = template::read_i32_from(reader)?;
-        let value = u32::try_from(value)
-            .map_err(|_| Error::with_message(Errno::EINVAL, "pid_max is out of range"))?;
+        let value = validate_pid_max(value as u64)?;
         set_pid_max(value)?;
         Ok(count)
     }
