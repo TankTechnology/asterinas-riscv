@@ -1129,8 +1129,37 @@ impl Ext2 {
         Ok(())
     }
 
+    /// Returns the largest number of segments a single BIO may carry on the
+    /// underlying device.
+    pub(super) fn max_bio_segments(&self) -> usize {
+        self.block_device.metadata().max_nr_segments_per_bio
+    }
+
+    /// Submits one asynchronous write for a physically contiguous run.
+    ///
+    /// The segments are written in order starting at `bid`, so callers must
+    /// have established that their device blocks are contiguous.
+    pub(super) fn write_blocks_multi_async(
+        &self,
+        bid: Ext2Bid,
+        segments: Vec<BioSegment>,
+        complete_fn: Option<BioCompleteFn>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        let bytes = segments.iter().map(|segment| segment.nbytes()).sum();
+        account_block_io_bytes(bytes, true);
+        self.block_device.write_blocks_multi_async(
+            Bid::new(bid as u64),
+            segments,
+            complete_fn,
+            io_batch,
+        )?;
+        Ok(())
+    }
+
     /// Writes blocks synchronously starting at `bid`.
     pub(super) fn write_blocks(&self, bid: Ext2Bid, bio_segment: BioSegment) -> Result<()> {
+        account_block_io(&bio_segment, true);
         let bio_status = self
             .block_device
             .write_blocks(Bid::new(bid as u64), vec![bio_segment])?;

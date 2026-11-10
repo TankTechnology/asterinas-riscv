@@ -63,6 +63,24 @@ impl dyn BlockDevice {
         bio.submit(self, io_batch)
     }
 
+    /// Asynchronously writes a scatter/gather list that is contiguous on the
+    /// device, starting at `bid`.
+    ///
+    /// The segments are written in order, so the device range is
+    /// `bid .. bid + sum(segment sectors)`. This lets a filesystem submit one
+    /// large request for physically contiguous pages instead of one BIO per
+    /// page.
+    pub fn write_blocks_multi_async(
+        &self,
+        bid: Bid,
+        segments: Vec<BioSegment>,
+        complete_fn: Option<BioCompleteFn>,
+        io_batch: &mut IoBatch,
+    ) -> Result<(), BioEnqueueError> {
+        let bio = Bio::new(BioType::Write, Sid::from(bid), segments, complete_fn);
+        bio.submit(self, io_batch)
+    }
+
     /// Issues a sync request
     pub fn sync(&self) -> Result<BioStatus, BioEnqueueError> {
         let bio = Bio::new(BioType::Flush, Sid::from(Bid::from_offset(0)), vec![], None);

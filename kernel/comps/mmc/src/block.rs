@@ -13,13 +13,13 @@ use core::{
 
 use aster_block::{
     BlockDeviceMeta, EXTENDED_DEVICE_ID_ALLOCATOR, PartitionInfo, PartitionNode, SECTOR_SIZE,
-    bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
+    bio::{BioEnqueueError, BioSegment, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
 };
 use device_id::{DeviceId, MinorId};
 use ostd::sync::{Mutex, SpinLock};
 
 use crate::{
-    MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2,
+    MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2, MMC_WRITE_PARTITION3,
     arch::MmioHost,
     card::{CacheState, Card},
     sdhci::HostError,
@@ -259,38 +259,106 @@ impl MegrezMmcBlock {
         let Some(mut lba) = physical_lba(logical_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
-        let mut transfer = pio_transfer_buffer(bio);
-        for segment in bio.segments() {
-            if !segment.nbytes().is_multiple_of(512) {
+
+        let total_len: usize = bio.segments().iter().map(|segment| segment.nbytes()).sum();
+        if !total_len.is_multiple_of(SECTOR_SIZE) {
+            return BioStatus::IoError;
+        }
+        // Gather as many segments as fit into one controller request instead
+        // of issuing one command per segment. A writeback batch can therefore
+        // reach the card as a single multi-block read.
+        let mut transfer = pio_transfer_buffer(total_len);
+        let mut chunks: Vec<(usize, usize, usize)> = Vec::new();
+        let mut filled = 0;
+        for (index, segment) in bio.segments().iter().enumerate() {
+            if !segment.nbytes().is_multiple_of(SECTOR_SIZE) {
                 return BioStatus::IoError;
             }
-            for offset in (0..segment.nbytes()).step_by(PIO_TRANSFER_BYTES) {
-                let length = (segment.nbytes() - offset).min(PIO_TRANSFER_BYTES);
-                if card
-                    .read_sectors(host, lba, &mut transfer[..length])
-                    .is_err()
-                    || segment
-                        .write_from_device(offset, &transfer[..length])
-                        .is_err()
-                {
-                    return BioStatus::IoError;
+            let mut offset = 0;
+            while offset < segment.nbytes() {
+                let length = (segment.nbytes() - offset).min(transfer.len() - filled);
+                chunks.push((index, offset, length));
+                offset += length;
+                filled += length;
+                if filled == transfer.len() {
+                    if !Self::read_and_scatter(
+                        host,
+                        *card,
+                        &mut lba,
+                        &mut transfer,
+                        &mut chunks,
+                        bio.segments(),
+                    ) {
+                        return BioStatus::IoError;
+                    }
+                    filled = 0;
                 }
-                lba += (length / 512) as u64;
             }
         }
+        if filled > 0
+            && !Self::read_and_scatter(
+                host,
+                *card,
+                &mut lba,
+                &mut transfer[..filled],
+                &mut chunks,
+                bio.segments(),
+            )
+        {
+            return BioStatus::IoError;
+        }
         BioStatus::Complete
+    }
+
+    /// Reads one buffered request from the card and scatters the bytes into the
+    /// segments recorded in `chunks`, in order.
+    fn read_and_scatter(
+        host: &mut MmioHost,
+        card: Card,
+        lba: &mut u64,
+        transfer: &mut [u8],
+        chunks: &mut Vec<(usize, usize, usize)>,
+        segments: &[BioSegment],
+    ) -> bool {
+        if card.read_sectors(host, *lba, transfer).is_err() {
+            return false;
+        }
+        let mut position = 0;
+        for (index, offset, length) in chunks.drain(..) {
+            if segments[index]
+                .write_from_device(offset, &transfer[position..position + length])
+                .is_err()
+            {
+                return false;
+            }
+            position += length;
+        }
+        *lba += (transfer.len() / SECTOR_SIZE) as u64;
+        true
     }
 
     fn write_bio(&self, bio: &SubmittedBio) -> BioStatus {
         let first_lba = bio.sid_range().start.to_raw();
         let nr_sectors = bio.sid_range().end.to_raw().saturating_sub(first_lba);
-        if !partition_write_allowed(
+        let p2_allowed = partition_write_allowed(
             self.partition2_write_armed,
             self.partition2_geometry_matches.load(Ordering::Relaxed),
+            P2_START_LBA,
+            P2_END_LBA,
             bio.sid_offset(),
             first_lba,
             nr_sectors,
-        ) {
+        );
+        let p3_allowed = partition_write_allowed(
+            self.partition3_write_armed,
+            self.partition3_geometry_matches.load(Ordering::Relaxed),
+            P3_START_LBA,
+            P3_END_LBA,
+            bio.sid_offset(),
+            first_lba,
+            nr_sectors,
+        );
+        if !p2_allowed && !p3_allowed {
             return BioStatus::NotSupported;
         }
 
@@ -303,22 +371,39 @@ impl MegrezMmcBlock {
         let Some(mut lba) = physical_lba(first_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
-        let mut transfer = pio_transfer_buffer(bio);
+
+        let total_len: usize = bio.segments().iter().map(|segment| segment.nbytes()).sum();
+        if !total_len.is_multiple_of(SECTOR_SIZE) {
+            return BioStatus::IoError;
+        }
+        let mut transfer = pio_transfer_buffer(total_len);
+        let mut filled = 0;
         for segment in bio.segments() {
-            if !segment.nbytes().is_multiple_of(512) {
+            if !segment.nbytes().is_multiple_of(SECTOR_SIZE) {
                 return BioStatus::IoError;
             }
-            for offset in (0..segment.nbytes()).step_by(PIO_TRANSFER_BYTES) {
-                let length = (segment.nbytes() - offset).min(PIO_TRANSFER_BYTES);
+            let mut offset = 0;
+            while offset < segment.nbytes() {
+                let length = (segment.nbytes() - offset).min(transfer.len() - filled);
                 if segment
-                    .read_for_device(offset, &mut transfer[..length])
+                    .read_for_device(offset, &mut transfer[filled..filled + length])
                     .is_err()
-                    || card.write_sectors(host, lba, &transfer[..length]).is_err()
                 {
                     return BioStatus::IoError;
                 }
-                lba += (length / 512) as u64;
+                offset += length;
+                filled += length;
+                if filled == transfer.len() {
+                    if card.write_sectors(host, lba, &transfer).is_err() {
+                        return BioStatus::IoError;
+                    }
+                    lba += (filled / SECTOR_SIZE) as u64;
+                    filled = 0;
+                }
             }
+        }
+        if filled > 0 && card.write_sectors(host, lba, &transfer[..filled]).is_err() {
+            return BioStatus::IoError;
         }
         BioStatus::Complete
     }

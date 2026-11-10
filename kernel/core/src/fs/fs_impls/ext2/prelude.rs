@@ -30,5 +30,8 @@ pub(super) use crate::{
     },
     prelude::*,
     time::UnixTime,
-    vm::page_cache::{BlockAsPageCacheBackend, PageCache, PageCacheBackend, PageCacheReadRequest},
+    vm::page_cache::{
+        BlockAsPageCacheBackend, PageCache, PageCacheBackend, PageCacheReadRequest,
+        PageCacheWriteRequest, fail_writeback_page,
+    },
 };

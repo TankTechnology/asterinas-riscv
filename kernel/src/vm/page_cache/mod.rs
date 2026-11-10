@@ -400,6 +400,30 @@ pub trait PageCacheBackend: Sync + Send {
         locked_page: LockedCachePage,
         io_batch: &mut IoBatch,
     ) -> Result<()>;
+
+    /// Writes multiple pages to the backend asynchronously.
+    ///
+    /// The pages are unlocked. The implementation locks each page in turn
+    /// while it prepares the request, so at most one page lock is held at a
+    /// time, and skips pages that became clean after they were collected.
+    ///
+    /// The default implementation preserves the single-page contract. Block
+    /// backends override this through [`BlockAsPageCacheBackend`] to merge
+    /// adjacent requests into larger device operations.
+    fn write_pages_async(
+        &self,
+        pages: Vec<(usize, CachePage)>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        for (idx, page) in pages {
+            let locked_page = page.lock();
+            locked_page.wait_until_finish_writing_back();
+            if locked_page.is_dirty() {
+                self.write_page_async(idx, locked_page, io_batch)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl dyn PageCacheBackend + '_ {
@@ -409,6 +433,99 @@ impl dyn PageCacheBackend + '_ {
         self.read_page_async(idx, page, &mut io_batch)?;
         io_batch.wait_all()?;
         Ok(())
+    }
+}
+
+/// One page prepared for writeback through [`BlockAsPageCacheBackend`].
+///
+/// Preparing a request takes the page lock, snapshots the page into a
+/// device-bound segment, marks the page as being written back, and unlocks the
+/// page again. The backend may merge several requests into one BIO; the
+/// per-page completion callbacks then run when that single BIO completes.
+pub struct PageCacheWriteRequest {
+    idx: usize,
+    page: CachePage,
+    bio_segment: BioSegment,
+    complete_fn: BioCompleteFn,
+}
+
+impl PageCacheWriteRequest {
+    /// Returns the page index within the backend object.
+    pub fn idx(&self) -> usize {
+        self.idx
+    }
+
+    /// Consumes the request, returning the BIO parts but keeping no handle to
+    /// the page.
+    pub fn into_parts(self) -> (usize, BioSegment, BioCompleteFn) {
+        (self.idx, self.bio_segment, self.complete_fn)
+    }
+
+    /// Consumes the request, returning every part needed to recover the page
+    /// if the device refuses the BIO.
+    pub fn into_submission_parts(self) -> (usize, CachePage, BioSegment, BioCompleteFn) {
+        (self.idx, self.page, self.bio_segment, self.complete_fn)
+    }
+
+    /// Marks the page dirty again after the device refused its BIO.
+    pub fn submission_failed(self) {
+        fail_writeback_page(&self.page);
+    }
+}
+
+/// Restores the writeback state of a page whose BIO was never accepted.
+pub(crate) fn fail_writeback_page(page: &CachePage) {
+    let locked_page = page.clone().lock();
+    locked_page.set_dirty();
+    locked_page.clear_writing_back();
+}
+
+/// Locks and prepares `page` for writeback, or returns `None` if it became
+/// clean before the lock was acquired.
+fn prepare_write_request(idx: usize, page: CachePage) -> Option<PageCacheWriteRequest> {
+    let locked_page = page.lock();
+    locked_page.wait_until_finish_writing_back();
+    if !locked_page.is_dirty() {
+        return None;
+    }
+    Some(prepare_write_request_locked(idx, locked_page))
+}
+
+/// Prepares an already-locked dirty page for writeback.
+fn prepare_write_request_locked(idx: usize, locked_page: LockedCachePage) -> PageCacheWriteRequest {
+    let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+    bio_segment
+        .writer()
+        .unwrap()
+        .write(&mut locked_page.reader());
+
+    locked_page.set_writing_back();
+    locked_page.set_up_to_date();
+
+    let page = locked_page.unlock();
+    let submit_page = page.clone();
+
+    let complete_fn: BioCompleteFn = Box::new(move |status| {
+        let failed = status != BioStatus::Complete;
+        if failed {
+            // The current flush reports this error through IoBatch. Keep
+            // the page dirty so a later explicit flush can retry it, and
+            // publish that state before waking any writeback waiters.
+            submit_page.redirty_failed_writeback();
+        }
+        submit_page.clear_writing_back();
+        if failed {
+            ostd::error!(
+                "writeback I/O failed for page index {idx} with status {status:?}; page remains dirty"
+            );
+        }
+    });
+
+    PageCacheWriteRequest {
+        idx,
+        page,
+        bio_segment,
+        complete_fn,
     }
 }
 
@@ -479,6 +596,34 @@ pub trait BlockAsPageCacheBackend: Sync + Send {
         complete_fn: BioCompleteFn,
         io_batch: &mut IoBatch,
     ) -> Result<()>;
+
+    /// Submits a batch of pages for writeback.
+    ///
+    /// The default implementation submits one BIO per page. Filesystems that
+    /// can prove several adjacent pages are physically contiguous may override
+    /// this to submit one BIO with several segments.
+    ///
+    /// An implementation that returns an error must restore every request it
+    /// did not submit with [`PageCacheWriteRequest::submission_failed`] (or
+    /// [`fail_writeback_page`] for the request whose BIO was refused).
+    fn submit_write_bios(
+        &self,
+        requests: Vec<PageCacheWriteRequest>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        let mut requests = requests.into_iter();
+        while let Some(request) = requests.next() {
+            let (idx, page, bio_segment, complete_fn) = request.into_submission_parts();
+            if let Err(error) = self.submit_write_bio(idx, bio_segment, complete_fn, io_batch) {
+                fail_writeback_page(&page);
+                for remaining in requests {
+                    remaining.submission_failed();
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// One locked page-cache read prepared for a block-backed filesystem.
@@ -571,45 +716,20 @@ impl<T: BlockAsPageCacheBackend> PageCacheBackend for T {
         locked_page: LockedCachePage,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
-        locked_page.wait_until_finish_writing_back();
+        let request = prepare_write_request_locked(idx, locked_page);
+        self.submit_write_bios(vec![request], io_batch)
+    }
 
-        let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
-        bio_segment
-            .writer()
-            .unwrap()
-            .write(&mut locked_page.reader());
+    fn write_pages_async(
+        &self,
+        pages: Vec<(usize, CachePage)>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        let requests = pages
+            .into_iter()
+            .filter_map(|(idx, page)| prepare_write_request(idx, page))
+            .collect();
 
-        locked_page.set_writing_back();
-        locked_page.set_up_to_date();
-
-        let page = locked_page.unlock();
-        let submit_page = page.clone();
-
-        let complete_fn: BioCompleteFn = Box::new(move |status| {
-            let failed = status != BioStatus::Complete;
-            if failed {
-                // The current flush reports this error through IoBatch. Keep
-                // the page dirty so a later explicit flush can retry it, and
-                // publish that state before waking any writeback waiters.
-                submit_page.redirty_failed_writeback();
-            }
-            submit_page.clear_writing_back();
-            if failed {
-                ostd::error!(
-                    "writeback I/O failed for page index {idx} with status {status:?}; page remains dirty"
-                );
-            }
-        });
-
-        let res = self.submit_write_bio(idx, bio_segment, complete_fn, io_batch);
-        if res.is_err() {
-            // If submission fails, re-dirty the page so the next writeback can
-            // retry the data that never reached the device queue.
-            let locked_page = page.lock();
-            locked_page.set_dirty();
-            locked_page.clear_writing_back();
-        }
-
-        res
+        self.submit_write_bios(requests, io_batch)
     }
 }
