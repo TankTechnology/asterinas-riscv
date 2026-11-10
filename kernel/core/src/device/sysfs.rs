@@ -2,6 +2,7 @@
 
 //! Linux-compatible sysfs topology for character devices.
 
+use aster_bigtcp::iface::{IfaceStatsSnapshot, InterfaceFlags, InterfaceType};
 use aster_systree::{
     AttrLessBranchNodeFields, BranchNodeFields, Error as SysTreeError, NormalNodeFields,
     Result as SysTreeResult, SymlinkNodeFields, SysAttrSetBuilder, SysObj, SysPerms, SysStr,
@@ -11,7 +12,7 @@ use aster_util::printer::VmPrinter;
 use inherit_methods_macro::inherit_methods;
 
 use super::tty;
-use crate::prelude::*;
+use crate::{net::iface::Iface, prelude::*};
 
 const FRAMEBUFFER_SUBSYSTEM_TARGET: &str = "../../../../bus/platform";
 /// The same link, one level deeper: the DRM nodes hang off `/sys/dev/char`.
@@ -181,7 +182,276 @@ fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
     graphics_class_node.add_child(framebuffer_node as Arc<dyn SysObj>)?;
     class_node.add_child(graphics_class_node as Arc<dyn SysObj>)?;
 
+    class_node.add_child(build_net_class_node()?)?;
+
     Ok(class_node)
+}
+
+// The network interface class -------------------------------------------------
+//
+// `/sys/class/net` is how user space finds interfaces without going through
+// netlink: `ifconfig`, `iw`, `NetworkManager`, and most porting scripts walk
+// this directory. The attributes below are the subset those tools open for a
+// wired interface. Counters that the driver does not track are present and
+// read as zero, because a missing file is an error while a zero is an answer.
+
+const STATISTICS_ATTRS: [&str; 16] = [
+    "rx_bytes",
+    "rx_packets",
+    "rx_errors",
+    "rx_dropped",
+    "rx_fifo_errors",
+    "rx_frame_errors",
+    "rx_compressed",
+    "rx_multicast",
+    "tx_bytes",
+    "tx_packets",
+    "tx_errors",
+    "tx_dropped",
+    "tx_fifo_errors",
+    "tx_colls",
+    "tx_carrier_errors",
+    "tx_compressed",
+];
+
+const NET_IFACE_ATTRS: [&str; 16] = [
+    "address",
+    "addr_len",
+    "broadcast",
+    "type",
+    "ifindex",
+    "flags",
+    "mtu",
+    "operstate",
+    "carrier",
+    "dormant",
+    "speed",
+    "duplex",
+    "tx_queue_len",
+    "qdisc",
+    "iflink",
+    "dev_id",
+];
+
+fn build_net_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
+    let net_class_node = AttrLessSysNode::new("net");
+    let ifaces = crate::net::iface::try_iter_all_ifaces()
+        .into_iter()
+        .flatten();
+    for iface in ifaces {
+        let node = NetIfaceSysNode::new(iface.clone());
+        net_class_node.add_child(node as Arc<dyn SysObj>)?;
+    }
+    Ok(net_class_node)
+}
+
+/// `/sys/class/net/<name>`: the interface attributes and its `statistics/`
+/// directory.
+struct NetIfaceSysNode {
+    fields: BranchNodeFields<dyn SysObj, Self>,
+    iface: Arc<Iface>,
+}
+
+impl core::fmt::Debug for NetIfaceSysNode {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("NetIfaceSysNode")
+            .field("iface", &self.iface.name())
+            .finish_non_exhaustive()
+    }
+}
+
+#[inherit_methods(from = "self.fields")]
+impl NetIfaceSysNode {
+    fn new(iface: Arc<Iface>) -> Arc<Self> {
+        let mut builder = SysAttrSetBuilder::new();
+        for name in NET_IFACE_ATTRS {
+            builder.add(SysStr::from(name), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        }
+        let attrs = builder
+            .build()
+            .expect("failed to build the network interface attribute set");
+
+        let name = iface.name().to_str().unwrap_or("net").to_string();
+        let node = Arc::new_cyclic(|weak_self| Self {
+            fields: BranchNodeFields::new(SysStr::from(name), attrs, weak_self.clone()),
+            iface,
+        });
+        node.add_child(NetStatsSysNode::new(node.iface.clone()) as Arc<dyn SysObj>)
+            .expect("failed to register the network statistics node");
+        node
+    }
+
+    fn add_child(&self, new_child: Arc<dyn SysObj>) -> SysTreeResult<()>;
+}
+
+inherit_sys_branch_node!(NetIfaceSysNode, fields, {
+    fn read_attr_at(
+        &self,
+        name: &str,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> SysTreeResult<usize> {
+        let iface = &self.iface;
+        let typ = iface.type_();
+        let flags = iface.flags();
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        match name {
+            "address" => writeln!(printer, "{}", mac_text(iface.ethernet_addr()))?,
+            "addr_len" => writeln!(printer, "6")?,
+            "broadcast" => {
+                let broadcast = if typ == InterfaceType::ETHER {
+                    mac_text(Some(aster_bigtcp::wire::EthernetAddress::BROADCAST))
+                } else {
+                    mac_text(None)
+                };
+                writeln!(printer, "{}", broadcast)?
+            }
+            "type" => writeln!(printer, "{}", typ as u16)?,
+            "ifindex" => writeln!(printer, "{}", iface.index())?,
+            "flags" => writeln!(printer, "0x{:x}", netdev_flags(flags))?,
+            "mtu" => writeln!(printer, "{}", iface.mtu())?,
+            "operstate" => writeln!(printer, "{}", operstate(typ, flags))?,
+            "carrier" => {
+                let carrier = typ == InterfaceType::LOOPBACK
+                    || flags.contains(InterfaceFlags::LOWER_UP)
+                    || flags.contains(InterfaceFlags::RUNNING);
+                writeln!(printer, "{}", carrier as u8)?
+            }
+            "dormant" => writeln!(printer, "0")?,
+            // The Megrez link is a gigabit PHY; the driver does not negotiate
+            // down and there is no speed-change event to report.
+            "speed" => writeln!(printer, "1000")?,
+            "duplex" => writeln!(printer, "full")?,
+            "tx_queue_len" => writeln!(printer, "1000")?,
+            "qdisc" => writeln!(
+                printer,
+                "{}",
+                if typ == InterfaceType::LOOPBACK {
+                    "noqueue"
+                } else {
+                    "mq"
+                }
+            )?,
+            "iflink" => writeln!(printer, "{}", iface.index())?,
+            "dev_id" => writeln!(printer, "0x0")?,
+            _ => return Err(SysTreeError::AttributeError),
+        }
+        Ok(printer.bytes_written())
+    }
+
+    fn perms(&self) -> SysPerms {
+        SysPerms::DEFAULT_RO_PERMS
+    }
+});
+
+/// `/sys/class/net/<name>/statistics/`.
+struct NetStatsSysNode {
+    fields: BranchNodeFields<dyn SysObj, Self>,
+    iface: Arc<Iface>,
+}
+
+impl core::fmt::Debug for NetStatsSysNode {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("NetStatsSysNode")
+            .field("iface", &self.iface.name())
+            .finish_non_exhaustive()
+    }
+}
+
+impl NetStatsSysNode {
+    fn new(iface: Arc<Iface>) -> Arc<Self> {
+        let mut builder = SysAttrSetBuilder::new();
+        for name in STATISTICS_ATTRS {
+            builder.add(SysStr::from(name), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        }
+        let attrs = builder
+            .build()
+            .expect("failed to build the network statistics attribute set");
+
+        Arc::new_cyclic(|weak_self| Self {
+            fields: BranchNodeFields::new(SysStr::from("statistics"), attrs, weak_self.clone()),
+            iface,
+        })
+    }
+}
+
+inherit_sys_branch_node!(NetStatsSysNode, fields, {
+    fn read_attr_at(
+        &self,
+        name: &str,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> SysTreeResult<usize> {
+        let value =
+            statistics_value(&self.iface.stats(), name).ok_or(SysTreeError::AttributeError)?;
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(printer, "{}", value)?;
+        Ok(printer.bytes_written())
+    }
+
+    fn perms(&self) -> SysPerms {
+        SysPerms::DEFAULT_RO_PERMS
+    }
+});
+
+/// Writes an Ethernet address the way sysfs does, and an all-zero address for
+/// an interface that has none (loopback).
+fn mac_text(addr: Option<aster_bigtcp::wire::EthernetAddress>) -> alloc::string::String {
+    let bytes = addr.map(|addr| addr.0).unwrap_or([0u8; 6]);
+    alloc::format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5]
+    )
+}
+
+/// The flag word `ifconfig` and `ip` expect in `/sys/class/net/<name>/flags`.
+///
+/// The internal flags carry three bits Linux does not expose through this
+/// file: `IFF_RUNNING` (operational state, reported by `operstate` instead),
+/// `IFF_LOWER_UP` and `IFF_ECHO`. Leaving them in makes a script that masks
+/// for `IFF_UP` still work, but a script that compares the whole word to
+/// Linux's value does not, so they are removed here.
+fn netdev_flags(flags: InterfaceFlags) -> u32 {
+    let hidden = InterfaceFlags::RUNNING.bits()
+        | InterfaceFlags::LOWER_UP.bits()
+        | InterfaceFlags::DORMANT.bits()
+        | InterfaceFlags::ECHO.bits();
+    flags.bits() & !hidden & 0xffff
+}
+
+fn operstate(typ: InterfaceType, flags: InterfaceFlags) -> &'static str {
+    if typ == InterfaceType::LOOPBACK {
+        return "unknown";
+    }
+    if !flags.contains(InterfaceFlags::UP) {
+        return "down";
+    }
+    if flags.contains(InterfaceFlags::LOWER_UP) || flags.contains(InterfaceFlags::RUNNING) {
+        "up"
+    } else {
+        "unknown"
+    }
+}
+
+fn statistics_value(stats: &IfaceStatsSnapshot, name: &str) -> Option<u64> {
+    let value = match name {
+        "rx_bytes" => stats.rx_bytes,
+        "rx_packets" => stats.rx_packets,
+        "tx_bytes" => stats.tx_bytes,
+        "tx_packets" => stats.tx_packets,
+        // Only packets and bytes are counted by the interface today. The rest
+        // exist so that readers see zero rather than a missing file.
+        _ if STATISTICS_ATTRS.contains(&name) => 0,
+        _ => return None,
+    };
+    Some(value)
 }
 
 pub(super) fn active_vt_attr_value(index: u32) -> String {
@@ -508,6 +778,58 @@ mod test {
     fn drm_dev_node_is_absent_without_a_device() {
         assert!(build_dev_node(&[]).unwrap().is_none());
         assert!(build_dev_node(&[virtio_device(&[])]).unwrap().is_none());
+    }
+
+    #[ktest]
+    fn net_class_reports_the_words_tools_parse() {
+        assert_eq!(
+            mac_text(Some(aster_bigtcp::wire::EthernetAddress::from_bytes(&[
+                0x02, 0x4a, 0x1b, 0x00, 0xfe, 0x9d
+            ]))),
+            "02:4a:1b:00:fe:9d"
+        );
+        assert_eq!(mac_text(None), "00:00:00:00:00:00");
+
+        // `up` and `lower_up` are internal; Linux's `flags` file carries
+        // neither, so neither may leak into the word a script compares.
+        let up = InterfaceFlags::UP
+            | InterfaceFlags::BROADCAST
+            | InterfaceFlags::MULTICAST
+            | InterfaceFlags::RUNNING
+            | InterfaceFlags::LOWER_UP;
+        assert_eq!(netdev_flags(up), 0x1003);
+        assert_eq!(
+            netdev_flags(InterfaceFlags::UP | InterfaceFlags::LOOPBACK | InterfaceFlags::RUNNING),
+            0x9
+        );
+
+        assert_eq!(operstate(InterfaceType::ETHER, up), "up");
+        assert_eq!(
+            operstate(InterfaceType::ETHER, InterfaceFlags::UP),
+            "unknown"
+        );
+        assert_eq!(
+            operstate(InterfaceType::ETHER, InterfaceFlags::empty()),
+            "down"
+        );
+        assert_eq!(
+            operstate(
+                InterfaceType::LOOPBACK,
+                InterfaceFlags::UP | InterfaceFlags::LOOPBACK
+            ),
+            "unknown"
+        );
+
+        let stats = IfaceStatsSnapshot {
+            rx_bytes: 11,
+            rx_packets: 12,
+            tx_bytes: 13,
+            tx_packets: 14,
+        };
+        assert_eq!(statistics_value(&stats, "rx_bytes"), Some(11));
+        assert_eq!(statistics_value(&stats, "tx_packets"), Some(14));
+        assert_eq!(statistics_value(&stats, "rx_errors"), Some(0));
+        assert_eq!(statistics_value(&stats, "no_such_counter"), None);
     }
 
     #[ktest]

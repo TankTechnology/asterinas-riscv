@@ -10,7 +10,7 @@ use smoltcp::{
 use super::{
     BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceName, InterfaceType,
 };
-use crate::{errors::BindError, ext::Ext};
+use crate::{errors::BindError, ext::Ext, socket::IcmpSocket};
 
 /// A network interface.
 ///
@@ -61,6 +61,21 @@ impl<E: Ext> dyn Iface<E> {
     ) -> Result<BoundUdpPort<E>, BindError> {
         let common = self.common();
         common.bind_udp(self.clone(), config)
+    }
+
+    /// Binds an ICMP identifier to the iface.
+    ///
+    /// Unlike UDP, the identifier is chosen by the caller (the kernel allocates
+    /// one per socket); the interface only checks that it is free and registers
+    /// the socket for incoming replies.
+    pub fn bind_icmp(self: &Arc<Self>, ident: u16) -> Result<IcmpSocket<E>, BindError> {
+        let common = self.common();
+        common.bind_icmp(self.clone(), ident)
+    }
+
+    /// Returns how many ICMP ping sockets are bound to this interface.
+    pub fn icmp_socket_count(&self) -> usize {
+        self.common().icmp_socket_count()
     }
 
     /// Returns the interface index.

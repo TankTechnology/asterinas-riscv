@@ -20,7 +20,7 @@ use crate::{
     errors::BindError,
     ext::Ext,
     iface::Iface,
-    socket::{TcpConnectionBg, TcpListenerBg, UdpSocketBg},
+    socket::{IcmpSocketBg, TcpConnectionBg, TcpListenerBg, UdpSocketBg},
     wire::PortNum,
 };
 
@@ -525,6 +525,9 @@ pub(crate) struct SocketTable<E: Ext> {
     // Note that multiple UDP sockets can be bound to the same address,
     // so we cannot use (addr, port) as a _unique_ key for UDP sockets.
     udp_sockets: Vec<Arc<UdpSocketBg<E>>>,
+    // ICMP sockets are not hashed: a ping identifier is unique on the
+    // interface, so the list is short and a linear scan is enough.
+    icmp_sockets: Vec<Arc<IcmpSocketBg<E>>>,
 }
 
 // On Linux, the number of buckets is determined at runtime based on the available memory.
@@ -549,11 +552,13 @@ impl<E: Ext> SocketTable<E> {
             .collect();
 
         let udp_sockets = Vec::new();
+        let icmp_sockets = Vec::new();
 
         Self {
             listener_buckets,
             connection_buckets,
             udp_sockets,
+            icmp_sockets,
         }
     }
 
@@ -607,6 +612,37 @@ impl<E: Ext> SocketTable<E> {
 
         bucket.connections.push(connection);
         Ok(())
+    }
+
+    pub(crate) fn insert_icmp_socket(&mut self, icmp_socket: Arc<IcmpSocketBg<E>>) {
+        debug_assert!(
+            !self
+                .icmp_sockets
+                .iter()
+                .any(|socket| socket.needs_ident(icmp_socket.ident()))
+        );
+        self.icmp_sockets.push(icmp_socket);
+    }
+
+    pub(crate) fn remove_icmp_socket(
+        &mut self,
+        socket: &Arc<IcmpSocketBg<E>>,
+    ) -> Option<Arc<IcmpSocketBg<E>>> {
+        let index = self
+            .icmp_sockets
+            .iter()
+            .position(|existing| Arc::ptr_eq(existing, socket))?;
+        Some(self.icmp_sockets.swap_remove(index))
+    }
+
+    pub(crate) fn icmp_ident_in_use(&self, ident: u16) -> bool {
+        self.icmp_sockets
+            .iter()
+            .any(|socket| socket.needs_ident(ident))
+    }
+
+    pub(crate) fn icmp_socket_iter(&self) -> impl Iterator<Item = &Arc<IcmpSocketBg<E>>> {
+        self.icmp_sockets.iter()
     }
 
     pub(crate) fn insert_udp_socket(&mut self, udp_socket: Arc<UdpSocketBg<E>>) {

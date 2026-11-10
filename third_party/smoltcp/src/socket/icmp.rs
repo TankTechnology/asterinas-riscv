@@ -98,11 +98,22 @@ impl Endpoint {
     }
 }
 
+/// The metadata of one queued ICMP packet.
+///
+/// A received packet carries the hop limit of the IPv4/IPv6 header it arrived
+/// with, so a ping socket can report the TTL (`IP_RECVTTL`). The hop limit is
+/// zero for a packet being sent.
+#[derive(Debug, Clone, Copy)]
+pub struct PacketHeader {
+    pub addr: IpAddress,
+    pub hop_limit: u8,
+}
+
 /// An ICMP packet metadata.
-pub type PacketMetadata = crate::storage::PacketMetadata<IpAddress>;
+pub type PacketMetadata = crate::storage::PacketMetadata<PacketHeader>;
 
 /// An ICMP packet ring buffer.
-pub type PacketBuffer<'a> = crate::storage::PacketBuffer<'a, IpAddress>;
+pub type PacketBuffer<'a> = crate::storage::PacketBuffer<'a, PacketHeader>;
 
 /// A ICMP socket
 ///
@@ -334,7 +345,13 @@ impl<'a> Socket<'a> {
 
         let packet_buf = self
             .tx_buffer
-            .enqueue(size, endpoint)
+            .enqueue(
+                size,
+                PacketHeader {
+                    addr: endpoint,
+                    hop_limit: 0,
+                },
+            )
             .map_err(|_| SendError::BufferFull)?;
 
         net_trace!("icmp:{}: buffer to send {} octets", endpoint, size);
@@ -361,7 +378,14 @@ impl<'a> Socket<'a> {
 
         let size = self
             .tx_buffer
-            .enqueue_with_infallible(max_size, endpoint, f)
+            .enqueue_with_infallible(
+                max_size,
+                PacketHeader {
+                    addr: endpoint,
+                    hop_limit: 0,
+                },
+                f,
+            )
             .map_err(|_| SendError::BufferFull)?;
 
         net_trace!("icmp:{}: buffer to send {} octets", endpoint, size);
@@ -382,14 +406,34 @@ impl<'a> Socket<'a> {
     ///
     /// This function returns `Err(Error::Exhausted)` if the receive buffer is empty.
     pub fn recv(&mut self) -> Result<(&[u8], IpAddress), RecvError> {
-        let (endpoint, packet_buf) = self.rx_buffer.dequeue().map_err(|_| RecvError::Exhausted)?;
+        let (packet_buf, addr, _hop_limit) = self.recv_with_header()?;
+        Ok((packet_buf, addr))
+    }
+
+    /// Dequeues a received packet together with the hop limit of the IP
+    /// header it arrived with.
+    pub fn recv_with_header(&mut self) -> Result<(&[u8], IpAddress, u8), RecvError> {
+        let (header, packet_buf) = self.rx_buffer.dequeue().map_err(|_| RecvError::Exhausted)?;
 
         net_trace!(
             "icmp:{}: receive {} buffered octets",
-            endpoint,
+            header.addr,
             packet_buf.len()
         );
-        Ok((packet_buf, endpoint))
+        Ok((packet_buf, header.addr, header.hop_limit))
+    }
+
+    /// Peek at a packet received from a remote endpoint without removing it
+    /// from the receive buffer.
+    pub fn peek(&mut self) -> Result<(&[u8], IpAddress), RecvError> {
+        let (packet_buf, addr, _hop_limit) = self.peek_with_header()?;
+        Ok((packet_buf, addr))
+    }
+
+    /// Peeks at a received packet together with its arrival hop limit.
+    pub fn peek_with_header(&mut self) -> Result<(&[u8], IpAddress, u8), RecvError> {
+        let (header, packet_buf) = self.rx_buffer.peek().map_err(|_| RecvError::Exhausted)?;
+        Ok((packet_buf, header.addr, header.hop_limit))
     }
 
     /// Dequeue a packet received from a remote endpoint, copy the payload into the given slice,
@@ -499,10 +543,13 @@ impl<'a> Socket<'a> {
     pub fn process_v4(&mut self, _cx: &mut Context, ip_repr: &Ipv4Repr, icmp_repr: &Icmpv4Repr) {
         net_trace!("icmp: receiving {} octets", icmp_repr.buffer_len());
 
-        match self
-            .rx_buffer
-            .enqueue(icmp_repr.buffer_len(), ip_repr.src_addr.into())
-        {
+        match self.rx_buffer.enqueue(
+            icmp_repr.buffer_len(),
+            PacketHeader {
+                addr: ip_repr.src_addr.into(),
+                hop_limit: ip_repr.hop_limit,
+            },
+        ) {
             Ok(packet_buf) => {
                 icmp_repr.emit(
                     &mut Icmpv4Packet::new_unchecked(packet_buf),
@@ -520,10 +567,13 @@ impl<'a> Socket<'a> {
     pub fn process_v6(&mut self, _cx: &mut Context, ip_repr: &Ipv6Repr, icmp_repr: &Icmpv6Repr) {
         net_trace!("icmp: receiving {} octets", icmp_repr.buffer_len());
 
-        match self
-            .rx_buffer
-            .enqueue(icmp_repr.buffer_len(), ip_repr.src_addr.into())
-        {
+        match self.rx_buffer.enqueue(
+            icmp_repr.buffer_len(),
+            PacketHeader {
+                addr: ip_repr.src_addr.into(),
+                hop_limit: ip_repr.hop_limit,
+            },
+        ) {
             Ok(packet_buf) => icmp_repr.emit(
                 &ip_repr.src_addr,
                 &ip_repr.dst_addr,
@@ -545,10 +595,10 @@ impl<'a> Socket<'a> {
         let res = self.tx_buffer.dequeue_with(|remote_endpoint, packet_buf| {
             net_trace!(
                 "icmp:{}: sending {} octets",
-                remote_endpoint,
+                remote_endpoint.addr,
                 packet_buf.len()
             );
-            match *remote_endpoint {
+            match remote_endpoint.addr {
                 #[cfg(feature = "proto-ipv4")]
                 IpAddress::Ipv4(dst_addr) => {
                     let src_addr = match cx.get_source_address_ipv4(&dst_addr) {
@@ -556,7 +606,7 @@ impl<'a> Socket<'a> {
                         None => {
                             net_trace!(
                                 "icmp:{}: not find suitable source address, dropping",
-                                remote_endpoint
+                                remote_endpoint.addr
                             );
                             return Ok(());
                         }
@@ -567,7 +617,7 @@ impl<'a> Socket<'a> {
                         Err(_) => {
                             net_trace!(
                                 "icmp:{}: malformed packet in queue, dropping",
-                                remote_endpoint
+                                remote_endpoint.addr
                             );
                             return Ok(());
                         }
@@ -596,7 +646,7 @@ impl<'a> Socket<'a> {
                         Err(_) => {
                             net_trace!(
                                 "icmp:{}: malformed packet in queue, dropping",
-                                remote_endpoint
+                                remote_endpoint.addr
                             );
                             return Ok(());
                         }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod block_sysfs;
 mod dri;
 mod evdev;
 mod fb;
@@ -12,7 +13,7 @@ mod registry;
 mod shm;
 mod snd;
 mod sysfs;
-pub mod tty;
+mod tty;
 
 /// Returns the firmware scanout counters when that DRM backend is active.
 pub(crate) fn drm_scanout_snapshot_line() -> Option<String> {
@@ -211,6 +212,12 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     shm::init_in_first_process(&path_resolver, ctx)?;
     registry::init_in_first_process(&path_resolver)?;
     r#loop::init_in_first_process()?;
+
+    // The block devices registered by the drivers (the eMMC, and whatever a
+    // test QEMU attaches) get their `/sys/block` directories here. Loop
+    // devices build their own nodes because they have loop-specific
+    // attributes, so they are skipped.
+    block_sysfs::add_registered_block_devices();
 
     Ok(())
 }

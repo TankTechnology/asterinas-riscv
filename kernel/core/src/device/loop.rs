@@ -757,29 +757,6 @@ impl PerOpenFileOps for OpenLoopDevice {
 // /sys/block/loopN — sysfs nodes
 // ---------------------------------------------------------------------------
 
-/// The `/sys/block` branch node.
-#[derive(Debug)]
-struct BlockSysNode {
-    fields: AttrLessBranchNodeFields<dyn SysObj, Self>,
-}
-
-#[inherit_methods(from = "self.fields")]
-impl BlockSysNode {
-    fn new() -> Arc<Self> {
-        Arc::new_cyclic(|weak_self| Self {
-            fields: AttrLessBranchNodeFields::new(SysStr::from("block"), weak_self.clone()),
-        })
-    }
-
-    fn add_child(&self, new_child: Arc<dyn SysObj>) -> SysTreeResult<()>;
-}
-
-inherit_sys_branch_node!(BlockSysNode, fields, {
-    fn perms(&self) -> SysPerms {
-        SysPerms::DEFAULT_RO_PERMS
-    }
-});
-
 /// A `/sys/block/loopN` branch node exposing the generic block attributes
 /// (`ro`, `size`) and the `loop/` subdirectory.
 #[derive(Debug)]
@@ -995,19 +972,15 @@ impl PerOpenFileOps for LoopControlFile {
 static LOOP_MAJOR: Mutex<Option<aster_block::MajorIdOwner>> = Mutex::new(None);
 static LOOP_DEVICES: Mutex<Vec<Arc<LoopDevice>>> = Mutex::new(Vec::new());
 static LOOP_CONTROL_MAJOR: Mutex<Option<CharMajorIdOwner>> = Mutex::new(None);
-static BLOCK_SYS_NODE: Once<Arc<BlockSysNode>> = Once::new();
 
 pub(super) fn init_in_first_kthread() {
     let major = aster_block::allocate_major().expect("failed to allocate loop block major");
     *LOOP_MAJOR.lock() = Some(major);
 
-    // Create the `/sys/block` branch and one `/sys/block/loopN` node per loop
-    // device. The sysfs singleton is initialized before device init.
-    let block_sys_node = BLOCK_SYS_NODE.call_once(BlockSysNode::new);
-    crate::fs::sysfs::systree_singleton()
-        .root()
-        .add_child(block_sys_node.clone() as Arc<dyn SysObj>)
-        .expect("failed to register the /sys/block sysfs node");
+    // The `/sys/block` branch is shared with the other block drivers; get it
+    // (creating it on first use) and hang one `/sys/block/loopN` node per loop
+    // device off it.
+    let block_sys_node = super::block_sysfs::BlockSysNode::get();
 
     let mut devices = LOOP_DEVICES.lock();
     for i in 0..NUM_LOOP_DEVICES {

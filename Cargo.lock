@@ -218,6 +218,7 @@ dependencies = [
  "riscv",
  "short-vis-path",
  "smallvec",
+ "smoltcp",
  "sparse-id-alloc",
  "spin 0.9.9",
  "takeable",

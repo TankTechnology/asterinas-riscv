@@ -25,6 +25,7 @@ use crate::{
             },
             options::{Error as SocketError, SocketOption, macros::sock_option_mut},
             private::SocketPrivate,
+            proc_net::{InetProtocol, InetSocketEntry, ProcNetEntry, ProcNetSocket},
             util::{
                 ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
                 SocketControlMessage,
@@ -82,15 +83,20 @@ impl DatagramSocket {
         } else {
             StatusFlags::empty()
         };
-        Arc::new(Self {
+        let net_ns = current_net_ns();
+        let socket = Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
             family,
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            net_ns: current_net_ns(),
+            net_ns,
             common: FileCommon::new(SockFs::new_path(), status_flags),
-        })
+        });
+        let socket_object: Arc<dyn ProcNetSocket> = socket.clone();
+        let weak = Arc::downgrade(&socket_object);
+        socket.net_ns.proc_net_sockets().register(weak);
+        socket
     }
 
     fn try_recv(
@@ -457,5 +463,27 @@ impl SetIpLevelOption for Inner<UnboundDatagram, BoundDatagram> {
             Errno::ENOPROTOOPT,
             "IP_HDRINCL cannot be set on UDP sockets"
         );
+    }
+}
+
+impl ProcNetSocket for DatagramSocket {
+    fn proc_net_entries(&self, out: &mut Vec<ProcNetEntry>) {
+        let inner = self.inner.read();
+        // An unbound UDP socket is not in the kernel's UDP hash table, so
+        // Linux does not list it either.
+        let Some(local) = inner.addr() else {
+            return;
+        };
+        let remote = inner.peer_addr().copied();
+        out.push(ProcNetEntry::Inet(InetSocketEntry {
+            protocol: InetProtocol::Udp,
+            local,
+            remote,
+            // TCP_CLOSE for an unconnected UDP socket, TCP_ESTABLISHED for
+            // one that `connect()` has given a peer, as Linux reports.
+            state: if remote.is_some() { 0x01 } else { 0x07 },
+            inode: self.common.path().inode().ino(),
+            uid: 0,
+        }));
     }
 }

@@ -156,23 +156,35 @@ impl ControlMessage {
 pub enum SocketControlMessage {
     Timestamp(timeval_t),
     TimestampNs(timespec_t),
+    /// The hop limit of a received IPv4 packet (`IP_RECVTTL`).
+    IpTtl(i32),
 }
 
 impl SocketControlMessage {
     fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
-        let (type_, payload_len) = match self {
-            Self::Timestamp(_) => (SCM_TIMESTAMP, size_of::<timeval_t>()),
-            Self::TimestampNs(_) => (SCM_TIMESTAMPNS, size_of::<timespec_t>()),
+        let (level, type_, payload_len) = match self {
+            Self::Timestamp(_) => (
+                CSocketOptionLevel::SOL_SOCKET,
+                SCM_TIMESTAMP,
+                size_of::<timeval_t>(),
+            ),
+            Self::TimestampNs(_) => (
+                CSocketOptionLevel::SOL_SOCKET,
+                SCM_TIMESTAMPNS,
+                size_of::<timespec_t>(),
+            ),
+            Self::IpTtl(_) => (CSocketOptionLevel::SOL_IP, CMSG_IP_TTL, size_of::<i32>()),
         };
         if writer.avail() < size_of::<CControlHeader>() + payload_len {
             return_errno_with_message!(Errno::EINVAL, "the control message buffer is too small");
         }
 
-        let header = CControlHeader::new(CSocketOptionLevel::SOL_SOCKET, type_, payload_len);
+        let header = CControlHeader::new(level, type_, payload_len);
         writer.write_val(&header)?;
         match self {
             Self::Timestamp(value) => writer.write_val(value)?,
             Self::TimestampNs(value) => writer.write_val(value)?,
+            Self::IpTtl(value) => writer.write_val(value)?,
         }
 
         Ok((header, RecvFlags::empty()))
@@ -201,6 +213,9 @@ const CMSG_ALIGN: usize = size_of::<usize>();
 /// Ancillary message types carried at `SOL_SOCKET`.
 const SCM_TIMESTAMP: i32 = 29;
 const SCM_TIMESTAMPNS: i32 = 35;
+
+/// `IP_TTL` in the `IPPROTO_IP` ancillary namespace.
+const CMSG_IP_TTL: i32 = 2;
 
 impl CControlHeader {
     /// Creates a control message header with the level, type, and payload length.

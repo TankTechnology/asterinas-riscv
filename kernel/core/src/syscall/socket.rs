@@ -7,7 +7,7 @@ use crate::{
         file_table::{FdFlags, FileTableInsert},
     },
     net::socket::{
-        ip::{DatagramSocket, IpAddressFamily, StreamSocket},
+        ip::{DatagramSocket, IcmpSocket, IpAddressFamily, StreamSocket},
         netlink::{
             NetlinkGenericSocket, NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol,
             is_valid_protocol,
@@ -70,6 +70,11 @@ pub(super) fn sys_socket(
                         _ => unreachable!(),
                     };
                     DatagramSocket::new(is_nonblocking, family) as Arc<dyn FileLike>
+                }
+                // A ping socket: `SOCK_DGRAM` with `IPPROTO_ICMP`, as Linux
+                // and iputils open it.
+                Protocol::IPPROTO_ICMP if domain == CSocketAddrFamily::AF_INET => {
+                    IcmpSocket::new(is_nonblocking, IpAddressFamily::IPv4)? as Arc<dyn FileLike>
                 }
                 _ => return_errno_with_message!(Errno::EPROTONOSUPPORT, "unsupported protocol"),
             }

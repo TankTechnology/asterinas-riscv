@@ -9,7 +9,7 @@ mod sched;
 pub use aster_bigtcp::iface::InterfaceType;
 pub use broadcast::is_broadcast_endpoint;
 pub(in crate::net) use init::new_ns_loopback;
-pub use init::{init, iter_all_ifaces};
+pub use init::{init, iter_all_ifaces, try_iter_all_ifaces};
 pub(super) use poll::init_in_first_kthread;
 pub(in crate::net) use poll::spawn_poll_thread;
 
@@ -20,5 +20,6 @@ pub type BoundUdpPort = aster_bigtcp::iface::BoundUdpPort<ext::BigtcpExt>;
 pub type RawTcpSocketExt = aster_bigtcp::socket::RawTcpSocketExt<ext::BigtcpExt>;
 
 pub type TcpConnection = aster_bigtcp::socket::TcpConnection<ext::BigtcpExt>;
+pub type IcmpSocketHandle = aster_bigtcp::socket::IcmpSocket<ext::BigtcpExt>;
 pub type TcpListener = aster_bigtcp::socket::TcpListener<ext::BigtcpExt>;
 pub type UdpSocket = aster_bigtcp::socket::UdpSocket<ext::BigtcpExt>;

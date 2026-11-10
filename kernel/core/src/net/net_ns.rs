@@ -19,7 +19,7 @@ use spin::Once;
 
 use super::{
     iface::{self, Iface},
-    socket::netlink::NetlinkSocketTable,
+    socket::{netlink::NetlinkSocketTable, proc_net::ProcNetRegistry},
 };
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
@@ -36,6 +36,7 @@ pub struct NetNamespace {
     default_ipv4_tag: AtomicI32,
     loopback_ipv4_tag: AtomicI32,
     netlink_sockets: Arc<NetlinkSocketTable>,
+    proc_net_sockets: Arc<ProcNetRegistry>,
     stashed_dentry: StashedDentry,
 }
 
@@ -51,6 +52,7 @@ impl NetNamespace {
                 default_ipv4_tag: AtomicI32::new(0),
                 loopback_ipv4_tag: AtomicI32::new(0),
                 netlink_sockets: Arc::new(NetlinkSocketTable::new()),
+                proc_net_sockets: Arc::new(ProcNetRegistry::new()),
                 stashed_dentry: StashedDentry::new(),
             })
         })
@@ -68,6 +70,7 @@ impl NetNamespace {
             default_ipv4_tag: AtomicI32::new(0),
             loopback_ipv4_tag: AtomicI32::new(0),
             netlink_sockets: Arc::new(NetlinkSocketTable::new()),
+            proc_net_sockets: Arc::new(ProcNetRegistry::new()),
             stashed_dentry: StashedDentry::new(),
         })
     }
@@ -79,6 +82,26 @@ impl NetNamespace {
 
     pub(in crate::net) fn netlink_sockets(&self) -> &Arc<NetlinkSocketTable> {
         &self.netlink_sockets
+    }
+
+    /// Counts the sockets that exist in this namespace.
+    ///
+    /// This mirrors the idea behind Linux's `sockets: used` line: every socket
+    /// object, not just the ones that appear in `/proc/net/tcp` or
+    /// `/proc/net/udp`. Netlink sockets are counted once they are bound, and
+    /// ICMP ping sockets through their interface tables.
+    pub(crate) fn socket_count(&self) -> usize {
+        let icmp: usize = self
+            .ifaces
+            .iter()
+            .map(|iface| iface.icmp_socket_count())
+            .sum();
+        self.proc_net_sockets.live_count() + self.netlink_sockets.socket_count() + icmp
+    }
+
+    /// Returns the registry of sockets that `/proc/net` reports.
+    pub(crate) fn proc_net_sockets(&self) -> &Arc<ProcNetRegistry> {
+        &self.proc_net_sockets
     }
 
     /// Returns the owner user namespace of this namespace.

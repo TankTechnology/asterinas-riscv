@@ -7,7 +7,7 @@ use crate::{events::IoEvents, process::signal::Pollee};
 pub(crate) struct DatagramObserver(Pollee);
 
 impl DatagramObserver {
-    pub(super) fn new(pollee: Pollee) -> Self {
+    pub(in crate::net::socket) fn new(pollee: Pollee) -> Self {
         Self(pollee)
     }
 }
