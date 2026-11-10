@@ -12,9 +12,10 @@
 //! and ELF headers), `vm` new VMAR, `ld` interpreter lookup/parse, `sg`
 //! segment mapping and aux vector, `vd` vDSO, `sk` initial stack, `hp` heap,
 //! `tk`/`kl` task-set transition and sibling threads, `wt` waiting for other
-//! threads, `ac` VMAR activation and capabilities, `cx` CPU context, `fd`
-//! file-table unsharing and `O_CLOEXEC` closes, `si` signal state, `pt`
-//! ptrace stop check, `fe` finishing the exec, and `tt` the total.
+//! threads, `va` activating the new VMAR, `ca` file capabilities, `ac`
+//! releasing the old VMAR, `cx` CPU context, `fd` file-table unsharing and
+//! `O_CLOEXEC` closes, `si` signal state, `pt` ptrace stop check, `fe`
+//! finishing the exec, and `tt` the total.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
