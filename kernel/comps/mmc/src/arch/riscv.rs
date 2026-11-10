@@ -1,16 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{hint::spin_loop, ops::Range, sync::atomic::Ordering};
+use alloc::sync::Arc;
+use core::{
+    hint::spin_loop,
+    ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use fdt::{Fdt, node::FdtNode};
 use ostd::{
-    arch::boot::DEVICE_TREE,
+    arch::{
+        boot::DEVICE_TREE,
+        irq::{DeferredMappedIrqLine, IRQ_CHIP, InterruptSourceInFdt},
+    },
+    cpu::{CpuId, CpuSet},
     io::IoMem,
+    irq::IrqLine,
     mm::{
         HasPaddr, HasSize, PAGE_SIZE,
         dma::{DmaCoherent, DmaWindow},
         io::{VmIo, VmIoOnce},
     },
+    sync::WaitQueue,
+    timer::{self, Jiffies, TIMER_FREQ},
 };
 
 use crate::{
@@ -41,6 +54,23 @@ const CLOCK_CORE_ENABLE: u32 = 1 << 16;
 const CLOCK_CORE_DIVISOR_MASK: u32 = 0x0fff << 4;
 const CLOCK_CORE_SELECT_416MHZ: u32 = 1;
 const POLL_BUDGET: usize = 1_000_000;
+/// Poll iterations used when no cycle counter is available.
+const IRQ_SPIN_PROBES: usize = 4_000;
+/// How long a status wait spins before it sleeps.
+///
+/// The scheduler takes a timer tick or longer to run a waiter that was woken
+/// from interrupt context, so sleeping for a command that finishes in a few
+/// milliseconds would add latency and cut read throughput. One timer tick of
+/// spinning covers small reads at polling latency; only transfers that outlast
+/// it (large writes, cache flushes) sleep and give the CPU back.
+const IRQ_SPIN_DURATION: Duration = Duration::from_millis(4);
+/// Upper bound for one status wait in interrupt mode.
+const IRQ_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
+/// One-shot timer cadence used to re-check a sleeping wait's deadline.
+const IRQ_SLEEP_TICK: Duration = Duration::from_millis(1);
+
+/// Waiters that sleep on SDHCI interrupt delivery or the one-shot timer.
+static MMC_WAITERS: WaitQueue = WaitQueue::new();
 const DMA_DEVICE_START: usize = 0x2000_0000;
 const DMA_CPU_START: usize = 0xc000_0000;
 const DMA_WINDOW_SIZE: usize = 0x4000_0000;
@@ -77,6 +107,7 @@ struct PlatformConfig {
     clock_mmio_range: Range<usize>,
     dma_window: DmaWindow,
     interrupt: u32,
+    interrupt_parent: u32,
     bus_width: usize,
     clock_frequency: u32,
     max_frequency: u32,
@@ -88,6 +119,7 @@ struct ConfigFields {
     compatible: bool,
     mmio: Option<(usize, usize)>,
     interrupt: Option<u32>,
+    interrupt_parent: Option<u32>,
     bus_width: Option<usize>,
     clock_frequency: Option<u32>,
     max_frequency: Option<u32>,
@@ -122,6 +154,9 @@ impl ConfigFields {
         }
         if !matches!(self.interrupt, Some(INTERRUPT)) {
             return Some("interrupts");
+        }
+        if self.interrupt_parent.is_none() {
+            return Some("interrupt-parent");
         }
         if !matches!(self.bus_width, Some(BUS_WIDTH)) {
             return Some("bus-width");
@@ -184,6 +219,7 @@ fn validate(fields: ConfigFields) -> Result<PlatformConfig, ProbeError> {
             ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
         dma_window,
         interrupt: INTERRUPT,
+        interrupt_parent: fields.interrupt_parent.unwrap(),
         bus_width: BUS_WIDTH,
         clock_frequency: fields.clock_frequency.unwrap(),
         max_frequency,
@@ -314,6 +350,12 @@ fn iommu_stream_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> bool {
     valid_iommu_stream(&cells, provider_compatible, provider_mmio, iommu_cells)
 }
 
+fn u32_cell(node: FdtNode<'_, '_>, name: &str) -> Option<u32> {
+    let property = node.property(name)?;
+    let bytes: [u8; 4] = property.value.try_into().ok()?;
+    Some(u32::from_be_bytes(bytes))
+}
+
 fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
     let enabled = match node.property("status") {
         None => true,
@@ -338,6 +380,7 @@ fn fields_from_node(tree: &Fdt<'_>, node: FdtNode<'_, '_>) -> ConfigFields {
         compatible,
         mmio,
         interrupt,
+        interrupt_parent: u32_cell(node, "interrupt-parent"),
         bus_width: node
             .property("bus-width")
             .and_then(|value| value.as_usize()),
@@ -374,6 +417,7 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         mmio,
         clock_mmio,
         sdma: None,
+        irq: None,
     };
     host.validate_handoff().map_err(ProbeError::Host)?;
     if sdma_allowed(MMC_BOUNDED_PIO.load(Ordering::Relaxed)) {
@@ -418,6 +462,20 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         card.speed_selection().label(),
         card.data_clock_hz()
     );
+    // Card discovery runs on the polling path (no current task may be
+    // available during early component initialization). Runtime transfers can
+    // sleep, so enable interrupts only once discovery has finished.
+    if crate::MMC_INTERRUPTS.load(Ordering::Relaxed) {
+        match host.enable_interrupts(config.interrupt_parent, config.interrupt) {
+            Ok(()) => ostd::info!(
+                "[mmc] interrupts enabled on source {} (parent {}), tsc={}Hz",
+                config.interrupt,
+                config.interrupt_parent,
+                ostd::arch::tsc_freq()
+            ),
+            Err(error) => ostd::warn!("[mmc] interrupts unavailable: {:?}", error),
+        }
+    }
     Ok(Some((host, card)))
 }
 
@@ -429,11 +487,39 @@ const fn high_speed_allowed(force_default_speed: bool) -> bool {
     !force_default_speed
 }
 
-/// Safe MMIO-backed SDHCI polling host.
+/// Converts a wall-clock duration into timer ticks, at least one.
+fn duration_ticks(duration: Duration) -> u64 {
+    let ticks = duration.as_nanos() * u128::from(TIMER_FREQ) / 1_000_000_000;
+    u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
+}
+
+/// Safe MMIO-backed SDHCI host.
 pub(super) struct MmioHost {
     mmio: IoMem,
     clock_mmio: IoMem,
     sdma: Option<SdmaBuffer>,
+    irq: Option<IrqCompletion>,
+}
+
+/// Interrupt delivery for the SDHCI controller.
+///
+/// The handler runs with the PLIC source masked and only counts the event and
+/// wakes sleepers; the waiter reads and clears the controller status itself.
+/// The source is re-armed before each sleep, so a level-triggered line cannot
+/// storm.
+struct IrqCompletion {
+    line: DeferredMappedIrqLine,
+    interrupts: Arc<AtomicU64>,
+    transfers: u64,
+    reported: u64,
+    /// CPUs on which the one-shot timer waker has been installed.
+    installed_on: CpuSet,
+    /// Waits that finished during the spin and their cycles.
+    spin_returns: u64,
+    spin_cycles: u64,
+    /// Waits that slept and their cycles.
+    sleep_returns: u64,
+    sleep_cycles: u64,
 }
 
 struct SdmaBuffer {
@@ -442,6 +528,178 @@ struct SdmaBuffer {
 }
 
 impl MmioHost {
+    /// Registers the masked interrupt handler and enables interrupt signaling.
+    fn enable_interrupts(&mut self, parent: u32, interrupt: u32) -> Result<(), HostError> {
+        // `validate_handoff` leaves the normal/error signal enables at zero,
+        // which keeps the line deasserted for the polling path. Interrupt mode
+        // has a masked handler, so it can enable signaling again.
+        self.write32(INTERRUPT_ENABLE, u32::MAX)?;
+        self.write32(SIGNAL_ENABLE, u32::MAX)?;
+        let irq_line = IrqLine::alloc().map_err(|_| HostError::Unsupported)?;
+        let chip = IRQ_CHIP.get().ok_or(HostError::Unsupported)?;
+        let mut line = chip
+            .map_fdt_pin_to_masked(
+                InterruptSourceInFdt {
+                    interrupt_parent: parent,
+                    interrupt,
+                },
+                irq_line,
+            )
+            .map_err(|_| HostError::Unsupported)?;
+        let interrupts = Arc::new(AtomicU64::new(0));
+        let counter = interrupts.clone();
+        line.on_active_and_mask(move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            MMC_WAITERS.wake_all();
+        })
+        .map_err(|_| HostError::Unsupported)?;
+        self.irq = Some(IrqCompletion {
+            line,
+            interrupts,
+            transfers: 0,
+            reported: 0,
+            installed_on: CpuSet::new_empty(),
+            spin_returns: 0,
+            spin_cycles: 0,
+            sleep_returns: 0,
+            sleep_cycles: 0,
+        });
+        Ok(())
+    }
+
+    /// Accounts one completed wait and whether it slept.
+    fn account_wait(&mut self, start: u64, slept: bool) {
+        let Some(irq) = &mut self.irq else {
+            return;
+        };
+        let elapsed = ostd::arch::read_tsc().wrapping_sub(start);
+        if slept {
+            irq.sleep_returns += 1;
+            irq.sleep_cycles += elapsed;
+        } else {
+            irq.spin_returns += 1;
+            irq.spin_cycles += elapsed;
+        }
+    }
+
+    /// Counts one transfer and reports interrupt delivery now and then.
+    fn note_transfer(&mut self) {
+        let Some(irq) = &mut self.irq else {
+            return;
+        };
+        irq.transfers += 1;
+        let count = irq.interrupts.load(Ordering::Relaxed);
+        if count > 0 && irq.reported == 0 {
+            ostd::info!(
+                "[mmc] irq: first interrupt after {} transfer(s)",
+                irq.transfers
+            );
+            irq.reported = count;
+        } else if irq.transfers % 1024 == 0 {
+            let hz = ostd::arch::tsc_freq().max(1);
+            ostd::info!(
+                "[mmc] irq: {} irq, spin {}x/{}ms, sleep {}x/{}ms, over {} transfer(s)",
+                count,
+                irq.spin_returns,
+                irq.spin_cycles * 1000 / hz,
+                irq.sleep_returns,
+                irq.sleep_cycles * 1000 / hz,
+                irq.transfers
+            );
+            irq.reported = count;
+        }
+    }
+
+    /// Re-arms the source and schedules a timer wakeup on the current CPU.
+    fn arm_irq(&mut self) -> bool {
+        let Some(irq) = &mut self.irq else {
+            return false;
+        };
+        if irq.line.rearm().is_err() {
+            return false;
+        }
+        let cpu = CpuId::current_racy();
+        if !irq.installed_on.contains(cpu) {
+            irq.installed_on.add(cpu);
+            timer::register_high_resolution_callback_on_cpu(|| {
+                MMC_WAITERS.wake_all();
+            });
+        }
+        timer::request_interrupt_after(IRQ_SLEEP_TICK);
+        true
+    }
+
+    /// Waits until `wanted` or an error bit appears in InterruptStatus.
+    ///
+    /// Command completion and short transfers finish within microseconds, so
+    /// the first checks spin. After that, with interrupts enabled, the thread
+    /// sleeps until the handler or a one-shot timer wakes it. The timer turns
+    /// a lost interrupt into a timeout instead of a hang.
+    fn wait_status(&mut self, wanted: u32) -> Result<u32, HostError> {
+        let mask = wanted | INTERRUPT_ERROR;
+        let entered = ostd::arch::read_tsc();
+        let spin_budget = match ostd::arch::tsc_freq() {
+            0 => None,
+            frequency => Some(frequency * IRQ_SPIN_DURATION.as_micros() as u64 / 1_000_000),
+        };
+        if let Some(budget) = spin_budget {
+            loop {
+                let status = self.read32(Register::InterruptStatus.offset())?;
+                if status & mask != 0 {
+                    self.account_wait(entered, false);
+                    return Ok(status);
+                }
+                if ostd::arch::read_tsc().wrapping_sub(entered) >= budget {
+                    break;
+                }
+                spin_loop();
+            }
+        } else {
+            for _ in 0..IRQ_SPIN_PROBES {
+                let status = self.read32(Register::InterruptStatus.offset())?;
+                if status & mask != 0 {
+                    self.account_wait(entered, false);
+                    return Ok(status);
+                }
+                spin_loop();
+            }
+        }
+        if self.irq.is_none() {
+            return self.poll_status(mask, POLL_BUDGET - IRQ_SPIN_PROBES);
+        }
+
+        let deadline = Jiffies::elapsed().as_u64() + duration_ticks(IRQ_WAIT_TIMEOUT);
+        if !self.arm_irq() {
+            return Err(HostError::Unsupported);
+        }
+        let host = &*self;
+        let ready = MMC_WAITERS.wait_until(|| {
+            if Jiffies::elapsed().as_u64() >= deadline {
+                return Some(None);
+            }
+            match host.read32(Register::InterruptStatus.offset()) {
+                Ok(status) if status & mask != 0 => Some(Some(status)),
+                _ => None,
+            }
+        });
+        self.account_wait(entered, true);
+        match ready {
+            Some(status) => Ok(status),
+            None => Err(HostError::Timeout),
+        }
+    }
+
+    fn poll_status(&self, mask: u32, budget: usize) -> Result<u32, HostError> {
+        for _ in 0..budget {
+            let status = self.read32(Register::InterruptStatus.offset())?;
+            if status & mask != 0 {
+                return Ok(status);
+            }
+            spin_loop();
+        }
+        Err(HostError::Timeout)
+    }
+
     fn enable_sdma(&mut self, window: DmaWindow) -> Result<(), HostError> {
         let capabilities = self.read32(Register::Capabilities.offset())?;
         if !supports_sdma(capabilities) {
@@ -511,63 +769,51 @@ impl MmioHost {
         Err(HostError::Timeout)
     }
 
-    fn wait_interrupt(&self, wanted: u32) -> Result<(), HostError> {
-        for _ in 0..POLL_BUDGET {
-            let status = self.read32(Register::InterruptStatus.offset())?;
-            if status & INTERRUPT_ERROR != 0 {
-                self.write32(Register::InterruptStatus.offset(), status)?;
-                let failure =
-                    decode_data_failure(wanted, status).unwrap_or(crate::sdhci::DataFailure {
-                        wanted,
-                        status,
-                        error: HostError::Unsupported,
-                    });
-                ostd::error!(
-                    "[mmc] data wait {:#x} failed: status={:#x} error={:?}",
-                    failure.wanted,
-                    failure.status,
-                    failure.error
-                );
-                return Err(failure.error);
-            }
-            if status & wanted != 0 {
-                self.write32(Register::InterruptStatus.offset(), wanted)?;
-                return Ok(());
-            }
-            spin_loop();
+    fn wait_interrupt(&mut self, wanted: u32) -> Result<(), HostError> {
+        let status = self.wait_status(wanted)?;
+        if status & INTERRUPT_ERROR != 0 {
+            self.write32(Register::InterruptStatus.offset(), status)?;
+            let failure =
+                decode_data_failure(wanted, status).unwrap_or(crate::sdhci::DataFailure {
+                    wanted,
+                    status,
+                    error: HostError::Unsupported,
+                });
+            ostd::error!(
+                "[mmc] data wait {:#x} failed: status={:#x} error={:?}",
+                failure.wanted,
+                failure.status,
+                failure.error
+            );
+            return Err(failure.error);
         }
-        Err(HostError::Timeout)
+        self.write32(Register::InterruptStatus.offset(), wanted)?;
+        Ok(())
     }
 
-    fn wait_command_complete(&self, index: u8) -> Result<(), HostError> {
-        for _ in 0..POLL_BUDGET {
-            let status = self.read32(Register::InterruptStatus.offset())?;
-            if status & INTERRUPT_ERROR != 0 {
-                self.write32(Register::InterruptStatus.offset(), status)?;
-                let failure =
-                    decode_command_failure(index, status).unwrap_or(crate::sdhci::CommandFailure {
-                        index,
-                        status,
-                        error: HostError::Unsupported,
-                    });
-                ostd::error!(
-                    "[mmc] CMD{} failed: status={:#x} error={:?}",
-                    failure.index,
-                    failure.status,
-                    failure.error
-                );
-                return Err(failure.error);
-            }
-            if status & INTERRUPT_COMMAND_COMPLETE != 0 {
-                self.write32(
-                    Register::InterruptStatus.offset(),
-                    INTERRUPT_COMMAND_COMPLETE,
-                )?;
-                return Ok(());
-            }
-            spin_loop();
+    fn wait_command_complete(&mut self, index: u8) -> Result<(), HostError> {
+        let status = self.wait_status(INTERRUPT_COMMAND_COMPLETE)?;
+        if status & INTERRUPT_ERROR != 0 {
+            self.write32(Register::InterruptStatus.offset(), status)?;
+            let failure =
+                decode_command_failure(index, status).unwrap_or(crate::sdhci::CommandFailure {
+                    index,
+                    status,
+                    error: HostError::Unsupported,
+                });
+            ostd::error!(
+                "[mmc] CMD{} failed: status={:#x} error={:?}",
+                failure.index,
+                failure.status,
+                failure.error
+            );
+            return Err(failure.error);
         }
-        Err(HostError::Timeout)
+        self.write32(
+            Register::InterruptStatus.offset(),
+            INTERRUPT_COMMAND_COMPLETE,
+        )?;
+        Ok(())
     }
 
     fn submit_sdma(&mut self, command: Command, length: usize) -> Result<(), HostError> {
@@ -585,6 +831,7 @@ impl MmioHost {
             PRESENT_COMMAND_INHIBIT | PRESENT_DATA_INHIBIT,
         )?;
         self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
+        self.note_transfer();
         self.write8(HOST_CONTROL, sdma_host_control(self.read8(HOST_CONTROL)?))?;
         self.write_sdma_address(transfer.system_address as u64)?;
         self.write16(Register::BlockSize.offset(), transfer.block_size)?;
@@ -600,11 +847,11 @@ impl MmioHost {
         self.wait_sdma(transfer.system_address as u64)
     }
 
-    fn wait_sdma(&self, mut system_address: u64) -> Result<(), HostError> {
-        for _ in 0..POLL_BUDGET {
-            let status = self.read32(Register::InterruptStatus.offset())?;
+    fn wait_sdma(&mut self, mut system_address: u64) -> Result<(), HostError> {
+        loop {
+            let status = self.wait_status(INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA)?;
             match classify_sdma_interrupt(status) {
-                Ok(SdmaInterrupt::Pending) => spin_loop(),
+                Ok(SdmaInterrupt::Pending) => continue,
                 Ok(SdmaInterrupt::Complete) => {
                     self.write32(
                         Register::InterruptStatus.offset(),
@@ -629,7 +876,6 @@ impl MmioHost {
                 }
             }
         }
-        Err(HostError::Timeout)
     }
 
     fn write_sdma_address(&self, address: u64) -> Result<(), HostError> {
@@ -906,6 +1152,7 @@ mod tests {
             compatible: true,
             mmio: Some((MMIO_START, MMIO_SIZE)),
             interrupt: Some(INTERRUPT),
+            interrupt_parent: Some(16),
             bus_width: Some(BUS_WIDTH),
             clock_frequency: Some(208_000_000),
             max_frequency: Some(208_000_000),
@@ -927,6 +1174,7 @@ mod tests {
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
                 dma_window: DmaWindow::new(0xc000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
+                interrupt_parent: 16,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
                 max_frequency: 208_000_000,
@@ -983,6 +1231,10 @@ mod tests {
         assert_eq!(fields.invalid_field(), Some("interrupts"));
 
         let mut fields = valid_fields();
+        fields.interrupt_parent = None;
+        assert_eq!(fields.invalid_field(), Some("interrupt-parent"));
+
+        let mut fields = valid_fields();
         fields.clock_frequency = None;
         assert_eq!(fields.invalid_field(), Some("clock-frequency"));
 
@@ -1003,6 +1255,7 @@ mod tests {
                     ..CLOCK_MMIO_START + CLOCK_CORE_OFFSET + CLOCK_CORE_SIZE,
                 dma_window: DmaWindow::new(0xc000_0000, 0xc000_0000, 0x4000_0000).unwrap(),
                 interrupt: INTERRUPT,
+                interrupt_parent: 16,
                 bus_width: BUS_WIDTH,
                 clock_frequency: 208_000_000,
                 max_frequency: 208_000_000,
