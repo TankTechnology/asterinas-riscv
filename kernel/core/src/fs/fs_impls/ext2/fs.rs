@@ -29,9 +29,10 @@ use super::{
     block_group::BlockGroup,
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     journal::{
-        JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
-        JournalRing, JournalSuperBlock, JournalTag, JournalTransaction, parse_descriptor,
-        parse_header, parse_revoke, validate_commit,
+        JBD2_COMMIT_BLOCK, JBD2_DESCRIPTOR_BLOCK, JBD2_REVOKE_BLOCK, JBD2_SEQUENCE_OFFSET,
+        JBD2_START_OFFSET, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE, JournalRing,
+        JournalSuperBlock, JournalTag, JournalTransaction, parse_descriptor, parse_header,
+        parse_revoke, validate_commit,
     },
     prelude::*,
     super_block::{FeatureCompatSet, FsState, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
@@ -326,47 +327,62 @@ impl Ext2 {
         let mut visited = 0;
         let mut transactions = Vec::new();
         let mut revokes = Vec::new();
+        let mut payloads: Vec<(JournalTag, Vec<u8>)> = Vec::new();
+        // One transaction may span several descriptor blocks: each descriptor
+        // block is followed by its own payload blocks, and only the commit
+        // block ends the transaction. Revoke blocks belong to the transaction
+        // and may appear between them.
         while visited < journal.max_length {
-            let descriptor = self.read_journal_block(&journal_inode, position)?;
-            let tags = parse_descriptor(&descriptor, sequence, &journal.uuid)?;
-            position = next_journal_block(position, journal.first, journal.max_length);
-
-            let mut payloads = Vec::with_capacity(tags.len());
-            for tag in tags {
-                let payload = self.read_journal_block(&journal_inode, position)?;
-                payloads.push((tag, payload));
-                position = next_journal_block(position, journal.first, journal.max_length);
-            }
-
-            let possible_revoke = self.read_journal_block(&journal_inode, position)?;
-            if !possible_revoke.iter().all(|byte| *byte == 0) {
-                let header = parse_header(&possible_revoke)?;
-                if header.block_type == 5 {
-                    let revoked = parse_revoke(&possible_revoke, sequence)?;
-                    revokes.extend(revoked.into_iter().map(|block| (block, sequence)));
-                    position = next_journal_block(position, journal.first, journal.max_length);
-                }
-            }
-            let commit = self.read_journal_block(&journal_inode, position)?;
-            if commit.iter().all(|byte| *byte == 0) {
+            let block = self.read_journal_block(&journal_inode, position)?;
+            if block.iter().all(|byte| *byte == 0) {
                 // A crash may leave a descriptor and payload blocks durable
                 // without the commit record. JBD2 treats that transaction as
                 // uncommitted and discards it during recovery.
                 break;
             }
-            validate_commit(&commit, sequence)?;
-            position = next_journal_block(position, journal.first, journal.max_length);
-
-            transactions.push(JournalReplayTransaction { sequence, payloads });
-
-            visited += 1;
-            sequence = sequence.wrapping_add(1);
-            if position == journal.start {
+            let header = parse_header(&block)?;
+            if header.sequence != sequence {
+                // Stale or partially written data: only the committed prefix
+                // collected so far is replayed.
                 break;
             }
-            let next = self.read_journal_block(&journal_inode, position)?;
-            if next.iter().all(|byte| *byte == 0) {
-                break;
+            match header.block_type {
+                JBD2_DESCRIPTOR_BLOCK => {
+                    let tags = parse_descriptor(&block, sequence, &journal.uuid)?;
+                    position = next_journal_block(position, journal.first, journal.max_length);
+                    visited += 1;
+                    for tag in tags {
+                        let payload = self.read_journal_block(&journal_inode, position)?;
+                        payloads.push((tag, payload));
+                        position = next_journal_block(position, journal.first, journal.max_length);
+                        visited += 1;
+                    }
+                }
+                JBD2_REVOKE_BLOCK => {
+                    let revoked = parse_revoke(&block, sequence)?;
+                    revokes.extend(revoked.into_iter().map(|block| (block, sequence)));
+                    position = next_journal_block(position, journal.first, journal.max_length);
+                    visited += 1;
+                }
+                JBD2_COMMIT_BLOCK => {
+                    validate_commit(&block, sequence)?;
+                    transactions.push(JournalReplayTransaction {
+                        sequence,
+                        payloads: core::mem::take(&mut payloads),
+                    });
+                    sequence = sequence.wrapping_add(1);
+                    position = next_journal_block(position, journal.first, journal.max_length);
+                    visited += 1;
+                    if position == journal.start {
+                        break;
+                    }
+                }
+                _ => {
+                    return_errno_with_message!(
+                        Errno::EUCLEAN,
+                        "unexpected ext4 journal block inside a transaction"
+                    );
+                }
             }
         }
 
@@ -1445,10 +1461,13 @@ mod test {
     use super::*;
     use crate::{
         fs::{
-            fs_impls::ext2::test_utils::{
-                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
-                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
-                make_valid_super_block,
+            fs_impls::ext2::{
+                block_group::RawBlockGroup,
+                test_utils::{
+                    BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
+                    RawInodeBuilder, assert_errno, create_file, default_fixture,
+                    make_valid_group_desc, make_valid_super_block,
+                },
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },

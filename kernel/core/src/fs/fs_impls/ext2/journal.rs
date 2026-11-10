@@ -19,9 +19,9 @@ const JBD2_FEATURE_RO_COMPAT_OFFSET: usize = 44;
 const JBD2_UUID_OFFSET: usize = 48;
 const JBD2_UUID_SIZE: usize = 16;
 const JBD2_SUPERBLOCK_MIN_SIZE: usize = JBD2_UUID_OFFSET + JBD2_UUID_SIZE;
-const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
-const JBD2_COMMIT_BLOCK: u32 = 2;
-const JBD2_REVOKE_BLOCK: u32 = 5;
+pub(super) const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
+pub(super) const JBD2_COMMIT_BLOCK: u32 = 2;
+pub(super) const JBD2_REVOKE_BLOCK: u32 = 5;
 const JBD2_TAG_SIZE: usize = 8;
 const JBD2_FLAG_ESCAPE: u32 = 1;
 const JBD2_FLAG_SAME_UUID: u32 = 2;
@@ -201,44 +201,49 @@ impl JournalTransaction {
         if self.blocks.is_empty() {
             return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
         }
+        // A JBD2 transaction is not limited to one descriptor block. Each
+        // descriptor block tags at most this many target blocks and is
+        // followed by its payloads; the commit block ends the transaction.
+        // Large filesystems routinely dirty more metadata than one descriptor
+        // block can address, so split the tag list instead of rejecting the
+        // transaction.
         let tag_capacity =
             (BLOCK_SIZE - JBD2_SUPERBLOCK_HEADER_SIZE - JBD2_UUID_SIZE) / JBD2_TAG_SIZE;
-        if self.blocks.len() > tag_capacity {
-            return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
-        }
-        let mut descriptor = vec![0; BLOCK_SIZE];
-        put_be_u32(&mut descriptor, 0, JBD2_MAGIC);
-        put_be_u32(&mut descriptor, 4, JBD2_DESCRIPTOR_BLOCK);
-        put_be_u32(&mut descriptor, 8, self.sequence);
-        let mut offset = JBD2_SUPERBLOCK_HEADER_SIZE;
-        for (index, (block_number, payload)) in self.blocks.iter().enumerate() {
-            let mut flags = if index + 1 == self.blocks.len() {
-                JBD2_FLAG_LAST_TAG
-            } else {
-                0
-            };
-            if index != 0 {
-                flags |= JBD2_FLAG_SAME_UUID;
+        let mut encoded = Vec::new();
+        for chunk in self.blocks.chunks(tag_capacity) {
+            let mut descriptor = vec![0; BLOCK_SIZE];
+            put_be_u32(&mut descriptor, 0, JBD2_MAGIC);
+            put_be_u32(&mut descriptor, 4, JBD2_DESCRIPTOR_BLOCK);
+            put_be_u32(&mut descriptor, 8, self.sequence);
+            let mut offset = JBD2_SUPERBLOCK_HEADER_SIZE;
+            for (index, (block_number, payload)) in chunk.iter().enumerate() {
+                let mut flags = if index + 1 == chunk.len() {
+                    JBD2_FLAG_LAST_TAG
+                } else {
+                    0
+                };
+                if index != 0 {
+                    flags |= JBD2_FLAG_SAME_UUID;
+                }
+                if read_be_u32(payload, 0) == JBD2_MAGIC {
+                    flags |= JBD2_FLAG_ESCAPE;
+                }
+                put_be_u32(&mut descriptor, offset, *block_number);
+                put_be_u32(&mut descriptor, offset + 4, flags);
+                offset += JBD2_TAG_SIZE;
+                if index == 0 {
+                    descriptor[offset..offset + JBD2_UUID_SIZE].copy_from_slice(&self.uuid);
+                    offset += JBD2_UUID_SIZE;
+                }
             }
-            if read_be_u32(payload, 0) == JBD2_MAGIC {
-                flags |= JBD2_FLAG_ESCAPE;
+            encoded.push(descriptor);
+            for (_, payload) in chunk {
+                let mut payload = payload.clone();
+                if read_be_u32(&payload, 0) == JBD2_MAGIC {
+                    payload[..4].fill(0);
+                }
+                encoded.push(payload);
             }
-            put_be_u32(&mut descriptor, offset, *block_number);
-            put_be_u32(&mut descriptor, offset + 4, flags);
-            offset += JBD2_TAG_SIZE;
-            if index == 0 {
-                descriptor[offset..offset + JBD2_UUID_SIZE].copy_from_slice(&self.uuid);
-                offset += JBD2_UUID_SIZE;
-            }
-        }
-
-        let mut encoded = vec![descriptor];
-        for (_, payload) in self.blocks {
-            let mut payload = payload;
-            if read_be_u32(&payload, 0) == JBD2_MAGIC {
-                payload[..4].fill(0);
-            }
-            encoded.push(payload);
         }
         let mut commit = vec![0; BLOCK_SIZE];
         put_be_u32(&mut commit, 0, JBD2_MAGIC);
@@ -455,17 +460,41 @@ mod test {
     }
 
     #[ktest]
-    fn rejects_duplicate_or_oversized_transaction_targets() {
+    fn rejects_duplicate_transaction_targets() {
         let mut transaction = JournalTransaction::new(1, [0; 16]).unwrap();
         transaction.add_block(4, &[0; BLOCK_SIZE]).unwrap();
         assert!(transaction.add_block(4, &[0; BLOCK_SIZE]).is_err());
+    }
 
-        let mut transaction = JournalTransaction::new(2, [0; 16]).unwrap();
+    #[ktest]
+    fn splits_oversized_transactions_across_descriptors() {
         let capacity = (BLOCK_SIZE - JBD2_SUPERBLOCK_HEADER_SIZE - JBD2_UUID_SIZE) / JBD2_TAG_SIZE;
-        for block in 1..=capacity as u32 + 1 {
+        let mut transaction = JournalTransaction::new(2, [0; 16]).unwrap();
+        let total = capacity as u32 + 1;
+        for block in 1..=total {
             transaction.add_block(block, &[0; BLOCK_SIZE]).unwrap();
         }
-        assert!(transaction.encode().is_err());
+        let blocks = transaction.encode().unwrap();
+        // descriptor, its payloads, second descriptor, its payload, commit
+        assert_eq!(blocks.len(), capacity + 4);
+        assert_eq!(read_be_u32(&blocks[0], 4), JBD2_DESCRIPTOR_BLOCK);
+        assert_eq!(
+            parse_descriptor(&blocks[0], 2, &[0; 16]).unwrap().len(),
+            capacity
+        );
+        let second = capacity + 1;
+        assert_eq!(read_be_u32(&blocks[second], 4), JBD2_DESCRIPTOR_BLOCK);
+        assert_eq!(read_be_u32(&blocks[second], 8), 2);
+        assert_eq!(read_be_u32(&blocks[second], 12), capacity as u32 + 1);
+        assert_eq!(read_be_u32(&blocks[second], 16), JBD2_FLAG_LAST_TAG);
+        assert_eq!(&blocks[second][20..36], &[0; 16]);
+        assert_eq!(
+            parse_descriptor(&blocks[second], 2, &[0; 16])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(read_be_u32(&blocks[capacity + 3], 4), JBD2_COMMIT_BLOCK);
     }
 
     #[ktest]
