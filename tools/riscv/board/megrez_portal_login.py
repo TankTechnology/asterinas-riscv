@@ -35,6 +35,7 @@ import http.client
 import hashlib
 import hmac
 import json
+import os
 import re
 import socket
 import ssl
@@ -154,6 +155,12 @@ def nmcli_secret(profile: str | None, field: str) -> str | None:
 
 
 def credentials(profile: str | None) -> tuple[str, str]:
+    # The board has no NetworkManager: callers there pass the campus
+    # credentials through the environment instead of the host's keyring.
+    identity = os.environ.get("SRUN_USER", "")
+    password = os.environ.get("SRUN_PASS", "")
+    if identity and password:
+        return identity, password
     identity = nmcli_secret(profile, "802-1x.identity")
     password = nmcli_secret(profile, "802-1x.password")
     if not identity or not password:
@@ -309,9 +316,11 @@ def main() -> int:
         # The portal still holds a session for this address from a previous
         # boot; clear it and start again rather than leaving a half session.
         print("logout:", logout(username, values.expect_ip or "", values.ac_id))
-        result = login(username, password, values.ip, values.ac_id)
+        result = login(username, password, values.expect_ip, values.ac_id)
         print("login:", result)
-    return 0 if result == "login_ok" else 1
+    # The campus portal answers a plain "ok" on success; older deployments and
+    # the unit tests use "login_ok". Accept both.
+    return 0 if result in ("login_ok", "ok") else 1
 
 
 if __name__ == "__main__":
