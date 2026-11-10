@@ -6,7 +6,7 @@ use ostd::cpu::num_cpus;
 
 use super::{BuddyOrder, BuddySet, MAX_LOCAL_BUDDY_ORDER, OnDemandGlobalLock, lesser_order_of};
 
-use crate::chunk::split_to_order;
+use crate::chunk::{size_of_order, split_to_order};
 
 /// Controls the expected size of cache for each CPU-local free pool.
 ///
@@ -44,6 +44,14 @@ fn cache_minimal_size(global_size: usize) -> usize {
 ///
 /// The maximal will be the expected size multiplied by this constant.
 const CACHE_MAXIMAL_MULTIPLIER: usize = 2;
+
+/// The most chunks one balancing pass moves.
+///
+/// Attempting to move the whole target amount at once is unbounded in work
+/// when the source pool is fragmented: with only 32 KiB chunks available, an
+/// 8 MiB target needs 256 chunk moves. The cap keeps each pass short; the
+/// pool is topped up by subsequent allocations instead.
+const MAX_CHUNKS_PER_BALANCE: usize = 4;
 
 /// Returns the maximal size of cache for each CPU-local free pool.
 ///
@@ -89,28 +97,44 @@ pub(super) fn balance(
 }
 
 /// Balances from `a` to `b`.
+///
+/// Moves chunks of the largest available size first, until `order`'s worth of
+/// memory has been moved or the source pool has nothing left to give.
+///
+/// The move is capped so that the time spent holding the source pool's lock
+/// stays bounded. If the cap is reached, the target pool remains below its
+/// target size and later allocations balance it again.
 fn balance_to<const MAX_ORDER1: BuddyOrder, const MAX_ORDER2: BuddyOrder>(
     a: &mut BuddySet<MAX_ORDER1>,
     b: &mut BuddySet<MAX_ORDER2>,
     order: BuddyOrder,
 ) {
-    let allocated_from_a = a.alloc_chunk(order);
+    let mut remaining = size_of_order(order);
+    let mut moved = 0;
 
-    if let Some(addr) = allocated_from_a {
-        if order >= MAX_ORDER2 {
-            let inserted_order = MAX_ORDER2 - 1;
-            split_to_order(addr, order, inserted_order).for_each(|addr| {
-                b.insert_chunk(addr, inserted_order);
-            });
-        } else {
-            b.insert_chunk(addr, order);
+    for source_order in (0..=order).rev() {
+        let chunk_size = size_of_order(source_order);
+
+        while remaining >= chunk_size && moved < MAX_CHUNKS_PER_BALANCE {
+            let Some(addr) = a.alloc_chunk(source_order) else {
+                break;
+            };
+
+            if source_order >= MAX_ORDER2 {
+                let inserted_order = MAX_ORDER2 - 1;
+                split_to_order(addr, source_order, inserted_order).for_each(|addr| {
+                    b.insert_chunk(addr, inserted_order);
+                });
+            } else {
+                b.insert_chunk(addr, source_order);
+            }
+
+            remaining -= chunk_size;
+            moved += 1;
         }
-    } else {
-        // Maybe the chunk size is too large.
-        // Try to reduce the order and balance again.
-        if order > 1 {
-            balance_to(a, b, order - 1);
-            balance_to(a, b, order - 1);
+
+        if moved >= MAX_CHUNKS_PER_BALANCE {
+            break;
         }
     }
 }
@@ -118,6 +142,7 @@ fn balance_to<const MAX_ORDER1: BuddyOrder, const MAX_ORDER2: BuddyOrder>(
 #[cfg(ktest)]
 mod test {
     use super::*;
+    use crate::test::MockMemoryRegion;
     use ostd::prelude::ktest;
 
     #[ktest]
@@ -128,5 +153,43 @@ mod test {
 
         let large_global = CACHE_EXPECTED_SIZE_LIMIT * num_cpus() * CACHE_EXPECTED_PORTION * 2;
         assert_eq!(cache_expected_size(large_global), CACHE_EXPECTED_SIZE_LIMIT);
+    }
+
+    #[ktest]
+    fn balancing_moves_a_bounded_number_of_fragmented_chunks() {
+        // Every other chunk, so adjacent chunks are not buddies and cannot merge.
+        const CHUNK_ORDER: BuddyOrder = 3;
+        const CHUNKS: usize = 2 * MAX_CHUNKS_PER_BALANCE;
+        let chunk_size = size_of_order(CHUNK_ORDER);
+        let region = MockMemoryRegion::alloc(2 * CHUNKS * chunk_size);
+
+        let mut source = BuddySet::<8>::new_empty();
+        let mut target = BuddySet::<MAX_LOCAL_BUDDY_ORDER>::new_empty();
+        for index in 0..CHUNKS {
+            source.insert_chunk(region.paddr() + 2 * index * chunk_size, CHUNK_ORDER);
+        }
+        assert_eq!(source.total_size(), CHUNKS * chunk_size);
+
+        // The source has no chunk large enough for the requested order, so the
+        // pass has to move the target amount in small chunks. It must stop at
+        // the cap instead of draining everything in one lock-held burst.
+        balance_to(&mut source, &mut target, 11);
+
+        assert_eq!(target.total_size(), MAX_CHUNKS_PER_BALANCE * chunk_size);
+        assert_eq!(
+            source.total_size(),
+            (CHUNKS - MAX_CHUNKS_PER_BALANCE) * chunk_size
+        );
+
+        // Empty both sets before the region is returned: a free chunk holds
+        // frame metadata in the "unique" state, and dropping the region while
+        // chunks are still linked in would hand those frames back in that
+        // state.
+        while source.total_size() > 0 {
+            source.alloc_chunk(CHUNK_ORDER).unwrap();
+        }
+        while target.total_size() > 0 {
+            target.alloc_chunk(CHUNK_ORDER).unwrap();
+        }
     }
 }
