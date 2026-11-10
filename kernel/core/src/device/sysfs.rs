@@ -2,7 +2,10 @@
 
 //! Linux-compatible sysfs topology for character devices.
 
-use aster_bigtcp::iface::{IfaceStatsSnapshot, InterfaceFlags, InterfaceType};
+use aster_bigtcp::{
+    iface::{IfaceStatsSnapshot, InterfaceFlags, InterfaceType},
+    wire::EthernetAddress,
+};
 use aster_systree::{
     AttrLessBranchNodeFields, BranchNodeFields, Error as SysTreeError, NormalNodeFields,
     Result as SysTreeResult, SymlinkNodeFields, SysAttrSetBuilder, SysObj, SysPerms, SysStr,
@@ -252,7 +255,7 @@ struct NetIfaceSysNode {
     iface: Arc<Iface>,
 }
 
-impl core::fmt::Debug for NetIfaceSysNode {
+impl Debug for NetIfaceSysNode {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("NetIfaceSysNode")
@@ -301,7 +304,7 @@ inherit_sys_branch_node!(NetIfaceSysNode, fields, {
             "addr_len" => writeln!(printer, "6")?,
             "broadcast" => {
                 let broadcast = if typ == InterfaceType::ETHER {
-                    mac_text(Some(aster_bigtcp::wire::EthernetAddress::BROADCAST))
+                    mac_text(Some(EthernetAddress::BROADCAST))
                 } else {
                     mac_text(None)
                 };
@@ -351,7 +354,7 @@ struct NetStatsSysNode {
     iface: Arc<Iface>,
 }
 
-impl core::fmt::Debug for NetStatsSysNode {
+impl Debug for NetStatsSysNode {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("NetStatsSysNode")
@@ -398,7 +401,7 @@ inherit_sys_branch_node!(NetStatsSysNode, fields, {
 
 /// Writes an Ethernet address the way sysfs does, and an all-zero address for
 /// an interface that has none (loopback).
-fn mac_text(addr: Option<aster_bigtcp::wire::EthernetAddress>) -> alloc::string::String {
+fn mac_text(addr: Option<EthernetAddress>) -> String {
     let bytes = addr.map(|addr| addr.0).unwrap_or([0u8; 6]);
     alloc::format!(
         "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -783,7 +786,7 @@ mod test {
     #[ktest]
     fn net_class_reports_the_words_tools_parse() {
         assert_eq!(
-            mac_text(Some(aster_bigtcp::wire::EthernetAddress::from_bytes(&[
+            mac_text(Some(EthernetAddress::from_bytes(&[
                 0x02, 0x4a, 0x1b, 0x00, 0xfe, 0x9d
             ]))),
             "02:4a:1b:00:fe:9d"

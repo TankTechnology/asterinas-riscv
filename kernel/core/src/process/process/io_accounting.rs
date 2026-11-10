@@ -7,10 +7,10 @@
 //! (<https://www.kernel.org/doc/html/latest/filesystems/proc.html>).
 //!
 //! The character and syscall counters (`rchar`, `wchar`, `syscr`, `syscw`) are
-//! updated by the read/write syscall family. Like Linux's `vfs_read` and
-//! `vfs_write`, a syscall increments its `sysc*` counter once per call and adds
-//! the returned byte count to `*char` only when it succeeds with a positive
-//! length.
+//! updated by the read/write syscall family. A successful call increments its
+//! `sysc*` counter once and adds the returned byte count to `*char` when it is
+//! positive. Failed calls are not counted here, even though Linux also counts
+//! some failures that reach the file operations.
 //!
 //! The block counters (`read_bytes`, `write_bytes`) are charged when the
 //! filesystem submits block I/O while a process is running. Linux charges a

@@ -53,8 +53,9 @@ pub(super) fn sys_getrusage(
                 }
             }
             RusageTarget::Children => {
-                let (user_time, kernel_time) = ctx.process.reaped_children_stats().lock().get();
-                let (min_flt, maj_flt) = ctx.process.reaped_children_stats().lock().faults();
+                let stats = ctx.process.reaped_children_stats().lock();
+                let (user_time, kernel_time) = stats.get();
+                let (min_flt, maj_flt) = stats.faults();
                 rusage_t {
                     ru_utime: user_time.into(),
                     ru_stime: kernel_time.into(),

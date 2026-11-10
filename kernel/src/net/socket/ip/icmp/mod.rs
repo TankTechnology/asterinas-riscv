@@ -15,7 +15,7 @@ use core::{
 
 use aster_bigtcp::{
     errors::BindError,
-    socket::{IcmpRecvError, IcmpSendError, ReceiveBehavior},
+    socket::{IcmpRecvError, IcmpSendError},
     wire::{IpAddress, IpEndpoint},
 };
 
@@ -464,7 +464,7 @@ impl Socket for IcmpSocket {
     }
 }
 
-impl core::fmt::Debug for IcmpSocket {
+impl Debug for IcmpSocket {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("IcmpSocket")
             .field("ident", &self.inner.ident())

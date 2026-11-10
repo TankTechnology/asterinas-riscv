@@ -19,7 +19,7 @@ use ostd::sync::SpinLock;
 use smoltcp::{
     iface::Context,
     socket::icmp::{Endpoint, PacketBuffer, PacketMetadata, Socket as RawIcmpSocket},
-    wire::{IcmpRepr, IpAddress, IpRepr, Ipv4Repr, Ipv6Repr},
+    wire::{IcmpRepr, IpAddress, IpRepr, Ipv4Repr},
 };
 use spin::once::Once;
 
