@@ -54,16 +54,15 @@ const CLOCK_CORE_ENABLE: u32 = 1 << 16;
 const CLOCK_CORE_DIVISOR_MASK: u32 = 0x0fff << 4;
 const CLOCK_CORE_SELECT_416MHZ: u32 = 1;
 const POLL_BUDGET: usize = 1_000_000;
-/// Poll iterations used when no cycle counter is available.
-const IRQ_SPIN_PROBES: usize = 4_000;
-/// How long a status wait spins before it sleeps.
+/// How long a sleeping wait spins before it sleeps.
 ///
-/// The scheduler takes a timer tick or longer to run a waiter that was woken
-/// from interrupt context, so sleeping for a command that finishes in a few
-/// milliseconds would add latency and cut read throughput. One timer tick of
-/// spinning covers small reads at polling latency; only transfers that outlast
-/// it (large writes, cache flushes) sleep and give the CPU back.
-const IRQ_SPIN_DURATION: Duration = Duration::from_millis(4);
+/// A woken task takes about 7 ms to be scheduled again on this board, so a
+/// wait only sleeps when the expected device time clearly exceeds that; it
+/// spins first to catch completions that arrive early.
+const IRQ_SPIN_DURATION: Duration = Duration::from_millis(1);
+/// Writes at least this large are expected to outlast the wake latency and
+/// may sleep; smaller writes and all reads keep the polling path.
+const IRQ_SLEEP_MIN_BYTES: usize = 64 * 1024;
 /// Upper bound for one status wait in interrupt mode.
 const IRQ_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 /// One-shot timer cadence used to re-check a sleeping wait's deadline.
@@ -418,6 +417,7 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         clock_mmio,
         sdma: None,
         irq: None,
+        data_sleep_allowed: false,
     };
     host.validate_handoff().map_err(ProbeError::Host)?;
     if sdma_allowed(MMC_BOUNDED_PIO.load(Ordering::Relaxed)) {
@@ -499,6 +499,8 @@ pub(super) struct MmioHost {
     clock_mmio: IoMem,
     sdma: Option<SdmaBuffer>,
     irq: Option<IrqCompletion>,
+    /// Whether the current data transfer may sleep instead of polling.
+    data_sleep_allowed: bool,
 }
 
 /// Interrupt delivery for the SDHCI controller.
@@ -510,6 +512,8 @@ pub(super) struct MmioHost {
 struct IrqCompletion {
     line: DeferredMappedIrqLine,
     interrupts: Arc<AtomicU64>,
+    /// TSC value written by the handler on the last delivery.
+    last_irq: Arc<AtomicU64>,
     transfers: u64,
     reported: u64,
     /// CPUs on which the one-shot timer waker has been installed.
@@ -520,6 +524,10 @@ struct IrqCompletion {
     /// Waits that slept and their cycles.
     sleep_returns: u64,
     sleep_cycles: u64,
+    /// Time from the handler stamp to the waiter running again.
+    wake_cycles: u64,
+    wake_max_cycles: u64,
+    wake_samples: u64,
 }
 
 struct SdmaBuffer {
@@ -548,14 +556,18 @@ impl MmioHost {
             .map_err(|_| HostError::Unsupported)?;
         let interrupts = Arc::new(AtomicU64::new(0));
         let counter = interrupts.clone();
+        let last_irq = Arc::new(AtomicU64::new(0));
+        let stamp = last_irq.clone();
         line.on_active_and_mask(move |_| {
             counter.fetch_add(1, Ordering::Relaxed);
+            stamp.store(ostd::arch::read_tsc(), Ordering::Relaxed);
             MMC_WAITERS.wake_all();
         })
         .map_err(|_| HostError::Unsupported)?;
         self.irq = Some(IrqCompletion {
             line,
             interrupts,
+            last_irq,
             transfers: 0,
             reported: 0,
             installed_on: CpuSet::new_empty(),
@@ -563,6 +575,9 @@ impl MmioHost {
             spin_cycles: 0,
             sleep_returns: 0,
             sleep_cycles: 0,
+            wake_cycles: 0,
+            wake_max_cycles: 0,
+            wake_samples: 0,
         });
         Ok(())
     }
@@ -597,13 +612,17 @@ impl MmioHost {
             irq.reported = count;
         } else if irq.transfers % 1024 == 0 {
             let hz = ostd::arch::tsc_freq().max(1);
+            let wake_avg = irq.wake_cycles.checked_div(irq.wake_samples).unwrap_or(0);
             ostd::info!(
-                "[mmc] irq: {} irq, spin {}x/{}ms, sleep {}x/{}ms, over {} transfer(s)",
+                "[mmc] irq: {} irq, spin {}x/{}ms, sleep {}x/{}ms, wake n={} avg={}ms max={}ms, over {} transfer(s)",
                 count,
                 irq.spin_returns,
                 irq.spin_cycles * 1000 / hz,
                 irq.sleep_returns,
                 irq.sleep_cycles * 1000 / hz,
+                irq.wake_samples,
+                wake_avg * 1000 / hz,
+                irq.wake_max_cycles * 1000 / hz,
                 irq.transfers
             );
             irq.reported = count;
@@ -635,40 +654,32 @@ impl MmioHost {
     /// the first checks spin. After that, with interrupts enabled, the thread
     /// sleeps until the handler or a one-shot timer wakes it. The timer turns
     /// a lost interrupt into a timeout instead of a hang.
-    fn wait_status(&mut self, wanted: u32) -> Result<u32, HostError> {
+    fn wait_status(&mut self, wanted: u32, may_sleep: bool) -> Result<u32, HostError> {
         let mask = wanted | INTERRUPT_ERROR;
+        if !may_sleep || self.irq.is_none() {
+            return self.poll_status(mask, POLL_BUDGET);
+        }
         let entered = ostd::arch::read_tsc();
-        let spin_budget = match ostd::arch::tsc_freq() {
+        let Some(budget) = (match ostd::arch::tsc_freq() {
             0 => None,
             frequency => Some(frequency * IRQ_SPIN_DURATION.as_micros() as u64 / 1_000_000),
+        }) else {
+            return self.poll_status(mask, POLL_BUDGET);
         };
-        if let Some(budget) = spin_budget {
-            loop {
-                let status = self.read32(Register::InterruptStatus.offset())?;
-                if status & mask != 0 {
-                    self.account_wait(entered, false);
-                    return Ok(status);
-                }
-                if ostd::arch::read_tsc().wrapping_sub(entered) >= budget {
-                    break;
-                }
-                spin_loop();
+        loop {
+            let status = self.read32(Register::InterruptStatus.offset())?;
+            if status & mask != 0 {
+                self.account_wait(entered, false);
+                return Ok(status);
             }
-        } else {
-            for _ in 0..IRQ_SPIN_PROBES {
-                let status = self.read32(Register::InterruptStatus.offset())?;
-                if status & mask != 0 {
-                    self.account_wait(entered, false);
-                    return Ok(status);
-                }
-                spin_loop();
+            if ostd::arch::read_tsc().wrapping_sub(entered) >= budget {
+                break;
             }
-        }
-        if self.irq.is_none() {
-            return self.poll_status(mask, POLL_BUDGET - IRQ_SPIN_PROBES);
+            spin_loop();
         }
 
         let deadline = Jiffies::elapsed().as_u64() + duration_ticks(IRQ_WAIT_TIMEOUT);
+        let armed_at = ostd::arch::read_tsc();
         if !self.arm_irq() {
             return Err(HostError::Unsupported);
         }
@@ -682,6 +693,16 @@ impl MmioHost {
                 _ => None,
             }
         });
+        let now = ostd::arch::read_tsc();
+        if let Some(irq) = &mut self.irq {
+            let irq_at = irq.last_irq.load(Ordering::Relaxed);
+            if irq_at >= armed_at {
+                let latency = now.wrapping_sub(irq_at);
+                irq.wake_cycles += latency;
+                irq.wake_max_cycles = irq.wake_max_cycles.max(latency);
+                irq.wake_samples += 1;
+            }
+        }
         self.account_wait(entered, true);
         match ready {
             Some(status) => Ok(status),
@@ -770,7 +791,7 @@ impl MmioHost {
     }
 
     fn wait_interrupt(&mut self, wanted: u32) -> Result<(), HostError> {
-        let status = self.wait_status(wanted)?;
+        let status = self.wait_status(wanted, false)?;
         if status & INTERRUPT_ERROR != 0 {
             self.write32(Register::InterruptStatus.offset(), status)?;
             let failure =
@@ -792,7 +813,9 @@ impl MmioHost {
     }
 
     fn wait_command_complete(&mut self, index: u8) -> Result<(), HostError> {
-        let status = self.wait_status(INTERRUPT_COMMAND_COMPLETE)?;
+        // Commands finish in microseconds; sleeping would only add the wake
+        // latency, so command completion always polls.
+        let status = self.wait_status(INTERRUPT_COMMAND_COMPLETE, false)?;
         if status & INTERRUPT_ERROR != 0 {
             self.write32(Register::InterruptStatus.offset(), status)?;
             let failure =
@@ -826,6 +849,11 @@ impl MmioHost {
             .checked_add(length)
             .ok_or(HostError::Unsupported)?;
         let transfer = SdmaTransfer::new(command, device_start..device_end)?;
+        // Large writes program the card for tens of milliseconds; sleeping
+        // through that frees the CPU. Everything else keeps polling.
+        self.data_sleep_allowed = self.irq.is_some()
+            && command.data == Some(DataDirection::Write)
+            && length >= IRQ_SLEEP_MIN_BYTES;
         self.wait_clear(
             Register::PresentState.offset(),
             PRESENT_COMMAND_INHIBIT | PRESENT_DATA_INHIBIT,
@@ -848,8 +876,10 @@ impl MmioHost {
     }
 
     fn wait_sdma(&mut self, mut system_address: u64) -> Result<(), HostError> {
+        let may_sleep = self.data_sleep_allowed;
         loop {
-            let status = self.wait_status(INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA)?;
+            let status =
+                self.wait_status(INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA, may_sleep)?;
             match classify_sdma_interrupt(status) {
                 Ok(SdmaInterrupt::Pending) => continue,
                 Ok(SdmaInterrupt::Complete) => {
