@@ -18,6 +18,7 @@ use crate::{
     },
     prelude::*,
     process::{
+        ExecProfiler,
         posix_thread::AsPosixThread,
         process_vm::{AuxKey, AuxVec},
         program_loader::open_executable_file,
@@ -60,12 +61,15 @@ pub(crate) fn load_elf_to_vmar(
     elf_headers: ElfHeaders,
     argv: Vec<CString>,
     envp: Vec<CString>,
+    profile: &mut ExecProfiler,
 ) -> Result<ElfLoadInfo> {
     let ldso = lookup_and_parse_ldso(&elf_headers, &elf_file, path_resolver)?;
+    profile.mark("ld");
 
     #[cfg_attr(target_arch = "loongarch64", expect(unused_mut))]
     let (elf_mapped_info, entry_point, mut aux_vec) =
         map_vmos_and_build_aux_vec(vmar, ldso, &elf_headers, &elf_file)?;
+    profile.mark("sg");
     vmar.process_vm()
         .set_code_range(elf_mapped_info.code_range.clone());
     vmar.process_vm()
@@ -80,14 +84,17 @@ pub(crate) fn load_elf_to_vmar(
         vmar.process_vm().set_vdso_base(vdso_text_base);
         aux_vec.set(AuxKey::AT_SYSINFO_EHDR, vdso_text_base as u64);
     }
+    profile.mark("vd");
 
     vmar.process_vm()
         .map_and_write_init_stack(vmar, argv, envp, aux_vec)?;
+    profile.mark("sk");
     vmar.process_vm().map_and_init_heap(
         vmar,
         elf_mapped_info.data_range.len(),
         elf_mapped_info.heap_base,
     )?;
+    profile.mark("hp");
 
     let user_stack_top = vmar.process_vm().init_stack().user_stack_top();
     Ok(ElfLoadInfo {
