@@ -13,6 +13,7 @@
 //!
 
 use core::{
+    cell::RefCell,
     ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -201,6 +202,7 @@ impl InitStack {
             envp,
             auxvec,
             map_addr: self.initial_top - self.max_size,
+            page_buffer: RefCell::new(InitStackPageBuffer::new()),
         };
         let (auxv_range, argv_range, envp_range) = writer.write()?;
 
@@ -238,6 +240,94 @@ impl InitStack {
     }
 }
 
+/// A page-sized write buffer for the initial stack.
+///
+/// Arguments, environment strings, and the auxiliary vector are written
+/// directly into the stack's VMO by `InitStackWriter`. Writing each `u64` and
+/// each string separately made a typical exec issue dozens of small VMO
+/// writes. Accumulating a contiguous run of bytes for one page and flushing
+/// it with a single write is the same batching Linux does when
+/// `copy_strings()` keeps a stack page mapped while it copies consecutive
+/// strings into it.
+///
+/// Only the bytes actually written are buffered, never the whole page: a
+/// string that crosses a page boundary is written in two pieces, and the next
+/// (lower) string can come back to the first page, so writing a zero-filled
+/// page would erase the bytes that were already flushed for it.
+struct InitStackPageBuffer {
+    /// The VMO offset of the buffered page, or `usize::MAX` if empty.
+    base: usize,
+    /// The offset of the buffered run within that page.
+    start: usize,
+    /// A contiguous run of bytes beginning at `start`.
+    bytes: Vec<u8>,
+}
+
+impl InitStackPageBuffer {
+    fn new() -> Self {
+        Self {
+            base: usize::MAX,
+            start: 0,
+            bytes: Vec::new(),
+        }
+    }
+
+    /// Buffers `bytes` at `offset`, flushing whenever the page changes.
+    fn write(&mut self, vmo: &Vmo, mut offset: usize, mut bytes: &[u8]) -> Result<()> {
+        while !bytes.is_empty() {
+            let base = offset & !(PAGE_SIZE - 1);
+            let in_page = offset - base;
+            let len = bytes.len().min(PAGE_SIZE - in_page);
+
+            if self.base != base {
+                self.flush(vmo)?;
+                self.base = base;
+                self.start = in_page;
+                self.bytes.clear();
+                self.bytes.extend_from_slice(&bytes[..len]);
+            } else if in_page == self.start + self.bytes.len() {
+                // Extends the buffered run upwards.
+                self.bytes.extend_from_slice(&bytes[..len]);
+            } else if in_page + len == self.start {
+                // Extends the buffered run downwards. This happens when the
+                // next string starts in the page that the previous string's
+                // first bytes occupied.
+                let mut merged = Vec::with_capacity(self.bytes.len() + len);
+                merged.extend_from_slice(&bytes[..len]);
+                merged.extend_from_slice(&self.bytes);
+                self.bytes = merged;
+                self.start = in_page;
+            } else {
+                // A gap: keep the flushed bytes and start a new run.
+                self.flush(vmo)?;
+                self.base = base;
+                self.start = in_page;
+                self.bytes.clear();
+                self.bytes.extend_from_slice(&bytes[..len]);
+            }
+
+            offset += len;
+            bytes = &bytes[len..];
+        }
+
+        Ok(())
+    }
+
+    /// Writes the buffered run, if any, to the VMO.
+    fn flush(&mut self, vmo: &Vmo) -> Result<()> {
+        if self.base == usize::MAX {
+            return Ok(());
+        }
+
+        let mut reader = VmReader::from(self.bytes.as_slice()).to_fallible();
+        vmo.write(self.base + self.start, &mut reader)?;
+        self.base = usize::MAX;
+        self.bytes.clear();
+
+        Ok(())
+    }
+}
+
 /// A writer to initialize the content of an `InitStack`.
 struct InitStackWriter<'a> {
     pos: &'a AtomicUsize,
@@ -247,6 +337,8 @@ struct InitStackWriter<'a> {
     auxvec: AuxVec,
     /// The mapping address of the `InitStack`.
     map_addr: usize,
+    /// Pages are accumulated here and flushed with one VMO write each.
+    page_buffer: RefCell<InitStackPageBuffer>,
 }
 
 impl InitStackWriter<'_> {
@@ -284,6 +376,10 @@ impl InitStackWriter<'_> {
         // Write argc.
         let argc = self.argv.len();
         self.write_u64(argc as u64)?;
+
+        // Flush the last buffered page. Everything written above is already
+        // in the VMO.
+        self.page_buffer.borrow_mut().flush(&self.vmo)?;
 
         // Ensure the stack top is 16-byte aligned.
         debug_assert_eq!(self.pos() & !0xf, self.pos());
@@ -378,8 +474,9 @@ impl InitStackWriter<'_> {
     fn write_u64(&self, val: u64) -> Result<u64> {
         let new_pos = self.reserve_pos(size_of::<u64>(), align_of::<u64>())?;
         let bytes = val.to_ne_bytes();
-        let mut reader = VmReader::from(bytes.as_slice()).to_fallible();
-        self.vmo.write(new_pos - self.map_addr, &mut reader)?;
+        self.page_buffer
+            .borrow_mut()
+            .write(&self.vmo, new_pos - self.map_addr, &bytes)?;
         Ok(new_pos as u64)
     }
 
@@ -394,8 +491,9 @@ impl InitStackWriter<'_> {
     /// Returns the writing address.
     fn write_bytes(&self, bytes: &[u8]) -> Result<u64> {
         let new_pos = self.reserve_pos(bytes.len(), align_of::<u8>())?;
-        let mut reader = VmReader::from(bytes).to_fallible();
-        self.vmo.write(new_pos - self.map_addr, &mut reader)?;
+        self.page_buffer
+            .borrow_mut()
+            .write(&self.vmo, new_pos - self.map_addr, bytes)?;
         Ok(new_pos as u64)
     }
 
