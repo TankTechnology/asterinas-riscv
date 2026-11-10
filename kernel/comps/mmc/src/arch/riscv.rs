@@ -679,34 +679,63 @@ impl MmioHost {
         }
 
         let deadline = Jiffies::elapsed().as_u64() + duration_ticks(IRQ_WAIT_TIMEOUT);
-        let armed_at = ostd::arch::read_tsc();
-        if !self.arm_irq() {
-            return Err(HostError::Unsupported);
-        }
-        let host = &*self;
-        let ready = MMC_WAITERS.wait_until(|| {
-            if Jiffies::elapsed().as_u64() >= deadline {
-                return Some(None);
+        loop {
+            let observed = match &self.irq {
+                Some(irq) => irq.interrupts.load(Ordering::Relaxed),
+                None => return Err(HostError::Unsupported),
+            };
+            let armed_at = ostd::arch::read_tsc();
+            if !self.arm_irq() {
+                return Err(HostError::Unsupported);
             }
-            match host.read32(Register::InterruptStatus.offset()) {
-                Ok(status) if status & mask != 0 => Some(Some(status)),
-                _ => None,
+            let host = &*self;
+            #[derive(Clone, Copy)]
+            enum Wake {
+                Ready(u32),
+                Interrupted,
+                TimedOut,
             }
-        });
-        let now = ostd::arch::read_tsc();
-        if let Some(irq) = &mut self.irq {
-            let irq_at = irq.last_irq.load(Ordering::Relaxed);
-            if irq_at >= armed_at {
-                let latency = now.wrapping_sub(irq_at);
-                irq.wake_cycles += latency;
-                irq.wake_max_cycles = irq.wake_max_cycles.max(latency);
-                irq.wake_samples += 1;
+            let wake = MMC_WAITERS.wait_until(|| {
+                if Jiffies::elapsed().as_u64() >= deadline {
+                    return Some(Wake::TimedOut);
+                }
+                match host.read32(Register::InterruptStatus.offset()) {
+                    Ok(status) if status & mask != 0 => return Some(Wake::Ready(status)),
+                    _ => {}
+                }
+                let delivered = host
+                    .irq
+                    .as_ref()
+                    .is_some_and(|irq| irq.interrupts.load(Ordering::Relaxed) != observed);
+                delivered.then_some(Wake::Interrupted)
+            });
+            match wake {
+                Wake::Ready(status) => {
+                    let now = ostd::arch::read_tsc();
+                    if let Some(irq) = &mut self.irq {
+                        let irq_at = irq.last_irq.load(Ordering::Relaxed);
+                        if irq_at >= armed_at {
+                            let latency = now.wrapping_sub(irq_at);
+                            irq.wake_cycles += latency;
+                            irq.wake_max_cycles = irq.wake_max_cycles.max(latency);
+                            irq.wake_samples += 1;
+                        }
+                    }
+                    self.account_wait(entered, true);
+                    return Ok(status);
+                }
+                Wake::Interrupted => {
+                    // Woken by an interrupt that did not complete the wait.
+                    // Re-arm the source before sleeping again; the handler
+                    // masks it on every delivery, so without a re-arm a later
+                    // completion would only be seen on the next timer tick.
+                    continue;
+                }
+                Wake::TimedOut => {
+                    self.account_wait(entered, true);
+                    return Err(HostError::Timeout);
+                }
             }
-        }
-        self.account_wait(entered, true);
-        match ready {
-            Some(status) => Ok(status),
-            None => Err(HostError::Timeout),
         }
     }
 
