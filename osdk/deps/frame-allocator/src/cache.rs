@@ -15,32 +15,47 @@ cpu_local! {
 }
 
 struct CacheOfSizes {
-    cache1: CacheArray<1, 12>,
-    cache2: CacheArray<2, 6>,
-    cache3: CacheArray<3, 6>,
-    cache4: CacheArray<4, 6>,
+    cache1: CacheArray<1, 64, 8>,
+    cache2: CacheArray<2, 32, 4>,
+    cache3: CacheArray<3, 32, 4>,
+    cache4: CacheArray<4, 32, 4>,
     /// 64 KiB segments, the size of a default pipe buffer.
     ///
     /// Without this class every pipe creation and destruction went straight to
     /// the buddy pools; on the Megrez board a `pipe()` + close cost ~0.8 ms
     /// while a Unix socket (no buffer) cost ~20 µs.
-    cache16: CacheArray<16, 6>,
+    cache16: CacheArray<16, 16, 4>,
 }
 
 /// A fixed-size local cache for frame allocation.
 ///
 /// Each cache array contains at most `COUNT` segments. Each segment contains
 /// `NR_CONT_FRAMES` contiguous frames.
-struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize> {
+///
+/// Refilling a cache asks the buddy pools for a batch of segments at once,
+/// like Linux's per-CPU pageset (`rmqueue_bulk`): one acquisition of the pool
+/// lock serves many allocations. The batch starts at `BASE` and doubles on
+/// consecutive refills, up to `COUNT`; any free halves the scale again. This
+/// keeps the pool-lock frequency low for allocation-heavy workloads without
+/// making a single refill unbounded, which is the same latency/contention
+/// tradeoff Linux makes with `pcp->batch` and `alloc_factor`.
+struct CacheArray<const NR_CONT_FRAMES: usize, const COUNT: usize, const BASE: usize> {
     inner: [Option<Paddr>; COUNT],
     size: usize,
+    /// How many times `BASE` has been doubled for the next refill.
+    scale: u8,
 }
 
-impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES, COUNT> {
+impl<const NR_CONT_FRAMES: usize, const COUNT: usize, const BASE: usize>
+    CacheArray<NR_CONT_FRAMES, COUNT, BASE>
+{
+    const MAX_SCALE: u8 = (COUNT.trailing_zeros() - BASE.trailing_zeros()) as u8;
+
     const fn new() -> Self {
         Self {
             inner: [const { None }; COUNT],
             size: 0,
+            scale: 0,
         }
     }
 
@@ -49,25 +64,42 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
         NR_CONT_FRAMES * PAGE_SIZE
     }
 
+    /// The number of segments to request from the buddy pools on a refill.
+    fn refill_batch(&self) -> usize {
+        (BASE << self.scale.min(Self::MAX_SCALE)).min(COUNT)
+    }
+
     /// Allocates a segment of frames.
     ///
     /// It may allocate directly from this cache. If the cache is empty, it
-    /// will fill the cache.
+    /// refills the cache with a batch that grows while the workload keeps
+    /// allocating, and shrinks back towards a single batch when the request
+    /// size cannot be satisfied.
     fn alloc(&mut self, guard: &DisabledLocalIrqGuard) -> Option<Paddr> {
         if let Some(frame) = self.pop_front() {
             return Some(frame);
         }
 
-        let nr_to_alloc = COUNT * 2 / 3;
-        let batch = Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE);
-        if let Some(allocated) = batch
-            .ok()
-            .and_then(|layout| super::pools::alloc(guard, layout))
-        {
-            for i in 1..nr_to_alloc {
-                self.push_front(allocated + i * Self::segment_size());
+        let mut nr_to_alloc = self.refill_batch();
+        loop {
+            let batch = Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE);
+            if let Some(allocated) = batch
+                .ok()
+                .and_then(|layout| super::pools::alloc(guard, layout))
+            {
+                for i in 1..nr_to_alloc {
+                    self.push_front(allocated + i * Self::segment_size());
+                }
+                if self.scale < Self::MAX_SCALE {
+                    self.scale += 1;
+                }
+                return Some(allocated);
             }
-            return Some(allocated);
+
+            if nr_to_alloc == BASE {
+                break;
+            }
+            nr_to_alloc = (nr_to_alloc / 2).max(BASE);
         }
 
         // Refilling the cache must not turn into a new allocation failure:
@@ -81,10 +113,14 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
     /// Deallocates a segment of frames.
     ///
     /// It may deallocate directly to this cache. If the cache is full, it will
-    /// deallocate to the global pool.
+    /// drain a bounded batch to the buddy pools. A free also halves the
+    /// refill scale, so a workload that is releasing memory does not keep
+    /// asking for large batches.
     fn dealloc(&mut self, guard: &DisabledLocalIrqGuard, addr: Paddr) {
+        self.scale >>= 1;
+
         if self.push_front(addr).is_none() {
-            let nr_to_dealloc = COUNT * 2 / 3 + 1;
+            let nr_to_dealloc = BASE.min(COUNT);
 
             let segments = (0..nr_to_dealloc).map(|i| {
                 if i == 0 {
