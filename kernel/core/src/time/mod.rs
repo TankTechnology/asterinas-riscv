@@ -65,16 +65,13 @@ mod clock_tick_tests {
 
     #[ktest]
     fn internal_jiffies_are_not_user_ticks() {
+        let hz = ostd::timer::TIMER_FREQ;
         assert_eq!(jiffies_to_clock_ticks(Jiffies::new(0)), 0);
-        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(9)), 0);
-        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(10)), 1);
-        assert_eq!(
-            jiffies_to_clock_ticks(Jiffies::new(ostd::timer::TIMER_FREQ)),
-            USER_HZ
-        );
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(hz / 2)), USER_HZ / 2);
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(hz)), USER_HZ);
         assert_eq!(
             jiffies_to_clock_ticks(Jiffies::new(u64::MAX)),
-            u64::MAX / 10
+            (u128::from(u64::MAX) * u128::from(USER_HZ) / u128::from(hz)) as u64
         );
     }
 }
