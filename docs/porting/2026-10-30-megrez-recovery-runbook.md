@@ -32,7 +32,14 @@ binary file` / `Exec format error` → **文件系统层坏了**，别再用 GUI
 
 已经确认无效、不要重复的手段：`/proc/sysrq-trigger`（旧内核没有此文件）、
 `python3 -c ctypes...`（`_ctypes.so` 读坏块）、USB 串口 DTR/RTS 当复位线
-（这块板子没接线）、内核 panic（未 `asterinas.panic_reboot=1` 时是 halt 不是重启）。
+（这块板子没接线）、内核 panic（未启用 panic 重启时是 halt 不是重启）。
+
+自 2026-11-11 起，真机默认就带恢复网：内核在命令行没给
+`asterinas.reboot_after` 时默认 15 分钟自杀重启、panic 默认重启（QEMU 上默认
+关闭）；启动日志打印 `ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=… source=…`。
+systemd 镜像在 `basic.target` 解除；纯 initramfs shell 不解除。实验启动仍应在
+命令行显式给一个有界值，并通过 `megrez_console.py boot` 的安全闸门
+（它会拒绝 `--root-init=interactive` 之类无法到达用户态的模式）。
 
 ## 3. 明确会触发故障的操作（别做）
 

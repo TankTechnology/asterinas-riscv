@@ -416,9 +416,98 @@ def cmd_wait(args: argparse.Namespace) -> int:
     return 1
 
 
+class BootSafetyError(ValueError):
+    """The planned boot would leave the board unreachable without hands."""
+
+
+# `interactive` only accepts a rootfs labelled `ASTER_DEBIANROOT`. Our images
+# are labelled `ASTER_BROWSERWEB`, and a mismatch ends in stage1's
+# `fail_and_hold()`: no shell, no signal handling, no reboot. The basic
+# initramfs shell plus a chroot covers the same need without the precondition.
+_BOOT_SAFE_ROOT_INIT_MODES = frozenset({"basic", "systemd", "probe", "probe-auto"})
+_MAX_REBOOT_AFTER_SECONDS = 24 * 3600
+
+
+def validate_boot_append(
+    append: str, *, allow_kernel_default: bool = False, allow_interactive: bool = False
+) -> None:
+    """Reject boot command lines that cannot recover from a hang.
+
+    A board that hangs before userspace is unreachable from every software
+    channel, so every ad-hoc boot must either carry a bounded
+    `asterinas.reboot_after` deadline or run a kernel whose built-in default
+    arms one. The check is deliberately strict: the 2026-11-11 wedge came from
+    a command line with no deadline and an initramfs mode that never reached
+    userspace.
+    """
+
+    tokens = append.split()
+    if "--" not in tokens or tokens.count("--") != 1:
+        raise BootSafetyError(
+            "the command line must separate kernel and init options with exactly one '--'"
+        )
+    split = tokens.index("--")
+    kernel_tokens, init_tokens = tokens[:split], tokens[split + 1 :]
+
+    modes = [t.split("=", 1)[1] for t in init_tokens if t.startswith("--root-init=")]
+    if len(modes) != 1:
+        raise BootSafetyError("exactly one --root-init=<mode> is required")
+    mode = modes[0]
+    if mode == "interactive" and not allow_interactive:
+        raise BootSafetyError(
+            "interactive only matches the ASTER_DEBIANROOT label; this rootfs is "
+            "ASTER_BROWSERWEB, so stage1 would hold forever. Use --root-init=basic"
+        )
+    if mode not in _BOOT_SAFE_ROOT_INIT_MODES and not allow_interactive:
+        raise BootSafetyError(f"unknown --root-init mode {mode!r}")
+
+    deadlines = [
+        t.split("=", 1)[1]
+        for t in kernel_tokens
+        if t.startswith("asterinas.reboot_after=")
+    ]
+    if not deadlines:
+        if not allow_kernel_default:
+            raise BootSafetyError(
+                "no asterinas.reboot_after deadline: a hang before userspace would "
+                "need a physical reset (pass the flag, or --allow-kernel-default for "
+                "a kernel with the built-in 900 s default)"
+            )
+        return
+    try:
+        seconds = int(deadlines[-1], 10)
+    except ValueError as error:
+        raise BootSafetyError(
+            f"asterinas.reboot_after is not a decimal number: {deadlines[-1]!r}"
+        ) from error
+    if not 1 <= seconds <= _MAX_REBOOT_AFTER_SECONDS:
+        raise BootSafetyError(
+            f"asterinas.reboot_after={seconds} is outside 1..{_MAX_REBOOT_AFTER_SECONDS}"
+        )
+
+
 def cmd_boot(args: argparse.Namespace) -> int:
     """Load a p2 kernel plus the p1 initramfs and DTB, then hand off with booti."""
+    try:
+        validate_boot_append(
+            args.append,
+            allow_kernel_default=args.allow_kernel_default,
+            allow_interactive=args.allow_interactive,
+        )
+    except BootSafetyError as error:
+        raise SystemExit(f"refusing to boot: {error}") from error
+
     con = Console(args.log, args.fifo)
+
+    # A reset must always return to a bootable default. The persistent
+    # bootcmd lives in SPI and survives everything short of eraseenv, so
+    # checking it costs one command and rules out a board that can only be
+    # recovered by reflashing.
+    text, ok = con.run("printenv bootcmd", args.step_timeout)
+    if not ok or "bootcmd=" not in text or "booti" not in text:
+        print(text[-800:], file=sys.stderr)
+        raise SystemExit("refusing to boot: U-Boot bootcmd is missing or not a booti boot")
+
     steps = [
         f"ext4load mmc 1:1 0x88300000 {args.initrd}",
         "setenv initrd_size ${filesize}",
@@ -432,6 +521,19 @@ def cmd_boot(args: argparse.Namespace) -> int:
         if not ok or "Failed" in text or "Does not exist" in text:
             print(text[-800:], file=sys.stderr)
             raise SystemExit(f"rejected: {command}")
+        if command.endswith(args.kernel) and args.expect_kernel_size is not None:
+            read = re.search(r"(\d+) bytes read", text)
+            if read is None:
+                print(text[-800:], file=sys.stderr)
+                raise SystemExit(
+                    "refusing to boot: the load output did not report the kernel size"
+                )
+            size = int(read.group(1))
+            if size != args.expect_kernel_size:
+                raise SystemExit(
+                    f"refusing to boot: {args.kernel} is {size} bytes on the board, "
+                    f"expected {args.expect_kernel_size}"
+                )
     con.type_line("booti 0x80200000 0x88300000:${initrd_size} 0x88000000")
     print("booti sent", flush=True)
     return 0
@@ -482,6 +584,23 @@ def main() -> int:
     boot.add_argument("--dtb", default="megrez-daily.dtb")
     boot.add_argument("--append", required=True)
     boot.add_argument("--step-timeout", type=float, default=120.0)
+    boot.add_argument(
+        "--allow-kernel-default",
+        action="store_true",
+        help="accept a command line without asterinas.reboot_after when the kernel "
+        "carries the built-in 900 s recovery default",
+    )
+    boot.add_argument(
+        "--allow-interactive",
+        action="store_true",
+        help="allow --root-init=interactive (only for a rootfs labelled ASTER_DEBIANROOT)",
+    )
+    boot.add_argument(
+        "--expect-kernel-size",
+        type=int,
+        default=None,
+        help="refuse to boot when the kernel image read from p2 has another size",
+    )
     boot.set_defaults(func=cmd_boot)
 
     args = parser.parse_args()
