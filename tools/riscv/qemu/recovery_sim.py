@@ -253,6 +253,23 @@ def main(argv: list[str] | None = None) -> int:
                 {"min_boots": 2},
             ),
             (
+                # The 2026-11-10 regression: the panic policy install used to
+                # take the one injection slot, so the deadline was never armed.
+                # Both nets must coexist now, and the deadline must fire.
+                "panic-policy-and-deadline-coexist",
+                pause,
+                "console=ttyS0 loglevel=warn init=/init asterinas.panic_reboot=1 "
+                "asterinas.reboot_after=6",
+                25,
+                {
+                    "min_boots": 2,
+                    "contains": [
+                        "ASTERINAS_PANIC_REBOOT_ARMED",
+                        "ASTERINAS_SOFTWARE_REBOOT_SYNC_START",
+                    ],
+                },
+            ),
+            (
                 "panic-halts-without-policy",
                 empty,
                 "console=ttyS0 loglevel=warn init=/init asterinas.panic_reboot=0 "

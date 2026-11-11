@@ -130,6 +130,7 @@
   | stage1 未知 init 选项（11-05 `root-init-argument` 事故） | 3 次启动、3 次 `ARMED` |
   | `--root-init` 放在 `--` 之前（无参数 → 默认 interactive） | 3 次启动、3 次 `ARMED` |
   | 纯挂起 userspace（init 只 `pause()`） | 5 次启动、5 次 `ARMED` |
+  | panic 策略与 deadline 同时开启（11-10 回归：策略抢占后定时器不 arm） | `PANIC_REBOOT_ARMED` 与 `SYNC_START` 同时出现，deadline 触发了重启 |
   | panic + `panic_reboot=1`（deadline=0） | 47 次重启 → panic 策略单独驱动 |
   | panic + `panic_reboot=0` | 1 次启动后 QEMU 退出 → 基线未变 |
   | QEMU 无 deadline（虚拟平台默认关闭） | 1 次启动、`DISABLED` → 设计如此 |
