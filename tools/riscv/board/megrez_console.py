@@ -241,6 +241,18 @@ def run_bridge(device: str, log_path: str, fifo: str, baud: int, pace_ms: float)
     return 0
 
 
+# U-Boot's hush and POSIX shells both expand an unset `${VAR}` to nothing, so
+# the executed line prints the marker while the echoed command line keeps the
+# unexpanded form. That keeps the marker out of the echo.
+_RUN_MARKER_VAR = "__ASTERINAS_RUN_MARKER__"
+
+
+def run_command_line(command: str, marker: str) -> str:
+    """Builds a shell line whose echo cannot contain `marker`."""
+    suffix = marker[len("ZZOK") :]
+    return f"{command}; echo ZZOK${{{_RUN_MARKER_VAR}}}{suffix}"
+
+
 class Console:
     """Client side of the bridge: writes commands, reads the transcript."""
 
@@ -275,10 +287,24 @@ class Console:
         self.send_line("\n")
 
     def run(self, command: str, timeout: float, char_pause: float = DEFAULT_CHAR_PAUSE) -> tuple[str, bool]:
-        """Type a command and collect the console text up to its marker."""
-        marker = f"ZZOK{os.getpid()}"
+        """Type a command and collect the console text up to its marker.
+
+        The marker is assembled by the shell (`ZZOK${VAR}1234`), not typed
+        literally, so the echo of the command line cannot match it. Matching
+        the echo would return before the command has run, which silently
+        turns output checks — command output, byte counts, register reads —
+        into no-ops.
+        """
+        # A per-call marker: the bridge appends to the log asynchronously, so a
+        # previous command's marker can land inside this call's window and
+        # satisfy the wait before the new command has run.
+        self._run_sequence = getattr(self, "_run_sequence", 0) + 1
+        marker = f"ZZOK{os.getpid()}x{self._run_sequence}"
+        # Give the previous command's last bytes a moment to land so they
+        # cannot leak into this command's transcript window.
+        time.sleep(0.3)
         offset = os.path.getsize(self.log)
-        self.type_line(f"{command}; echo {marker}", char_pause)
+        self.type_line(run_command_line(command, marker), char_pause)
         collected = ""
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -427,6 +453,63 @@ class BootSafetyError(ValueError):
 _BOOT_SAFE_ROOT_INIT_MODES = frozenset({"basic", "systemd", "probe", "probe-auto"})
 _MAX_REBOOT_AFTER_SECONDS = 24 * 3600
 
+
+def _initramfs_entries(path: str) -> set[str]:
+    """Returns the paths inside a newc cpio archive (optionally gzip'd)."""
+    import gzip
+
+    with open(path, "rb") as stream:
+        data = stream.read()
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
+    entries: set[str] = set()
+    offset = 0
+    while offset + 110 <= len(data) and data[offset : offset + 6] in (
+        b"070701",
+        b"070702",
+    ):
+        def field(at: int) -> int:
+            return int(data[offset + at : offset + at + 8], 16)
+
+        size = field(54)
+        name_size = field(94)
+        name_start = offset + 110
+        name = data[name_start : name_start + name_size - 1].decode("utf-8", "replace")
+        if name == "TRAILER!!!":
+            break
+        entries.add(name.removeprefix("./").lstrip("/"))
+        offset = name_start + name_size
+        offset = (offset + 3) & ~3
+        offset = (offset + size + 3) & ~3
+    return entries
+
+
+def validate_initramfs_for_mode(
+    mode: str, initramfs_path: str | None
+) -> None:
+    """Refuses a mode the loaded initramfs cannot satisfy.
+
+    `basic` needs `/bin/busybox` in the initramfs. The deployed Megrez
+    initramfs does not contain one, and booting `basic` against it ends in
+    stage1's `fail_and_hold("basic-busybox-missing")` — the board is then
+    unreachable until the boot deadline fires. The archive is checked from a
+    local copy because U-Boot cannot read it.
+    """
+
+    if mode != "basic":
+        return
+    if not initramfs_path:
+        raise BootSafetyError(
+            "basic mode requires --initramfs-cpio with a local copy of the "
+            "initramfs the board will load, so its busybox can be checked"
+        )
+    entries = _initramfs_entries(initramfs_path)
+    if "bin/busybox" not in entries and "usr/bin/busybox" not in entries:
+        raise BootSafetyError(
+            f"{initramfs_path} has no /bin/busybox; --root-init=basic would "
+            "hold the board in fail_and_hold. Use --root-init=systemd"
+        )
+
 # The DesignWare watchdog U-Boot arms before a physical boot. It is the only
 # recovery layer that survives a kernel that stops taking timer interrupts, so
 # an ad-hoc boot must arm it the same way instead of relying on the persistent
@@ -437,10 +520,12 @@ _WATCHDOG_TIMEOUT_RANGE = 0x5080_0004
 _WATCHDOG_COUNTER_RESTART = 0x5080_000C
 _WATCHDOG_COMPONENT_TYPE = 0x4457_0120
 _WATCHDOG_ARM_SEQUENCE = (
-    "mw.l 0x51828444 0x1; "
     "if itest.l *0x508000fc == 0x44570120; then "
     "mw.l 0x50800004 0xf; mw.l 0x5080000c 0x76; mw.l 0x50800000 0x1f; fi"
 )
+# The watchdog window is not readable until its clock/power gate is opened;
+# the persistent bootcmd writes this before its `itest.l` component check.
+_WATCHDOG_CLOCK_ENABLE = "mw.l 0x51828444 0x1"
 
 
 def _read_md_word(text: str, address: int) -> int | None:
@@ -457,6 +542,11 @@ def arm_hardware_watchdog(con, step_timeout: float, allow_missing: bool) -> None
     closed, a kernel hang that also stops the software deadline (interrupts
     masked on the only hart with a timer) leaves no recovery layer at all.
     """
+
+    text, ok = con.run(_WATCHDOG_CLOCK_ENABLE, step_timeout)
+    if not ok:
+        print(text[-800:], file=sys.stderr)
+        raise SystemExit("refusing to boot: could not enable the watchdog clock")
 
     text, ok = con.run(f"md.l {_WATCHDOG_COMPONENT_OFFSET:#x} 1", step_timeout)
     component = _read_md_word(text, _WATCHDOG_COMPONENT_OFFSET)
@@ -553,6 +643,12 @@ def cmd_boot(args: argparse.Namespace) -> int:
             allow_kernel_default=args.allow_kernel_default,
             allow_interactive=args.allow_interactive,
         )
+        mode = next(
+            token.split("=", 1)[1]
+            for token in args.append.split("--", 1)[1].split()
+            if token.startswith("--root-init=")
+        )
+        validate_initramfs_for_mode(mode, args.initramfs_cpio)
     except BootSafetyError as error:
         raise SystemExit(f"refusing to boot: {error}") from error
 
@@ -581,13 +677,13 @@ def cmd_boot(args: argparse.Namespace) -> int:
             print(text[-800:], file=sys.stderr)
             raise SystemExit(f"rejected: {command}")
         if command.endswith(args.kernel) and args.expect_kernel_size is not None:
-            read = re.search(r"(\d+) bytes read", text)
-            if read is None:
+            reads = re.findall(r"(\d+) bytes read", text)
+            if not reads:
                 print(text[-800:], file=sys.stderr)
                 raise SystemExit(
                     "refusing to boot: the load output did not report the kernel size"
                 )
-            size = int(read.group(1))
+            size = int(reads[-1])
             if size != args.expect_kernel_size:
                 raise SystemExit(
                     f"refusing to boot: {args.kernel} is {size} bytes on the board, "
@@ -667,6 +763,12 @@ def main() -> int:
         "--allow-missing-watchdog",
         action="store_true",
         help="boot even when the DesignWare watchdog is absent (for QEMU/virt)",
+    )
+    boot.add_argument(
+        "--initramfs-cpio",
+        default=None,
+        help="local copy of the initramfs the board loads; required to prove "
+        "that --root-init=basic has a busybox",
     )
     boot.set_defaults(func=cmd_boot)
 

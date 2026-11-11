@@ -11,13 +11,18 @@ that combination impossible to boot by accident.
 from __future__ import annotations
 
 import itertools
+import os
+import tempfile
 import unittest
 
 from tools.riscv.board.megrez_console import (
     BootSafetyError,
+    _initramfs_entries,
     _read_md_word,
     arm_hardware_watchdog,
+    run_command_line,
     validate_boot_append,
+    validate_initramfs_for_mode,
 )
 
 
@@ -155,6 +160,18 @@ class BootSafetyGateTest(unittest.TestCase):
             )
 
 
+class RunMarkerTest(unittest.TestCase):
+    def test_the_echo_cannot_match_the_marker(self) -> None:
+        """A marker that appears in the typed line matches before execution."""
+        line = run_command_line("md.l 0x508000fc 1", "ZZOK4321")
+        self.assertNotIn("ZZOK4321", line)
+        self.assertIn("echo ZZOK${__ASTERINAS_RUN_MARKER__}4321", line)
+
+    def test_the_shell_expands_the_marker_to_the_expected_text(self) -> None:
+        line = run_command_line("true", "ZZOK99")
+        self.assertTrue(line.endswith("ZZOK${__ASTERINAS_RUN_MARKER__}99"))
+
+
 class FakeConsole:
     """Feeds canned `run` results and records the commands that were sent."""
 
@@ -168,6 +185,13 @@ class FakeConsole:
 
 
 class WatchdogArmTest(unittest.TestCase):
+    CLOCK = ("", True)
+    ARMED = ("", True)
+    COMPONENT_OK = ("508000fc: 44570120 00000000 00000000 00000000", True)
+    COMPONENT_MISSING = ("508000fc: 00000000 00000000 00000000 00000000", True)
+    CONTROL_ENABLED = ("50800000: 0000001f 00000000 00000000 00000000", True)
+    CONTROL_DISABLED = ("50800000: 00000000 00000000 00000000 00000000", True)
+
     def test_reads_the_first_word_of_md_output(self) -> None:
         text = "508000fc: 44570120 00000000 00000000 00000000"
         self.assertEqual(_read_md_word(text, 0x5080_00FC), 0x4457_0120)
@@ -175,46 +199,84 @@ class WatchdogArmTest(unittest.TestCase):
 
     def test_arms_and_verifies_the_watchdog(self) -> None:
         con = FakeConsole(
-            [
-                ("508000fc: 44570120 00000000 00000000 00000000", True),
-                ("", True),
-                ("50800000: 0000001f 00000000 00000000 00000000", True),
-            ]
+            [self.CLOCK, self.COMPONENT_OK, self.ARMED, self.CONTROL_ENABLED]
         )
         arm_hardware_watchdog(con, 10.0, allow_missing=False)
-        self.assertIn("mw.l 0x50800004 0xf", con.commands[1])
-        self.assertIn("mw.l 0x50800000 0x1f", con.commands[1])
+        self.assertIn("0x51828444", con.commands[0])
+        self.assertIn("mw.l 0x50800004 0xf", con.commands[2])
+        self.assertIn("mw.l 0x50800000 0x1f", con.commands[2])
 
     def test_a_missing_watchdog_is_refused(self) -> None:
-        con = FakeConsole([("508000fc: 00000000 00000000 00000000 00000000", True)])
+        con = FakeConsole([self.CLOCK, self.COMPONENT_MISSING])
         with self.assertRaises(SystemExit):
             arm_hardware_watchdog(con, 10.0, allow_missing=False)
 
     def test_a_missing_watchdog_can_be_allowed_for_virt(self) -> None:
-        con = FakeConsole([("508000fc: 00000000 00000000 00000000 00000000", True)])
+        con = FakeConsole([self.CLOCK, self.COMPONENT_MISSING])
         arm_hardware_watchdog(con, 10.0, allow_missing=True)
 
     def test_a_watchdog_that_stays_disabled_is_refused(self) -> None:
         con = FakeConsole(
-            [
-                ("508000fc: 44570120 00000000 00000000 00000000", True),
-                ("", True),
-                ("50800000: 00000000 00000000 00000000 00000000", True),
-            ]
+            [self.CLOCK, self.COMPONENT_OK, self.ARMED, self.CONTROL_DISABLED]
         )
         with self.assertRaises(SystemExit):
             arm_hardware_watchdog(con, 10.0, allow_missing=False)
 
     def test_an_unreadable_control_word_is_refused(self) -> None:
-        con = FakeConsole(
-            [
-                ("508000fc: 44570120 00000000 00000000 00000000", True),
-                ("", True),
-                ("garbage", False),
-            ]
-        )
+        con = FakeConsole([self.CLOCK, self.COMPONENT_OK, self.ARMED, ("garbage", False)])
         with self.assertRaises(SystemExit):
             arm_hardware_watchdog(con, 10.0, allow_missing=False)
+
+
+class InitramfsModeTest(unittest.TestCase):
+    def _archive(self, entries: dict[str, bytes]) -> str:
+        handle, path = tempfile.mkstemp(suffix=".cpio")
+        os.close(handle)
+        self.addCleanup(os.unlink, path)
+        with open(path, "wb") as stream:
+            stream.write(newc(entries))
+        return path
+
+    def test_parses_newc_names(self) -> None:
+        path = self._archive({"init": b"x", "bin/busybox": b"y"})
+        self.assertEqual(_initramfs_entries(path), {"init", "bin/busybox"})
+
+    def test_basic_without_busybox_is_refused(self) -> None:
+        path = self._archive({"init": b"x"})
+        with self.assertRaises(BootSafetyError) as caught:
+            validate_initramfs_for_mode("basic", path)
+        self.assertIn("busybox", str(caught.exception))
+
+    def test_basic_with_busybox_is_accepted(self) -> None:
+        path = self._archive({"init": b"x", "bin/busybox": b"y"})
+        validate_initramfs_for_mode("basic", path)
+
+    def test_basic_without_a_local_copy_is_refused(self) -> None:
+        with self.assertRaises(BootSafetyError):
+            validate_initramfs_for_mode("basic", None)
+
+    def test_systemd_needs_no_archive_check(self) -> None:
+        validate_initramfs_for_mode("systemd", None)
+
+
+def newc(entries: dict[str, bytes]) -> bytes:
+    """Builds a minimal newc cpio archive for the parser tests."""
+    out = bytearray()
+    for ino, (name, data) in enumerate(entries.items(), start=1):
+        name_bytes = name.encode() + b"\0"
+        fields = [ino, 0o100644, 0, 0, 1, 0, len(data), 0, 0, 0, 0, len(name_bytes), 0]
+        out += b"070701" + b"".join(f"{value:08x}".encode() for value in fields)
+        out += name_bytes
+        out += b"\0" * (-len(out) % 4)
+        out += data
+        out += b"\0" * (-len(out) % 4)
+    trailer = b"TRAILER!!!\0"
+    fields = [0] * 13
+    fields[11] = len(trailer)
+    out += b"070701" + b"".join(f"{value:08x}".encode() for value in fields)
+    out += trailer
+    out += b"\0" * (-len(out) % 4)
+    return bytes(out)
 
 
 if __name__ == "__main__":
