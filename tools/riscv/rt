@@ -61,6 +61,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "ktest-gate": ("script", "ktest/gate_ktests.sh"),
     # kernel log contract
     "log-check": ("module", "tools.riscv.qemu.validate_run_kernel_log"),
+    # boot-failure simulations for the recovery guarantees
+    "recovery-sim": ("module", "tools.riscv.qemu.recovery_sim"),
     # LTP
     "ltp-run": ("module", "tools.riscv.ltp.ltp_gate"),
     "ltp-manifest": ("module", "tools.riscv.ltp.ltp_manifest"),

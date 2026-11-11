@@ -114,9 +114,25 @@
 ## 5. 验证状态与待办
 
 已做：
-- Kani 5 条证明；boot-recovery crate 4 个单元测试；闸门 21 个单元测试；
+- Kani 5 条证明；boot-recovery crate 4 个单元测试；闸门 31 个单元测试；
   kernel ktest（定时器状态机）。
 - release 镜像确定性构建（同一树两次构建 sha256 一致）。
+- **启动失效模拟套件**（`rt recovery-sim`，`tools/riscv/qemu/recovery_sim.py`）：
+  用 release 内核在 QEMU 上逐类制造失效，统计启动次数与恢复标记。
+
+  | 用例 | 结果 |
+  | --- | --- |
+  | stage1 `interactive` 标签不匹配（原始事故） | 4 次启动、4 次 `ARMED` → 反复自愈 |
+  | stage1 `basic` 无 busybox（第二次事故） | 4 次启动、4 次 `ARMED` → 反复自愈 |
+  | 纯挂起 userspace（init 只 `pause()`） | 5 次启动、5 次 `ARMED` |
+  | panic + `panic_reboot=1`（deadline=0） | 38 次重启 → panic 策略单独驱动 |
+  | panic + `panic_reboot=0` | 1 次启动后 QEMU 退出 → 基线未变 |
+  | QEMU 无 deadline（虚拟平台默认关闭） | 1 次启动、`DISABLED` → 设计如此 |
+  | 闸门拒绝两次真实事故的命令行 | 均拒绝 |
+
+  套件拒绝使用大于 10 MB 的镜像：`make ktest` 会把 release 镜像覆盖成
+  dev/ktest 构建，那会让所有用例超时并看起来像安全机制失效（第一次运行就
+  踩到了）。
 - **L2 端到端复现（2026-11-11，QEMU virt）**：用与事故完全相同的失效条件
   启动（`--root-init=interactive`，rootfs 无匹配标签），命令行显式
   `asterinas.reboot_after=15`。串口记录到
