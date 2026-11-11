@@ -45,13 +45,28 @@ class BootSafetyGateTest(unittest.TestCase):
 
     def test_proven_mode_with_a_short_deadline_needs_no_flags(self) -> None:
         validate_boot_append(
-            f"{KERNEL_BASE} asterinas.reboot_after=120 -- --root-init=systemd"
+            f"{KERNEL_BASE} asterinas.reboot_after=300 -- --root-init=systemd"
         )
+
+    def test_a_deadline_inside_the_userspace_guard_is_refused(self) -> None:
+        """180 s or less turns into an immediate userspace reboot.
+
+        `megrez-safe-reboot` reboots 180 s before the kernel deadline; at or
+        below that guard the subtraction collapses and aborts the boot (the
+        2026-11-11 S2 boot).
+        """
+        for seconds in (1, 120, 180):
+            with self.assertRaises(BootSafetyError) as caught:
+                validate_boot_append(
+                    f"{KERNEL_BASE} asterinas.reboot_after={seconds} -- "
+                    "--root-init=systemd"
+                )
+            self.assertIn("userspace watchdog guard", str(caught.exception))
 
     def test_an_unproven_mode_needs_an_explicit_opt_in(self) -> None:
         with self.assertRaises(BootSafetyError) as caught:
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=60 -- --root-init=basic"
+                f"{KERNEL_BASE} asterinas.reboot_after=300 -- --root-init=basic"
             )
         self.assertIn("allow-experimental-mode", str(caught.exception))
 
@@ -104,7 +119,7 @@ class BootSafetyGateTest(unittest.TestCase):
 
     def test_interactive_mode_can_be_allowed_explicitly(self) -> None:
         validate_boot_append(
-            f"{KERNEL_BASE} asterinas.reboot_after=120 -- --root-init=interactive",
+            f"{KERNEL_BASE} asterinas.reboot_after=300 -- --root-init=interactive",
             allow_interactive=True,
             allow_experimental_mode=True,
         )
@@ -144,7 +159,7 @@ class BootSafetyGateTest(unittest.TestCase):
         """The 2026-11-05 wedge: a stray token after '--' made stage1 hold."""
         with self.assertRaises(BootSafetyError) as caught:
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=60 "
+                f"{KERNEL_BASE} asterinas.reboot_after=300 "
                 "-- --root-init=systemd --debug-console=bogus"
             )
         self.assertIn("root-init-argument", str(caught.exception))
@@ -152,19 +167,19 @@ class BootSafetyGateTest(unittest.TestCase):
     def test_a_duplicate_init_option_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=60 "
+                f"{KERNEL_BASE} asterinas.reboot_after=300 "
                 "-- --root-init=systemd --volatile-home --volatile-home"
             )
 
     def test_debug_console_needs_systemd_mode(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=60 "
+                f"{KERNEL_BASE} asterinas.reboot_after=300 "
                 "-- --root-init=basic --debug-console=root",
                 allow_experimental_mode=True,
             )
         validate_boot_append(
-            f"{KERNEL_BASE} asterinas.reboot_after=60 "
+            f"{KERNEL_BASE} asterinas.reboot_after=300 "
             "-- --root-init=systemd --debug-console=isolated-root"
         )
 
@@ -183,6 +198,7 @@ class BootSafetyGateTest(unittest.TestCase):
             "",
             " asterinas.reboot_after=0",
             " asterinas.reboot_after=1",
+            " asterinas.reboot_after=300",
             " asterinas.reboot_after=900",
             " asterinas.reboot_after=86400",
             " asterinas.reboot_after=86401",
@@ -192,6 +208,7 @@ class BootSafetyGateTest(unittest.TestCase):
         safe_modes = {"basic", "systemd", "probe", "probe-auto"}
         accepted_deadlines = {
             " asterinas.reboot_after=1",
+            " asterinas.reboot_after=300",
             " asterinas.reboot_after=900",
             " asterinas.reboot_after=86400",
         }

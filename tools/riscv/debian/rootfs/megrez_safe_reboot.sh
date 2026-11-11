@@ -63,8 +63,18 @@ if [[ -n "$KERNEL_DEADLINE" ]]; then
 fi
 if [[ -z "$DEADLINE" ]]; then
     [[ -n "$KERNEL_DEADLINE" ]] || exit 0
-    DEADLINE=$((KERNEL_DEADLINE > KERNEL_REBOOT_GUARD_SECONDS ?
-        KERNEL_DEADLINE - KERNEL_REBOOT_GUARD_SECONDS : 1))
+    # The userspace watchdog reboots `KERNEL_REBOOT_GUARD_SECONDS` before the
+    # kernel's hard deadline so the reboot can be clean. A deadline that is
+    # not longer than that guard leaves no room: deriving
+    # `deadline - guard` would collapse to an immediate reboot, which aborts
+    # the boot before the desktop can report ready (the 2026-11-11 S2 boot
+    # did exactly this). Refuse up front and leave the short deadline to the
+    # kernel's own grace path; the reason doubles as the existing
+    # budget-exhausted contract.
+    if ((KERNEL_DEADLINE <= KERNEL_REBOOT_GUARD_SECONDS)); then
+        fail kernel-deadline-exhausted
+    fi
+    DEADLINE=$((KERNEL_DEADLINE - KERNEL_REBOOT_GUARD_SECONDS))
 fi
 readonly DEADLINE KERNEL_DEADLINE
 [[ "$DEADLINE" =~ ^[1-9][0-9]*$ ]] || fail invalid-deadline

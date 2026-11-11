@@ -1069,6 +1069,77 @@ configure_and_normalize_rootfs
             ],
         )
 
+    def test_safe_reboot_leaves_a_short_kernel_deadline_to_the_kernel(
+        self,
+    ) -> None:
+        """A deadline inside the 180 s guard must not become an instant reboot.
+
+        The script reboots `KERNEL_REBOOT_GUARD_SECONDS` before the kernel's
+        deadline. With `asterinas.reboot_after=180` and a small uptime the
+        subtraction used to collapse to one second, so the script stopped
+        units and rebooted before the desktop could report ready (the
+        2026-11-11 S2 boot). It now refuses up front and leaves the short
+        deadline to the kernel's own grace path.
+        """
+        fake_bin = self.directory / "short-deadline-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "short-deadline-units"
+        unit_dir.mkdir()
+        for name in (
+            "asterinas-browser-web-evidence.service",
+            "asterinas-browser-web.service",
+            "asterinas-desktop-m5-network.service",
+            "asterinas-desktop-m5.service",
+        ):
+            (unit_dir / name).touch()
+        actions = self.directory / "short-deadline-actions"
+        actions.write_text("", encoding="utf-8")
+        console = self.directory / "short-deadline-console"
+        console.write_text("", encoding="utf-8")
+        uptime = self.directory / "short-deadline-uptime"
+        uptime.write_text("10.00 4.00\n", encoding="utf-8")
+        cmdline = self.directory / "short-deadline-cmdline"
+        cmdline.write_text(
+            "console=ttyS0 asterinas.reboot_after=180 init=/init\n",
+            encoding="utf-8",
+        )
+        for name in ("systemctl", "sync", "reboot", "sleep", "pgrep"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+        )
+        environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(actions.read_text(encoding="utf-8"), "")
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            ["ASTERINAS_USERSPACE_REBOOT_FAIL reason=kernel-deadline-exhausted"],
+        )
+
     def test_safe_reboot_hands_off_only_to_ready_current_boot(self) -> None:
         fake_bin = self.directory / "desktop-handoff-bin"
         fake_bin.mkdir()

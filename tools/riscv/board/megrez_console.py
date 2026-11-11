@@ -467,10 +467,16 @@ _ALLOWED_INIT_OPTIONS = frozenset(
         "--debug-console=isolated-root",
     }
 )
-# The deadline for a boot that has not been proven yet. Long enough for a slow
-# cold boot, short enough that a mistake returns the board while the operator
-# is still at the desk.
-_EXPERIMENTAL_REBOOT_AFTER_LIMIT = 180
+# The deployed rootfs runs `megrez-safe-reboot`, which reboots 180 s before
+# the kernel deadline so it can stop writers and sync. A kernel deadline at or
+# below that guard leaves no room: the userspace watchdog turns it into an
+# immediate reboot that aborts the boot (the 2026-11-11 S2 boot did this).
+_USRESPACE_REBOOT_GUARD_SECONDS = 180
+_MIN_REBOOT_AFTER_SECONDS = _USRESPACE_REBOOT_GUARD_SECONDS + 1
+# A first boot of an unproven command line still has to come back while the
+# operator is there. Twice the userspace guard leaves the desktop at least
+# 180 s to reach its ready marker before the userspace watchdog acts.
+_EXPERIMENTAL_REBOOT_AFTER_LIMIT = 2 * _USRESPACE_REBOOT_GUARD_SECONDS
 
 
 def _initramfs_entries(path: str) -> set[str]:
@@ -693,6 +699,14 @@ def validate_boot_append(
     if not 1 <= seconds <= _MAX_REBOOT_AFTER_SECONDS:
         raise BootSafetyError(
             f"asterinas.reboot_after={seconds} is outside 1..{_MAX_REBOOT_AFTER_SECONDS}"
+        )
+    if seconds < _MIN_REBOOT_AFTER_SECONDS:
+        raise BootSafetyError(
+            f"asterinas.reboot_after={seconds} is at or below the userspace "
+            f"watchdog guard ({_USRESPACE_REBOOT_GUARD_SECONDS} s): the deployed "
+            "safe-reboot service would reboot immediately and abort the boot. "
+            f"Use at least {_MIN_REBOOT_AFTER_SECONDS} s "
+            f"({_EXPERIMENTAL_REBOOT_AFTER_LIMIT} s leaves the desktop 180 s)."
         )
     if seconds > _EXPERIMENTAL_REBOOT_AFTER_LIMIT and not allow_long_deadline:
         raise BootSafetyError(

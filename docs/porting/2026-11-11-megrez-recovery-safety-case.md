@@ -43,9 +43,15 @@
   `--volatile-home` 搭配非 systemd 模式都拒绝）——2026-11-05 的
   `root-init-argument` 死机就来自一个位置错误的调试选项。
 - **未在本板上到达过用户态的模式**（目前只有 `systemd` 算已证）需要显式
-  `--allow-experimental-mode`；**任何超过 180 s 的 deadline** 需要显式
+  `--allow-experimental-mode`；**任何超过 360 s 的 deadline** 需要显式
   `--allow-long-deadline`。也就是说，一条新命令行第一次上真机时，出错代价被
-  限制在 3 分钟内，操作者还在现场。
+  限制在数分钟内，操作者还在现场。
+- **kernel deadline 必须大于 180 s**：rootfs 里的用户态看门狗
+  （`megrez-safe-reboot`）在内核硬 deadline 前 180 s 提前重启；deadline ≤180 s
+  会被它折叠成立即重启，反而打断启动（2026-11-11 S2 实测）。闸门现在直接拒绝
+  该区间；脚本本身也改为"预算不足就拒绝"，不再推导出 1 秒。
+  这条是**跨层交互**：内核、用户态看门狗、启动闸门各自的规则都正确，组合起来
+  才暴露出问题，所以它现在同时被三处的测试覆盖。
 - `basic` 模式必须用 `--initramfs-cpio` 提供板上将要加载的同一份 initramfs，
   并解析 cpio 确认存在 `/bin/busybox`（部署版没有，这正是 2026-11-11 第二次
   卡死的原因）。

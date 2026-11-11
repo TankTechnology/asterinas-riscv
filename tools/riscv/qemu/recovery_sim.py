@@ -152,12 +152,12 @@ def gate_cases() -> list[tuple[str, bool, str]]:
         ),
         (
             "gate-refuses-unknown-init-option",
-            "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=60 "
+            "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=300 "
             "-- --root-init=systemd --debug-console=bogus",
         ),
         (
             "gate-refuses-root-init-before-separator",
-            "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=60 "
+            "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=300 "
             "--root-init=systemd",
         ),
     ]
