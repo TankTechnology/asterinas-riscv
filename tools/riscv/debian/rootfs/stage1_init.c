@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/reboot.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -34,9 +35,17 @@ static void report_progress(const char *step, const char *key,
  * console shows the failure once and then nothing, ever. Keep a heartbeat on
  * the console so an operator can tell "still holding with this reason" from
  * "the machine stopped", and so the recovery layers have a liveness signal.
- * The hold itself is unchanged (no exit, no reboot).
+ *
+ * A hold that outlives HOLD_REBOOT_SECONDS reboots instead of holding
+ * forever. The kernel's software deadline normally recovers a stuck boot, but
+ * this layer also works when that deadline is missing, disarmed, or cannot
+ * run (an interrupted kernel timer path). If the reboot syscall fails the
+ * hold continues and retries after another interval.
  */
 enum { HOLD_HEARTBEAT_SECONDS = 10 };
+#ifndef HOLD_REBOOT_SECONDS
+#define HOLD_REBOOT_SECONDS 300
+#endif
 
 static void fail_and_hold(const char *reason)
 {
@@ -49,6 +58,7 @@ static void fail_and_hold(const char *reason)
         start.tv_nsec = 0;
     }
     unsigned long next_beat = HOLD_HEARTBEAT_SECONDS;
+    unsigned long next_reboot = HOLD_REBOOT_SECONDS;
     for (;;) {
         struct timespec tick = { .tv_sec = 1, .tv_nsec = 0 };
         (void)nanosleep(&tick, NULL);
@@ -57,6 +67,17 @@ static void fail_and_hold(const char *reason)
             continue;
         }
         unsigned long elapsed = (unsigned long)(now.tv_sec - start.tv_sec);
+        if (elapsed >= next_reboot) {
+            (void)printf("DEBIAN_STAGE1_HOLD_REBOOT reason=%s uptime=%lus\n",
+                         reason, elapsed);
+            (void)fflush(stdout);
+            (void)sync();
+            (void)reboot(RB_AUTOBOOT);
+            /* The reboot did not take; keep the hold and try again later. */
+            next_reboot = elapsed + HOLD_REBOOT_SECONDS;
+            next_beat = elapsed + HOLD_HEARTBEAT_SECONDS;
+            continue;
+        }
         if (elapsed < next_beat) {
             continue;
         }

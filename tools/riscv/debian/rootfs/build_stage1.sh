@@ -97,6 +97,7 @@ PHYSICAL_SYSTEM_PROBE_SOURCE="$SCRIPT_DIR/physical_system_probe.sh"
 OUTPUT="${1:-$REPOSITORY_ROOT/target/debian-riscv/stage1/initramfs.cpio}"
 COMPILER="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
 read -r -a EXTRA_LINK_FLAGS <<< "${RISC_V_LDFLAGS:-}"
+read -r -a EXTRA_CFLAGS <<< "${RISC_V_CFLAGS:-}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-0}"
 MAX_NEWC_TIMESTAMP=4294967295
 
@@ -183,6 +184,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "$COMPILER" -std=c11 -O2 -static -no-pie -Wall -Wextra -Werror \
+    "${EXTRA_CFLAGS[@]}" \
     "$SOURCE" "$DEBUG_CONSOLE_SOURCE" "$PROBE_SOURCE" \
     "${EXTRA_LINK_FLAGS[@]}" -o "$STAGE/init"
 chmod 0755 "$STAGE" "$STAGE/init"

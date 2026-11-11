@@ -38,12 +38,16 @@ DEFAULT_IMAGE = REPO / "target/osdk/aster-kernel-osdk-bin.Image"
 MAX_RELEASE_IMAGE_BYTES = 10 * 1024 * 1024
 
 
-def build_stage1(workdir: Path) -> Path:
-    archive = workdir / "stage1.cpio"
+def build_stage1(workdir: Path, name: str = "stage1.cpio", cflags: str = "") -> Path:
+    archive = workdir / name
+    environment = dict(os.environ)
+    if cflags:
+        environment["RISC_V_CFLAGS"] = cflags
     subprocess.run(
         [str(TOOLS / "debian/rootfs/build_stage1.sh"), str(archive)],
         check=True,
         stdout=subprocess.DEVNULL,
+        env=environment,
     )
     return archive
 
@@ -201,6 +205,11 @@ def main(argv: list[str] | None = None) -> int:
     workdir = Path(tempfile.mkdtemp(prefix="recovery-sim-"))
     try:
         stage1 = build_stage1(workdir)
+        # A build with a short hold bound, so the bounded-hold reboot can be
+        # observed inside a simulation run instead of after five minutes.
+        fast_hold = build_stage1(
+            workdir, "stage1-fast-hold.cpio", "-DHOLD_REBOOT_SECONDS=8"
+        )
         pause = build_pause_initramfs(workdir)
         empty = build_empty_initramfs(workdir)
 
@@ -242,6 +251,20 @@ def main(argv: list[str] | None = None) -> int:
                     "contains": [
                         "basic-busybox-missing",
                         "DEBIAN_STAGE1_HOLD reason=basic-busybox-missing",
+                    ],
+                },
+            ),
+            (
+                # No kernel deadline at all: only stage1's own hold bound can
+                # bring the board back. The fixture is built with an 8 s bound.
+                "hold-reboots-without-kernel-deadline",
+                fast_hold,
+                "console=ttyS0 loglevel=warn init=/init -- --root-init=basic",
+                28,
+                {
+                    "min_boots": 2,
+                    "contains": [
+                        "DEBIAN_STAGE1_HOLD_REBOOT reason=basic-busybox-missing"
                     ],
                 },
             ),
