@@ -29,14 +29,41 @@ static void report_progress(const char *step, const char *key,
 #endif
 
 #if !defined(DEBIAN_STAGE1_SELF_TEST)
+/*
+ * A held boot is indistinguishable from a dead board from the outside: the
+ * console shows the failure once and then nothing, ever. Keep a heartbeat on
+ * the console so an operator can tell "still holding with this reason" from
+ * "the machine stopped", and so the recovery layers have a liveness signal.
+ * The hold itself is unchanged (no exit, no reboot).
+ */
+enum { HOLD_HEARTBEAT_SECONDS = 10 };
+
 static void fail_and_hold(const char *reason)
 {
     (void)printf("DEBIAN_ROOTFS_FAIL reason=%s\n", reason);
     (void)fflush(stdout);
 
+    struct timespec start;
+    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+        start.tv_sec = 0;
+        start.tv_nsec = 0;
+    }
+    unsigned long next_beat = HOLD_HEARTBEAT_SECONDS;
     for (;;) {
-        while (pause() < 0 && errno == EINTR) {
+        struct timespec tick = { .tv_sec = 1, .tv_nsec = 0 };
+        (void)nanosleep(&tick, NULL);
+        struct timespec now;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            continue;
         }
+        unsigned long elapsed = (unsigned long)(now.tv_sec - start.tv_sec);
+        if (elapsed < next_beat) {
+            continue;
+        }
+        (void)printf("DEBIAN_STAGE1_HOLD reason=%s uptime=%lus\n", reason,
+                     elapsed);
+        (void)fflush(stdout);
+        next_beat = elapsed + HOLD_HEARTBEAT_SECONDS;
     }
 }
 #endif

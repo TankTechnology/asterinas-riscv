@@ -230,6 +230,22 @@ def main(argv: list[str] | None = None) -> int:
                 {"min_boots": 2, "contains": ["root-init-argument"]},
             ),
             (
+                # A held boot must stay observable: one failure line and then
+                # silence is indistinguishable from a dead machine.
+                "hold-heartbeat",
+                stage1,
+                "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=25 "
+                "-- --root-init=basic",
+                32,
+                {
+                    "min_boots": 1,
+                    "contains": [
+                        "basic-busybox-missing",
+                        "DEBIAN_STAGE1_HOLD reason=basic-busybox-missing",
+                    ],
+                },
+            ),
+            (
                 "root-init-before-separator",
                 stage1,
                 "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=8 "
