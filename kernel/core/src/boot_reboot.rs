@@ -153,13 +153,13 @@ fn on_timer_interrupt() {
             }
             let Some(work) = GRACEFUL_REBOOT_WORK.get() else {
                 if RECOVERY_STATE.is_armed() {
-                    power::emergency_restart(ExitCode::Failure);
+                    emergency_reboot_now();
                 }
                 return;
             };
             if !work_queue::try_submit_high_priority_work_item(work.clone()) {
                 if RECOVERY_STATE.is_armed() {
-                    power::emergency_restart(ExitCode::Failure);
+                    emergency_reboot_now();
                 }
                 return;
             }
@@ -167,7 +167,7 @@ fn on_timer_interrupt() {
         }
         TimerAction::Emergency => {
             if RECOVERY_STATE.is_armed() {
-                power::emergency_restart(ExitCode::Failure);
+                emergency_reboot_now();
             }
         }
         TimerAction::Rearm(remaining) => {
@@ -189,8 +189,24 @@ fn graceful_reboot() {
     }
     if RECOVERY_STATE.is_armed() {
         ostd::early_println!("ASTERINAS_SOFTWARE_REBOOT_SYNC_COMPLETE");
-        power::restart(ExitCode::Failure);
+        reboot_now();
     }
+}
+
+/// Stops the hardware watchdog heartbeat, then asks SBI to reset.
+///
+/// If the SBI call fails, `power::restart` halts instead of returning; the
+/// un-fed hardware watchdog then resets the SoC on its own, so a board whose
+/// firmware lacks the reset extension still comes back.
+fn reboot_now() -> ! {
+    crate::hardware_watchdog::stop_kicking_for_reset();
+    power::restart(ExitCode::Failure)
+}
+
+/// Same ordering for the paths that run in interrupt context.
+fn emergency_reboot_now() -> ! {
+    crate::hardware_watchdog::stop_kicking_for_reset();
+    power::emergency_restart(ExitCode::Failure)
 }
 
 #[derive(Debug, PartialEq)]

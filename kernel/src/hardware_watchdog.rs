@@ -10,7 +10,10 @@
 //! have both been checked.
 
 use alloc::string::String;
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use aster_cmdline::define_kv_param;
 use ostd::{arch::boot::DEVICE_TREE, io::IoMem, mm::io::VmIoOnce, timer};
@@ -28,6 +31,23 @@ const KICK_PERIOD: Duration = Duration::from_secs(1);
 
 static REQUESTED: Once<String> = Once::new();
 define_kv_param!("asterinas.hardware_watchdog_handoff", REQUESTED);
+
+/// Whether this kernel still feeds the hardware watchdog.
+///
+/// The software reboot path clears it before asking SBI to reset. If SBI has
+/// no reset extension (or the call fails), the un-fed watchdog is what still
+/// brings the board back: it is the only layer left when the kernel cannot
+/// complete a software reset.
+static KICKING: AtomicBool = AtomicBool::new(true);
+
+/// Stops feeding the hardware watchdog for the rest of this boot.
+///
+/// Called immediately before a software reset is attempted. If the reset
+/// works the watchdog never fires; if it does not, the watchdog resets the
+/// SoC within its programmed timeout instead of leaving the board halted.
+pub(crate) fn stop_kicking_for_reset() {
+    KICKING.store(false, Ordering::Release);
+}
 
 fn requested() -> bool {
     REQUESTED
@@ -85,6 +105,9 @@ pub(super) fn handoff_if_requested() {
     }
 
     let heartbeat = move || {
+        if !KICKING.load(Ordering::Acquire) {
+            return;
+        }
         // A failed write is intentionally ignored: if this MMIO path becomes
         // unavailable the hardware watchdog remains the fail-safe.
         let _ = registers.write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE);
