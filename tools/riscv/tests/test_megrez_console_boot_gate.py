@@ -140,6 +140,34 @@ class BootSafetyGateTest(unittest.TestCase):
                 "-- --root-init=systemd --root-init=basic"
             )
 
+    def test_an_unknown_init_option_is_refused(self) -> None:
+        """The 2026-11-05 wedge: a stray token after '--' made stage1 hold."""
+        with self.assertRaises(BootSafetyError) as caught:
+            validate_boot_append(
+                f"{KERNEL_BASE} asterinas.reboot_after=60 "
+                "-- --root-init=systemd --debug-console=bogus"
+            )
+        self.assertIn("root-init-argument", str(caught.exception))
+
+    def test_a_duplicate_init_option_is_refused(self) -> None:
+        with self.assertRaises(BootSafetyError):
+            validate_boot_append(
+                f"{KERNEL_BASE} asterinas.reboot_after=60 "
+                "-- --root-init=systemd --volatile-home --volatile-home"
+            )
+
+    def test_debug_console_needs_systemd_mode(self) -> None:
+        with self.assertRaises(BootSafetyError):
+            validate_boot_append(
+                f"{KERNEL_BASE} asterinas.reboot_after=60 "
+                "-- --root-init=basic --debug-console=root",
+                allow_experimental_mode=True,
+            )
+        validate_boot_append(
+            f"{KERNEL_BASE} asterinas.reboot_after=60 "
+            "-- --root-init=systemd --debug-console=isolated-root"
+        )
+
     def test_every_accepted_line_is_recoverable(self) -> None:
         """Exhaustive check over the interesting token combinations.
 

@@ -456,6 +456,17 @@ _BOOT_SAFE_ROOT_INIT_MODES = frozenset({"basic", "systemd", "probe", "probe-auto
 # recovery deadline, so a wrong guess costs minutes instead of hours.
 _PROVEN_ROOT_INIT_MODES = frozenset({"systemd"})
 _MAX_REBOOT_AFTER_SECONDS = 24 * 3600
+# The only init options stage1 accepts. Any other token makes
+# `parse_root_init()` return -1 and stage1 holds in
+# `fail_and_hold("root-init-argument")` (the 2026-11-05 wedge).
+_ALLOWED_INIT_OPTIONS = frozenset(
+    {
+        "--root-fs=ext4",
+        "--volatile-home",
+        "--debug-console=root",
+        "--debug-console=isolated-root",
+    }
+)
 # The deadline for a boot that has not been proven yet. Long enough for a slow
 # cold boot, short enough that a mistake returns the board while the operator
 # is still at the desk.
@@ -633,6 +644,25 @@ def validate_boot_append(
             f"--root-init={mode} has not reached userspace on this board yet; "
             "an unproven mode needs --allow-experimental-mode and a deadline of "
             f"at most {_EXPERIMENTAL_REBOOT_AFTER_LIMIT} s"
+        )
+
+    # Mirror stage1's parser: an unknown, duplicated or misplaced init option
+    # makes it hold, so refuse it here instead of discovering it after handoff.
+    init_options = [t for t in init_tokens if not t.startswith("--root-init=")]
+    for token in init_options:
+        if token not in _ALLOWED_INIT_OPTIONS:
+            raise BootSafetyError(
+                f"unknown init option {token!r}; stage1 would hold in "
+                "fail_and_hold(\"root-init-argument\")"
+            )
+    if len(set(init_options)) != len(init_options):
+        raise BootSafetyError("duplicate init option; stage1 rejects duplicates")
+    debug_or_volatile = any(
+        t.startswith("--debug-console=") or t == "--volatile-home" for t in init_options
+    )
+    if debug_or_volatile and mode != "systemd":
+        raise BootSafetyError(
+            "--debug-console/--volatile-home are only accepted with --root-init=systemd"
         )
 
     deadlines = [

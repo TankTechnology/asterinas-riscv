@@ -38,7 +38,10 @@
 ### I1（工具层）任何 ad-hoc 启动都带可恢复性前提，且硬件看门狗已武装并核验.
 
 - `validate_boot_append()`：拒绝 `--root-init=interactive`、未知模式、缺失/为
-  0/超 24 h 的 `asterinas.reboot_after`；要求恰好一个 `--`。
+  0/超 24 h 的 `asterinas.reboot_after`；要求恰好一个 `--`；**`--` 之后的
+  init 选项按 stage1 的解析器做白名单校验**（未知、重复、`--debug-console`/
+  `--volatile-home` 搭配非 systemd 模式都拒绝）——2026-11-05 的
+  `root-init-argument` 死机就来自一个位置错误的调试选项。
 - **未在本板上到达过用户态的模式**（目前只有 `systemd` 算已证）需要显式
   `--allow-experimental-mode`；**任何超过 180 s 的 deadline** 需要显式
   `--allow-long-deadline`。也就是说，一条新命令行第一次上真机时，出错代价被
@@ -124,11 +127,14 @@
   | --- | --- |
   | stage1 `interactive` 标签不匹配（原始事故） | 4 次启动、4 次 `ARMED` → 反复自愈 |
   | stage1 `basic` 无 busybox（第二次事故） | 4 次启动、4 次 `ARMED` → 反复自愈 |
+  | stage1 未知 init 选项（11-05 `root-init-argument` 事故） | 3 次启动、3 次 `ARMED` |
+  | `--root-init` 放在 `--` 之前（无参数 → 默认 interactive） | 3 次启动、3 次 `ARMED` |
   | 纯挂起 userspace（init 只 `pause()`） | 5 次启动、5 次 `ARMED` |
-  | panic + `panic_reboot=1`（deadline=0） | 38 次重启 → panic 策略单独驱动 |
+  | panic + `panic_reboot=1`（deadline=0） | 47 次重启 → panic 策略单独驱动 |
   | panic + `panic_reboot=0` | 1 次启动后 QEMU 退出 → 基线未变 |
   | QEMU 无 deadline（虚拟平台默认关闭） | 1 次启动、`DISABLED` → 设计如此 |
   | 闸门拒绝两次真实事故的命令行 | 均拒绝 |
+  | 闸门拒绝未知 init 选项 / `--root-init` 位置错误 | 均拒绝 |
 
   套件拒绝使用大于 10 MB 的镜像：`make ktest` 会把 release 镜像覆盖成
   dev/ktest 构建，那会让所有用例超时并看起来像安全机制失效（第一次运行就

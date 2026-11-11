@@ -150,6 +150,16 @@ def gate_cases() -> list[tuple[str, bool, str]]:
             "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=5400 "
             "-- --root-init=basic",
         ),
+        (
+            "gate-refuses-unknown-init-option",
+            "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=60 "
+            "-- --root-init=systemd --debug-console=bogus",
+        ),
+        (
+            "gate-refuses-root-init-before-separator",
+            "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=60 "
+            "--root-init=systemd",
+        ),
     ]
     results = []
     for name, append in incidents:
@@ -210,6 +220,22 @@ def main(argv: list[str] | None = None) -> int:
                 "-- --root-init=basic",
                 30,
                 {"min_boots": 2, "contains": ["basic-busybox-missing"]},
+            ),
+            (
+                "stage1-root-init-argument",
+                stage1,
+                "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=8 "
+                "-- --root-init=systemd --debug-console=bogus",
+                30,
+                {"min_boots": 2, "contains": ["root-init-argument"]},
+            ),
+            (
+                "root-init-before-separator",
+                stage1,
+                "console=ttyS0 loglevel=warn init=/init asterinas.reboot_after=8 "
+                "--root-init=systemd",
+                30,
+                {"min_boots": 2, "contains": ["step=start mode=interactive"]},
             ),
             (
                 "hung-init",
