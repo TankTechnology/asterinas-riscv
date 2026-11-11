@@ -17,6 +17,7 @@ import unittest
 
 from tools.riscv.board.megrez_console import (
     BootSafetyError,
+    boot_load_commands,
     _initramfs_entries,
     _read_md_word,
     arm_hardware_watchdog,
@@ -308,6 +309,36 @@ class WatchdogArmTest(unittest.TestCase):
         con = FakeConsole([self.CLOCK, self.COMPONENT_OK, self.ARMED, ("garbage", False)])
         with self.assertRaises(SystemExit):
             arm_hardware_watchdog(con, 10.0, allow_missing=False)
+
+
+class BootLoadCommandsTest(unittest.TestCase):
+    APPEND = "console=ttyS0 init=/init asterinas.reboot_after=420 -- --root-init=systemd"
+
+    def test_default_initramfs_comes_from_p1(self) -> None:
+        steps = boot_load_commands(
+            "stage1-daily.cpio", "megrez-daily.dtb", "/root/kernel-linux4.img",
+            self.APPEND,
+        )
+        self.assertEqual(steps[0], "ext4load mmc 1:1 0x88300000 stage1-daily.cpio")
+
+    def test_a_candidate_initramfs_can_come_from_p2(self) -> None:
+        """Trying a new stage1 must not require writing to the boot partition."""
+        steps = boot_load_commands(
+            "/root/stage1-heartbeat.cpio", "megrez-daily.dtb",
+            "/root/kernel-linux4.img", self.APPEND, "mmc 1:2",
+        )
+        self.assertEqual(
+            steps[0], "ext4load mmc 1:2 0x88300000 /root/stage1-heartbeat.cpio"
+        )
+        self.assertEqual(steps[2], "ext4load mmc 1:1 0x88000000 megrez-daily.dtb")
+        self.assertEqual(steps[3], "ext4load mmc 1:2 0x80200000 /root/kernel-linux4.img")
+
+    def test_an_unknown_device_is_refused(self) -> None:
+        with self.assertRaises(BootSafetyError):
+            boot_load_commands(
+                "stage1-daily.cpio", "megrez-daily.dtb", "/root/kernel-img",
+                self.APPEND, "mmc 0:1",
+            )
 
 
 class InitramfsModeTest(unittest.TestCase):

@@ -716,6 +716,31 @@ def validate_boot_append(
         )
 
 
+_INITRD_DEVICES = frozenset({"mmc 1:1", "mmc 1:2"})
+
+
+def boot_load_commands(
+    initrd: str, dtb: str, kernel: str, append: str, initrd_device: str = "mmc 1:1"
+) -> list[str]:
+    """Builds the U-Boot load sequence for one handoff.
+
+    The initramfs usually lives on p1 next to the DTB, but a candidate
+    initramfs can be tested from p2 without touching the boot partition.
+    """
+    if initrd_device not in _INITRD_DEVICES:
+        raise BootSafetyError(
+            f"unsupported initrd device {initrd_device!r}; use 'mmc 1:1' (p1) "
+            "or 'mmc 1:2' (p2)"
+        )
+    return [
+        f"ext4load {initrd_device} 0x88300000 {initrd}",
+        "setenv initrd_size ${filesize}",
+        f"ext4load mmc 1:1 0x88000000 {dtb}",
+        f"ext4load mmc 1:2 0x80200000 {kernel}",
+        f"setenv bootargs {append}",
+    ]
+
+
 def cmd_boot(args: argparse.Namespace) -> int:
     """Load a p2 kernel plus the p1 initramfs and DTB, then hand off with booti."""
     try:
@@ -732,6 +757,9 @@ def cmd_boot(args: argparse.Namespace) -> int:
             if token.startswith("--root-init=")
         )
         validate_initramfs_for_mode(mode, args.initramfs_cpio)
+        steps = boot_load_commands(
+            args.initrd, args.dtb, args.kernel, args.append, args.initrd_device
+        )
     except BootSafetyError as error:
         raise SystemExit(f"refusing to boot: {error}") from error
 
@@ -746,13 +774,6 @@ def cmd_boot(args: argparse.Namespace) -> int:
         print(text[-800:], file=sys.stderr)
         raise SystemExit("refusing to boot: U-Boot bootcmd is missing or not a booti boot")
 
-    steps = [
-        f"ext4load mmc 1:1 0x88300000 {args.initrd}",
-        "setenv initrd_size ${filesize}",
-        f"ext4load mmc 1:1 0x88000000 {args.dtb}",
-        f"ext4load mmc 1:2 0x80200000 {args.kernel}",
-        f"setenv bootargs {args.append}",
-    ]
     for command in steps:
         print("$", command, flush=True)
         text, ok = con.run(command, args.step_timeout)
@@ -822,6 +843,12 @@ def main() -> int:
     boot.add_argument("--fifo", default="/tmp/board.cmd")
     boot.add_argument("--kernel", default="/root/kernel-rel.img", help="path inside p2")
     boot.add_argument("--initrd", default="stage1-daily.cpio")
+    boot.add_argument(
+        "--initrd-device",
+        default="mmc 1:1",
+        help="U-Boot device holding the initramfs: 'mmc 1:1' (p1) or 'mmc 1:2' "
+        "(p2) for trying a candidate without touching the boot partition",
+    )
     boot.add_argument("--dtb", default="megrez-daily.dtb")
     boot.add_argument("--append", required=True)
     boot.add_argument("--step-timeout", type=float, default=120.0)
