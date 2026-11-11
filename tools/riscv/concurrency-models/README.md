@@ -28,6 +28,7 @@ python3 tools/riscv/concurrency-models/run.py --only pollee-poll
 | `lock-order/` | policy check | futex bucket pairs, VMAR, page table | Every two-lock path follows one total order, so those paths cannot deadlock. |
 | `futex-bucket/` | loom | `kernel/src/process/posix_thread/futex.rs` | Futex wait/wake/requeue bookkeeping: a requeued waiter is woken on the target bucket and no wake is lost. |
 | `kani:cow-decision` | Kani | `kernel/libs/cow-decision`, called from `vm_mapping.rs` | The shipped CoW decision function: a private mapping is upgraded in place only when it is the frame's sole reference. |
+| `kani:boot-recovery` | Kani | `kernel/libs/boot-recovery`, called from `kernel/src/boot_reboot.rs` | A boot that names neither recovery switch still arms both nets on real hardware; nothing is disabled except by an explicit `=0`. |
 
 The buggy variants are kept and asserted to *fail*: `loom` must find the
 interleaving, TLC must report the invariant violation. That makes the model a

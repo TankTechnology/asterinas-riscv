@@ -8,10 +8,11 @@
 //! type at. Physical access is then the only way out.
 //!
 //! Recovery is therefore on by default on real hardware: the kernel reboots
-//! itself if boot has not reached a healthy userspace within
-//! [`DEFAULT_REBOOT_AFTER_SECONDS`], and reboots instead of halting after a
-//! fatal abort. A systemd image disarms the deadline at `basic.target` through
-//! `/proc/sys/kernel/asterinas_reboot_watchdog`.
+//! itself if boot has not reached a healthy userspace within the default
+//! deadline (900 s), and reboots instead of halting after a fatal abort. A
+//! systemd image disarms the deadline at `basic.target` through
+//! `/proc/sys/kernel/asterinas_reboot_watchdog`. The table that decides this
+//! lives in the `boot-recovery` crate, where it is model-checked with Kani.
 //!
 //! `asterinas.reboot_after=<seconds>` overrides the deadline (`0` disables
 //! it); a systemd image disarms it at `basic.target`, while an initramfs shell
@@ -27,6 +28,7 @@ use core::{
 };
 
 use aster_time::read_monotonic_time;
+use boot_recovery::{Platform, RecoverySettings, resolve};
 use ostd::{
     panic,
     power::{self, ExitCode},
@@ -41,63 +43,14 @@ use crate::{
 
 const GRACEFUL_REBOOT_GRACE: Duration = Duration::from_secs(10);
 
-/// Left in place when the command-line key is absent, so "not given" stays
-/// distinguishable from an explicit zero.
-const PARAM_UNSET: u32 = u32::MAX;
-
-/// Recovery deadline used when the command line does not choose one: long
-/// enough that a slow cold boot is never mistaken for a hang, short enough
-/// that an unattended board comes back without hands.
-const DEFAULT_REBOOT_AFTER_SECONDS: u32 = 900;
-
-static REBOOT_AFTER_SECONDS: AtomicU32 = AtomicU32::new(PARAM_UNSET);
-static PANIC_REBOOT: AtomicU32 = AtomicU32::new(PARAM_UNSET);
+static REBOOT_AFTER_SECONDS: AtomicU32 = AtomicU32::new(boot_recovery::PARAM_UNSET);
+static PANIC_REBOOT: AtomicU32 = AtomicU32::new(boot_recovery::PARAM_UNSET);
 static RECOVERY_STATE: RecoveryState = RecoveryState::new();
 static GRACEFUL_REBOOT_WORK: Once<Arc<WorkItem>> = Once::new();
 static PANIC_RESTART_ENABLED: AtomicBool = AtomicBool::new(false);
 
 aster_cmdline::define_kv_param!("asterinas.reboot_after", REBOOT_AFTER_SECONDS);
 aster_cmdline::define_kv_param!("asterinas.panic_reboot", PANIC_REBOOT);
-
-/// The recovery behaviour after defaults are applied.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct RecoverySettings {
-    reboot_after_seconds: u32,
-    panic_restart: bool,
-    deadline_from_default: bool,
-    panic_from_default: bool,
-}
-
-fn resolve_recovery_settings(
-    reboot_after: u32,
-    panic_reboot: u32,
-    virtual_platform: bool,
-) -> RecoverySettings {
-    let deadline_from_default = reboot_after == PARAM_UNSET;
-    let reboot_after_seconds = if deadline_from_default {
-        if virtual_platform {
-            0
-        } else {
-            DEFAULT_REBOOT_AFTER_SECONDS
-        }
-    } else {
-        reboot_after
-    };
-
-    let panic_from_default = panic_reboot == PARAM_UNSET;
-    let panic_restart = if panic_from_default {
-        !virtual_platform
-    } else {
-        panic_reboot != 0
-    };
-
-    RecoverySettings {
-        reboot_after_seconds,
-        panic_restart,
-        deadline_from_default,
-        panic_from_default,
-    }
-}
 
 /// The policy installed into the fatal-abort path.
 ///
@@ -108,13 +61,13 @@ fn recovery_shall_restart() -> bool {
     PANIC_RESTART_ENABLED.load(Ordering::Relaxed) || is_armed()
 }
 
-/// Returns whether the device tree describes a virtual machine.
+/// Returns where the kernel runs, as far as recovery is concerned.
 ///
 /// QEMU's `virt` machine identifies itself as `riscv-virtio,qemu`; real
 /// boards (the Megrez reports `eswin,eic7700`) do not.
-fn platform_is_virtual() -> bool {
+fn platform() -> Platform {
     let Some(fdt) = ostd::arch::boot::DEVICE_TREE.get() else {
-        return false;
+        return Platform::Hardware;
     };
     let matches = |name: &str| {
         fdt.root().property(name).is_some_and(|property| {
@@ -122,18 +75,22 @@ fn platform_is_virtual() -> bool {
                 .is_ok_and(|text| text.contains("qemu") || text.contains("riscv-virtio"))
         })
     };
-    matches("model") || matches("compatible")
+    if matches("model") || matches("compatible") {
+        Platform::Virtual
+    } else {
+        Platform::Hardware
+    }
 }
 
 pub(super) fn arm_if_requested() {
-    let settings = resolve_recovery_settings(
+    let settings: RecoverySettings = resolve(
         REBOOT_AFTER_SECONDS.load(Ordering::Relaxed),
         PANIC_REBOOT.load(Ordering::Relaxed),
-        platform_is_virtual(),
+        platform(),
     );
 
     PANIC_RESTART_ENABLED.store(settings.panic_restart, Ordering::Release);
-    if settings.panic_restart || settings.reboot_after_seconds != 0 {
+    if settings.arms_anything() {
         // One policy covers both recovery paths. Installing it a second time
         // used to fail and leave the deadline unarmed, so install it once and
         // let it consult the flags at abort time instead.
@@ -340,53 +297,6 @@ mod tests {
     use ostd::prelude::*;
 
     use super::*;
-
-    #[ktest]
-    fn hardware_defaults_arm_recovery() {
-        let settings = resolve_recovery_settings(PARAM_UNSET, PARAM_UNSET, false);
-        assert_eq!(settings.reboot_after_seconds, DEFAULT_REBOOT_AFTER_SECONDS);
-        assert!(settings.deadline_from_default);
-        assert!(settings.panic_restart);
-        assert!(settings.panic_from_default);
-    }
-
-    #[ktest]
-    fn qemu_defaults_stay_opt_in() {
-        let settings = resolve_recovery_settings(PARAM_UNSET, PARAM_UNSET, true);
-        assert_eq!(settings.reboot_after_seconds, 0);
-        assert!(!settings.panic_restart);
-    }
-
-    #[ktest]
-    fn explicit_deadline_wins_on_qemu() {
-        let settings = resolve_recovery_settings(60, PARAM_UNSET, true);
-        assert_eq!(settings.reboot_after_seconds, 60);
-        assert!(!settings.deadline_from_default);
-        assert!(!settings.panic_restart);
-    }
-
-    #[ktest]
-    fn zero_deadline_disables_only_the_deadline() {
-        let settings = resolve_recovery_settings(0, PARAM_UNSET, false);
-        assert_eq!(settings.reboot_after_seconds, 0);
-        assert!(settings.panic_restart);
-    }
-
-    #[ktest]
-    fn explicit_panic_off_keeps_the_default_deadline() {
-        let settings = resolve_recovery_settings(PARAM_UNSET, 0, false);
-        assert_eq!(settings.reboot_after_seconds, DEFAULT_REBOOT_AFTER_SECONDS);
-        assert!(!settings.panic_restart);
-        assert!(!settings.panic_from_default);
-    }
-
-    #[ktest]
-    fn explicit_panic_on_works_on_qemu() {
-        let settings = resolve_recovery_settings(PARAM_UNSET, 1, true);
-        assert_eq!(settings.reboot_after_seconds, 0);
-        assert!(settings.panic_restart);
-        assert!(!settings.panic_from_default);
-    }
 
     #[ktest]
     fn zero_seconds_leaves_recovery_disabled() {

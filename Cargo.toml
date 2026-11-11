@@ -55,6 +55,7 @@ members = [
     "kernel/libs/aster-rights-proc",
     "kernel/libs/aster-util",
     "kernel/libs/atomic-integer-wrapper",
+    "kernel/libs/boot-recovery",
     "kernel/libs/cow-decision",
     "kernel/libs/cpio-decoder",
     "kernel/libs/device-id",
@@ -204,6 +205,7 @@ aster-fuse = { path = "kernel/libs/aster-fuse" }
 aster-rights = { path = "kernel/libs/aster-rights" }
 aster-rights-proc = { path = "kernel/libs/aster-rights-proc" }
 aster-util = { path = "kernel/libs/aster-util" }
+boot-recovery = { path = "kernel/libs/boot-recovery" }
 cow-decision = { path = "kernel/libs/cow-decision" }
 atomic-integer-wrapper = { path = "kernel/libs/atomic-integer-wrapper" }
 cpio-decoder = { path = "kernel/libs/cpio-decoder" }

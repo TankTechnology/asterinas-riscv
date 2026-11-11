@@ -42,7 +42,7 @@ DEFAULT_JAR = REPO / "target" / "tla" / "tla2tools.jar"
 
 # Crates with Kani proofs (`#[cfg(kani)]` harnesses). Kani needs its own
 # toolchain and CBMC, so these run only with `--kani`.
-KANI_PACKAGES = ("cow-decision",)
+KANI_PACKAGES = ("boot-recovery", "cow-decision")
 
 EXPECT_RE = re.compile(r"\\\*\s*EXPECT:\s*(?P<kind>ok|violation)(?:\s+(?P<what>\S+))?")
 
