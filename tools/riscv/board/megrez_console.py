@@ -451,7 +451,15 @@ class BootSafetyError(ValueError):
 # `fail_and_hold()`: no shell, no signal handling, no reboot. The basic
 # initramfs shell plus a chroot covers the same need without the precondition.
 _BOOT_SAFE_ROOT_INIT_MODES = frozenset({"basic", "systemd", "probe", "probe-auto"})
+# Modes that have actually reached userspace on this board and rootfs. A boot
+# in any other mode is an experiment and needs an explicit opt-in plus a short
+# recovery deadline, so a wrong guess costs minutes instead of hours.
+_PROVEN_ROOT_INIT_MODES = frozenset({"systemd"})
 _MAX_REBOOT_AFTER_SECONDS = 24 * 3600
+# The deadline for a boot that has not been proven yet. Long enough for a slow
+# cold boot, short enough that a mistake returns the board while the operator
+# is still at the desk.
+_EXPERIMENTAL_REBOOT_AFTER_LIMIT = 180
 
 
 def _initramfs_entries(path: str) -> set[str]:
@@ -578,7 +586,12 @@ def arm_hardware_watchdog(con, step_timeout: float, allow_missing: bool) -> None
 
 
 def validate_boot_append(
-    append: str, *, allow_kernel_default: bool = False, allow_interactive: bool = False
+    append: str,
+    *,
+    allow_kernel_default: bool = False,
+    allow_interactive: bool = False,
+    allow_experimental_mode: bool = False,
+    allow_long_deadline: bool = False,
 ) -> None:
     """Reject boot command lines that cannot recover from a hang.
 
@@ -588,6 +601,12 @@ def validate_boot_append(
     arms one. The check is deliberately strict: the 2026-11-11 wedge came from
     a command line with no deadline and an initramfs mode that never reached
     userspace.
+
+    Two further rules bound the cost of a wrong guess on the only physical
+    board. A mode that has not reached userspace here before needs an explicit
+    opt-in, and any deadline longer than three minutes needs one too: the first
+    boot of a new command line must come back while the operator is still
+    there.
     """
 
     tokens = append.split()
@@ -609,6 +628,12 @@ def validate_boot_append(
         )
     if mode not in _BOOT_SAFE_ROOT_INIT_MODES and not allow_interactive:
         raise BootSafetyError(f"unknown --root-init mode {mode!r}")
+    if mode not in _PROVEN_ROOT_INIT_MODES and not allow_experimental_mode:
+        raise BootSafetyError(
+            f"--root-init={mode} has not reached userspace on this board yet; "
+            "an unproven mode needs --allow-experimental-mode and a deadline of "
+            f"at most {_EXPERIMENTAL_REBOOT_AFTER_LIMIT} s"
+        )
 
     deadlines = [
         t.split("=", 1)[1]
@@ -622,6 +647,12 @@ def validate_boot_append(
                 "need a physical reset (pass the flag, or --allow-kernel-default for "
                 "a kernel with the built-in 900 s default)"
             )
+        if not allow_long_deadline:
+            raise BootSafetyError(
+                "the built-in default is 900 s; a first boot must recover within "
+                f"{_EXPERIMENTAL_REBOOT_AFTER_LIMIT} s (pass --allow-long-deadline "
+                "once the command line is proven)"
+            )
         return
     try:
         seconds = int(deadlines[-1], 10)
@@ -633,6 +664,12 @@ def validate_boot_append(
         raise BootSafetyError(
             f"asterinas.reboot_after={seconds} is outside 1..{_MAX_REBOOT_AFTER_SECONDS}"
         )
+    if seconds > _EXPERIMENTAL_REBOOT_AFTER_LIMIT and not allow_long_deadline:
+        raise BootSafetyError(
+            f"asterinas.reboot_after={seconds} keeps a mistake from recovering for "
+            f"longer than {_EXPERIMENTAL_REBOOT_AFTER_LIMIT} s (pass "
+            "--allow-long-deadline once the command line is proven)"
+        )
 
 
 def cmd_boot(args: argparse.Namespace) -> int:
@@ -642,6 +679,8 @@ def cmd_boot(args: argparse.Namespace) -> int:
             args.append,
             allow_kernel_default=args.allow_kernel_default,
             allow_interactive=args.allow_interactive,
+            allow_experimental_mode=args.allow_experimental_mode,
+            allow_long_deadline=args.allow_long_deadline,
         )
         mode = next(
             token.split("=", 1)[1]
@@ -769,6 +808,16 @@ def main() -> int:
         default=None,
         help="local copy of the initramfs the board loads; required to prove "
         "that --root-init=basic has a busybox",
+    )
+    boot.add_argument(
+        "--allow-experimental-mode",
+        action="store_true",
+        help="allow a root-init mode that has not reached userspace on this board",
+    )
+    boot.add_argument(
+        "--allow-long-deadline",
+        action="store_true",
+        help="allow a recovery deadline longer than the 180 s first-boot limit",
     )
     boot.set_defaults(func=cmd_boot)
 

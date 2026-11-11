@@ -39,11 +39,20 @@
 
 - `validate_boot_append()`：拒绝 `--root-init=interactive`、未知模式、缺失/为
   0/超 24 h 的 `asterinas.reboot_after`；要求恰好一个 `--`。
-- `arm_hardware_watchdog()`：读 `0x508000fc` 必须等于 `0x44570120`，执行与
-  `bootcmd` 相同的武装序列，读回 `0x50800000` 必须 bit0=1，否则拒绝启动。
+- **未在本板上到达过用户态的模式**（目前只有 `systemd` 算已证）需要显式
+  `--allow-experimental-mode`；**任何超过 180 s 的 deadline** 需要显式
+  `--allow-long-deadline`。也就是说，一条新命令行第一次上真机时，出错代价被
+  限制在 3 分钟内，操作者还在现场。
+- `basic` 模式必须用 `--initramfs-cpio` 提供板上将要加载的同一份 initramfs，
+  并解析 cpio 确认存在 `/bin/busybox`（部署版没有，这正是 2026-11-11 第二次
+  卡死的原因）。
+- `arm_hardware_watchdog()`：先写 `0x51828444` 打开看门狗时钟，读
+  `0x508000fc` 必须等于 `0x44570120`，执行与 `bootcmd` 相同的武装序列，读回
+  `0x50800000` 必须 bit0=1，否则拒绝启动。
 - `printenv bootcmd` 必须仍是含 `booti` 的默认启动项（一次断电总能回来）。
-- 证据：`tools/riscv/tests/test_megrez_console_boot_gate.py`（21 例，含对
-  模式×分隔符×deadline 写法的穷举"接受集 ⊆ 可恢复集"检查）。
+- 证据：`tools/riscv/tests/test_megrez_console_boot_gate.py`（31 例，含对
+  模式×分隔符×deadline 写法的穷举"接受集 ⊆ 可恢复集"检查，以及 console
+  marker、看门狗、cpio 解析的独立用例）。
 
 ### I2（决策层）真机上命令行为空时，两层恢复网都会被武装；关闭需要显式 `=0`.
 

@@ -32,58 +32,89 @@ KERNEL_BASE = "console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partit
 class BootSafetyGateTest(unittest.TestCase):
     def test_bounded_deadline_and_basic_mode_pass(self) -> None:
         validate_boot_append(
-            f"{KERNEL_BASE} asterinas.reboot_after=1800 -- --root-init=basic"
+            f"{KERNEL_BASE} asterinas.reboot_after=1800 -- --root-init=basic",
+            allow_experimental_mode=True,
+            allow_long_deadline=True,
         )
 
     def test_systemd_mode_with_deadline_passes(self) -> None:
         validate_boot_append(
-            f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=systemd"
+            f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=systemd",
+            allow_long_deadline=True,
         )
+
+    def test_proven_mode_with_a_short_deadline_needs_no_flags(self) -> None:
+        validate_boot_append(
+            f"{KERNEL_BASE} asterinas.reboot_after=120 -- --root-init=systemd"
+        )
+
+    def test_an_unproven_mode_needs_an_explicit_opt_in(self) -> None:
+        with self.assertRaises(BootSafetyError) as caught:
+            validate_boot_append(
+                f"{KERNEL_BASE} asterinas.reboot_after=60 -- --root-init=basic"
+            )
+        self.assertIn("allow-experimental-mode", str(caught.exception))
+
+    def test_a_long_deadline_needs_an_explicit_opt_in(self) -> None:
+        with self.assertRaises(BootSafetyError) as caught:
+            validate_boot_append(
+                f"{KERNEL_BASE} asterinas.reboot_after=5400 -- --root-init=systemd"
+            )
+        self.assertIn("allow-long-deadline", str(caught.exception))
 
     def test_missing_deadline_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
-            validate_boot_append(f"{KERNEL_BASE} -- --root-init=basic")
+            validate_boot_append(f"{KERNEL_BASE} -- --root-init=systemd")
 
     def test_missing_deadline_passes_with_kernel_default_acknowledged(self) -> None:
         validate_boot_append(
-            f"{KERNEL_BASE} -- --root-init=basic", allow_kernel_default=True
+            f"{KERNEL_BASE} -- --root-init=systemd",
+            allow_kernel_default=True,
+            allow_long_deadline=True,
         )
 
     def test_zero_deadline_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=0 -- --root-init=basic"
+                f"{KERNEL_BASE} asterinas.reboot_after=0 -- --root-init=systemd"
             )
 
     def test_non_numeric_deadline_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=soon -- --root-init=basic"
+                f"{KERNEL_BASE} asterinas.reboot_after=soon -- --root-init=systemd",
+                allow_long_deadline=True,
             )
 
     def test_deadline_beyond_one_day_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=90000 -- --root-init=basic"
+                f"{KERNEL_BASE} asterinas.reboot_after=90000 -- --root-init=systemd",
+                allow_long_deadline=True,
             )
 
     def test_interactive_mode_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError) as caught:
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=interactive"
+                f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=interactive",
+                allow_experimental_mode=True,
+                allow_long_deadline=True,
             )
         self.assertIn("ASTER_DEBIANROOT", str(caught.exception))
 
     def test_interactive_mode_can_be_allowed_explicitly(self) -> None:
         validate_boot_append(
-            f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=interactive",
+            f"{KERNEL_BASE} asterinas.reboot_after=120 -- --root-init=interactive",
             allow_interactive=True,
+            allow_experimental_mode=True,
         )
 
     def test_unknown_root_init_mode_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=shell"
+                f"{KERNEL_BASE} asterinas.reboot_after=900 -- --root-init=shell",
+                allow_experimental_mode=True,
+                allow_long_deadline=True,
             )
 
     def test_missing_root_init_is_refused(self) -> None:
@@ -93,20 +124,20 @@ class BootSafetyGateTest(unittest.TestCase):
     def test_missing_separator_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=900 --root-init=basic"
+                f"{KERNEL_BASE} asterinas.reboot_after=900 --root-init=systemd"
             )
 
     def test_two_separators_are_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
-                f"{KERNEL_BASE} asterinas.reboot_after=900 -- -- --root-init=basic"
+                f"{KERNEL_BASE} asterinas.reboot_after=900 -- -- --root-init=systemd"
             )
 
     def test_duplicate_root_init_is_refused(self) -> None:
         with self.assertRaises(BootSafetyError):
             validate_boot_append(
                 f"{KERNEL_BASE} asterinas.reboot_after=900 "
-                "-- --root-init=basic --root-init=systemd"
+                "-- --root-init=systemd --root-init=basic"
             )
 
     def test_every_accepted_line_is_recoverable(self) -> None:
@@ -143,7 +174,13 @@ class BootSafetyGateTest(unittest.TestCase):
             mode_tokens = f" --root-init={mode}" if mode else ""
             append = f"{KERNEL_BASE}{deadline}{separator}{mode_tokens}".strip()
             try:
-                validate_boot_append(append)
+                # Both opt-ins make the whole grammar reachable; with them the
+                # accepted set still has to stay recoverable.
+                validate_boot_append(
+                    append,
+                    allow_experimental_mode=True,
+                    allow_long_deadline=True,
+                )
             except BootSafetyError:
                 continue
 
