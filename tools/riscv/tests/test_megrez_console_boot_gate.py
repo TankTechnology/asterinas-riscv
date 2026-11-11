@@ -10,6 +10,7 @@ that combination impossible to boot by accident.
 
 from __future__ import annotations
 
+import itertools
 import unittest
 
 from tools.riscv.board.megrez_console import BootSafetyError, validate_boot_append
@@ -96,6 +97,56 @@ class BootSafetyGateTest(unittest.TestCase):
             validate_boot_append(
                 f"{KERNEL_BASE} asterinas.reboot_after=900 "
                 "-- --root-init=basic --root-init=systemd"
+            )
+
+    def test_every_accepted_line_is_recoverable(self) -> None:
+        """Exhaustive check over the interesting token combinations.
+
+        The accepted set must stay a subset of the recoverable set: a safe
+        root-init mode and either a bounded deadline or an acknowledged
+        kernel default. This is the executable form of the policy, so a
+        future change that widens the gate has to widen this test too.
+        """
+
+        separators = ["", " --", " -- --"]
+        modes = ["", "basic", "systemd", "probe", "probe-auto", "interactive", "shell"]
+        deadlines = [
+            "",
+            " asterinas.reboot_after=0",
+            " asterinas.reboot_after=1",
+            " asterinas.reboot_after=900",
+            " asterinas.reboot_after=86400",
+            " asterinas.reboot_after=86401",
+            " asterinas.reboot_after=soon",
+            " asterinas.reboot_after=-5",
+        ]
+        safe_modes = {"basic", "systemd", "probe", "probe-auto"}
+        accepted_deadlines = {
+            " asterinas.reboot_after=1",
+            " asterinas.reboot_after=900",
+            " asterinas.reboot_after=86400",
+        }
+
+        for separator, mode, deadline in itertools.product(
+            separators, modes, deadlines
+        ):
+            mode_tokens = f" --root-init={mode}" if mode else ""
+            append = f"{KERNEL_BASE}{deadline}{separator}{mode_tokens}".strip()
+            try:
+                validate_boot_append(append)
+            except BootSafetyError:
+                continue
+
+            self.assertIn(
+                mode,
+                safe_modes,
+                msg=f"accepted a root-init mode this rootfs cannot satisfy: {append!r}",
+            )
+            self.assertIn(separator, (" --",), msg=f"accepted {append!r}")
+            self.assertIn(
+                deadline,
+                accepted_deadlines,
+                msg=f"accepted a missing or out-of-bounds deadline: {append!r}",
             )
 
 
