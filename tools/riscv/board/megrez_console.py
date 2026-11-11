@@ -427,6 +427,65 @@ class BootSafetyError(ValueError):
 _BOOT_SAFE_ROOT_INIT_MODES = frozenset({"basic", "systemd", "probe", "probe-auto"})
 _MAX_REBOOT_AFTER_SECONDS = 24 * 3600
 
+# The DesignWare watchdog U-Boot arms before a physical boot. It is the only
+# recovery layer that survives a kernel that stops taking timer interrupts, so
+# an ad-hoc boot must arm it the same way instead of relying on the persistent
+# bootcmd's inline `mw.l` sequence.
+_WATCHDOG_COMPONENT_OFFSET = 0x5080_00FC
+_WATCHDOG_CONTROL = 0x5080_0000
+_WATCHDOG_TIMEOUT_RANGE = 0x5080_0004
+_WATCHDOG_COUNTER_RESTART = 0x5080_000C
+_WATCHDOG_COMPONENT_TYPE = 0x4457_0120
+_WATCHDOG_ARM_SEQUENCE = (
+    "mw.l 0x51828444 0x1; "
+    "if itest.l *0x508000fc == 0x44570120; then "
+    "mw.l 0x50800004 0xf; mw.l 0x5080000c 0x76; mw.l 0x50800000 0x1f; fi"
+)
+
+
+def _read_md_word(text: str, address: int) -> int | None:
+    """Extracts the first word of `md.l <address> 1` from a U-Boot transcript."""
+    match = re.search(rf"{address:08x}:\s*([0-9a-fA-F]{{8}})", text)
+    return int(match.group(1), 16) if match else None
+
+
+def arm_hardware_watchdog(con, step_timeout: float, allow_missing: bool) -> None:
+    """Arms and verifies the SoC watchdog before handing off to the kernel.
+
+    U-Boot's persistent `bootcmd` arms this watchdog inline; an ad-hoc boot
+    that just loads images and sends `booti` would skip it. Before that gap is
+    closed, a kernel hang that also stops the software deadline (interrupts
+    masked on the only hart with a timer) leaves no recovery layer at all.
+    """
+
+    text, ok = con.run(f"md.l {_WATCHDOG_COMPONENT_OFFSET:#x} 1", step_timeout)
+    component = _read_md_word(text, _WATCHDOG_COMPONENT_OFFSET)
+    if not ok or component != _WATCHDOG_COMPONENT_TYPE:
+        if allow_missing:
+            print(
+                "warning: the DesignWare watchdog was not detected; booting without it",
+                file=sys.stderr,
+            )
+            return
+        print(text[-800:], file=sys.stderr)
+        raise SystemExit(
+            "refusing to boot: the hardware watchdog was not detected "
+            "(pass --allow-missing-watchdog for a platform without it)"
+        )
+
+    text, ok = con.run(_WATCHDOG_ARM_SEQUENCE, step_timeout)
+    if not ok:
+        print(text[-800:], file=sys.stderr)
+        raise SystemExit("refusing to boot: the watchdog arm sequence failed")
+
+    text, ok = con.run(f"md.l {_WATCHDOG_CONTROL:#x} 1", step_timeout)
+    control = _read_md_word(text, _WATCHDOG_CONTROL)
+    if not ok or control is None or control & 1 == 0:
+        print(text[-800:], file=sys.stderr)
+        raise SystemExit(
+            "refusing to boot: the hardware watchdog is not enabled after arming"
+        )
+
 
 def validate_boot_append(
     append: str, *, allow_kernel_default: bool = False, allow_interactive: bool = False
@@ -534,6 +593,9 @@ def cmd_boot(args: argparse.Namespace) -> int:
                     f"refusing to boot: {args.kernel} is {size} bytes on the board, "
                     f"expected {args.expect_kernel_size}"
                 )
+
+    arm_hardware_watchdog(con, args.step_timeout, args.allow_missing_watchdog)
+
     con.type_line("booti 0x80200000 0x88300000:${initrd_size} 0x88000000")
     print("booti sent", flush=True)
     return 0
@@ -600,6 +662,11 @@ def main() -> int:
         type=int,
         default=None,
         help="refuse to boot when the kernel image read from p2 has another size",
+    )
+    boot.add_argument(
+        "--allow-missing-watchdog",
+        action="store_true",
+        help="boot even when the DesignWare watchdog is absent (for QEMU/virt)",
     )
     boot.set_defaults(func=cmd_boot)
 

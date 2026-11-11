@@ -13,7 +13,12 @@ from __future__ import annotations
 import itertools
 import unittest
 
-from tools.riscv.board.megrez_console import BootSafetyError, validate_boot_append
+from tools.riscv.board.megrez_console import (
+    BootSafetyError,
+    _read_md_word,
+    arm_hardware_watchdog,
+    validate_boot_append,
+)
 
 
 KERNEL_BASE = "console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2"
@@ -148,6 +153,68 @@ class BootSafetyGateTest(unittest.TestCase):
                 accepted_deadlines,
                 msg=f"accepted a missing or out-of-bounds deadline: {append!r}",
             )
+
+
+class FakeConsole:
+    """Feeds canned `run` results and records the commands that were sent."""
+
+    def __init__(self, responses: list[tuple[str, bool]]) -> None:
+        self.responses = list(responses)
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float, char_pause: float = 0.0):
+        self.commands.append(command)
+        return self.responses.pop(0)
+
+
+class WatchdogArmTest(unittest.TestCase):
+    def test_reads_the_first_word_of_md_output(self) -> None:
+        text = "508000fc: 44570120 00000000 00000000 00000000"
+        self.assertEqual(_read_md_word(text, 0x5080_00FC), 0x4457_0120)
+        self.assertIsNone(_read_md_word("no match here", 0x5080_00FC))
+
+    def test_arms_and_verifies_the_watchdog(self) -> None:
+        con = FakeConsole(
+            [
+                ("508000fc: 44570120 00000000 00000000 00000000", True),
+                ("", True),
+                ("50800000: 0000001f 00000000 00000000 00000000", True),
+            ]
+        )
+        arm_hardware_watchdog(con, 10.0, allow_missing=False)
+        self.assertIn("mw.l 0x50800004 0xf", con.commands[1])
+        self.assertIn("mw.l 0x50800000 0x1f", con.commands[1])
+
+    def test_a_missing_watchdog_is_refused(self) -> None:
+        con = FakeConsole([("508000fc: 00000000 00000000 00000000 00000000", True)])
+        with self.assertRaises(SystemExit):
+            arm_hardware_watchdog(con, 10.0, allow_missing=False)
+
+    def test_a_missing_watchdog_can_be_allowed_for_virt(self) -> None:
+        con = FakeConsole([("508000fc: 00000000 00000000 00000000 00000000", True)])
+        arm_hardware_watchdog(con, 10.0, allow_missing=True)
+
+    def test_a_watchdog_that_stays_disabled_is_refused(self) -> None:
+        con = FakeConsole(
+            [
+                ("508000fc: 44570120 00000000 00000000 00000000", True),
+                ("", True),
+                ("50800000: 00000000 00000000 00000000 00000000", True),
+            ]
+        )
+        with self.assertRaises(SystemExit):
+            arm_hardware_watchdog(con, 10.0, allow_missing=False)
+
+    def test_an_unreadable_control_word_is_refused(self) -> None:
+        con = FakeConsole(
+            [
+                ("508000fc: 44570120 00000000 00000000 00000000", True),
+                ("", True),
+                ("garbage", False),
+            ]
+        )
+        with self.assertRaises(SystemExit):
+            arm_hardware_watchdog(con, 10.0, allow_missing=False)
 
 
 if __name__ == "__main__":
