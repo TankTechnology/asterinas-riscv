@@ -48,6 +48,12 @@ use crate::{
     thread::Thread,
 };
 
+/// Test hook: hold the metadata writeback between the inode table and the
+/// bitmaps for this many milliseconds (see `hold_metadata_writeback`).
+static SYNC_HOLD_MS: AtomicU32 = AtomicU32::new(0);
+
+aster_cmdline::define_kv_param!("asterinas.ext2_sync_hold_ms", SYNC_HOLD_MS);
+
 static JOURNAL_FAULT_STAGE: AtomicU32 = AtomicU32::new(0);
 
 aster_cmdline::define_kv_param!("asterinas.ext4_fault_stage", JOURNAL_FAULT_STAGE);
@@ -1216,19 +1222,83 @@ impl Ext2 {
         // `metadata.write()` guard.  Because groups are synced sequentially and
         // their descriptor offsets are disjoint, no two writers touch the same
         // bytes, so the segment is always consistent.
-        let mut group_desc_dirty = false;
+        if !self.has_journal() {
+            return self.sync_all_without_journal();
+        }
         for group in &self.block_groups {
-            if self.has_journal() {
-                group.sync_inodes_without_table()?;
-            } else {
-                group_desc_dirty |= group.sync_all(&self.group_descriptors_segment)?;
-            }
+            group.sync_inodes_without_table()?;
         }
-        if self.has_journal() {
-            self.sync_allocation_metadata()
-        } else {
-            self.sync_metadata(group_desc_dirty)
+        self.sync_allocation_metadata()
+    }
+
+    /// Syncs a volume that has no journal.
+    ///
+    /// The inode table and the allocation bitmaps are independent writes to the
+    /// device here, so their order decides what a power loss leaves behind.
+    /// Writing the inode table first would publish an inode that points at a
+    /// block the bitmap still calls free; writing the bitmaps first would
+    /// advertise a block as free while an inode that has not been written back
+    /// yet still points at it, and the next allocation could hand it to another
+    /// file. Running the bitmaps twice -- once with the blocks freed since the
+    /// last writeback held back, once for real after the inode table -- closes
+    /// both windows. A crash between the passes leaks blocks, which `e2fsck`
+    /// reclaims; it cannot produce a dangling reference.
+    fn sync_all_without_journal(&self) -> Result<()> {
+        let group_descs = &self.group_descriptors_segment;
+        for group in &self.block_groups {
+            group.sync_inodes_without_table()?;
         }
+        let mut desc_dirty = false;
+        for group in &self.block_groups {
+            desc_dirty |= group.write_pre_inode_bitmap(group_descs)?;
+        }
+        if desc_dirty {
+            self.sync_metadata(true)?;
+        }
+        for group in &self.block_groups {
+            group.sync_inode_table()?;
+        }
+        Self::hold_metadata_writeback();
+        let mut final_desc_dirty = false;
+        for group in &self.block_groups {
+            final_desc_dirty |= group.sync_metadata(group_descs)?;
+        }
+        self.sync_metadata(final_desc_dirty || desc_dirty)
+    }
+
+    /// Pauses the metadata writeback between the inode table and the bitmaps
+    /// when `asterinas.ext2_sync_hold_ms` is set.
+    ///
+    /// Test hook for `crash_consistency_gate.py --writer churn`: on a real boot
+    /// the window between those two writes is a few microseconds wide, so a
+    /// randomly timed kill can never land in it deliberately. Holding it open
+    /// turns "the crash has to hit the window" into "the crash hits the window
+    /// unless the write order is wrong". Off by default, and free when off.
+    fn hold_metadata_writeback() {
+        let millis = SYNC_HOLD_MS.load(Ordering::Relaxed);
+        if millis == 0 {
+            return;
+        }
+        warn!("ext2: holding metadata writeback for {millis} ms");
+        let start = ostd::timer::Jiffies::elapsed().as_duration();
+        let hold = core::time::Duration::from_millis(millis as u64);
+        while ostd::timer::Jiffies::elapsed()
+            .as_duration()
+            .saturating_sub(start)
+            < hold
+        {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Publishes one group's inode table on a volume without a journal, with
+    /// the same ordering as [`Self::sync_all_without_journal`].
+    pub(super) fn sync_inode_table_without_journal(&self, group: &BlockGroup) -> Result<()> {
+        let group_descs = &self.group_descriptors_segment;
+        if group.write_pre_inode_bitmap(group_descs)? {
+            self.sync_metadata(true)?;
+        }
+        group.sync_inode_table()
     }
 
     /// Persists allocation bitmaps, group descriptors, and the superblock
