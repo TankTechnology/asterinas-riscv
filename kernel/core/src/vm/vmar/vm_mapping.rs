@@ -22,6 +22,7 @@ use ostd::{
     task::disable_preempt,
     timer::Jiffies,
 };
+use spin::Once;
 
 use super::{RssType, Vmar, interval_set::Interval, util::is_intersected, vmar_impls::RssDelta};
 use crate::{
@@ -32,7 +33,7 @@ use crate::{
     prelude::*,
     process::{LockedHeap, posix_thread::AsPosixThread},
     vm::{
-        page_cache::{CachePage, Vmo, VmoCommitError},
+        page_cache::{CachePage, Vmo, VmoCommitError, VmoOptions},
         perms::VmPerms,
         vmar::{PageFaultInfo, PageFaultOutcome},
     },
@@ -112,6 +113,27 @@ static FAULT_STAGE_PREPARE: FaultStage = FaultStage::new();
 static FAULT_STAGE_MAP: FaultStage = FaultStage::new();
 static FAULT_STAGE_AROUND: FaultStage = FaultStage::new();
 const FAULT_PROFILE_LOG_INTERVAL: u64 = 128;
+
+/// The shared zero page backing read faults on anonymous mappings.
+///
+/// Linux's `do_anonymous_page` maps a shared zero page for anonymous read
+/// faults instead of allocating a private frame; the first write fault then
+/// copies it through the normal COW path. The VMO keeps the frame alive and
+/// each mapping holds its own reference, so the COW decision never mistakes
+/// the page for a uniquely owned frame and upgrades it in place.
+static ZERO_PAGE_VMO: Once<Arc<Vmo>> = Once::new();
+
+fn zero_page_vmo() -> &'static Arc<Vmo> {
+    ZERO_PAGE_VMO.call_once(|| {
+        let vmo = VmoOptions::new(PAGE_SIZE)
+            .alloc()
+            .expect("failed to allocate the shared zero page");
+        // Committing the page allocates and zero-fills the frame.
+        vmo.commit_on(0)
+            .expect("failed to commit the shared zero page");
+        vmo
+    })
+}
 
 /// Starts a page-fault stage timer, or returns `None` when profiling is off.
 #[inline]
@@ -321,6 +343,29 @@ impl VmMapping {
     }
 
     /// Returns the mapping's RSS type.
+    /// Returns how many pages of this mapping are resident in its backing VMO.
+    ///
+    /// This is the `Rss` that `/proc/[pid]/smaps` reports. It counts pages
+    /// resident in the page cache rather than present page-table entries:
+    /// those differ while a page is cached but not mapped, and counting the
+    /// cache needs no page-table walk over a process we are only inspecting.
+    pub fn resident_pages(&self) -> usize {
+        let Some(mapped) = self.vmo() else {
+            return 0;
+        };
+        let size = self.map_size();
+        let base = mapped.offset;
+        let mut resident = 0;
+        let mut offset = 0;
+        while offset < size {
+            if mapped.vmo.is_page_resident(base + offset) {
+                resident += 1;
+            }
+            offset += PAGE_SIZE;
+        }
+        resident
+    }
+
     pub fn rss_type(&self) -> RssType {
         match &self.mapped_mem {
             MappedMemory::Anonymous => RssType::Anon,
@@ -377,15 +422,21 @@ impl VmMapping {
     ///
     /// In debug builds, this method panics if the mapping is not a device
     /// memory mapping.
-    pub(super) fn populate_device(&self, vm_space: &VmSpace, io_mem: IoMem, vmo_offset: usize) {
+    pub(super) fn populate_device(
+        &self,
+        vm_space: &VmSpace,
+        io_mem: IoMem,
+        vmo_offset: usize,
+    ) -> Result<()> {
         debug_assert!(matches!(self.mapped_mem, MappedMemory::Device));
 
         let preempt_guard = disable_preempt();
         let map_range = self.map_to_addr..self.map_to_addr + self.map_size.get();
-        let mut cursor = vm_space.cursor_mut(&preempt_guard, &map_range).unwrap();
+        let mut cursor = vm_space.cursor_mut(&preempt_guard, &map_range)?;
         let io_page_prop =
             PageProperty::new_user(PageFlags::from(self.perms), io_mem.cache_policy());
-        cursor.map_iomem(io_mem, io_page_prop, self.map_size.get(), vmo_offset);
+        cursor.map_iomem(io_mem, io_page_prop, self.map_size.get(), vmo_offset)?;
+        Ok(())
     }
 
     /// Prints the mapping information in the format of `/proc/[pid]/maps`.
@@ -691,7 +742,7 @@ impl VmMapping {
                         prop.flags |= new_flags;
                         cursor.unmap(PAGE_SIZE);
                         cursor.jump(va.start).unwrap();
-                        cursor.map(new_frame.into(), prop);
+                        cursor.map(new_frame.into(), prop)?;
                         // FIXME: Linux re-classifies the page from `File` to `Anon` in RSS,
                         // when a COW on a file-backed mapping happens.
                         // We currently do not support this re-classification,
@@ -737,7 +788,13 @@ impl VmMapping {
                     let map_prop = PageProperty::new_user(page_flags, CachePolicy::Writeback);
 
                     let map_start = fault_profile_mark();
-                    cursor.map(frame, map_prop);
+                    cursor.map(frame, map_prop)?;
+                    // The shared zero page is counted like any other resident
+                    // page here. Linux excludes it from RSS because it maps
+                    // the page with a special PTE; this VM has no per-PTE
+                    // special marker yet, and unmapping decrements RSS by the
+                    // number of mapped pages, so skipping the increment would
+                    // underflow the counter.
                     rss_delta.add(self.rss_type(), 1);
                     record_fault_stage(&FAULT_STAGE_MAP, map_start);
                 }
@@ -758,7 +815,16 @@ impl VmMapping {
         let vmo = match &self.mapped_mem {
             MappedMemory::Vmo(vmo) => vmo,
             MappedMemory::Anonymous => {
-                // Anonymous mapping. Allocate a new frame.
+                if !write {
+                    // Read faults on anonymous memory map the shared zero
+                    // page, as Linux's `do_anonymous_page` does. A later
+                    // write fault goes through the normal COW path and
+                    // copies the page.
+                    let frame = zero_page_vmo().commit_on(0).map_err(VmoCommitError::Err)?;
+                    return Ok((frame.into(), true));
+                }
+
+                // Anonymous write mapping. Allocate a new frame.
                 return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
             }
             MappedMemory::Device => {
@@ -854,7 +920,7 @@ impl VmMapping {
                             let page_prop =
                                 PageProperty::new_user(page_flags, CachePolicy::Writeback);
                             let (_, frame) = commit_fn()?;
-                            cursor.map(frame.into(), page_prop);
+                            cursor.map(frame.into(), page_prop)?;
                             rss_delta_ref.add(self.rss_type(), 1);
                         }
                         Some(VmQueriedItem::MappedRam { prop, .. })
@@ -1175,7 +1241,12 @@ impl VmMapping {
     /// Change the perms of the mapping.
     pub(super) fn protect(self, vm_space: &VmSpace, perms: VmPerms) -> Self {
         let mut new_flags = PageFlags::from(perms);
-        if self.is_cow() && !self.perms.contains(VmPerms::WRITE) {
+        if self.is_cow() {
+            // A COW mapping may contain pages that are not exclusively owned
+            // by this VM, such as the shared zero page or pages shared with a
+            // forked child. Never make such a PTE writable from the VMA
+            // permissions alone: the next write fault re-checks ownership and
+            // either upgrades the frame in place or copies it.
             new_flags.remove(PageFlags::W);
         }
 
@@ -1513,7 +1584,7 @@ mod tests {
     fn page_fault_handler_resolves_ad_bit_fault_for_read() {
         const EXPECTED_VALUE: u8 = 0x5a;
 
-        let vm_space = Arc::new(VmSpace::new());
+        let vm_space = Arc::new(VmSpace::new().unwrap());
         let map_range = PAGE_SIZE..PAGE_SIZE * 2;
         let frame = FrameAllocOptions::new().alloc_frame().unwrap();
         frame.writer().write_val(&EXPECTED_VALUE).unwrap();
@@ -1566,7 +1637,7 @@ mod tests {
     fn page_fault_handler_resolves_ad_bit_fault_for_write() {
         const EXPECTED_VALUE: u8 = 0xa5;
 
-        let vm_space = Arc::new(VmSpace::new());
+        let vm_space = Arc::new(VmSpace::new().unwrap());
         let map_range = PAGE_SIZE..PAGE_SIZE * 2;
         let frame = FrameAllocOptions::new().alloc_frame().unwrap();
         let preempt_guard = disable_preempt();
@@ -1614,7 +1685,7 @@ mod tests {
     // Regression test for Asterinas issue #3589.
     #[ktest]
     fn page_fault_handler_resolves_ad_bit_fault_with_fault_around() {
-        let vm_space = Arc::new(VmSpace::new());
+        let vm_space = Arc::new(VmSpace::new().unwrap());
         let map_range = PAGE_SIZE..PAGE_SIZE * 2;
         let vmo = VmoOptions::new_anon(PAGE_SIZE).alloc().unwrap();
         let mapped_vmo = MappedVmo::new(vmo, 0, false).unwrap();
@@ -1658,7 +1729,7 @@ mod tests {
     // Regression test for Asterinas issue #3589.
     #[ktest]
     fn page_fault_handler_repairs_ad_bit_when_fault_around_io_fails() {
-        let vm_space = Arc::new(VmSpace::new());
+        let vm_space = Arc::new(VmSpace::new().unwrap());
         let mapping_start = PAGE_SIZE;
         let fault_addr = mapping_start + PAGE_SIZE;
         let fault_range = fault_addr..fault_addr + PAGE_SIZE;
@@ -1709,7 +1780,7 @@ mod tests {
         const VMO_PAGE_COUNT: usize = 128;
         const MAPPING_PAGE_COUNT: usize = 16;
 
-        let vm_space = Arc::new(VmSpace::new());
+        let vm_space = Arc::new(VmSpace::new().unwrap());
         vm_space.activate();
         for (iteration, offset) in [0, 8, 120].into_iter().enumerate() {
             let mapping_start = (iteration + 1) * MAPPING_PAGE_COUNT * PAGE_SIZE;
