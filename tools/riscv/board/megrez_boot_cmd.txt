@@ -6,32 +6,39 @@
 # The board's saved `bootcmd` is one line that only loads and runs it:
 #   setenv bootcmd 'ext4load mmc 1:2 0x87000000 /root/boot.scr && source 0x87000000'
 #   saveenv
-# so a change to the boot sequence costs an scp (or, with no running system,
-# an XMODEM `loadx 0x87000000` + `save mmc 1:2 0x87000000 /root/boot.scr <len>`)
-# instead of editing the SPI environment over the serial console.
 #
-# The address is no longer written down anywhere: `dhcp` leaves the lease in
-# U-Boot's `${ipaddr}` / `${netmask}` / `${gatewayip}`, and those are handed to
-# the kernel through `asterinas.net`. `${netmask}` is a dotted quad, which the
-# kernel's profile parser accepts in place of a prefix length
-# (`kernel/src/net/iface/init.rs`). If DHCP fails the argument is omitted and
-# the kernel comes up with loopback only -- visible in the console log.
+# The address is not written down anywhere: `dhcp` leaves the lease in U-Boot's
+# `${ipaddr}` / `${netmask}` / `${gatewayip}`, and those are handed to the
+# kernel through `asterinas.net`. `${netmask}` is a dotted quad, which the
+# kernel's profile parser accepts in place of a prefix length.
 #
-# `dhcp` also negotiates the PHY before the kernel starts. The dwmac driver can
-# do that itself (start_auto_negotiation() in kernel/comps/dwmac/src/phy.rs),
-# but a cold PHY needs about 3.5 s and U-Boot does the work outside the kernel's
-# boot time.
+# This script is written to keep the board recoverable without a person at the
+# console, because that is how it fails in practice:
 #
-# The kernel watchdog (`asterinas.reboot_after=900`) reboots the board if early
-# unit startup does not reach the desktop-ready handoff; a hang nobody is
-# watching then costs one boot cycle instead of a trip to the board.
+# * The SoC watchdog is armed first, before any load can hang. A wedged boot,
+#   a panic or a stuck driver then resets the board instead of leaving it dead
+#   on the far end of a serial cable. The order of the register writes matters;
+#   0x508000fc is the watchdog's component ID, so a board without one skips the
+#   arming rather than writing into an unrelated block.
+# * `asterinas.panic_reboot=1` makes a fatal abort restart instead of halting.
+# * If the main kernel image cannot be read -- on 2026-11-13 a corrupted root
+#   filesystem took `/root/kernel-rel.img` with it and the board sat at the
+#   U-Boot prompt -- the script falls back to the backup kernel and replaces
+#   the initramfs with the repair image on mmc 1:3, which runs e2fsck on the
+#   root partition before anything mounts it.
 #
-# The four `mw.l` lines arm the SoC's hardware watchdog just before the kernel
-# starts; the kernel takes it over (asterinas.hardware_watchdog_handoff=1). The
-# order of the register writes matters. Register 0x508000fc is the watchdog's
-# component ID; if it does not read back, the SoC has no watchdog and the
-# arming is skipped rather than writing to an unrelated block.
+# The repair initramfs is a self-contained busybox image: it mounts the root
+# partition read-only, copies e2fsck out of it, unmounts, runs the check, and
+# drops to a shell. Its boot needs `asterinas.mmc_write_partition2` in the
+# command line, or the write gate refuses every metadata write.
 echo "ASTERINAS_BOOTCMD start"
+mw.l 0x51828444 0x1
+if itest.l *0x508000fc == 0x44570120; then
+  echo "ASTERINAS_WATCHDOG armed"
+  mw.l 0x50800004 0xf
+  mw.l 0x5080000c 0x76
+  mw.l 0x50800000 0x1f
+fi
 setenv autoload no
 dhcp
 ext4load mmc 1:1 0x88300000 stage1-daily.cpio
@@ -39,8 +46,6 @@ if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=stage1"; exit 1; fi
 setenv initrd_size ${filesize}
 ext4load mmc 1:1 0x88000000 megrez-daily.dtb
 if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=dtb"; exit 1; fi
-ext4load mmc 1:2 0x80200000 /root/kernel-rel.img
-if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=kernel"; exit 1; fi
 setenv netopt ""
 if test -n "${ipaddr}"; then
   setenv netprof "${ipaddr}/${netmask}"
@@ -48,7 +53,19 @@ if test -n "${ipaddr}"; then
   setenv netopt "asterinas.net=eic7700-rj45,${netprof}"
 fi
 echo "ASTERINAS_NETOPT [${netopt}]"
-setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.mmc_write_partition3 asterinas.reboot_after=900 asterinas.hardware_watchdog_handoff=1 ${netopt} -- --root-init=systemd --debug-console=isolated-root
-mw.l 0x51828444 0x1
-if itest.l *0x508000fc == 0x44570120; then mw.l 0x50800004 0xf; mw.l 0x5080000c 0x76; mw.l 0x50800000 0x1f; fi
+setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.mmc_write_partition3 asterinas.reboot_after=900 asterinas.hardware_watchdog_handoff=1 asterinas.panic_reboot=1 ${netopt} -- --root-init=systemd --debug-console=isolated-root
+ext4load mmc 1:2 0x80200000 /root/kernel-rel.img
+if test $? -ne 0; then
+  echo "ASTERINAS_BOOTCMD fallback=repair"
+  ext4load mmc 1:2 0x80200000 /root/kernel-rel.img.bak
+  if test $? -eq 0; then
+    ext4load mmc 1:3 0x88300000 repair.cpio.gz
+    if test $? -eq 0; then
+      setenv initrd_size ${filesize}
+      echo "ASTERINAS_BOOTCMD repair_initrd=loaded"
+    else
+      echo "ASTERINAS_BOOTCMD repair_initrd=missing"
+    fi
+  fi
+fi
 booti 0x80200000 0x88300000:${initrd_size} 0x88000000
