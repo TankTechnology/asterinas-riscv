@@ -369,7 +369,17 @@ impl BlockGroup {
 
         let Some(range) = allocated_range else {
             if metadata.desc.free_blocks_count > 0 {
-                return_errno_with_message!(Errno::EIO, "block bitmap corruption detected");
+                // The descriptor claims free blocks the bitmap does not have.
+                // The bitmap is what allocation actually consults, so it wins:
+                // correct the counter (as e2fsck would) and report this group
+                // as full so the caller tries the next one instead of failing
+                // the whole allocation.
+                let live_free = metadata.block_bitmap.count_free();
+                warn!(
+                    "ext2: group {} free count {} disagrees with bitmap ({} free); correcting",
+                    self.group_idx, metadata.desc.free_blocks_count, live_free
+                );
+                metadata.desc.free_blocks_count = live_free;
             }
             return Ok(0..0);
         };

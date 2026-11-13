@@ -49,6 +49,15 @@ impl IdBitmap {
         self.len
     }
 
+    /// Returns how many of the valid IDs are free.
+    ///
+    /// Used to repair a group descriptor whose cached free count drifted away
+    /// from the bitmap it describes: the bitmap is what allocation consults,
+    /// so it is the authority the filesystem corrects the counter from.
+    pub fn count_free(&self) -> u16 {
+        self.len - self.bit_slice().count_ones() as u16
+    }
+
     /// Returns whether all valid IDs are allocated.
     pub const fn is_full(&self) -> bool {
         self.first_available_id == self.len
