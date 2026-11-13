@@ -1,0 +1,50 @@
+{
+  "description": "Asterinas vs vendor Linux 6.6.87 on the same Megrez board, same Debian rootfs, same static-musl benchmarks. Ratio = Asterinas / Linux; below 1 means Asterinas is faster.",
+  "measured": "2026-11-14",
+  "board": "Milk-V Megrez (EIC7700), eMMC root, tmpfs /tmp",
+  "linux": {
+    "kernel": "6.6.87-win2030-origin (vendor RockOS kernel), root mounted read-only, initramfs + chroot into the shared rootfs",
+    "getpid_us": 0.191,
+    "write_null_us": 0.295,
+    "open_close_us": 4.442,
+    "stat_path_us": 2.327,
+    "fstat_fd_us": 0.646,
+    "fork_exec_wait_ms": 2.733,
+    "pipe_rtt_us": 1.68,
+    "mutex_ops_Mops_s": 2.426,
+    "memcpy_MiB_s": 1564.0,
+    "fs_create_sync_us": 15.45,
+    "fs_unlink_us": 8.835,
+    "fs_write_MiB_s": 1349.9,
+    "fs_read_MiB_s": 644.2,
+    "io4k_write_iops": 293000,
+    "io4k_read_iops": 154000
+  },
+  "asterinas": {
+    "getpid_us": 3.251,
+    "write_null_us": 3.325,
+    "open_close_us": 29.422,
+    "stat_path_us": 18.657,
+    "fstat_fd_us": 3.639,
+    "fork_exec_wait_ms": 3.335,
+    "pipe_rtt_us": 8.744,
+    "mutex_ops_Mops_s": 2.392,
+    "memcpy_MiB_s": 243.9,
+    "fs_create_sync_us": 85.115,
+    "fs_unlink_us": 48.565,
+    "fs_write_MiB_s": 369.2,
+    "fs_read_MiB_s": 193.1,
+    "io4k_write_iops": 57800,
+    "io4k_read_iops": 33000
+  },
+  "gates": {
+    "syscall_ratio_max": 9.0,
+    "io4k_ratio_max": 6.0,
+    "fork_exec_ratio_max": 1.4
+  },
+  "notes": [
+    "io4k is a 4 KiB random read/write loop over a 64 MiB tmpfs file (bs=4k, iodepth=1), the fio parameter set without the fio binary: installing fio triggered an eMMC multi-block write failure on this board.",
+    "Linux numbers were taken with init=/bin/sh inside the vendor initramfs plus a chroot into the read-only rootfs, so no filesystem writes happened on the Linux side.",
+    "io4k read IOPS vary between runs (26.7k-39.3k on Asterinas), so its gate carries that headroom."
+  ]
+}

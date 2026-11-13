@@ -8,9 +8,15 @@
 //! because a perf counter measured across two boots moves with cache and
 //! frequency state as much as with the code.
 //!
+//! The same file also selects how a path syscall reads its path string, for
+//! the same reason: `stack` reads it into a stack buffer (default), `heap`
+//! allocates.
+//!
 //! ```text
 //! echo legacy > /proc/perm_order   # capability check first (old order)
 //! echo fast   > /proc/perm_order   # mode bits first (default)
+//! echo heap   > /proc/perm_order   # allocating path read
+//! echo stack  > /proc/perm_order   # stack path read (default)
 //! cat /proc/perm_order
 //! ```
 
@@ -38,11 +44,16 @@ impl ProcFileOps for PermOrderFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
         let order = if inode::legacy_permission_order() {
-            "legacy\n"
+            "legacy"
         } else {
-            "fast\n"
+            "fast"
         };
-        write!(printer, "{}", order)?;
+        let path_read = if crate::syscall::stat::stack_path_read() {
+            "stack"
+        } else {
+            "heap"
+        };
+        write!(printer, "{} {}\n", order, path_read)?;
         Ok(printer.bytes_written())
     }
 
@@ -55,7 +66,11 @@ impl ProcFileOps for PermOrderFileOps {
         match text.trim() {
             "legacy" | "1" => inode::set_legacy_permission_order(true),
             "fast" | "0" => inode::set_legacy_permission_order(false),
-            _ => return_errno_with_message!(Errno::EINVAL, "expected `fast` or `legacy`"),
+            "heap" => crate::syscall::stat::set_stack_path_read(false),
+            "stack" => crate::syscall::stat::set_stack_path_read(true),
+            _ => {
+                return_errno_with_message!(Errno::EINVAL, "expected `fast`, `legacy`, `heap` or `stack`")
+            }
         }
         Ok(read)
     }

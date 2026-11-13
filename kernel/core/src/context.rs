@@ -246,6 +246,26 @@ impl<'a> CurrentUserSpace<'a> {
                 )
             })
     }
+
+    /// Reads a C string into `buffer` instead of allocating one.
+    ///
+    /// Returns the number of bytes written, including the nul, or `None` when
+    /// the nul does not fit, in which case the caller should read the string
+    /// with [`Self::read_cstring`] instead.
+    pub fn read_cstring_into(
+        &self,
+        vaddr: Vaddr,
+        buffer: &mut [u8],
+        max_len: usize,
+    ) -> Result<Option<usize>> {
+        if max_len > 0 {
+            check_vaddr_lowerbound(vaddr)?;
+        }
+
+        let userspace_max_len = VMAR_CAP_ADDR.saturating_sub(vaddr).min(max_len);
+        let mut user_reader = self.reader(vaddr, userspace_max_len)?;
+        crate::util::read_cstring_into(&mut user_reader, buffer, userspace_max_len)
+    }
 }
 
 impl VmIo for CurrentUserSpace<'_> {

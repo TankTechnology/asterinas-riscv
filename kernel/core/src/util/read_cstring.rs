@@ -38,6 +38,32 @@ pub(crate) trait ReadCString {
 /// which the user provides a short string.
 const INIT_ALLOC_SIZE: usize = 128;
 
+/// Reads a C string into `buffer` instead of allocating one.
+///
+/// Returns the number of bytes written, including the nul, or `None` when the
+/// nul does not fit in `buffer` (the caller decides whether to fall back to an
+/// allocating read). Paths fit in a small stack buffer almost always, and a
+/// path syscall makes one or two allocations otherwise -- which on this
+/// platform costs more than the string read itself.
+pub fn read_cstring_into(
+    reader: &mut VmReader<'_, Fallible>,
+    buffer: &mut [u8],
+    max_len: usize,
+) -> Result<Option<usize>> {
+    let limit = buffer.len().min(max_len);
+    let mut len = 0;
+    while len < limit {
+        let byte = reader.read_val::<u8>()?;
+        buffer[len] = byte;
+        len += 1;
+        if byte == 0 {
+            return Ok(Some(len));
+        }
+    }
+
+    Ok(None)
+}
+
 impl ReadCString for VmReader<'_, Fallible> {
     fn read_cstring_until_nul(&mut self, max_len: usize) -> Result<Option<CString>> {
         // This implementation is inspired by
