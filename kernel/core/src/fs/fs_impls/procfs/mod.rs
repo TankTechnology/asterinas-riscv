@@ -19,6 +19,7 @@ use self::{
     partitions::PartitionsFileOps,
     pid::{PidDirOps, TidDirOps},
     self_::SelfSymOps,
+    syscall_profile::SyscallProfileFileOps,
     sys::SysDirOps,
     thread_self::ThreadSelfSymOps,
     uptime::UptimeFileOps,
@@ -56,6 +57,7 @@ mod partitions;
 mod pid;
 mod self_;
 mod stat;
+mod syscall_profile;
 mod sys;
 mod sysrq;
 mod template;
@@ -183,6 +185,11 @@ impl RootDirOps {
         ("partitions", InodeType::File, PartitionsFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_inode),
+        (
+            "syscall_profile",
+            InodeType::File,
+            SyscallProfileFileOps::new_inode,
+        ),
         ("sys", InodeType::Dir, SysDirOps::new_inode),
         (
             "thread-self",

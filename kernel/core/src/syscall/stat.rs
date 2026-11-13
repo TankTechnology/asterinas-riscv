@@ -2,7 +2,7 @@
 
 use ostd::mm::VmIo;
 
-use super::SyscallReturn;
+use super::{SyscallReturn, profile::PhaseProfiler};
 use crate::{
     fs::{
         file::file_table::{RawFileDesc, get_file_fast},
@@ -23,11 +23,21 @@ pub(super) fn sys_fstat(
 ) -> Result<SyscallReturn> {
     debug!("fd = {}, stat_buf_addr = 0x{:x}", raw_fd, stat_buf_ptr);
 
+    let mut profiler = PhaseProfiler::start("fstat");
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
+    profiler.mark("fd");
 
-    let stat = Stat::from(file.path().metadata()?);
+    let path = file.path().clone();
+    profiler.mark("path");
+    let metadata = path.metadata()?;
+    profiler.mark("meta");
+    let stat = Stat::from(metadata);
+    profiler.mark("conv");
+    drop(file_table);
     ctx.user_space().write_val(stat_buf_ptr, &stat)?;
+    profiler.mark("copy");
+    profiler.finish();
 
     Ok(SyscallReturn::Return(0))
 }
@@ -61,8 +71,10 @@ pub(super) fn sys_fstatat(
     flags: u32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
+    let mut profiler = PhaseProfiler::start("fstatat");
     let user_space = ctx.user_space();
     let filename = user_space.read_cstring(filename_ptr, MAX_FILENAME_LEN)?;
+    profiler.mark("str");
     let flags = StatFlags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
     debug!(
@@ -72,20 +84,28 @@ pub(super) fn sys_fstatat(
 
     let path = {
         let filename = filename.to_string_lossy();
+        profiler.mark("name");
         let fs_path =
             FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
 
         let fs_ref = ctx.thread_local.borrow_fs();
         let path_resolver = fs_ref.resolver().read();
+        profiler.mark("lock");
         if flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW) {
             path_resolver.lookup_no_follow(&fs_path)?
         } else {
             path_resolver.lookup(&fs_path)?
         }
     };
+    profiler.mark("path");
 
-    let stat = Stat::from(path.metadata()?);
+    let metadata = path.metadata()?;
+    profiler.mark("meta");
+    let stat = Stat::from(metadata);
+    profiler.mark("conv");
     user_space.write_val(stat_buf_ptr, &stat)?;
+    profiler.mark("copy");
+    profiler.finish();
     Ok(SyscallReturn::Return(0))
 }
 

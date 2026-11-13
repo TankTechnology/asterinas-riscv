@@ -637,7 +637,10 @@ impl PathResolver {
     pub(crate) fn lookup_at_path(&self, path: &Path, name: &str) -> Result<Path> {
         let dir_dentry = path.dentry.as_dir_dentry_or_err()?;
 
-        if path.inode().check_permission(Permission::MAY_EXEC).is_err() {
+        let permitted = crate::syscall::profile::measure("lookup", "perm", || {
+            path.inode().check_permission(Permission::MAY_EXEC).is_ok()
+        });
+        if !permitted {
             return_errno_with_message!(Errno::EACCES, "the path cannot be looked up");
         }
         if name.len() > NAME_MAX {
@@ -647,13 +650,21 @@ impl PathResolver {
         let target_path = if super::is_dot(name) {
             return Ok(path.this());
         } else if super::is_dotdot(name) {
-            self.resolve_parent(path).unwrap_or_else(|| path.this())
+            crate::syscall::profile::measure("lookup", "dotdot", || {
+                self.resolve_parent(path).unwrap_or_else(|| path.this())
+            })
         } else {
-            let target_dentry = dir_dentry.lookup_child(name)?;
-            Path::new(path.mount.clone(), target_dentry)
+            let target_dentry = crate::syscall::profile::measure("lookup", "child", || {
+                dir_dentry.lookup_child(name)
+            })?;
+            crate::syscall::profile::measure("lookup", "mount", || {
+                Path::new(path.mount.clone(), target_dentry)
+            })
         };
 
-        Ok(target_path.get_top_path())
+        Ok(crate::syscall::profile::measure("lookup", "top", || {
+            target_path.get_top_path()
+        }))
     }
 
     /// Lookups the target `Path` according to the `fs_path`.
