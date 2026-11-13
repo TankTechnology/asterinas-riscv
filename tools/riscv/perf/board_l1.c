@@ -80,6 +80,39 @@ static void bench_open_close(void) {
     report("open_close", (now_s() - start) / ITER_OPEN * 1e6, "us");
 }
 
+// Path resolution and metadata fetch, the two halves of `stat`.
+//
+// `stat_path` includes reading the path string, parsing it, walking the dentry
+// tree and fetching the inode; `fstat_fd` skips all of that and only fetches
+// the metadata, so the difference between them is what path resolution costs
+// on an already-cached path. Both run on a file that is guaranteed to exist.
+static void bench_stat(void) {
+    const char *path = "/bin/true";
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        report("stat_path", -1, "us");
+        return;
+    }
+    for (int i = 0; i < 1000; i++)
+        (void)stat(path, &st);
+
+    double start = now_s();
+    for (int i = 0; i < ITER_SYSCALL; i++)
+        (void)stat(path, &st);
+    report("stat_path", (now_s() - start) / ITER_SYSCALL * 1e6, "us");
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        report("fstat_fd", -1, "us");
+        return;
+    }
+    start = now_s();
+    for (int i = 0; i < ITER_SYSCALL; i++)
+        (void)fstat(fd, &st);
+    report("fstat_fd", (now_s() - start) / ITER_SYSCALL * 1e6, "us");
+    close(fd);
+}
+
 static void bench_fork_exec(void) {
     double start = now_s();
     for (int i = 0; i < ITER_FORKEXEC; i++) {
@@ -234,6 +267,7 @@ int main(void) {
     bench_getpid();
     bench_write_null();
     bench_open_close();
+    bench_stat();
     bench_fork_exec();
     bench_memcpy();
     bench_pipe();
