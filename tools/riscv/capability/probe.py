@@ -244,18 +244,30 @@ def probe_memory() -> None:
         page.close()
         return "read/write page ok"
 
-    @check("memory", "madvise(MADV_DONTNEED)")
+    @check("memory", "madvise(MADV_DONTNEED) zeros the pages")
     def _madvise():
+        # The address must be page aligned, so use an mmap rather than a
+        # malloc'd buffer; and check the part that matters: Linux promises the
+        # pages read back as zero afterwards.
         import ctypes
+
         libc = ctypes.CDLL(None, use_errno=True)
-        page = mmap.mmap(-1, mmap.PAGESIZE)
-        buf = ctypes.create_string_buffer(len(page))
-        addr = ctypes.addressof(buf)
-        rc = libc.madvise(ctypes.c_void_p(addr), ctypes.c_size_t(mmap.PAGESIZE), 4)
-        code = ctypes.get_errno()
+        size = 4 * mmap.PAGESIZE
+        area = mmap.mmap(-1, size)
+        addr = ctypes.addressof(ctypes.c_char.from_buffer(area))
+        assert addr % mmap.PAGESIZE == 0
+        area[0:size] = b"x" * size
+        rc = libc.madvise(ctypes.c_void_p(addr), ctypes.c_size_t(size), 4)
         if rc != 0:
+            code = ctypes.get_errno()
             raise OSError(code, os.strerror(code))
-        return "MADV_DONTNEED accepted"
+        zeroed = area[0] == 0 and area[size // 2] == 0
+        area.close()
+        if not zeroed:
+            record("memory", "MADV_DONTNEED page contents", "partial",
+                   "accepted, but the mapping still returns the old bytes")
+            return "accepted"
+        return f"{size // 1024} KiB discarded and read back as zero"
 
     _anon()
     _file()
