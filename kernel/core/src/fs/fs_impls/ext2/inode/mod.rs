@@ -166,7 +166,7 @@ impl Inode {
             Self {
                 ino,
                 type_,
-                inner: RwMutex::new(InodeInner::new(inode_desc, fs.clone())),
+                inner: RwMutex::new(InodeInner::new(inode_desc, ino, fs.clone())),
                 block_group_idx,
                 fs,
                 xattr,
@@ -201,6 +201,11 @@ impl Inode {
     /// Returns the logical file size in bytes.
     pub(super) fn file_size(&self) -> usize {
         self.inner.read().file_size()
+    }
+
+    /// Returns this inode's generation (`i_generation`).
+    pub(super) fn generation(&self) -> u32 {
+        self.inner.read().desc.generation()
     }
 
     /// Returns a reference to the VFS extension slot.
@@ -285,6 +290,11 @@ impl InodeDesc {
     /// Returns the inode type stored in this descriptor.
     pub(super) fn type_(&self) -> InodeType {
         self.type_
+    }
+
+    /// Returns the inode generation (`i_generation`).
+    pub(super) const fn generation(&self) -> u32 {
+        self.generation
     }
 }
 
@@ -419,6 +429,8 @@ const_assert!(size_of::<RawInode>() == 128);
 struct InodeInner {
     /// Full persistence mirror of the on-disk inode.
     desc: Dirty<InodeDesc>,
+    /// `(seed, ino)` for directory-block checksums, `None` when disabled.
+    dir_csum: Option<(u32, u32)>,
     /// Type-specific payload stored in ext2's overloaded `i_block` area.
     payload: InodePayload,
 }
@@ -440,11 +452,26 @@ enum InodePayload {
 }
 
 impl InodeInner {
-    fn new(inode_desc: Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
+    fn new(inode_desc: Dirty<InodeDesc>, ino: Ext2Ino, fs: Weak<Ext2>) -> Self {
+        // Directory blocks carry a trailing checksum record once the
+        // filesystem enables metadata checksums; cache the seed and inode
+        // number so entry updates can refresh it without the `Arc<Ext2>`.
+        let dir_csum = match (inode_desc.type_, fs.upgrade()) {
+            (InodeType::Dir, Some(fs)) => {
+                let sb = fs.super_block();
+                if sb.metadata_csum() {
+                    Some((sb.checksum_seed(), ino))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let payload = InodePayload::new(&inode_desc, fs);
 
         Self {
             desc: inode_desc,
+            dir_csum,
             payload,
         }
     }

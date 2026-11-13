@@ -864,8 +864,19 @@ impl Ext2 {
                     .ok_or_else(|| Error::with_message(Errno::EIO, "inode table block overflow"))?;
                 let mut block = vec![0u8; BLOCK_SIZE];
                 group.read_inode_table_block(block_offset, &mut block)?;
-                block[in_block_offset..in_block_offset + size_of::<RawInode>()]
-                    .copy_from_slice(raw_inode.as_bytes());
+                // Publish the whole inode slot, not just the 128-byte ext2
+                // inode: the tail carries `i_checksum_hi`, and `i_checksum_lo`
+                // lives inside the first 128 bytes, so copying `RawInode`
+                // alone would stage an inode whose checksum no longer matches.
+                let image = group.inode_slot_image(ino, raw_inode)?;
+                let end = in_block_offset + image.len();
+                if end > BLOCK_SIZE {
+                    return_errno_with_message!(
+                        Errno::EUCLEAN,
+                        "inode slot crosses filesystem block boundary"
+                    );
+                }
+                block[in_block_offset..end].copy_from_slice(&image);
                 (block_bid, block)
             };
             self.stage_metadata_block(block_bid, &block);
@@ -1051,6 +1062,17 @@ impl Ext2 {
         // transaction before the parent directory entry is durable.  Stage it
         // in the inode-table cache instead; the filesystem sync path flushes
         // the inode, directory, and allocation metadata as one writeback unit.
+        //
+        // The slot's ext4 extension (`i_extra_isize` and friends) is
+        // initialized first: it lives past the 128-byte ext2 descriptor and
+        // may still contain a previous inode's values.
+        if let Err(err) = block_group.init_inode_extra(ino) {
+            if block_group.free_inode(ino, inode_type).is_ok() {
+                let _ = self.super_block.write().inc_free_inodes();
+            }
+
+            return Err(err);
+        }
         if let Err(err) = self.stage_inode_desc(ino, &raw_inode) {
             if block_group.free_inode(ino, inode_type).is_ok() {
                 let _ = self.super_block.write().inc_free_inodes();

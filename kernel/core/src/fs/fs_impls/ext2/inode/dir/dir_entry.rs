@@ -145,9 +145,10 @@ impl<'a> DirBlockView<'a> {
         page_cache: &'a PageCache,
         block_idx: usize,
         file_size: usize,
+        tail_reserve: usize,
     ) -> Self {
         let offset = block_idx * BLOCK_SIZE;
-        let limit = (file_size - offset).min(BLOCK_SIZE);
+        let limit = (file_size - offset).min(BLOCK_SIZE - tail_reserve);
         Self {
             page_cache,
             offset,
@@ -399,7 +400,7 @@ mod test {
     #[ktest]
     fn iter_all_zero_block_returns_eio() {
         let page_cache = PageCache::new_anon(BLOCK_SIZE).unwrap();
-        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE);
+        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE, 0);
         let mut iter = view.iter_entries();
         assert_errno!(iter.next_entry(), Errno::EIO);
     }
@@ -419,7 +420,7 @@ mod test {
         block[8] = b'.'; // name
         page_cache.write_bytes(0, &block).unwrap();
 
-        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE);
+        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE, 0);
         let mut iter = view.iter_entries();
         assert_errno!(iter.next_entry(), Errno::EIO);
     }
@@ -447,7 +448,7 @@ mod test {
 
         page_cache.write_bytes(0, &block).unwrap();
 
-        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE);
+        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE, 0);
         let mut iter = view.iter_entries();
 
         let (offset, entry) = iter.next_entry().unwrap().unwrap();
@@ -477,7 +478,7 @@ mod test {
 
         page_cache.write_bytes(0, &block).unwrap();
 
-        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE);
+        let view = DirBlockView::from_index(&page_cache, 0, BLOCK_SIZE, 0);
         let mut iter = view.iter_entries();
 
         let (offset, entry) = iter.next_entry().unwrap().unwrap();

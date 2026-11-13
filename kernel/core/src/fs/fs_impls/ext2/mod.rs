@@ -39,6 +39,7 @@
 //! | `inode`        | Inode operations: file I/O, directories, symlinks    |
 //! | `xattr`        | Extended attribute block management                  |
 //! | `block_group`  | Block group descriptor and per-group allocation      |
+//! | `checksum`     | CRC32C primitive for ext4 `metadata_csum`            |
 //! | `super_block`  | On-disk superblock parsing and writeback             |
 //! | `impl_for_vfs` | Wires ext2 types into the VFS trait interfaces       |
 //! | `fs_type`      | `FsType` registration glue                           |
@@ -67,6 +68,7 @@ pub(in crate::fs) use self::fs_type::EXT2_TYPE;
 use crate::fs::vfs::registry;
 
 mod block_group;
+mod checksum;
 mod fs;
 mod fs_type;
 mod impl_for_vfs;
