@@ -30,9 +30,8 @@ run() {
     echo | tee -a "$LOG"
 }
 
-if ! timeout 10 ssh -i "$KEY" -p "$PORT" -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=8 \
-    "$TARGET" true 2>/dev/null; then
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if ! "$HERE/board_ssh_ensure.sh" 120; then
     echo "board not reachable; nothing to inventory" >&2
     exit 1
 fi

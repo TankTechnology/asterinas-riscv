@@ -45,7 +45,8 @@ ssh_board() {
         "$TARGET" "$1" 2>&1 | tee -a "$LOG"
 }
 
-if ! ssh_board 'true' >/dev/null; then
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if ! "$HERE/board_ssh_ensure.sh" 120; then
     echo "board not reachable" >&2
     exit 1
 fi
