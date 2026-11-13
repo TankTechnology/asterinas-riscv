@@ -731,6 +731,38 @@ fn check_permission_ids<I: Inode + ?Sized>(
     let metadata = inode.metadata()?;
     let mode = metadata.mode;
 
+    // Measurement switch: forces the capability check to run before the mode
+    // bits are consulted, which is the order this code used before the mode
+    // bits were given priority. It exists so the two orders can be compared
+    // inside a single boot, where cache and frequency state are the same; a
+    // comparison across two boots is not reliable at this granularity.
+    if legacy_permission_order() {
+        return check_permission_legacy(task, posix_thread, inode, perm, uid, gid, &metadata);
+    }
+
+    // POSIX grants a permission through exactly one class: the owner's, the
+    // group's or the other's. Check that class first and only fall back to
+    // capabilities when it denies, the order Linux uses too. The capability
+    // path walks the LSM modules, locks the process's user namespace and
+    // clones its `Arc`, which is far too heavy to pay on a path component
+    // that the mode bits already allow.
+    let granted_by_mode = if metadata.uid == uid {
+        (!perm.may_read() || mode.is_owner_readable())
+            && (!perm.may_write() || mode.is_owner_writable())
+            && (!perm.may_exec() || mode.is_owner_executable())
+    } else if metadata.gid == gid || posix_thread.credentials().groups().contains(&metadata.gid) {
+        (!perm.may_read() || mode.is_group_readable())
+            && (!perm.may_write() || mode.is_group_writable())
+            && (!perm.may_exec() || mode.is_group_executable())
+    } else {
+        (!perm.may_read() || mode.is_other_readable())
+            && (!perm.may_write() || mode.is_other_writable())
+            && (!perm.may_exec() || mode.is_other_executable())
+    };
+    if granted_by_mode {
+        return Ok(());
+    }
+
     // With DAC_OVERRIDE capability, the user can bypass some permission checks.
     if has_dac_override_capability(task, posix_thread) {
         // Read/write DACs are always overridable.
@@ -739,6 +771,65 @@ fn check_permission_ids<I: Inode + ?Sized>(
         // Executable DACs are always overridable for directories. For
         // regular files, they are overridable only when there is at least
         // one exec bit set. This matches Linux's `generic_permission()`.
+        if perm.may_exec() {
+            if inode.type_() == InodeType::Dir
+                || mode.is_owner_executable()
+                || mode.is_group_executable()
+                || mode.is_other_executable()
+            {
+                perm -= Permission::MAY_EXEC;
+            } else {
+                return_errno_with_message!(
+                    Errno::EACCES,
+                    "root execute permission denied: no execute bits set"
+                );
+            }
+        }
+        if perm.is_empty() {
+            return Ok(());
+        }
+    }
+
+    // The mode bits denied the permission and no capability overrode it.
+    // Report which class said no, because that is what tells a user why.
+    if metadata.uid == uid {
+        return_errno_with_message!(Errno::EACCES, "owner permission check failed");
+    } else if metadata.gid == gid || posix_thread.credentials().groups().contains(&metadata.gid) {
+        return_errno_with_message!(Errno::EACCES, "group permission check failed");
+    }
+    return_errno_with_message!(Errno::EACCES, "other permission check failed");
+}
+
+/// Whether the capability check runs before the mode bits are consulted.
+///
+/// Only a measurement switch: both orders give the same answers, they differ
+/// in how much work a permission that the mode bits already grant costs. The
+/// default is the fast order.
+static LEGACY_PERMISSION_ORDER: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn legacy_permission_order() -> bool {
+    LEGACY_PERMISSION_ORDER.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) fn set_legacy_permission_order(enabled: bool) {
+    LEGACY_PERMISSION_ORDER.store(enabled, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The pre-optimization order: consult capabilities first, then the mode bits.
+fn check_permission_legacy<I: Inode + ?Sized>(
+    task: &CurrentTask,
+    posix_thread: &PosixThread,
+    inode: &I,
+    mut perm: Permission,
+    uid: Uid,
+    gid: Gid,
+    metadata: &Metadata,
+) -> Result<()> {
+    let mode = metadata.mode;
+
+    if has_dac_override_capability(task, posix_thread) {
+        perm -= Permission::MAY_READ | Permission::MAY_WRITE;
         if perm.may_exec() {
             if inode.type_() == InodeType::Dir
                 || mode.is_owner_executable()
