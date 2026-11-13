@@ -1,25 +1,36 @@
-# NOTE: U-Boot's `source` only accepts an mkimage-wrapped script image. Wrap
-# this file with
+# U-Boot boot script for the Megrez board (EIC7700).
+#
+# Wrap this file with
 #   mkimage -A riscv -O linux -T script -C none -d megrez_boot_cmd.txt boot.scr
-# and point bootcmd at `boot.scr`. A plain text file loaded with ext4load and
-# passed to `source` fails with: Wrong image format for "source" command.
-# The board currently uses the equivalent sequence directly in the U-Boot
-# `bootcmd` variable instead (see docs/porting/2026-10-29-megrez-desktop-network-bringup.md §6).
+# and install the result as /root/boot.scr on the root partition (mmc 1:2).
+# The board's saved `bootcmd` is one line that only loads and runs it:
+#   setenv bootcmd 'ext4load mmc 1:2 0x87000000 /root/boot.scr && source 0x87000000'
+#   saveenv
+# so a change to the boot sequence costs an scp (or, with no running system,
+# an XMODEM `loadx 0x87000000` + `save mmc 1:2 0x87000000 /root/boot.scr <len>`)
+# instead of editing the SPI environment over the serial console.
 #
-# Boot script kept on the writable root partition (mmc 1:2).
+# The address is no longer written down anywhere: `dhcp` leaves the lease in
+# U-Boot's `${ipaddr}` / `${netmask}` / `${gatewayip}`, and those are handed to
+# the kernel through `asterinas.net`. `${netmask}` is a dotted quad, which the
+# kernel's profile parser accepts in place of a prefix length
+# (`kernel/src/net/iface/init.rs`). If DHCP fails the argument is omitted and
+# the kernel comes up with loopback only -- visible in the console log.
 #
-# The vendor extlinux.conf on mmc 1:1 still carries the lab network address and
-# omits `asterinas.mmc_write_partition2`, which leaves the root filesystem
-# read-only: Firefox then cannot create its profile ("Your Firefox profile
-# cannot be loaded") and everything that needs to write fails. U-Boot's bootcmd
-# loads this file instead, so the boot arguments live where we can edit them.
-# `dhcp` is not here for the address — the kernel gets that from bootargs. It
-# is here so U-Boot negotiates the PHY before the kernel starts. The kernel
-# driver can do that itself now (start_auto_negotiation() in
-# kernel/comps/dwmac/src/phy.rs), but a cold PHY needs about 3.5 s to finish
-# negotiating and U-Boot does that work outside the kernel's boot time. A
-# board whose PHY is already linked when the kernel boots does not restart the
-# negotiation, so this only saves time; it is not what makes the network work.
+# `dhcp` also negotiates the PHY before the kernel starts. The dwmac driver can
+# do that itself (start_auto_negotiation() in kernel/comps/dwmac/src/phy.rs),
+# but a cold PHY needs about 3.5 s and U-Boot does the work outside the kernel's
+# boot time.
+#
+# The kernel watchdog (`asterinas.reboot_after=900`) reboots the board if early
+# unit startup does not reach the desktop-ready handoff; a hang nobody is
+# watching then costs one boot cycle instead of a trip to the board.
+#
+# The four `mw.l` lines arm the SoC's hardware watchdog just before the kernel
+# starts; the kernel takes it over (asterinas.hardware_watchdog_handoff=1). The
+# order of the register writes matters. Register 0x508000fc is the watchdog's
+# component ID; if it does not read back, the SoC has no watchdog and the
+# arming is skipped rather than writing to an unrelated block.
 echo "ASTERINAS_BOOTCMD start"
 setenv autoload no
 dhcp
@@ -30,17 +41,14 @@ ext4load mmc 1:1 0x88000000 megrez-daily.dtb
 if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=dtb"; exit 1; fi
 ext4load mmc 1:2 0x80200000 /root/kernel-rel.img
 if test $? -ne 0; then echo "ASTERINAS_BOOTCMD fail=kernel"; exit 1; fi
-# asterinas.reboot_after is the boot watchdog: if the system has not reached
-# basic.target in 15 minutes the kernel reboots the board by itself
-# (asterinas-watchdog-disarm.service disarms it as soon as it gets there).
-# Without it a hang in early unit startup leaves the board silent until
-# somebody presses the reset button.
-# `asterinas.panic_reboot` restarts instead of halting after a fatal abort. On a
-# board nobody can reach, a halted kernel and a hung kernel look the same from
-# the console; with this one a driver bug costs a boot cycle instead of a
-# trip to the board.
-# 192.0.2.10 / 192.0.2.1 are RFC 5737 documentation addresses; substitute
-# the board's real address in your local copy (BOARD_IP / BOARD_GW), never
-# in the repository.
-setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=900 asterinas.panic_reboot=1 asterinas.net=eic7700-rj45,192.0.2.10/24,192.0.2.1 -- --root-init=systemd --debug-console=isolated-root
+setenv netopt ""
+if test -n "${ipaddr}"; then
+  setenv netprof "${ipaddr}/${netmask}"
+  if test -n "${gatewayip}"; then setenv netprof "${netprof},${gatewayip}"; fi
+  setenv netopt "asterinas.net=eic7700-rj45,${netprof}"
+fi
+echo "ASTERINAS_NETOPT [${netopt}]"
+setenv bootargs console=ttyS0 loglevel=warn init=/init asterinas.mmc_write_partition2 asterinas.mmc_write_partition3 asterinas.reboot_after=900 asterinas.hardware_watchdog_handoff=1 ${netopt} -- --root-init=systemd --debug-console=isolated-root
+mw.l 0x51828444 0x1
+if itest.l *0x508000fc == 0x44570120; then mw.l 0x50800004 0xf; mw.l 0x5080000c 0x76; mw.l 0x50800000 0x1f; fi
 booti 0x80200000 0x88300000:${initrd_size} 0x88000000

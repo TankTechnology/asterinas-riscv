@@ -22,7 +22,6 @@ use ostd::{
     task::disable_preempt,
     timer::Jiffies,
 };
-use spin::Once;
 
 use super::{RssType, Vmar, interval_set::Interval, util::is_intersected, vmar_impls::RssDelta};
 use crate::{
@@ -33,7 +32,7 @@ use crate::{
     prelude::*,
     process::{LockedHeap, posix_thread::AsPosixThread},
     vm::{
-        page_cache::{CachePage, Vmo, VmoCommitError, VmoOptions},
+        page_cache::{CachePage, Vmo, VmoCommitError},
         perms::VmPerms,
         vmar::{PageFaultInfo, PageFaultOutcome},
     },
@@ -113,27 +112,6 @@ static FAULT_STAGE_PREPARE: FaultStage = FaultStage::new();
 static FAULT_STAGE_MAP: FaultStage = FaultStage::new();
 static FAULT_STAGE_AROUND: FaultStage = FaultStage::new();
 const FAULT_PROFILE_LOG_INTERVAL: u64 = 128;
-
-/// The shared zero page backing read faults on anonymous mappings.
-///
-/// Linux's `do_anonymous_page` maps a shared zero page for anonymous read
-/// faults instead of allocating a private frame; the first write fault then
-/// copies it through the normal COW path. The VMO keeps the frame alive and
-/// each mapping holds its own reference, so the COW decision never mistakes
-/// the page for a uniquely owned frame and upgrades it in place.
-static ZERO_PAGE_VMO: Once<Arc<Vmo>> = Once::new();
-
-fn zero_page_vmo() -> &'static Arc<Vmo> {
-    ZERO_PAGE_VMO.call_once(|| {
-        let vmo = VmoOptions::new(PAGE_SIZE)
-            .alloc()
-            .expect("failed to allocate the shared zero page");
-        // Committing the page allocates and zero-fills the frame.
-        vmo.commit_on(0)
-            .expect("failed to commit the shared zero page");
-        vmo
-    })
-}
 
 /// Starts a page-fault stage timer, or returns `None` when profiling is off.
 #[inline]
@@ -760,12 +738,6 @@ impl VmMapping {
 
                     let map_start = fault_profile_mark();
                     cursor.map(frame, map_prop);
-                    // The shared zero page is counted like any other resident
-                    // page here. Linux excludes it from RSS because it maps
-                    // the page with a special PTE; this VM has no per-PTE
-                    // special marker yet, and unmapping decrements RSS by the
-                    // number of mapped pages, so skipping the increment would
-                    // underflow the counter.
                     rss_delta.add(self.rss_type(), 1);
                     record_fault_stage(&FAULT_STAGE_MAP, map_start);
                 }
@@ -786,16 +758,7 @@ impl VmMapping {
         let vmo = match &self.mapped_mem {
             MappedMemory::Vmo(vmo) => vmo,
             MappedMemory::Anonymous => {
-                if !write {
-                    // Read faults on anonymous memory map the shared zero
-                    // page, as Linux's `do_anonymous_page` does. A later
-                    // write fault goes through the normal COW path and
-                    // copies the page.
-                    let frame = zero_page_vmo().commit_on(0).map_err(VmoCommitError::Err)?;
-                    return Ok((frame.into(), true));
-                }
-
-                // Anonymous write mapping. Allocate a new frame.
+                // Anonymous mapping. Allocate a new frame.
                 return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
             }
             MappedMemory::Device => {
@@ -1212,12 +1175,7 @@ impl VmMapping {
     /// Change the perms of the mapping.
     pub(super) fn protect(self, vm_space: &VmSpace, perms: VmPerms) -> Self {
         let mut new_flags = PageFlags::from(perms);
-        if self.is_cow() {
-            // A COW mapping may contain pages that are not exclusively owned
-            // by this VM, such as the shared zero page or pages shared with a
-            // forked child. Never make such a PTE writable from the VMA
-            // permissions alone: the next write fault re-checks ownership and
-            // either upgrades the frame in place or copies it.
+        if self.is_cow() && !self.perms.contains(VmPerms::WRITE) {
             new_flags.remove(PageFlags::W);
         }
 
