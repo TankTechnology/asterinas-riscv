@@ -776,20 +776,22 @@ impl InodeInner {
         let file_size = self.file_size();
         let name_bytes = name.as_bytes();
         let page_cache = self.page_cache();
+        let tail_reserve = self.dir_tail_reserve();
 
+        // One page-cache read per block, then scan in memory. Reading a header
+        // and a name per entry through the page cache costs about a
+        // microsecond per entry, which a 638-entry directory turns into most
+        // of a millisecond.
+        let mut buffer = vec![0u8; BLOCK_SIZE];
         for block_idx in 0..file_size.div_ceil(BLOCK_SIZE) {
             let block_offset = block_idx * BLOCK_SIZE;
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size, self.dir_tail_reserve());
-            let mut entry_iter = block.iter_entries();
-            while let Some((entry_offset, entry)) = entry_iter.next_entry()? {
-                let ino = entry.header.ino;
-                if ino == 0 || entry.name != name_bytes {
-                    continue;
-                }
+            let block = DirBlockView::from_index(page_cache, block_idx, file_size, tail_reserve);
+            block.read_into(&mut buffer)?;
+            if let Some((entry_offset, header)) = block.find_name_in_buffer(&buffer, name_bytes)? {
                 return Ok(DirEntryInfo {
-                    ino,
+                    ino: header.ino,
                     dir_offset: block_offset + entry_offset,
-                    entry_rec_len: entry.header.rec_len as usize,
+                    entry_rec_len: header.rec_len as usize,
                 });
             }
         }

@@ -209,6 +209,78 @@ impl<'a> DirBlockView<'a> {
         Ok(header)
     }
 
+    /// Copies the whole view into `buffer` with one page-cache read.
+    ///
+    /// A scan that reads a header and a name per entry pays one page-cache
+    /// lookup for each of them, which on this platform is around half a
+    /// microsecond; a full 638-entry directory then costs most of a
+    /// millisecond. Reading the block once and parsing it in memory turns that
+    /// into one lookup per block.
+    pub(super) fn read_into(&self, buffer: &mut [u8]) -> Result<()> {
+        debug_assert!(buffer.len() >= self.limit);
+        self.page_cache
+            .read_bytes(self.offset, &mut buffer[..self.limit])
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to read directory block"))
+    }
+
+    /// Finds `name` in an already-read block, applying the same validation as
+    /// [`Self::read_header`].
+    ///
+    /// Returns the entry offset within the view and its header.
+    pub(super) fn find_name_in_buffer(
+        &self,
+        buffer: &[u8],
+        name: &[u8],
+    ) -> Result<Option<(usize, DirEntryHeader)>> {
+        let mut cursor = 0;
+        while cursor < self.limit {
+            let header_bytes = buffer
+                .get(cursor..cursor + Self::HEADER_LEN)
+                .ok_or_else(|| Error::with_message(Errno::EIO, "dir entry header short read"))?;
+            let header = DirEntryHeader::from_bytes(header_bytes);
+            let rec_len = header.rec_len as usize;
+            let name_len = header.name_len as usize;
+            if (rec_len & DirEntryHeader::ALIGN_MASK) != 0 {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "invalid dir entry: rec_len is not 4-byte aligned"
+                );
+            }
+            if name_len > NAME_MAX {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "invalid dir entry: name_len exceeds NAME_MAX"
+                );
+            }
+            if header.ino != 0 && name_len == 0 {
+                return_errno_with_message!(Errno::EIO, "invalid dir entry: name_len is zero");
+            }
+            if rec_len < DirEntryHeader::min_rec_len(name_len) as usize {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "invalid dir entry: rec_len is smaller than required by name_len"
+                );
+            }
+            if cursor + rec_len > self.limit {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "invalid dir entry: entry extends beyond block limit"
+                );
+            }
+
+            let name_at = cursor + Self::HEADER_LEN;
+            if header.ino != 0
+                && name_len == name.len()
+                && buffer.get(name_at..name_at + name_len) == Some(name)
+            {
+                return Ok(Some((cursor, header)));
+            }
+            cursor += rec_len;
+        }
+
+        Ok(None)
+    }
+
     /// Returns an iterator over entries in this view.
     pub(super) fn iter_entries(&self) -> DirBlockViewIter<'_> {
         DirBlockViewIter {
