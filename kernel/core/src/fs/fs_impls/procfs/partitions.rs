@@ -6,6 +6,8 @@
 //!
 //! Reference: <https://man7.org/linux/man-pages/man5/proc_partitions.5.html>
 
+use alloc::string::String;
+
 use aster_block::BlockDevice;
 use aster_util::printer::VmPrinter;
 
@@ -36,10 +38,24 @@ impl ProcFileOps for PartitionsFileOps {
         // Linux prints this header with the same alignment.
         writeln!(printer, "major minor  #blocks  name")?;
 
-        for device in aster_block::collect_all() {
+        let devices = aster_block::collect_all();
+
+        // The registry hands out partitions as devices of their own, and
+        // `is_partition()` is not implemented by every driver, so decide by
+        // name: anything a device lists as its partition is printed under that
+        // device, never as a top-level entry of its own.
+        let mut partition_names: Vec<String> = Vec::new();
+        for device in &devices {
+            for partition in device.partitions().unwrap_or_default() {
+                partition_names.push(String::from(partition.name()));
+            }
+        }
+
+        for device in &devices {
+            if partition_names.iter().any(|name| name == device.name()) {
+                continue;
+            }
             print_device(&mut printer, device.as_ref())?;
-            // A partition is listed after its whole device, and the whole
-            // device's entry comes first, as in Linux.
             for partition in device.partitions().unwrap_or_default() {
                 print_device(&mut printer, partition.as_ref())?;
             }

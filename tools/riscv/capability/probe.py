@@ -106,6 +106,26 @@ def probe_system() -> None:
         except OSError as error:
             record("system", path, "missing", error.strerror or "")
 
+    @check("system", "AT_HWCAP (auxv)")
+    def _hwcap():
+        import struct
+
+        with open("/proc/self/auxv", "rb") as handle:
+            data = handle.read()
+        values = {}
+        for offset in range(0, len(data) - 15, 16):
+            key, value = struct.unpack_from("<QQ", data, offset)
+            if key == 0:
+                break
+            values[key] = value
+        hwcap = values.get(16)
+        if hwcap is None:
+            raise OSError(errno.EINVAL, "AT_HWCAP absent from the auxiliary vector")
+        letters = "".join(chr(ord("A") + bit) for bit in range(26) if hwcap & (1 << bit))
+        return f"0x{hwcap:x} ({letters}) hwcap2=0x{values.get(26, 0):x}"
+
+    _hwcap()
+
     @check("system", "clock_gettime(CLOCK_MONOTONIC)")
     def _monotonic():
         a = time.clock_gettime(time.CLOCK_MONOTONIC)
