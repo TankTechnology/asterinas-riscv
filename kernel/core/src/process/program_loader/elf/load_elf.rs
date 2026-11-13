@@ -470,6 +470,14 @@ fn init_aux_vec(
 
     aux_vec.set(AuxKey::AT_PAGESZ, PAGE_SIZE as _);
     aux_vec.set(AuxKey::AT_CLKTCK, time::USER_HZ);
+    #[cfg(target_arch = "riscv64")]
+    {
+        // User space learns which single-letter extensions the harts have from
+        // this word; glibc's ifunc dispatch and the language runtimes read it.
+        let (hwcap, hwcap2) = crate::arch::isa::hwcap();
+        aux_vec.set(AuxKey::AT_HWCAP, hwcap);
+        aux_vec.set(AuxKey::AT_HWCAP2, hwcap2);
+    }
 
     let Some(ph_vaddr) = elf_map_range.relocated_addr_of(elf.find_vaddr_of_phdrs()?) else {
         return_errno_with_message!(
