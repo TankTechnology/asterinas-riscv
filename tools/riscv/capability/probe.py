@@ -332,20 +332,56 @@ def probe_ipc() -> None:
         os.close(write_fd)
         return "1 KiB through a pipe"
 
-    @check("ipc", "unix socket + SCM_RIGHTS")
-    def _scm():
-        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        try:
-            fd = os.open("/dev/null", os.O_RDONLY)
-            socket.send_fds(left, [b"fd"], [fd])
-            message, fds, _, _ = socket.recv_fds(right, 16, 4)
-            os.close(fd)
-            for received in fds:
-                os.close(received)
-            return f"received {message!r} with {len(fds)} fd"
-        finally:
-            left.close()
-            right.close()
+    # SCM_RIGHTS is allowed per file class, not per socket: the B1 ownership
+    # model passes regular files, pipes, sockets, epoll and pidfd handles, and
+    # refuses file types it does not model yet. Report each class separately so
+    # "SCM_RIGHTS is broken" cannot be read into a single failing case.
+    def scm_rights(label: str, make_fd):
+        @check("ipc", f"SCM_RIGHTS {label}")
+        def _probe():
+            left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            fd = make_fd()
+            try:
+                socket.send_fds(left, [b"fd"], [fd])
+                message, fds, _, _ = socket.recv_fds(right, 16, 4)
+                for received in fds:
+                    os.close(received)
+                return f"received {message!r} with {len(fds)} fd"
+            finally:
+                os.close(fd)
+                left.close()
+                right.close()
+
+        _probe()
+
+    def open_regular():
+        handle, path = tempfile.mkstemp(dir="/tmp")
+        os.close(handle)
+        os.unlink(path)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.unlink(path)
+        return fd
+
+    held: list = []
+
+    def open_socket():
+        # The socketpair has to outlive the probe: taking only `fileno()` from a
+        # temporary lets the collector close it before the fd is passed.
+        pair = socket.socketpair()
+        held.append(pair)
+        # Duplicate so the probe's own close() does not close the fd the
+        # socket object still owns. `os.dup` yields a plain integer fd.
+        return os.dup(pair[0].fileno())
+
+    scm_rights("regular file", open_regular)
+    scm_rights("pipe", lambda: os.pipe()[0])
+    scm_rights("unix socket", open_socket)
+    scm_rights("/dev/null", lambda: os.open("/dev/null", os.O_RDONLY))
+    if hasattr(os, "eventfd"):
+        scm_rights("eventfd", lambda: os.eventfd(0))
+    for pair in held:
+        for sock in pair:
+            sock.close()
 
     @check("ipc", "shared memory (POSIX shm)")
     def _shm():
@@ -382,7 +418,7 @@ def probe_ipc() -> None:
             os.close(read_fd)
             os.close(write_fd)
 
-    for probe in (_pipe, _scm, _shm, _sem, _epoll):
+    for probe in (_pipe, _shm, _sem, _epoll):
         probe()
 
 
