@@ -1,5 +1,16 @@
 # 缓冲读没有命中页缓存（2026-11-14，待修）
 
+## 结论（先看这里）
+
+临时计数器（已删除）表明：**读的时候页都在缓存里**——完整读 64 MiB 三遍，
+`resident_ok` 增长、`need_io` **一次都不增加**、`wait_init` 不变。也就是说
+`read()` 的 196 MiB/s 不是设备 I/O 速度，而是**逐页拷贝路径的 CPU 成本**
+（约 20 µs / 4 KiB 页）。`mmap` 之所以快，是因为它只映射、不拷贝。
+
+修的方向因此不是「让页留下来」，而是**降低每页的拷贝开销**（`Vm::read` 里
+每页 `page.reader().skip().read_fallible(writer)` 的机械开销：页引用、锁、
+用户缓冲的 `VmWriter` 逐页写入与页表遍历）。页对齐且大块时应有整块快速路径。
+
 ## 现象
 
 同一个 64 MiB 文件，用 `mmap` 触碰所有页与用 `read()` 读，第二遍的行为完全不同：
@@ -29,8 +40,9 @@
 
 - `Vmo::read` → `collect_pages(..., CommitMode::Read)` → `try_operate_on_range_internal`
   → `try_commit_with_cursor`：只有在 `page.is_uninit()` 时才返回 `WaitUntilInit`。
-- 因此「已驻留且非 Uninit」的页不应触发 I/O；`read()` 仍然慢，说明要么页在
-  读路径之后被移出 XArray，要么每次 `commit_range` 都重新提交了 I/O。
+- 计数器实测：三遍读全程 `need_io` 不变，说明页确实驻留；瓶颈在
+  `Vmo::read` 里逐页的 `page.reader().skip(page_offset).read_fallible(writer)`
+  这段拷贝，而不是提交逻辑。
 - 相关：`wait_for_writeback_and_remove_pages`（写回后移除页）、
   `CachePage::set_up_to_date` / `set_dirty` 的状态迁移。
 
@@ -43,12 +55,11 @@
 
 ## 建议的下一步（按顺序）
 
-1. 在 `try_commit_with_cursor`（backed VMO 版本）里计数：命中驻留页 /
-   返回 `NeedIo` / `WaitUntilInit` 各多少次，读一次 64 MiB 文件看分布。
-2. 若大量 `NeedIo`：检查写回后页是否被移除（`wait_for_writeback_and_remove_pages`
-   的调用点），只在 truncate/invalidate 时移除才正确。
-3. 若命中驻留但每次仍慢：测单页 `read_fallible` 的拷贝成本，确认瓶颈在拷贝
-   还是锁/`Arc` 操作。
+1. （已完成）计数器显示 `need_io` 全程为零 → 不是提交/落盘问题。
+2. 下一步：测单页 `read_fallible` 的拷贝成本（4 KiB 用户缓冲），与裸 `memcpy`
+   对比，确认是页引用/锁还是用户缓冲写入（页表遍历）占大头。
+3. 加整块快速路径：源页与目标都页对齐时，直接按页切片拷贝，跳过逐字节/逐块的
+   `VmReader`/`VmWriter` 机械开销。
 4. 修好后用 `cacheprobe`（三遍读）与 `fs_read` 验收，并更新
    `board_al_baseline.json` 的 `fs_read` 门禁。
 
