@@ -41,6 +41,11 @@ pub(super) fn init_in_first_process() -> Result<()> {
     let class_node = class_node();
     add_class_children(&class_node)?;
 
+    let module_node = build_module_node()?;
+    crate::fs::sysfs::systree_singleton()
+        .root()
+        .add_child(module_node as Arc<dyn SysObj>)?;
+
     let bus_node = AttrLessSysNode::new("bus");
     bus_node.add_child(AttrLessSysNode::new("platform") as Arc<dyn SysObj>)?;
     crate::fs::sysfs::systree_singleton()
@@ -502,6 +507,66 @@ pub(super) fn dev_node() -> Arc<AttrLessSysNode> {
         .clone()
 }
 
+/// `/sys/module`: one directory per component that initialized.
+///
+/// There are no loadable modules in this kernel, so `/sys/module` is a view of
+/// the component system rather than of a module loader. Tools read it to learn
+/// whether a driver is present (`ls /sys/module | grep mmc`) and, through
+/// `initstate`, whether it came up.
+pub(super) fn build_module_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
+    let module_node = AttrLessSysNode::new("module");
+    for name in component::initialized_components() {
+        module_node.add_child(ModuleSysNode::new(name) as Arc<dyn SysObj>)?;
+    }
+    Ok(module_node)
+}
+
+/// One `/sys/module/<name>` directory.
+#[derive(Debug)]
+struct ModuleSysNode {
+    fields: NormalNodeFields<Self>,
+}
+
+impl ModuleSysNode {
+    fn new(name: String) -> Arc<Self> {
+        let mut builder = SysAttrSetBuilder::new();
+        builder.add(SysStr::from("initstate"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        builder.add(SysStr::from("refcnt"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        let attrs = builder
+            .build()
+            .expect("failed to build the module attribute set");
+        Arc::new_cyclic(|weak_self| Self {
+            fields: NormalNodeFields::new(SysStr::Owned(name.clone()), attrs, weak_self.clone()),
+        })
+    }
+}
+
+inherit_sys_leaf_node!(ModuleSysNode, fields, {
+    fn read_attr_at(
+        &self,
+        name: &str,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> SysTreeResult<usize> {
+        // Everything listed here finished initializing, so the state is
+        // `live`. `refcnt` is the module loader's reference count, which has
+        // no meaning without a loader: report zero, as Linux does for a
+        // module nothing holds.
+        let value = match name {
+            "initstate" => "live",
+            "refcnt" => "0",
+            _ => return Err(SysTreeError::AttributeError),
+        };
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(printer, "{}", value)?;
+        Ok(printer.bytes_written())
+    }
+
+    fn perms(&self) -> SysPerms {
+        SysPerms::DEFAULT_RO_PERMS
+    }
+});
+
 /// `/sys/devices`, the container the CPU topology hangs off.
 static DEVICES_NODE: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
 
@@ -697,14 +762,32 @@ mod test {
         }
     }
 
+    /// Builds a detached `/sys/dev` node the way `init_in_first_process` does.
+    ///
+    /// The production path hangs these off the global systree singleton
+    /// through `dev_node()`; a test wants the same shape without publishing it
+    /// to a tree that other tests share.
+    fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Arc<AttrLessSysNode>> {
+        let dev = AttrLessSysNode::new("dev");
+        if let Some(char_node) = build_char_node(devices)? {
+            dev.add_child(char_node as Arc<dyn SysObj>)?;
+        }
+        Ok(dev)
+    }
+
+    /// The detached counterpart of `class_node()` + `add_class_children()`.
+    fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
+        let class = AttrLessSysNode::new("class");
+        add_class_children(&class)?;
+        Ok(class)
+    }
+
     /// The shape libdrm walks to decide that `/dev/dri/card0` is a real
     /// device: a bus symlink it can readlink, a `uevent` it can read an
     /// identifier out of, and a `drm` directory it can list for the node name.
     #[ktest]
     fn drm_dev_node_matches_the_shape_libdrm_walks() {
-        let dev = build_dev_node(&[virtio_device(&[("card0", 0), ("renderD128", 128)])])
-            .unwrap()
-            .unwrap();
+        let dev = build_dev_node(&[virtio_device(&[("card0", 0), ("renderD128", 128)])]).unwrap();
         let char = dev.child("char").unwrap().cast_to_branch().unwrap();
 
         let card = char.child("226:0").unwrap().cast_to_branch().unwrap();
@@ -784,9 +867,7 @@ mod test {
             driver: "pvrsrvkm",
             modalias: "platform:pvrsrvkm",
         };
-        let dev = build_dev_node(&[display_device, gpu_device])
-            .unwrap()
-            .unwrap();
+        let dev = build_dev_node(&[display_device, gpu_device]).unwrap();
         let char = dev.child("char").unwrap().cast_to_branch().unwrap();
         let display = char
             .child("226:0")

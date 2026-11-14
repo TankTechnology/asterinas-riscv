@@ -18,6 +18,26 @@ use alloc::{
 
 pub use component_macro::*;
 pub use inventory::submit;
+
+/// Names of the components that initialized successfully, in init order.
+///
+/// This kernel has no loadable modules, so the things a user can find in
+/// `/sys/module` are exactly the components the build linked in and brought
+/// up. Recording them here keeps `/sys/module` honest: it lists what actually
+/// initialized, not what was compiled.
+static INITIALIZED_COMPONENTS: spin::Mutex<Vec<String>> = spin::Mutex::new(Vec::new());
+
+/// Returns the components that have initialized so far, once each.
+///
+/// A component runs once per init stage (`Bootstrap`, `Kthread`, `Process`),
+/// so the same name is recorded several times; `/sys/module` wants the sorted,
+/// deduplicated set, which is also the order Linux lists modules in.
+pub fn initialized_components() -> Vec<String> {
+    let mut names = INITIALIZED_COMPONENTS.lock().clone();
+    names.sort();
+    names.dedup();
+    names
+}
 // This crate intentionally uses the `log` crate directly (not `ostd::log`)
 // because it is a standalone framework crate that does not depend on OSTD.
 // Messages are forwarded to the OSTD logger via the `LogCrateBridge`.
@@ -217,6 +237,7 @@ fn match_and_call(
         if let Err(res) = (info.function.unwrap())() {
             error!("Component initialize error: {:?}", res);
         } else {
+            INITIALIZED_COMPONENTS.lock().push(info.name.clone());
             info!("Component initialize complete");
         }
     }
