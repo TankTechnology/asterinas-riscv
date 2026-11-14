@@ -30,6 +30,8 @@ use crate::{
 };
 
 mod asterinas_reboot_watchdog;
+#[cfg(target_arch = "riscv64")]
+mod asterinas_watchdog_drill;
 mod cap_last_cap;
 mod overflow_gid;
 mod overflow_uid;
@@ -55,6 +57,12 @@ impl KernelDirOps {
             "asterinas_reboot_watchdog",
             InodeType::File,
             AsterinasRebootWatchdogFileOps::new_inode,
+        ),
+        #[cfg(target_arch = "riscv64")]
+        (
+            "asterinas_watchdog_drill",
+            InodeType::File,
+            asterinas_watchdog_drill::AsterinasWatchdogDrillFileOps::new_inode,
         ),
         (
             "cap_last_cap",

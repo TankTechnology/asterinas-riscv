@@ -302,3 +302,38 @@ cp /root/kernel-rel.img.bak /root/kernel-rel.img && sync && reboot -f
 
 2026-11-14 复核时，从当前源码树重新构建出的镜像与板上运行的
 `0fce3a3c…` 逐字节一致，说明"源码 ↔ 构建 ↔ 真机"三者对得上（确定性构建仍然成立）。
+
+## 8. 2026-11-14 真机演练：L2 与 L1 首次在板上触发
+
+§5 待做 1 与 3 在同一天补完，两次演练都不碰启动路径（bootcmd 与 boot.scr 未改）。
+
+### L2：内核 900 s deadline 在板上自己把系统拉回来
+
+做法：把三条解除路径全部停用（移走 `asterinas-watchdog-disarm.service` 与
+`asterinas-safe-reboot.service`，mask `asterinas-desktop-ready.service`），
+恢复脚本 `/root/watchdog-drill/restore.sh` 事先放好，然后正常重启。
+
+- 该次启动只有 `ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=900 source=cmdline`，
+  **没有** `USERSPACE_REBOOT_DISARMED`；
+- 到点（15:25:14）打印 `ASTERINAS_SOFTWARE_REBOOT_SYNC_START` 与
+  `SYNC_COMPLETE`，随后 OpenSBI 重启、U-Boot 按默认 bootcmd 起回桌面；
+- 演练后三个单元已恢复（`enabled` / `enabled-runtime` / `enabled`），
+  下一次开机 `ARMED → DISARMED` 正常。
+
+这条证明的是：**用户态没有任何进展时，RISC-V 定时器中断仍被内核取走**，
+这是整个 L2 层成立的前提。
+
+### L1：停止喂狗后，DesignWare 看门狗真的复位了 SoC
+
+L1 依赖一个从未在真机上验证过的假设（§3 A1/A2）：U-Boot 武装的 DW 看门狗
+在没人喂的时候会复位 SoC。健康板子上永远不会出现"没人喂"，所以加了一个
+受控入口：`/proc/sys/kernel/asterinas_watchdog_drill`（写 1 即停止心跳，
+需 `CAP_SYS_ADMIN`，读回 0 表示已停）。
+
+- 15:31:24 写入后文件立即变为 `0`；SSH 会话随之中断；
+- 45 s 后（15:32:09）U-Boot banner 重新出现，板子按默认路径起回桌面，
+  `uptime` 归零，三层看门狗重新武装。
+
+这关闭了安全案里最大的未知：L1 不再是"设计上应该能救"而是实测能救。
+演练钩子不会在正常启动时生效（只由这个 procfs 写触发），代价是它给 root
+留了一个"把板子拖到下一次看门狗复位"的开关——调试设施，已在文件头注明。

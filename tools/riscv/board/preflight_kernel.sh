@@ -35,8 +35,8 @@ DTB_ADDR=$((0x88000000))
 MAX_BYTES=$((DTB_ADDR - KERNEL_ADDR))
 MIN_BYTES=$((1 << 20))
 
-IMAGE=${1:?usage: preflight_kernel.sh <image> [--no-qemu] [--timeout seconds]}
-shift
+IMAGE=${1:-$REPO/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image}
+[ $# -gt 0 ] && shift
 USE_QEMU=1
 TIMEOUT=150
 while [ $# -gt 0 ]; do

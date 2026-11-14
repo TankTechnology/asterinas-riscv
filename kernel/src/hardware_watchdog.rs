@@ -49,6 +49,14 @@ pub(crate) fn stop_kicking_for_reset() {
     KICKING.store(false, Ordering::Release);
 }
 
+/// Whether this kernel still feeds the hardware watchdog.
+///
+/// `/proc/sys/kernel/asterinas_watchdog_drill` reports it, so a drill run can
+/// be told apart from a board that merely stopped booting.
+pub(crate) fn is_kicking() -> bool {
+    KICKING.load(Ordering::Acquire)
+}
+
 fn requested() -> bool {
     REQUESTED
         .get()
