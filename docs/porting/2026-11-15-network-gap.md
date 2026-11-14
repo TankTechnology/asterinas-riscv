@@ -18,7 +18,7 @@
 | 功能 | 板上现象 | 缺在哪 | 工作量 |
 | --- | --- | --- | --- |
 | **`ip link set mtu/name`** | 以前返回成功但改不动（见 §2.1，已修） | — | 已修 |
-| **`ip route add/del`、`ip neigh add`** | **命令挂住不返回**（10 s 超时），而不是报错 | `RtnlSegment::read_from` 没有 `CSegmentType::NEWROUTE` 分支，落到"不支持"；但客户端在收到 `EOPNOTSUPP` 后仍继续 `recvmsg` 等待 | 待查 |
+| **`ip route add/del`、`ip neigh add`** | 以前**命令挂住不返回**（10 s 超时）；修复后立即返回 `Operation not supported` | 见 §2.2 | 已修 |
 | **veth pair** | `ip link add veth0 type veth peer name veth1` → `RTNETLINK answers: No such device` | `do_new_link` 只按 index 找已有接口，**不解析 LINKINFO kind，也没有"创建接口"的路径**；内核里没有任何虚拟以太网设备 | 大：需要虚拟设备模型 + 双向队列表 + rtnl 创建/删除 + 命名 |
 | **bridge** | `ip link add br0 type bridge` → 同上 | 同上，且没有转发表 | 大 |
 | **netfilter / iptables / nft** | 内核里没有 netfilter 钩子；`iptables` 也没装（Debian 包可装，但内核不支持会直接报 `can't initialize iptables table`） | 完全没有：需要 `NF_HOOK` 挂点、table/chain/rule 数据结构、`setsockopt(SO_ATTACH_FILTER)` 之外的匹配动作、以及 netlink nfnetlink 协议 | 很大 |
@@ -47,21 +47,23 @@ $ ip link show eth0
 板上复验：`ip link set dev eth0 mtu 1400` → `Operation not supported`，MTU 不变、
 `UP` 保持；`ip link set lo down/up` 仍然有效；默认路由与网关 ping 不受影响。
 
-## 2.2 待查的：`ip route add` 挂起
+## 2.2 已修的：`ip route add` 挂起不返回
 
 ```
 $ timeout 5 ip route add 10.98.0.0/24 dev lo ; echo $?
-124
+124          # 修复前：永远不返回
 ```
 
-strace 显示：GETLINK 正常；随后 `sendmsg` 了 `nlmsg_type=0x18`（RTM_NEWROUTE）
-带 `NLM_F_ACK`，收到了 `NLMSG_ERROR error=-EOPNOTSUPP`（seq 对得上），**然后又阻塞在
-`recvmsg`**。同样的 `EOPNOTSUPP` 回复对 `ip addr add` 是正常的（立即返回 rc=2），
-所以差异在 iproute2 对这条消息的处理，或是我们回复里某个字段（GETLINK 回复里
-`nlmsg_pid` 出现过垃圾值）让它不认。
+strace 显示内核确实回了 `NLMSG_ERROR error=-EOPNOTSUPP`（seq 对得上），但 iproute2
+又阻塞在 `recvmsg`。用最小 netlink 客户端（`/tmp/nlprobe.c`）复现后对比发现：
+**解析阶段失败的请求，错误回复里的 `nlmsg_pid` 是客户端发来的 0**，而解析成功、
+进入分发阶段后才被规范化成请求端的端口号（Linux 的 `netlink_ack` 就是这么写的）。
+iproute2 6.15 按 `nlmsg_pid` 过滤回复，pid=0 的回复被当成外来消息丢弃，于是它一直在等
+一个它永远不会认的消息。
 
-`RtnlSegment::read_from` 确实没有 `NEWROUTE` 分支，落进"不支持"；要修好，要么
-补 `NewRoute` 段解析并返回明确错误，要么实现最小的静态路由添加。
+修复：`bound.rs` 里 `SkippedErr` 分支在回错误前把 `header.pid` 设成 `local_port`，
+与正常路径一致。板上复验：`ip route add/del`、`ip neigh add` 全部立即返回
+`Operation not supported`（rc=2），默认路由与网关不受影响。
 
 ## 3. rtnl 的现状（决定 veth 怎么做）
 
