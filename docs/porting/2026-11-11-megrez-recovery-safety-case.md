@@ -337,3 +337,49 @@ L1 依赖一个从未在真机上验证过的假设（§3 A1/A2）：U-Boot 武�
 这关闭了安全案里最大的未知：L1 不再是"设计上应该能救"而是实测能救。
 演练钩子不会在正常启动时生效（只由这个 procfs 写触发），代价是它给 root
 留了一个"把板子拖到下一次看门狗复位"的开关——调试设施，已在文件头注明。
+
+## 9. 控制通道看门狗（§5 待做 5）：已实现并在板上验证
+
+事故现场是"系统活着、端口在回显、但没人能操作它"：二进制经 `cat` 推进规范
+模式 tty，shell 被 SIGTTIN 停住或丢掉读端。此时 `Restart=always` 完全无效
+——进程没退出，只是不读了——而 L1/L2 早已在桌面就绪时被解除。
+
+新增 `asterinas-console-watchdog.service`（`tools/riscv/debian/rootfs/`），
+每 60 s 读一次 `asterinas-debug-console.service` 的 MainPID：
+
+| 观察到的状态 | 判据 | 动作 |
+| --- | --- | --- |
+| `R/S/D/I` | 正常在跑 | 什么都不做 |
+| `T/t`（SIGTTIN 停止） | `/proc/<pid>/stat` 第 3 字段 | 连续 2 次 → 重启控制台单元 |
+| `Z` / 进程不存在 / MainPID 为 0 | 通道已没有读者 | 同上 |
+| 重启超过 3 次仍不恢复 | — | `sync` + `reboot -f`（其它层都已解除） |
+
+板上实测（2026-11-14，两次）：
+
+1. 第一次用**部署的 60 s × 2 次**配置，对一个真实控制台 shell `kill -STOP`：
+   两个周期后控制台单元被重启，`ASTERINAS_DEBUG_CONSOLE_READY` 重新出现
+   （t=378 s），控制台恢复可用。（该次的标记行被单元重启时的 tty 重置吞掉，
+   所以改用下面的方式留证。）
+2. 第二次把脚本当作普通进程跑（间隔 5 s），输出落到文件，再次 `kill -STOP`
+   控制台 shell，得到完整证据：
+
+   ```
+   ASTERINAS_CONSOLE_WATCHDOG state=unusable detail=stopped failures=1
+   ASTERINAS_CONSOLE_WATCHDOG state=restart attempt=1 detail=stopped
+   ASTERINAS_CONSOLE_WATCHDOG state=recovered restarts=1
+   ```
+
+   控制台 MainPID 713 → 950，`/dev/ttyS0` 上的新 shell 可正常执行命令。
+
+主机侧回归：`tools/riscv/debian/rootfs/test_console_watchdog.sh` 用 stub 的
+`systemctl`/`reboot` 与假 `/proc` 覆盖 5 个用例（健康、S 状态不误杀、T 停止、
+进程消失、重启无效后升级为重启），全部通过。
+
+**顺带修掉一个运维陷阱**：从控制台 shell 里 `dropbear ... &` 启动的 SSH 属于
+控制台单元的 cgroup，控制台一重启 SSH 就跟着消失（第一次演练正是这样丢了
+SSH）。已改为 `systemctl enable --now asterinas-dropbear.service`（端口 22），
+SSH 现在开机自启且与控制台互不牵连。
+
+**仍未做**：`/run/asterinas-debug-console.bashrc` 里的 `set +m`（预防 SIGTTIN）
+要等下一次 stage1 重建，而 stage1 在 p1，当前无写入手段；看门狗已经覆盖了
+这条失效，所以不阻塞。

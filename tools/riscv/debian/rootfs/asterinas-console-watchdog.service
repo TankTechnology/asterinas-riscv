@@ -1,0 +1,23 @@
+[Unit]
+Description=Asterinas serial-console watchdog
+# The console is the last usable channel, so this only starts once systemd
+# itself is up and stays out of the boot path.
+DefaultDependencies=no
+After=sysinit.target asterinas-debug-console.service
+Wants=asterinas-debug-console.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/bin/sh /usr/lib/asterinas/console-watchdog
+Restart=always
+RestartSec=10
+EnvironmentFile=-/etc/asterinas/console-watchdog.conf
+# Only warnings and the state changes matter; a line every minute would be
+# noise in the serial log.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
