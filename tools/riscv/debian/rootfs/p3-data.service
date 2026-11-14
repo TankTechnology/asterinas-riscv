@@ -1,0 +1,13 @@
+[Unit]
+Description=Mount the p3 data partition at /data
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+KeyringMode=inherit
+ExecStart=/bin/sh -c 'grep -q " /data " /proc/mounts || exec /bin/mount -t ext2 /dev/mmcblk0p3 /data'
+ExecStop=/bin/sh -c 'umount /data 2>/dev/null || true'
+
+[Install]
+WantedBy=sysinit.target
