@@ -55,7 +55,7 @@ def credentials(profile: str) -> tuple[str, str]:
     return identity, password
 
 
-def stop_bridge() -> list[int]:
+def bridge_pids() -> list[int]:
     pids = []
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -64,14 +64,30 @@ def stop_bridge() -> list[int]:
             cmdline = open(f"/proc/{entry}/cmdline", "rb").read().decode("utf-8", "replace")
         except OSError:
             continue
-        if "megrez_console.py" in cmdline and " bridge " in cmdline:
+        # /proc/<pid>/cmdline separates arguments with NUL, not spaces, so a
+        # substring test for " bridge " never matches and the bridge keeps
+        # reading the port. Split it instead; missing this once put the
+        # password in the bridge log.
+        argv = cmdline.split("\0")
+        if any("megrez_console.py" in arg for arg in argv) and "bridge" in argv:
             pids.append(int(entry))
+    return pids
+
+
+def stop_bridge() -> list[int]:
+    pids = bridge_pids()
     for pid in pids:
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
             pass
     time.sleep(0.5)
+    for pid in bridge_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    time.sleep(0.3)
     return pids
 
 
@@ -99,6 +115,10 @@ def main() -> int:
 
     identity, password = credentials(args.profile)
     stopped = stop_bridge()
+    if bridge_pids():
+        # Anything still attached to the port would echo the command line into
+        # its log. Refuse rather than take that risk.
+        sys.exit("serial bridge still running; refusing to type credentials")
     transcript = ""
     try:
         fd = os.open(DEVICE, os.O_RDWR | os.O_NOCTTY)
