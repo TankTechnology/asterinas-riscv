@@ -1,0 +1,27 @@
+[Unit]
+Description=Asterinas remote desktop (x11vnc on the session display)
+Documentation=man:x11vnc(1)
+# Ready when the desktop session is: x11vnc retries through -loop until the
+# X display exists, so this never needs to know how long the session takes.
+After=asterinas-desktop-m5.service
+Wants=asterinas-desktop-m5.service
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+# The session runs Xorg with -ac (access control off), so no X authority file
+# is needed; the RFB password below is what guards the desktop.
+Environment=DISPLAY=:0
+ExecStart=/usr/bin/x11vnc -display :0 -rfbport 5900 -rfbauth /etc/asterinas/vnc-passwd \
+    -forever -shared -noxdamage -repeat -loop -o /run/asterinas-vnc.log
+Restart=on-failure
+RestartSec=5
+# The log carries client addresses, which is what an operator needs when a
+# connection is refused.
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=asterinas-debug-console.target
