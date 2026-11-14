@@ -100,6 +100,16 @@ def start_bridge(log: str, fifo: str) -> None:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
     time.sleep(0.5)
+    # This tool runs under sudo, so the bridge it leaves behind recreates the
+    # fifo as root, and the next bridge started as the normal user cannot
+    # unlink it ("Operation not permitted") and refuses to start. Hand the
+    # fifo back to whoever invoked sudo.
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if os.geteuid() == 0 and uid and gid:
+        try:
+            os.chown(fifo, int(uid), int(gid))
+        except OSError:
+            pass
 
 
 def main() -> int:
