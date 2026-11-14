@@ -81,7 +81,7 @@ impl Inode {
             return Ok(false);
         }
         let group = fs.block_group(self.block_group_idx);
-        if !group.is_inode_allocated(self.ino) {
+        if !group.is_inode_allocated(self.ino)? {
             return Ok(false);
         }
 

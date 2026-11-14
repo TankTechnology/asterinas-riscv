@@ -865,6 +865,10 @@ impl Ext2FixtureBuilder {
             .custom_device
             .unwrap_or_else(|| disk.clone() as Arc<dyn BlockDevice>);
         let ext2 = Ext2::open(device, FsFlags::empty(), None, false)?;
+        // The images built here are deliberately small and several tests rely
+        // on mount-time bitmap validation rejecting an inconsistent one, so
+        // pay for the eager read the production path now defers.
+        ext2.warm_all_group_bitmaps()?;
 
         Ok(Ext2Fixture {
             disk,

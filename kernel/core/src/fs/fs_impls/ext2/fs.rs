@@ -767,6 +767,20 @@ impl Ext2 {
     }
 
     /// Returns a reference to the block group at `group_idx`.
+    /// Reads every group's block and inode bitmaps.
+    ///
+    /// Mount no longer reads them (`BlockGroup::ensure_bitmaps_loaded` does it
+    /// on first use), but the test fixtures want the eager validation a mount
+    /// used to perform, so a test that builds a deliberately inconsistent
+    /// image still fails at build time rather than at first allocation.
+    #[cfg(ktest)]
+    pub(super) fn warm_all_group_bitmaps(&self) -> Result<()> {
+        for group in &self.block_groups {
+            group.ensure_bitmaps_loaded()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn block_group(&self, group_idx: usize) -> &BlockGroup {
         &self.block_groups[group_idx]
     }
@@ -1896,7 +1910,13 @@ mod test {
             Errno::EINVAL
         );
 
-        // Inconsistent counters/bitmap shape should surface as EIO on allocation.
+        // A descriptor that claims a free block its bitmap does not have used
+        // to fail the whole allocation. The bitmap is what allocation actually
+        // consults, so the group now corrects its own counter, reports itself
+        // full, and the caller answers ENOSPC once the last group is
+        // exhausted. That is the answer e2fsck's viewpoint gives, and it keeps
+        // a filesystem whose counters drifted (which is what a full root
+        // partition left behind) usable instead of failing every write.
         let f_corrupt = Ext2FixtureBuilder::new(1, 128)
             .with_free_blocks(1, 1)
             .block_bitmap(BlockBitmapInit::Full)
@@ -1906,7 +1926,15 @@ mod test {
             f_corrupt
                 .ext2
                 .alloc_blocks(1, f_corrupt.sb.first_data_block()),
-            Errno::EIO
+            Errno::ENOSPC
+        );
+        // The correction is per group and idempotent, so a second attempt is
+        // just as harmless as the first.
+        assert_errno!(
+            f_corrupt
+                .ext2
+                .alloc_blocks(1, f_corrupt.sb.first_data_block()),
+            Errno::ENOSPC
         );
 
         // Free-path boundary and system-zone guards.
@@ -2056,10 +2084,10 @@ mod test {
             .build()
             .unwrap();
         let group = f.ext2.block_group(0);
-        assert!(!group.is_inode_allocated(1));
+        assert!(!group.is_inode_allocated(1).unwrap());
 
         assert_errno!(f.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
-        assert!(!group.is_inode_allocated(1));
+        assert!(!group.is_inode_allocated(1).unwrap());
         assert_eq!(group.free_inodes_count(), 1000);
         assert_eq!(f.ext2.super_block().free_inodes_count(), 1000);
         f.ext2.sync_all().unwrap();
@@ -2075,10 +2103,10 @@ mod test {
             .build()
             .unwrap();
         let group = f.ext2.block_group(0);
-        assert!(group.is_inode_allocated(target_ino));
+        assert!(group.is_inode_allocated(target_ino).unwrap());
 
         assert_errno!(f.ext2.free_inode(target_ino, InodeType::File), Errno::EIO);
-        assert!(group.is_inode_allocated(target_ino));
+        assert!(group.is_inode_allocated(target_ino).unwrap());
         assert_eq!(group.free_inodes_count(), 1013);
         assert_eq!(f.ext2.super_block().free_inodes_count(), 1024);
     }
