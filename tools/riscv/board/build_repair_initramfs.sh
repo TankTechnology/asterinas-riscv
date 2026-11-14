@@ -31,6 +31,11 @@ mkdir -p "$WORK"/{bin,sbin,lib/riscv64-linux-gnu,proc,sys,dev,tmp}
 
 [ -x "$BUSYBOX" ] || { echo "no static busybox at $BUSYBOX (set BUSYBOX=)" >&2; exit 1; }
 install -m 0755 "$BUSYBOX" "$WORK/bin/busybox"
+# The kernel execs /init through its shebang, so /bin/sh must exist before
+# anything in the image runs. Without this the init dies with ENOENT and the
+# kernel panics before printing a single line of the repair script.
+ln -sf busybox "$WORK/bin/sh"
+for applet in mount umount cat echo ls; do ln -sf busybox "$WORK/bin/$applet"; done
 
 # One tar round trip: e2fsck plus its libraries, following symlinks.
 {
