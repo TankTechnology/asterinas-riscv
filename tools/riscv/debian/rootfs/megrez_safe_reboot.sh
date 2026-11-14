@@ -35,6 +35,25 @@ fail() {
     exit 1
 }
 
+# Past the deadline the board is supposed to be restarting. If the clean path
+# cannot finish -- a unit refuses to stop, a sync hangs, the reboot call
+# itself fails -- the alternative is a board that stays up with no watchdog:
+# the kernel timer was disarmed when this service started, and the desktop
+# never published readiness. A hard restart loses at most the writes since the
+# last sync and is the only outcome that brings the board back on its own.
+force_reboot() {
+    local reason="$1"
+
+    emit "ASTERINAS_USERSPACE_REBOOT_FORCED reason=$reason"
+    if reboot -f; then
+        exit 0
+    fi
+    if [[ -w /proc/sysrq-trigger ]]; then
+        printf 'b' >/proc/sysrq-trigger && exit 0
+    fi
+    fail "forced-reboot-failed-$reason"
+}
+
 [[ "$TERM_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-term-wait
 [[ "$KILL_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-kill-wait
 readonly MANUAL_REBOOT="${ASTERINAS_SAFE_REBOOT_MANUAL:-0}"
@@ -172,13 +191,13 @@ emit "ASTERINAS_USERSPACE_REBOOT_QUIESCE_START deadline=$DEADLINE units=${#prese
 if ((${#present_units[@]} > 0)); then
     if ! bounded_timeout "$QUIESCE_TIMEOUT_SECONDS" "$SYNC_RESERVE_SECONDS" \
         systemctl stop "${present_units[@]}"; then
-        emit "ASTERINAS_USERSPACE_REBOOT_UNIT_STOP state=escalate"
+        emit "ASTERINAS_USERSPACE_REBOOT_UNIT_STOP state=escalate units=${present_units[*]}"
         bounded_timeout "$UNIT_KILL_TIMEOUT_SECONDS" "$SYNC_RESERVE_SECONDS" \
             systemctl kill --kill-who=all --signal=KILL "${present_units[@]}" ||
-            fail unit-quiesce
+            emit "ASTERINAS_USERSPACE_REBOOT_UNIT_STOP state=kill-failed units=${present_units[*]}"
         # A signal request is not proof that a root-owned writer has exited.
         bounded_timeout "$UNIT_KILL_TIMEOUT_SECONDS" "$SYNC_RESERVE_SECONDS" \
-            systemctl stop "${present_units[@]}" || fail unit-quiesce
+            systemctl stop "${present_units[@]}" || force_reboot unit-quiesce
     fi
 fi
 
@@ -230,10 +249,10 @@ if ((process_count > 0)); then
     pkill -KILL -u "$USER_ID" || true
     wait_for_user_processes "$KILL_WAIT_SECONDS" || true
 fi
-((process_count == 0)) || fail "writers-remain-$process_count"
+((process_count == 0)) || force_reboot "writers-remain-$process_count"
 
 emit "ASTERINAS_USERSPACE_REBOOT_QUIESCE_DONE processes=0"
 emit "ASTERINAS_USERSPACE_REBOOT_SYNC_START deadline=$DEADLINE"
-bounded_timeout "$SYNC_TIMEOUT_SECONDS" 0 sync || fail sync
+bounded_timeout "$SYNC_TIMEOUT_SECONDS" 0 sync || force_reboot sync
 emit "ASTERINAS_USERSPACE_REBOOT_SYNC_DONE deadline=$DEADLINE"
-reboot -f || fail reboot
+reboot -f || force_reboot reboot-call
