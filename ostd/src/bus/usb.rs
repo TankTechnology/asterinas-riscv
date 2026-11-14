@@ -34,6 +34,15 @@ use crate::{
 
 const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const KEYBOARD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long to keep looking for the other device once one has been found.
+///
+/// A controller may host a keyboard, a mouse, or both, and a board may put
+/// them on different controllers: this one does. Waiting for both on the same
+/// controller does not fail there, it waits out the whole discovery deadline
+/// and stalls the boot by half a minute. Once one device is up, a short settle
+/// window is enough to catch a partner that enumerates a moment later, and both
+/// devices on one controller normally arrive in the same probe anyway.
+const HID_DISCOVERY_SETTLE: Duration = Duration::from_millis(1000);
 const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
 /// The boot mouse report: buttons, X displacement, Y displacement.
 const BOOT_MOUSE_REPORT_LEN: usize = 3;
@@ -175,9 +184,14 @@ enum DiscoveryDecision {
 fn discovery_decision(
     keyboard_found: bool,
     mouse_found: bool,
+    settled: bool,
     deadline_expired: bool,
 ) -> DiscoveryDecision {
     if keyboard_found && mouse_found {
+        DiscoveryDecision::Complete
+    } else if settled && (keyboard_found || mouse_found) {
+        // One device on this controller and nothing else showed up while the
+        // settle window ran: it is a single-device controller.
         DiscoveryDecision::Complete
     } else if !deadline_expired {
         DiscoveryDecision::Continue
@@ -1139,6 +1153,7 @@ impl PollingUsbHidHost {
         let discovery_deadline = Deadline::after(KEYBOARD_DISCOVERY_TIMEOUT);
         let mut keyboard = None;
         let mut mouse = None;
+        let mut settle_deadline: Option<Deadline> = None;
         loop {
             let devices = match drive(xhci.host.probe_devices(), &events) {
                 Ok(Ok(devices)) => devices,
@@ -1180,9 +1195,15 @@ impl PollingUsbHidHost {
                     *slot = Some((device_id, device_info, interface));
                 }
             }
+            // Start the settle window the first time any boot HID device is
+            // up on this controller.
+            if (keyboard.is_some() || mouse.is_some()) && settle_deadline.is_none() {
+                settle_deadline = Some(Deadline::after(HID_DISCOVERY_SETTLE));
+            }
             match discovery_decision(
                 keyboard.is_some(),
                 mouse.is_some(),
+                settle_deadline.as_ref().is_some_and(|deadline| deadline.expired()),
                 discovery_deadline.expired(),
             ) {
                 DiscoveryDecision::Continue => Task::yield_now(),
@@ -1785,13 +1806,22 @@ mod tests {
     fn completes_discovery_with_either_hid_kind_at_the_deadline() {
         use super::DiscoveryDecision::{Complete, Continue, Missing};
 
-        assert_eq!(super::discovery_decision(false, false, false), Continue);
-        assert_eq!(super::discovery_decision(true, false, false), Continue);
-        assert_eq!(super::discovery_decision(false, true, false), Continue);
-        assert_eq!(super::discovery_decision(true, true, false), Complete);
-        assert_eq!(super::discovery_decision(true, false, true), Complete);
-        assert_eq!(super::discovery_decision(false, true, true), Complete);
-        assert_eq!(super::discovery_decision(false, false, true), Missing);
+        // Nothing found and the deadline not reached: keep looking.
+        assert_eq!(super::discovery_decision(false, false, false, false), Continue);
+        assert_eq!(super::discovery_decision(true, false, false, false), Continue);
+        assert_eq!(super::discovery_decision(false, true, false, false), Continue);
+        // Both devices: done regardless of the settle window.
+        assert_eq!(super::discovery_decision(true, true, false, false), Complete);
+        // One device and the settle window ran out: this controller is done,
+        // and the boot must not wait for the other one.
+        assert_eq!(super::discovery_decision(true, false, true, false), Complete);
+        assert_eq!(super::discovery_decision(false, true, true, false), Complete);
+        // The settle window alone is not evidence when nothing was found.
+        assert_eq!(super::discovery_decision(false, false, true, false), Continue);
+        // At the deadline, a partial set is still usable.
+        assert_eq!(super::discovery_decision(true, false, false, true), Complete);
+        assert_eq!(super::discovery_decision(false, true, false, true), Complete);
+        assert_eq!(super::discovery_decision(false, false, false, true), Missing);
     }
 
     fn boot_configuration(protocol: u8, max_packet_size: u16) -> ConfigurationDescriptor {
