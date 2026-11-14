@@ -19,7 +19,8 @@
 | --- | --- | --- | --- |
 | **`ip addr add` / `ip addr del`** | 以前是 `EOPNOTSUPP`（接口只能有启动配置给的地址） | 已支持；地址表从 2 扩到 8（见 §2.3） | 已修 |
 | **`ip link set mtu/name`** | 以前返回成功但改不动（见 §2.1，已修） | — | 已修 |
-| **`ip route add/del`、`ip neigh add`** | 以前**命令挂住不返回**（10 s 超时）；修复后立即返回 `Operation not supported` | 见 §2.2 | 已修 |
+| **`ip route add/del`（网关路由）** | 以前挂住；pid 修复后返回 `EOPNOTSUPP`；现在**可用**（见 §2.4） | 见 §2.2/§2.4 | 已修 |
+| **`ip neigh add/del`** | 挂住的问题已修；操作本身仍是 `EOPNOTSUPP` | 邻居缓存只在启动时按 profile 填 | 待做 |
 | **veth pair** | `ip link add veth0 type veth peer name veth1` → `RTNETLINK answers: No such device` | `do_new_link` 只按 index 找已有接口，**不解析 LINKINFO kind，也没有"创建接口"的路径**；内核里没有任何虚拟以太网设备 | 大：需要虚拟设备模型 + 双向队列表 + rtnl 创建/删除 + 命名 |
 | **bridge** | `ip link add br0 type bridge` → 同上 | 同上，且没有转发表 | 大 |
 | **netfilter / iptables / nft** | 内核里没有 netfilter 钩子；`iptables` 也没装（Debian 包可装，但内核不支持会直接报 `can't initialize iptables table`） | 完全没有：需要 `NF_HOOK` 挂点、table/chain/rule 数据结构、`setsockopt(SO_ATTACH_FILTER)` 之外的匹配动作、以及 netlink nfnetlink 协议 | 很大 |
@@ -91,6 +92,30 @@ $ ip addr del 10.99.99.1/32 dev lo      # rc=0，回到单地址
 ```
 
 eth0 的地址与默认路由不受影响，网关可达。
+
+## 2.4 已加的：`ip route add/del`（网关路由）
+
+`RTM_NEWROUTE`/`RTM_DELROUTE` 现在被解析并处理：
+
+- 目标地址取 `RTA_DST` + `rtm_dst_len`，下一跳取 `RTA_GATEWAY`，出接口取 `RTA_OIF`；
+  没有 OIF 时按"网关所在的接口"选择；
+- 路由写进该接口自己的路由表（`aster-bigtcp` 新增 `add_route`/`del_route`/`routes`，
+  底层是 smoltcp 的 `Routes::update`，为此给 vendored smoltcp 加了 `Routes::iter`）；
+- `RTM_GETROUTE` 的 dump 在有启动配置项之外，也列出运行期加的路由；
+- **只支持网关路由**（`via <gw>`）：smoltcp 的路由表是"目的 → 下一跳"，表达不了
+  `dev <iface>` 的 on-link 路由，所以那种请求明确返回 `EOPNOTSUPP`，而不是悄悄改语义。
+
+板上复验：
+
+```
+$ ip route add 10.99.0.0/16 via 58.206.232.1
+$ ip route
+default via 58.206.232.1 dev eth0
+10.99.0.0/16 via 58.206.232.1 dev eth0
+58.206.232.0/24 dev eth0 proto kernel scope link src 58.206.232.122
+$ ip route del 10.99.0.0/16          # 干净移除
+$ ping 58.206.232.1 && curl https://www.baidu.com/    # 都正常
+```
 
 ## 3. rtnl 的现状（决定 veth 怎么做）
 

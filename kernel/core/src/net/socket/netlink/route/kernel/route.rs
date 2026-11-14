@@ -4,12 +4,13 @@
 
 use aster_bigtcp::{
     iface::{InterfaceFlags, InterfaceType},
-    wire::Ipv4Address,
+    wire::{IpCidr, Ipv4Address, Ipv4Cidr},
 };
 
 use super::util::finish_response;
 use crate::{
     net::{
+        iface::Iface,
         net_ns::NetNamespace,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
@@ -87,6 +88,111 @@ pub(super) fn do_get_route(
     Ok(response_segments)
 }
 
+/// Handles `RTM_NEWROUTE`.
+///
+/// Only gateway routes are expressible: the interface layer's routing table
+/// maps a destination to a next hop, so `ip route add <net> via <gw>` works
+/// and an on-link `dev <iface>` route is refused rather than silently turned
+/// into something else.
+pub(super) fn do_new_route(
+    request: &RouteSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    let body = request.body();
+    if body.family != CSocketAddrFamily::AF_INET as u8 {
+        return_errno_with_message!(Errno::EAFNOSUPPORT, "only IPv4 routes are supported");
+    }
+    if body.table != MAIN_TABLE && body.table != 0 {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "route table is not supported");
+    }
+
+    let mut dst = [0u8; 4];
+    let mut gateway = None;
+    let mut oif = None;
+    for attr in request.attrs().iter() {
+        match attr {
+            RouteAttr::Destination(addr) => dst = *addr,
+            RouteAttr::Gateway(addr) => gateway = Some(*addr),
+            RouteAttr::OutputInterface(index) => oif = Some(*index),
+            _ => {}
+        }
+    }
+
+    let Some(gateway) = gateway else {
+        return_errno_with_message!(
+            Errno::EOPNOTSUPP,
+            "on-link (device) routes are not supported"
+        );
+    };
+
+    let iface = match oif {
+        Some(index) => find_iface(net_ns, index)?,
+        // Without an output interface, use the one whose address shares the
+        // gateway's subnet, the way a tool that omits `dev` expects.
+        None => net_ns
+            .ifaces()
+            .iter()
+            .find(|iface| {
+                iface.type_() != InterfaceType::LOOPBACK
+                    && iface
+                        .ipv4_cidr()
+                        .is_some_and(|cidr| cidr.contains_addr(&Ipv4Address::from(gateway)))
+            })
+            .ok_or_else(|| Error::with_message(Errno::ENETUNREACH, "no interface for the gateway"))?,
+    };
+
+    let cidr = Ipv4Cidr::new(Ipv4Address::from(dst), body.dst_len);
+    iface
+        .add_route(IpCidr::Ipv4(cidr), Ipv4Address::from(gateway).into())
+        .map_err(|_| Error::with_message(Errno::ENOSPC, "the route table is full"))?;
+
+    Ok(Vec::new())
+}
+
+/// Handles `RTM_DELROUTE`.
+pub(super) fn do_del_route(
+    request: &RouteSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    let body = request.body();
+    if body.family != CSocketAddrFamily::AF_INET as u8 {
+        return_errno_with_message!(Errno::EAFNOSUPPORT, "only IPv4 routes are supported");
+    }
+
+    let mut dst = [0u8; 4];
+    let mut oif = None;
+    for attr in request.attrs().iter() {
+        match attr {
+            RouteAttr::Destination(addr) => dst = *addr,
+            RouteAttr::OutputInterface(index) => oif = Some(*index),
+            _ => {}
+        }
+    }
+
+    let iface = match oif {
+        Some(index) => find_iface(net_ns, index)?,
+        None => net_ns
+            .ifaces()
+            .iter()
+            .find(|iface| iface.type_() != InterfaceType::LOOPBACK)
+            .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?,
+    };
+    let cidr = Ipv4Cidr::new(Ipv4Address::from(dst), body.dst_len);
+    if !iface.del_route(IpCidr::Ipv4(cidr)) {
+        return_errno_with_message!(Errno::ESRCH, "the route is not installed");
+    }
+
+    Ok(Vec::new())
+}
+
+fn find_iface(net_ns: &NetNamespace, index: u32) -> Result<&Arc<Iface>> {
+    net_ns
+        .ifaces()
+        .iter()
+        .find(|iface| iface.index() == index)
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))
+}
+
 fn dump_main_routes(
     request_header: &CMsgSegHdr,
     net_ns: &NetNamespace,
@@ -112,6 +218,37 @@ fn dump_main_routes(
                 ),
                 vec![
                     RouteAttr::Gateway(gateway.octets()),
+                    RouteAttr::OutputInterface(iface.index()),
+                ],
+            ));
+        }
+
+        // Routes added at run time (`ip route add ... via ...`) live in the
+        // interface's own table; the entries above are the boot
+        // configuration, so the two sets are reported together.
+        for (route_cidr, via) in iface.routes() {
+            let IpCidr::Ipv4(route_cidr) = route_cidr else {
+                continue;
+            };
+            let aster_bigtcp::wire::IpAddress::Ipv4(via) = via else {
+                continue;
+            };
+            // The default route is already reported from the boot profile.
+            if route_cidr.prefix_len() == 0 {
+                continue;
+            }
+            response_segments.push(new_route(
+                request_header,
+                RouteSpec::new(
+                    MAIN_TABLE,
+                    route_cidr.prefix_len(),
+                    BOOT_PROTOCOL,
+                    RtScope::UNIVERSE,
+                    UNICAST_ROUTE,
+                ),
+                vec![
+                    RouteAttr::Destination(route_cidr.network().address().octets()),
+                    RouteAttr::Gateway(via.octets()),
                     RouteAttr::OutputInterface(iface.index()),
                 ],
             ));

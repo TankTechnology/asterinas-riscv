@@ -59,6 +59,7 @@ pub(crate) enum RtnlSegment {
     GetLink(LinkSegment),
     GetRoute(RouteSegment),
     NewRoute(RouteSegment),
+    DelRoute(RouteSegment),
     GetQdisc(QdiscSegment),
     GetTclass(QdiscSegment),
     GetTfilter(QdiscSegment),
@@ -78,9 +79,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewAddr(addr_segment)
             | RtnlSegment::DelAddr(addr_segment)
             | RtnlSegment::GetAddr(addr_segment) => addr_segment.header(),
-            RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
-                route_segment.header()
-            }
+            RtnlSegment::GetRoute(route_segment)
+            | RtnlSegment::NewRoute(route_segment)
+            | RtnlSegment::DelRoute(route_segment) => route_segment.header(),
             RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header(),
             RtnlSegment::GetTclass(qdisc_segment) => qdisc_segment.header(),
             RtnlSegment::GetTfilter(qdisc_segment) => qdisc_segment.header(),
@@ -100,9 +101,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewAddr(addr_segment)
             | RtnlSegment::DelAddr(addr_segment)
             | RtnlSegment::GetAddr(addr_segment) => addr_segment.header_mut(),
-            RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
-                route_segment.header_mut()
-            }
+            RtnlSegment::GetRoute(route_segment)
+            | RtnlSegment::NewRoute(route_segment)
+            | RtnlSegment::DelRoute(route_segment) => route_segment.header_mut(),
             RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header_mut(),
             RtnlSegment::GetTclass(qdisc_segment) => qdisc_segment.header_mut(),
             RtnlSegment::GetTfilter(qdisc_segment) => qdisc_segment.header_mut(),
@@ -144,6 +145,12 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::GETROUTE) => {
                 RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
             }
+            Ok(CSegmentType::NEWROUTE) => {
+                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::NewRoute)
+            }
+            Ok(CSegmentType::DELROUTE) => {
+                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::DelRoute)
+            }
             Ok(CSegmentType::GETQDISC) => {
                 QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetQdisc)
             }
@@ -181,7 +188,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewAddr(addr_segment) | RtnlSegment::DelAddr(addr_segment) => {
                 addr_segment.write_to(writer)?
             }
-            RtnlSegment::NewRoute(route_segment) => route_segment.write_to(writer)?,
+            RtnlSegment::NewRoute(route_segment) | RtnlSegment::DelRoute(route_segment) => {
+                route_segment.write_to(writer)?
+            }
             RtnlSegment::Done(done_segment) => done_segment.write_to(writer)?,
             RtnlSegment::Error(error_segment) => error_segment.write_to(writer)?,
             RtnlSegment::SetLink(_)

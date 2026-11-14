@@ -79,6 +79,11 @@ impl Routes {
         }
     }
 
+    /// Iterates over the installed routes.
+    pub fn iter(&self) -> impl Iterator<Item = &Route> {
+        self.storage.iter()
+    }
+
     /// Update the routes of this node.
     pub fn update<F: FnOnce(&mut Vec<Route, IFACE_MAX_ROUTE_COUNT>)>(&mut self, f: F) {
         f(&mut self.storage);
