@@ -84,16 +84,54 @@ pub(crate) use top_half::PhasedCallbackSnapshot;
 pub(crate) use top_half::snapshot_phased_callback;
 pub use top_half::{IrqCallbackFunction, IrqLine};
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use crate::{
     arch::{irq::HwIrqLine, trap::TrapFrame},
     cpu::PrivilegeLevel,
 };
+
+/// Number of IRQ lines the counter table covers.
+///
+/// It matches the RISC-V controller's line range; other architectures simply
+/// use the first entries.
+pub const IRQ_LINE_COUNT: usize = crate::arch::irq::IRQ_NUM_MAX as usize + 1;
+
+/// How many times each IRQ line has been delivered, system-wide.
+///
+/// `/proc/interrupts` reports these. They are per line rather than per CPU:
+/// the board has four harts and an interrupt is claimed by one of them, but
+/// none of the tools this kernel targets (`htop`, `irqtop`, `sar -I`) depends
+/// on the split, and a per-CPU table would need a CPU id in the dispatch path
+/// that is not portable across the architectures OSTD supports.
+static IRQ_COUNTS: [AtomicU64; IRQ_LINE_COUNT] = [const { AtomicU64::new(0) }; IRQ_LINE_COUNT];
+
+/// Records one delivery of `irq_num`.
+fn record_irq(irq_num: u8) {
+    if let Some(counter) = IRQ_COUNTS.get(irq_num as usize) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Returns how many times `irq_num` has been delivered since boot.
+pub fn irq_count(irq_num: u8) -> u64 {
+    IRQ_COUNTS
+        .get(irq_num as usize)
+        .map(|counter| counter.load(Ordering::Relaxed))
+        .unwrap_or(0)
+}
+
+/// Returns how many deliveries each IRQ line has seen since boot.
+pub fn irq_counts() -> &'static [AtomicU64; IRQ_LINE_COUNT] {
+    &IRQ_COUNTS
+}
 
 pub(crate) fn call_irq_callback_functions(
     trap_frame: &TrapFrame,
     hw_irq_line: &HwIrqLine,
     cpu_priv_at_irq: PrivilegeLevel,
 ) {
+    record_irq(hw_irq_line.irq_num());
     level::enter(
         move || {
             top_half::process(trap_frame, hw_irq_line);

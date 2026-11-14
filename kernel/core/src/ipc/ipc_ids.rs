@@ -55,6 +55,17 @@ impl<T> IpcIds<T> {
         }
     }
 
+    /// Calls `op` with every `(id, object)` pair.
+    pub(super) fn for_each_with_id<F>(&self, mut op: F)
+    where
+        F: FnMut(IpcId, &T),
+    {
+        let objects = self.objects.read();
+        for (id, object) in objects.iter() {
+            op(*id, object);
+        }
+    }
+
     /// Removes the object identified by `id`.
     pub(super) fn remove<F>(&self, id: IpcId, may_remove: F) -> Result<()>
     where

@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use aster_rights::ReadOp;
 
 use crate::{
+    ipc::IpcId,
     ipc::{IpcKey, IpcPerm, IpcPermission},
     prelude::*,
     process::{Credentials, Pid},
@@ -53,6 +54,26 @@ pub struct ShmSet {
 // In Linux, the `shmid_ds` layout differs between x86_64 and the other
 // 64-bit architectures (which use the generic `shmid64_ds` layout).
 // Reference: <https://elixir.bootlin.com/linux/v6.16.9/A/ident/shmid64_ds>.
+
+/// One row of `/proc/sysvipc/shm`.
+///
+/// The columns are the ones Linux's `ipcs -m` reads. `rss` and `swap` are not
+/// tracked by this kernel, so the reader prints them as zero.
+pub struct ShmProcRow {
+    pub id: u32,
+    pub key: i32,
+    pub mode: u16,
+    pub size: u64,
+    pub cpid: u32,
+    pub nattch: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub cuid: u32,
+    pub cgid: u32,
+    pub atime: u64,
+    pub dtime: u64,
+    pub ctime: u64,
+}
 
 #[cfg(target_arch = "x86_64")]
 #[padding_struct]
@@ -143,6 +164,27 @@ impl ShmSet {
             RealTimeCoarseClock::get().read_time().as_secs(),
             Ordering::Relaxed,
         );
+    }
+
+    /// The columns `/proc/sysvipc/shm` prints for this segment.
+    pub fn proc_row(&self, id: IpcId) -> ShmProcRow {
+        let ds = self.shmid_ds();
+        let perm = self.permission();
+        ShmProcRow {
+            id: id.get(),
+            key: perm.key(),
+            mode: perm.mode(),
+            size: ds.shm_segsz,
+            cpid: ds.shm_cpid,
+            nattch: ds.shm_nattch,
+            uid: perm.uid().into(),
+            gid: perm.gid().into(),
+            cuid: perm.cuid().into(),
+            cgid: perm.cguid().into(),
+            atime: ds.shm_atime,
+            dtime: ds.shm_dtime,
+            ctime: ds.shm_ctime,
+        }
     }
 
     pub fn shmid_ds(&self) -> ShmidDs {

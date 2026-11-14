@@ -18,6 +18,10 @@ use self::{
     net::NetSymOps,
     buddyinfo::BuddyInfoFileOps,
     diskstats::DiskStatsFileOps,
+    cgroups::CgroupsFileOps,
+    interrupts::InterruptsFileOps,
+    pressure::PressureDirOps,
+    sysvipc::SysvipcDirOps,
     pagetypeinfo::PageTypeInfoFileOps,
     vmstat::VmStatFileOps,
     zoneinfo::ZoneInfoFileOps,
@@ -55,6 +59,10 @@ mod cmdline;
 mod cpuinfo;
 mod drm_scanout;
 mod filesystems;
+mod cgroups;
+mod interrupts;
+mod pressure;
+mod sysvipc;
 mod loadavg;
 mod meminfo;
 mod mounts;
@@ -200,6 +208,10 @@ impl RootDirOps {
         ("vmstat", InodeType::File, VmStatFileOps::new_inode),
         ("zoneinfo", InodeType::File, ZoneInfoFileOps::new_inode),
         ("partitions", InodeType::File, PartitionsFileOps::new_inode),
+        ("interrupts", InodeType::File, InterruptsFileOps::new_inode),
+        ("cgroups", InodeType::File, CgroupsFileOps::new_inode),
+        ("pressure", InodeType::Dir, PressureDirOps::new_inode),
+        ("sysvipc", InodeType::Dir, SysvipcDirOps::new_inode),
         ("perm_order", InodeType::File, PermOrderFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_inode),
