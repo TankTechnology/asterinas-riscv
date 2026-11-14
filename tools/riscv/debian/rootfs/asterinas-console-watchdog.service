@@ -20,4 +20,8 @@ StandardOutput=journal+console
 StandardError=journal+console
 
 [Install]
-WantedBy=multi-user.target
+# This image never activates multi-user.target: the boot is driven by
+# asterinas-debug-console.target, and a unit installed under multi-user.target
+# is enabled and never started (the first deployment of this unit did exactly
+# that and stayed inactive through a cold boot).
+WantedBy=asterinas-debug-console.target

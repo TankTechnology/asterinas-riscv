@@ -12,4 +12,7 @@ StandardOutput=journal+console
 StandardError=journal+console
 
 [Install]
-WantedBy=multi-user.target
+# multi-user.target is never activated on this image (it is enabled and
+# inactive forever, which is how this watchdog silently did not run), so it
+# hangs off the target the boot actually reaches.
+WantedBy=multi-user.target asterinas-debug-console.target

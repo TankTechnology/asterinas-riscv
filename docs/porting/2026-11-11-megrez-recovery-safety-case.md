@@ -383,3 +383,29 @@ SSH 现在开机自启且与控制台互不牵连。
 **仍未做**：`/run/asterinas-debug-console.bashrc` 里的 `set +m`（预防 SIGTTIN）
 要等下一次 stage1 重建，而 stage1 在 p1，当前无写入手段；看门狗已经覆盖了
 这条失效，所以不阻塞。
+
+### 9.1 冷启动验收暴露的 target 陷阱
+
+第一次部署后做冷启动验收，`asterinas-console-watchdog` **inactive**：单元写的是
+`WantedBy=multi-user.target`，而这个镜像**永远不激活 multi-user.target**
+（开机驱动是 `asterinas-debug-console.target`），于是"enabled 却从不启动"。
+
+同一个坑顺带查出**网络看门狗其实一直没跑过**：`asterinas-net-watchdog` 在板上
+`enabled`、`inactive`，说明自从它加入镜像以来就没有真正运行。两个单元的
+`[Install]` 都改为挂 `asterinas-debug-console.target`（net-watchdog 保留原来的
+multi-user 条目，两者并存无害）。
+
+改动后在板上 `reenable` 并做一次冷启动验收：
+
+| 单元 | 冷启动后 |
+| --- | --- |
+| asterinas-debug-console | active |
+| asterinas-dropbear | active（端口 22，无需手工启动） |
+| asterinas-console-watchdog | active |
+| asterinas-net-watchdog | active（此前从未运行） |
+| asterinas-safe-reboot | active |
+| 内核三层（L1/L2/L3） | `ARMED … seconds=900` → 桌面就绪后 `DISARMED` |
+
+`dmesg` 无 I/O 错误。至此，"一块刚上电的板子"不再需要任何手工步骤就能同时
+具备：硬件看门狗、内核 deadline、用户态 deadline、串口控制台、SSH、控制台
+看门狗、网络看门狗七条通道。
