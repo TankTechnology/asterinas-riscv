@@ -38,6 +38,9 @@ setenv as_initrd stage1-daily.cpio
 setenv as_dtb megrez-daily.dtb
 setenv as_kernel /root/kernel-rel.img
 setenv as_kernel_backup /root/kernel-rel.img.bak
+# The repair image lives next to the normal initramfs on the boot partition;
+# the data partition is only a second try, because that filesystem is the one
+# the repair is often needed for.
 setenv as_repair_initrd repair.cpio.gz
 # Watchdog: gate register, component-id address, expected id, and the
 # enable/restart values. The write order matters on this SoC.
@@ -92,7 +95,10 @@ if test $? -ne 0; then
   echo "ASTERINAS_BOOTCMD fallback=repair"
   ext4load ${as_root_part} ${as_kernel_addr} ${as_kernel_backup}
   if test $? -eq 0; then
-    ext4load ${as_data_part} ${as_initrd_addr} ${as_repair_initrd}
+    ext4load ${as_boot_part} ${as_initrd_addr} ${as_repair_initrd}
+    if test $? -ne 0; then
+      ext4load ${as_data_part} ${as_initrd_addr} ${as_repair_initrd}
+    fi
     if test $? -eq 0; then
       setenv initrd_size ${filesize}
       echo "ASTERINAS_BOOTCMD repair_initrd=loaded"

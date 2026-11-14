@@ -1,0 +1,19 @@
+#!/bin/sh
+# Repair initramfs: run e2fsck on the root and data partitions, then hand the
+# operator a shell. It mounts nothing from the disk, so both filesystems are
+# checked while unmounted. Each check prints its exit status; 0 and 1 both mean
+# the filesystem is consistent afterwards.
+export PATH=/sbin:/bin
+/bin/busybox mount -t proc proc /proc
+/bin/busybox mount -t sysfs sys /sys
+/bin/busybox mount -t devtmpfs dev /dev
+echo "ASTERINAS_REPAIR start"
+for part in 2 3; do
+    dev=/dev/mmcblk0p$part
+    [ -b "$dev" ] || { echo "ASTERINAS_REPAIR skip=$dev reason=missing"; continue; }
+    echo "ASTERINAS_REPAIR check=$dev begin"
+    /sbin/e2fsck -f -y "$dev"
+    echo "ASTERINAS_REPAIR check=$dev rc=$?"
+done
+echo "ASTERINAS_REPAIR done"
+exec /bin/busybox sh

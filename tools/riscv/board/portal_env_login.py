@@ -94,6 +94,7 @@ def main() -> int:
     parser.add_argument("--bridge-log", default="/tmp/megrez2.log")
     parser.add_argument("--fifo", default="/tmp/megrez.cmd")
     parser.add_argument("--wait", type=float, default=45.0)
+    parser.add_argument("--logout", action="store_true", help="log the address out first")
     args = parser.parse_args()
 
     identity, password = credentials(args.profile)
@@ -102,12 +103,23 @@ def main() -> int:
     try:
         fd = os.open(DEVICE, os.O_RDWR | os.O_NOCTTY)
         try:
+            # The portal answers `challenge_expire_error` to a board whose
+            # clock drifted more than its window allows, which is what a board
+            # without a working RTC looks like after every boot. Setting the
+            # time first costs one line and removes that whole failure mode.
+            host_utc = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+            clock = f"date -u -s '{host_utc}'\n"
+            for char in clock:
+                os.write(fd, char.encode())
+                time.sleep(0.01)
+            time.sleep(1.5)
             os.write(fd, b"\n")
-            time.sleep(1.0)
+            time.sleep(0.5)
+            extra = " --logout" if args.logout else ""
             command = (
                 f"SRUN_USER={shlex.quote(identity)} SRUN_PASS={shlex.quote(password)} "
                 f"python3 /root/srun_board.py --expect-ip {args.board_ip} "
-                f"--ac-id {args.ac_id}\n"
+                f"--ac-id {args.ac_id}{extra}\n"
             )
             for char in command:
                 os.write(fd, char.encode())
