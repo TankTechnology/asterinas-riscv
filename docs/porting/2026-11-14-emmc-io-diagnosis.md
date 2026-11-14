@@ -68,3 +68,53 @@ dd if=/dev/zero of=/root/scratch.bin bs=1M count=256 oflag=direct
   与驱动修复无关，不会自行消失。
 - **单点仍在**：内核镜像只存在于 p2，p2 全坏则 U-Boot 无内核可载。把一份内核 +
   initramfs 放到 p1（需要在 U-Boot 里写一次）是当前唯一能消除它的手段。
+
+## 6. 第二根因：读-改-写把 ToDevice 的段交给 Read bio（修复于同日）
+
+第 5 节留下的"e2fsck 最后一步写不回超级块"在同一天查清并修好了。它不是介质问题，
+也不是超时问题，而是一个**方向校验**的必然失败。
+
+现象：`e2fsck` 前 5 个 pass 全部正常（18 秒），最后
+`Error writing file system info: Input/output error`，内核日志里对应一条
+`failed to do Read ... (sectors 2..3)`。
+
+定位过程（加两行日志即可，`kernel/comps/block/src/impl_block_device.rs`）：
+
+```
+[block] write needs read-modify-write: offset=1036 len=2 first=true last=false
+[block] preserved-sector read failed: sector=2 (read-modify-write path)
+```
+
+`offset=1036` 正是超级块里 `s_free_blocks_count` 的位置——**e2fsprogs 只写 2 个字节**，
+属于非扇区对齐写，内核为此走"保留扇区"路径：先把该扇区读进来，改动后再整体写回。
+
+`read_sector_for_write()` 用 `alloc_write_segment()` 分配了 **ToDevice** 方向的段，
+然后把它交给一个 **Read bio** 去填。而 `BioSegment::write_from_device()` 的第一句是：
+
+```rust
+if self.inner.direction != BioDirection::FromDevice {
+    return Err(Error::AccessDenied);
+}
+```
+
+所以**任何非扇区对齐的块设备写都 100% 失败**，和介质、和超时都无关。
+
+修复：读段用一个 `FromDevice` 的临时段，读完后经一个扇区大小的缓冲区复制进
+`ToDevice` 的写段（一个段只携带一个 DMA 方向）。多一次 512 字节拷贝，只在非对齐
+写时发生。
+
+验证：
+
+| 检查 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `e2fsck` p3 | 每次停在 `write file system info` | 完整跑完，`Filesystem state: clean` |
+| `mount` p3（可写） | `EUCLEAN: requires repair before writable mount` | `ext2 (rw,relatime)` |
+| p3 写 32 MB | — | 14.9 MB/s，md5 一致，0 错误 |
+| 启动期块错误 | 1 | 0 |
+
+**这同时解释了历史上最吓人的现象**：p2 的两次离线 `e2fsck` 都卡在
+"write file system info"、rc=9——那时以为是 eMMC 寿命到了，实际上根分区**从来就没
+被真正修复过**，因为这条路径根本走不通。修好之后，根分区重新具备可修复性。
+
+诊断用的 `[block] write needs read-modify-write` 日志保留：这条路径罕见，出现即说明
+有工具在写不满一个扇区，值得知道。

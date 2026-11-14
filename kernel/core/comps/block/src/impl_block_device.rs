@@ -183,6 +183,19 @@ impl VmIo for dyn BlockDevice {
 
         let mut bio_segments = Vec::new();
 
+        if need_read_first_sector || need_read_last_sector {
+            // Rare, and the only place a write turns into a read. Naming the
+            // request makes a failing read-modify-write traceable back to the
+            // write that caused it.
+            ostd::warn!(
+                "[block] write needs read-modify-write: offset={} len={} first={} last={}",
+                offset,
+                write_len,
+                need_read_first_sector,
+                need_read_last_sector
+            );
+        }
+
         if need_read_first_sector {
             let first_segment = self.read_sector_for_write(aligned_offset)?;
             let first_segment_offset = offset - aligned_offset;
@@ -266,19 +279,40 @@ impl dyn BlockDevice {
     }
 
     fn read_sector_for_write(&self, sector_offset: usize) -> ostd::Result<BioSegment> {
-        // The segment will be submitted by the later write bio, so keep it writable
-        // from the CPU side and read the preserved sector directly into it.
-        let write_segment = alloc_write_segment(sector_offset, SECTOR_SIZE);
+        // The preserved sector has to be read from the device first and then
+        // handed to the write bio, and a segment carries a single DMA
+        // direction: the device may only fill a `FromDevice` segment and may
+        // only consume a `ToDevice` one. Reading into the write segment
+        // directly (which is what this did) is refused by `write_from_device`
+        // with AccessDenied, so every read-modify-write failed -- which is why
+        // a tool writing less than a full sector to the raw device (e2fsck
+        // flushing the superblock counters) could never complete, on any
+        // device, regardless of the media.
+        let inner_offset = sector_offset % BLOCK_SIZE;
+        let read_segment =
+            BioSegment::alloc_inner(1, inner_offset, SECTOR_SIZE, BioDirection::FromDevice);
         let read_bio = Bio::new(
             BioType::Read,
             Sid::from_offset(sector_offset),
-            vec![write_segment.clone()],
+            vec![read_segment.clone()],
             None,
         );
         if read_bio.submit_and_wait(self)? != BioStatus::Complete {
+            ostd::error!(
+                "[block] preserved-sector read failed: sector={} (read-modify-write path)",
+                sector_offset / SECTOR_SIZE
+            );
             return Err(ostd::Error::IoError);
         }
 
+        // Carry the preserved bytes across in a small buffer; the copy costs
+        // one sector and only happens for requests that are not sector
+        // aligned.
+        let mut preserved = [0u8; SECTOR_SIZE];
+        read_segment.read(0, &mut VmWriter::from(&mut preserved[..]).to_fallible())?;
+
+        let write_segment = alloc_write_segment(sector_offset, SECTOR_SIZE);
+        write_segment.write(0, &mut VmReader::from(preserved.as_slice()).to_fallible())?;
         Ok(write_segment)
     }
 }
