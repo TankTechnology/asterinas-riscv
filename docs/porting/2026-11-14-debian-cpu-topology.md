@@ -63,23 +63,62 @@ CPU(s):              4
 On-line CPU(s) list: 0-3
 ```
 
-## 4. 已知限制
+## 4. `lscpu -e` / `-p` 空行的真正原因与修复
 
-`lscpu -e` / `lscpu -p` **仍然输出空行**（CPU 列是 `-`）。排查记录：
+最初 `lscpu -e` 每行都是 `-`。排查走了三步：
 
-- `possible/online/present` 都正确解析，`taskset`/`nproc`/`sched_getaffinity`
-  都报 4 核、掩码 `1111`；
-- sysfs 的 `readdir` 返回正确的 `d_type`（`DT_DIR`），`O_PATH`/`O_DIRECTORY`/
-  `openat` 全部可用；
-- 用 `LD_PRELOAD` 拦截 `open/openat/stat/fstatat/opendir/fopen` 观察 lscpu：
-  它只打开了 `/sys/devices/system/cpu` 目录本身，**从未打开任何 `cpuN/` 下的文件**，
-  所以那些列本来就是空的。
+1. `possible/online/present` 解析正确，`nproc`/`sched_getaffinity` 都报 4 核；
+2. sysfs 的 `readdir` 返回正确的 `d_type`，`O_PATH`/`openat` 可用；
+3. 用 `LD_PRELOAD` 拦截 `open/openat/fstatat/opendir/fopen` 观察 lscpu 的实际调用：
+   它读了 `kernel_max/possible/present/online` 和 `/proc/cpuinfo`，**却从未打开任何
+   `cpuN/` 下的文件**。
 
-结论：缺的是它枚举 CPU 所用的某个本文档尚未覆盖的入口，默认输出（脚本真正解析的
-那一行 `CPU(s): 4`）是对的。要继续查需要 util-linux 2.41 的枚举逻辑。
+第 3 步把范围缩小到 lscpu 内部逻辑，于是去读 util-linux 2.41 源码，找到
+`lscpu-topology.c`：
+
+```c
+if (!cpu || cpu->type != ct)
+    continue;          /* 每个核的拓扑只有在其 CPU 类型已知时才读 */
+```
+
+CPU 的 `type` 由 `/proc/cpuinfo` 的**身份字段**建立。RISC-V 的对应字段是
+`mvendorid` / `marchid` / `mimpid` / `uarch`（见 `lscpu-cputype.c` 的模式表），
+而我们的 cpuinfo 只有 `processor` / `isa` / `mmu`，于是一个 type 都没有，
+所有核被跳过。
+
+修复：`uarch` 从设备树 hart 节点的 `compatible` 取（Linux 在无法把 CSR 映射到已知
+核心时也用它），只取属性列表的第一个字符串。前三个是机器态 CSR，S 态不保证可读，
+所以不用它们。
+
+修复后板上：
+
+```
+$ lscpu
+Architecture:        riscv64
+Byte Order:          Little Endian
+CPU(s):              4
+On-line CPU(s) list: 0-3
+Model name:          eswin,eic770x
+Thread(s) per core:  1
+Core(s) per socket:  4
+Socket(s):           1
+
+$ lscpu -e
+CPU SOCKET CORE ONLINE
+  0      0    0    yes
+  1      0    1    yes
+  2      0    2    yes
+  3      0    3    yes
+
+$ lscpu -p
+# CPU,Core,Socket,Node
+0,0,0,
+1,1,0,
+...
+```
 
 ## 5. 仍未做
 
 - `/proc/interrupts`、`/sys/module`、`/proc/sysvipc`、`/proc/cgroups`、`/proc/pressure`。
-- `lscpu` 的 "Model name"/"Vendor ID" 依赖 `/proc/cpuinfo` 里的对应字段，本内核
-  没有输出（RISC-V 上并非必需，但会让 lscpu 少几行）。
+- `Vendor ID` 仍缺：它来自 `mvendorid`（机器态 CSR，S 态不保证可读）。
+  只影响一行展示，不影响任何工具的解析。
