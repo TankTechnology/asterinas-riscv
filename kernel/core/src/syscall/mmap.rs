@@ -116,6 +116,12 @@ fn do_sys_mmap(
                     vmo_options.alloc()?
                 };
                 options = options.vmo(shared_vmo);
+            } else if !option.flags().contains(MMapFlags::MAP_POPULATE) {
+                // A private anonymous mapping may install its pages in
+                // batches around the faulting one (see
+                // `handle_anonymous_page_faults_around`). `MAP_POPULATE`
+                // installs everything up front, so batching has nothing to do.
+                options = options.handle_page_faults_around();
             }
 
             options.build()?

@@ -595,6 +595,31 @@ impl VmMapping {
         let page_aligned_addr = page_fault_info.address.align_down(PAGE_SIZE);
         let is_write = page_fault_info.required_perms.contains(VmPerms::WRITE);
 
+        // Anonymous mappings take the same shortcut through their own
+        // implementation: there is no backing object to commit from, but the
+        // pages are still contiguous and can be installed in one batch.
+        if matches!(&self.mapped_mem, MappedMemory::Anonymous) && self.handle_page_faults_around {
+            let around_start = fault_profile_mark();
+            let res = self.handle_anonymous_page_faults_around(
+                vm_space,
+                page_aligned_addr,
+                page_fault_info.required_perms,
+                rss_delta,
+            );
+            record_fault_stage(&FAULT_STAGE_AROUND, around_start);
+
+            if res.is_err() {
+                return self.handle_single_page_fault(
+                    vm_space,
+                    page_aligned_addr,
+                    page_fault_info.required_perms,
+                    rss_delta,
+                );
+            }
+
+            return res;
+        }
+
         if !is_write
             && matches!(&self.mapped_mem, MappedMemory::Vmo(_))
             && self.handle_page_faults_around
@@ -902,6 +927,112 @@ impl VmMapping {
     }
 
     /// Handles a page fault and maps additional surrounding pages.
+    /// Installs the pages around an anonymous fault in one batch.
+    ///
+    /// This is the anonymous counterpart of `handle_page_faults_around`: the
+    /// pages are contiguous and belong to this mapping, so one trap can
+    /// install a batch. What it may do is deliberately narrow:
+    ///
+    /// * it only maps pages inside this mapping, never a neighbour's;
+    /// * it never replaces an existing mapping;
+    /// * a read fault installs the shared zero page, exactly like the
+    ///   single-page path, so a later write still takes the COW fault;
+    /// * one TLB invalidation covers the whole batch.
+    fn handle_anonymous_page_faults_around(
+        &self,
+        vm_space: &VmSpace,
+        page_aligned_addr: Vaddr,
+        required_perms: VmPerms,
+        rss_delta: &mut RssDelta,
+    ) -> Result<PageFaultOutcome> {
+        const AROUND_PAGE_NUM: usize = 16;
+
+        let is_write = required_perms.contains(VmPerms::WRITE);
+        let access = if is_write {
+            PageAccess::Write
+        } else {
+            PageAccess::Read
+        };
+
+        let mapping_start = self.map_to_addr;
+        let mapping_end = self.map_to_addr + self.map_size.get();
+        let batch_base = page_aligned_addr & !(AROUND_PAGE_NUM * PAGE_SIZE - 1);
+        let start = max(batch_base, mapping_start);
+        let end = min(start + AROUND_PAGE_NUM * PAGE_SIZE, mapping_end)
+            .max(page_aligned_addr + PAGE_SIZE);
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = vm_space.cursor_mut(&preempt_guard, &(start..end))?;
+
+        let mut faulting_page_handled = false;
+        let mut addr = start;
+        while addr < end {
+            cursor
+                .jump(addr)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "fault-around lost the cursor"))?;
+            let (va, item) = cursor.query().unwrap();
+            addr = va.end.max(addr + PAGE_SIZE);
+
+            match item {
+                None => {
+                    let (frame, is_readonly) = self
+                        .prepare_page(va.start, is_write)
+                        .map_err(|_| Error::with_message(Errno::ENOMEM, "fault-around alloc"))?;
+                    let mut page_flags = PageFlags::from(self.perms);
+                    if is_readonly {
+                        page_flags.remove(PageFlags::W);
+                    }
+                    page_flags.record_access(access);
+                    cursor.map(
+                        frame,
+                        PageProperty::new_user(page_flags, CachePolicy::Writeback),
+                    )?;
+                    rss_delta.add(self.rss_type(), 1);
+                    if va.start == page_aligned_addr {
+                        faulting_page_handled = true;
+                    }
+                }
+                Some(VmQueriedItem::MappedRam { prop, .. }) if va.start == page_aligned_addr => {
+                    if VmPerms::from(prop.flags).contains(required_perms) {
+                        // The entry already permits the access, so the fault
+                        // is about the accessed bit: this core updates A/D in
+                        // software (Svade), and a PTE without ACCESSED faults
+                        // on every access until the handler records one.
+                        // `record_page_access` is the same call the
+                        // single-page path makes, and it flushes.
+                        record_page_access(&mut cursor, va, access);
+                        faulting_page_handled = true;
+                    } else {
+                        // The page is mapped with weaker permissions: a COW
+                        // fault, or a permission upgrade. That is the
+                        // single-page path's job.
+                        drop(cursor);
+                        drop(preempt_guard);
+                        return self.handle_single_page_fault(
+                            vm_space,
+                            page_aligned_addr,
+                            required_perms,
+                            rss_delta,
+                        );
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+
+        if !faulting_page_handled {
+            return_errno_with_message!(Errno::EAGAIN, "fault-around skipped the faulting page");
+        }
+
+        cursor
+            .flusher()
+            .issue_tlb_flush(TlbFlushOp::for_range(start..end));
+        cursor.flusher().dispatch_tlb_flush();
+        cursor.flusher().sync_tlb_flush();
+
+        Ok(PageFaultOutcome::MINOR)
+    }
+
     fn handle_page_faults_around(
         &self,
         vm_space: &VmSpace,
