@@ -45,6 +45,18 @@ pub struct IoAccounting {
     cancelled_write_bytes: AtomicU64,
 }
 
+/// System-wide page fault counts, for `/proc/vmstat`.
+static GLOBAL_MIN_FLT: AtomicU64 = AtomicU64::new(0);
+static GLOBAL_MAJ_FLT: AtomicU64 = AtomicU64::new(0);
+
+/// Returns `(minor faults, major faults)` since boot.
+pub fn global_page_faults() -> (u64, u64) {
+    (
+        GLOBAL_MIN_FLT.load(Ordering::Relaxed),
+        GLOBAL_MAJ_FLT.load(Ordering::Relaxed),
+    )
+}
+
 /// A consistent-enough reading of every [`IoAccounting`] counter.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct IoStats {
@@ -72,6 +84,13 @@ impl IoAccounting {
     pub fn account_page_fault(&self, major: bool) {
         let counter = if major { &self.maj_flt } else { &self.min_flt };
         counter.fetch_add(1, Ordering::Relaxed);
+        // `/proc/vmstat` reports system-wide fault counts, which no single
+        // process owns. Counting here is the one place every fault passes.
+        if major {
+            GLOBAL_MAJ_FLT.fetch_add(1, Ordering::Relaxed);
+        } else {
+            GLOBAL_MIN_FLT.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Records bytes returned by a read-family syscall.

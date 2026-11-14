@@ -498,7 +498,7 @@ fn clone_child_task(
         thread_builder = clone_child_cleartid(thread_builder, clone_args.child_tid, clone_flags);
         thread_builder = clone_child_settid(thread_builder, clone_args.child_tid, clone_flags);
 
-        thread_builder.build()
+        thread_builder.build()?
     };
 
     // Seccomp TSYNC uses the process task-set lock to make policy preflight
@@ -687,7 +687,7 @@ fn clone_child_process(
             child_user_ns,
             child_pid_ns,
             child_thread_builder,
-        )
+        )?
     };
 
     clone_pidfd(ctx, &child, clone_flags, clone_args.pidfd)?;
@@ -917,7 +917,7 @@ fn create_child_process(
     user_ns: Arc<UserNamespace>,
     pid_ns: Arc<PidNamespace>,
     thread_builder: PosixThreadBuilder,
-) -> Arc<Process> {
+) -> Result<Arc<Process>> {
     let child_proc = Process::new(
         pid,
         vmar,
@@ -929,10 +929,12 @@ fn create_child_process(
         pid_ns,
     );
 
-    let child_task = thread_builder.process(Arc::downgrade(&child_proc)).build();
+    let child_task = thread_builder
+        .process(Arc::downgrade(&child_proc))
+        .build()?;
     child_proc.tasks().lock().insert(child_task).unwrap();
 
-    child_proc
+    Ok(child_proc)
 }
 
 fn set_parent_and_group(clone_flags: CloneFlags, parent: &Arc<Process>, child: &Arc<Process>) {

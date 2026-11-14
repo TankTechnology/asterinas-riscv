@@ -16,7 +16,11 @@ use self::{
     meminfo::MemInfoFileOps,
     mounts::MountsSymOps,
     net::NetSymOps,
+    buddyinfo::BuddyInfoFileOps,
     diskstats::DiskStatsFileOps,
+    pagetypeinfo::PageTypeInfoFileOps,
+    vmstat::VmStatFileOps,
+    zoneinfo::ZoneInfoFileOps,
     partitions::PartitionsFileOps,
     perm_order::PermOrderFileOps,
     pid::{PidDirOps, TidDirOps},
@@ -55,7 +59,11 @@ mod loadavg;
 mod meminfo;
 mod mounts;
 mod net;
+mod buddyinfo;
 mod diskstats;
+mod pagetypeinfo;
+mod vmstat;
+mod zoneinfo;
 mod partitions;
 mod perm_order;
 mod pid;
@@ -186,7 +194,11 @@ impl RootDirOps {
         ("meminfo", InodeType::File, MemInfoFileOps::new_inode),
         ("mounts", InodeType::SymLink, MountsSymOps::new_inode),
         ("net", InodeType::SymLink, NetSymOps::new_inode),
+        ("buddyinfo", InodeType::File, BuddyInfoFileOps::new_inode),
         ("diskstats", InodeType::File, DiskStatsFileOps::new_inode),
+        ("pagetypeinfo", InodeType::File, PageTypeInfoFileOps::new_inode),
+        ("vmstat", InodeType::File, VmStatFileOps::new_inode),
+        ("zoneinfo", InodeType::File, ZoneInfoFileOps::new_inode),
         ("partitions", InodeType::File, PartitionsFileOps::new_inode),
         ("perm_order", InodeType::File, PermOrderFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),

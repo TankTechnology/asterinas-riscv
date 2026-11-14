@@ -55,6 +55,18 @@ pub fn load_total_free_size() -> usize {
     TOTAL_FREE_SIZE.get()
 }
 
+/// The number of buddy orders the allocator tracks.
+pub const BUDDY_ORDERS: usize = pools::MAX_BUDDY_ORDER;
+
+/// Counts the free chunks of every buddy order, summed over the CPU-local
+/// pools and the global pool.
+///
+/// This walks the free lists, which is what Linux does to answer the same
+/// question for `/proc/buddyinfo`; it is a diagnostic path, not a hot path.
+pub fn load_free_chunks_by_order() -> [usize; BUDDY_ORDERS] {
+    pools::count_free_chunks_by_order()
+}
+
 /// The global frame allocator provided by OSDK.
 ///
 /// It is a singleton that provides frame allocation for the kernel. If

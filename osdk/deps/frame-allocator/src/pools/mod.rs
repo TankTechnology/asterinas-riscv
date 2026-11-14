@@ -38,7 +38,7 @@ cpu_local! {
 /// maximum size of each allocation.
 ///
 /// A maximum buddy order of 32 supports up to 4KiB*2^31 = 8 TiB of chunks.
-const MAX_BUDDY_ORDER: BuddyOrder = 32;
+pub(crate) const MAX_BUDDY_ORDER: BuddyOrder = 32;
 
 /// Maximum supported order of the buddy system for CPU-local buddy system.
 ///
@@ -239,6 +239,29 @@ fn drain_local_pool(cpu: CpuId) {
 
     let mut global_pool = OnDemandGlobalLock::new();
     local_pool.drain_into(&mut *global_pool.get());
+}
+
+/// Counts free chunks per order across every CPU-local pool and the global one.
+///
+/// Lock order matches the allocator: one local pool at a time, then the
+/// global pool last, so a concurrent allocation can never wait on a lock this
+/// walk is holding in the opposite order.
+pub(super) fn count_free_chunks_by_order() -> [usize; MAX_BUDDY_ORDER] {
+    let mut counts = [0usize; MAX_BUDDY_ORDER];
+    {
+        let _guard = ostd::irq::disable_local();
+        for cpu in all_cpus() {
+            let mut local = LOCAL_POOL.get_on_cpu(cpu).lock();
+            for (order, count) in local.count_by_order().into_iter().enumerate() {
+                counts[order] += count;
+            }
+        }
+    }
+    let mut global = GLOBAL_POOL.lock();
+    for (order, count) in global.count_by_order().into_iter().enumerate() {
+        counts[order] += count;
+    }
+    counts
 }
 
 pub(super) fn add_free_memory(_guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {

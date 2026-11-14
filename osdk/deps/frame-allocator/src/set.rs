@@ -157,6 +157,22 @@ impl<const MAX_ORDER: BuddyOrder> BuddySet<MAX_ORDER> {
 
     /// Moves every free chunk into a buddy set with at least as many orders.
     ///
+    /// Counts the free chunks in every order without modifying the set.
+    ///
+    /// Used by the files that report buddy state to user space; walking the
+    /// lists is the same work Linux does to answer the same question.
+    pub(crate) fn count_by_order(&mut self) -> [usize; MAX_ORDER] {
+        let mut counts = [0usize; MAX_ORDER];
+        for (order, list) in self.lists.iter_mut().enumerate() {
+            let mut cursor = list.cursor_front_mut();
+            while cursor.current_paddr().is_some() {
+                counts[order] += 1;
+                cursor.move_next();
+            }
+        }
+        counts
+    }
+
     /// Inserting the chunks again is intentional: chunks that were separated
     /// across CPU-local sets can then coalesce in the destination set.
     pub(crate) fn drain_into<const DEST_MAX_ORDER: BuddyOrder>(
