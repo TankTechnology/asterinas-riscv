@@ -23,6 +23,7 @@ use ostd::{
     timer::Jiffies,
 };
 use spin::Once;
+use tlb_staleness::{Translation, flush_required};
 
 use super::{RssType, Vmar, interval_set::Interval, util::is_intersected, vmar_impls::RssDelta};
 use crate::{
@@ -789,6 +790,40 @@ impl VmMapping {
 
                     let map_start = fault_profile_mark();
                     cursor.map(frame, map_prop)?;
+                    // Invalidate the translation the MMU cached when it took
+                    // this fault. The RISC-V manual only promises that an
+                    // `sfence.vma` makes a page-table change visible; it does
+                    // not forbid a core from caching the *invalid* entry it
+                    // walked to raise the fault. The EIC7700 in the Megrez
+                    // board does exactly that: without this flush the retried
+                    // instruction faults a second time, and only that second
+                    // trap (which runs `record_page_access`, and therefore a
+                    // flush) makes the new mapping visible. Measured on the
+                    // board: every cold anonymous page cost two faults and
+                    // about 10 us per trap; QEMU's TCG does not cache invalid
+                    // translations, so the same kernel reported one fault per
+                    // page there, which is how the two runs were told apart.
+                    //
+                    // The COW branch below does not need this because the
+                    // `unmap` it performs already dispatches a flush.
+                    // The rule and its proof live in `tlb-staleness`; the
+                    // entry was absent (that is why this arm ran) and the
+                    // handler is about to install one of these two.
+                    let before = Translation::Absent;
+                    let after = if page_flags.contains(PageFlags::W) {
+                        Translation::Writable
+                    } else {
+                        Translation::ReadOnly
+                    };
+                    if flush_required(before, after) {
+                        cursor
+                            .flusher()
+                            .issue_tlb_flush(TlbFlushOp::for_range(
+                                page_aligned_addr..page_aligned_addr + PAGE_SIZE,
+                            ));
+                        cursor.flusher().dispatch_tlb_flush();
+                        cursor.flusher().sync_tlb_flush();
+                    }
                     // The shared zero page is counted like any other resident
                     // page here. Linux excludes it from RSS because it maps
                     // the page with a special PTE; this VM has no per-PTE
