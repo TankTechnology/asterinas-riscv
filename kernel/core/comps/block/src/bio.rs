@@ -65,6 +65,7 @@ impl Bio {
             .sum();
 
         let metadata = Arc::new(BioMetadata {
+            stats: spin::Once::new(),
             type_,
             sid_range: start_sid..start_sid + nsectors,
             status: AtomicU32::new(BioStatus::Init as u32),
@@ -117,6 +118,14 @@ impl Bio {
             complete_fn,
             segments,
         } = self;
+
+        // Charge the request to the device's counters. `begin` runs here so a
+        // request that never completes still shows up in flight, and the
+        // handle is kept so the completion can settle it.
+        if let Some(stats) = crate::iostats::lookup(block_device.id()) {
+            stats.begin();
+            let _ = metadata.stats.call_once(|| stats);
+        }
 
         // Change the status from "Init" to "Submit".
         let result = metadata.status.compare_exchange(
@@ -257,6 +266,14 @@ impl SubmittedBio {
         // finished, so a synchronous waiter can safely use that page.
         general_complete_fn(metadata.type_(), &metadata.sid_range, status, complete_fn);
 
+        if let Some(stats) = metadata.stats.get() {
+            stats.finish(
+                metadata.type_(),
+                crate::iostats::sectors_of(&metadata.sid_range),
+                status == BioStatus::Complete,
+            );
+        }
+
         let result = metadata.status.compare_exchange(
             BioStatus::Submit as u32,
             status as u32,
@@ -281,6 +298,9 @@ impl Debug for SubmittedBio {
 
 /// The metadata and waitable state shared by submitted `Bio`s and their waiter handles.
 struct BioMetadata {
+    /// The counters this request is charged to, once it is submitted to a
+    /// device that has them. Set in `submit`, read in `complete`.
+    stats: spin::Once<alloc::sync::Arc<crate::iostats::IoStats>>,
     /// The type of the I/O
     type_: BioType,
     /// The logical range of target sectors on device

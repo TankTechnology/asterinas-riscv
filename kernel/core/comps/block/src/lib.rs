@@ -43,6 +43,7 @@ pub mod bio;
 mod device_id;
 pub mod id;
 mod impl_block_device;
+pub mod iostats;
 mod partition;
 mod prelude;
 pub mod request_queue;
@@ -137,16 +138,22 @@ pub fn register(device: Arc<dyn BlockDevice>) -> Result<(), Error> {
         return Err(Error::Registered);
     }
     registry.insert(id, device);
+    drop(registry);
+    iostats::register(id);
 
     Ok(())
 }
 
 /// Unregisters an existing block device, returning the device if found.
 pub fn unregister(id: DeviceId) -> Result<Arc<dyn BlockDevice>, Error> {
-    DEVICE_REGISTRY
+    let removed = DEVICE_REGISTRY
         .lock()
         .remove(&id.to_raw())
-        .ok_or(Error::NotFound)
+        .ok_or(Error::NotFound);
+    if removed.is_ok() {
+        iostats::unregister(id.to_raw());
+    }
+    removed
 }
 
 /// Collects all block devices.

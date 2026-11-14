@@ -80,8 +80,29 @@ pub(super) fn add_registered_block_devices() {
             );
             continue;
         }
+        let target = alloc::format!("../../block/{}", device.name());
+        if let Err(error) = publish_lookup_links(&device, &target) {
+            warn!(
+                "failed to publish lookups for /sys/block/{}: {:?}",
+                device.name(),
+                error
+            );
+        }
         for partition in device.partitions().unwrap_or_default() {
             let partition_node = GenericBlockSysNode::new(partition.clone());
+            let target = alloc::format!(
+                "../../block/{}/{}",
+                device.name(),
+                partition.name()
+            );
+            if let Err(error) = publish_lookup_links(&partition, &target) {
+                warn!(
+                    "failed to publish lookups for /sys/block/{}/{}: {:?}",
+                    device.name(),
+                    partition.name(),
+                    error
+                );
+            }
             if let Err(error) = node.add_child(partition_node as Arc<dyn SysObj>) {
                 warn!(
                     "failed to register /sys/block/{}/{}: {:?}",
@@ -92,6 +113,30 @@ pub(super) fn add_registered_block_devices() {
             }
         }
     }
+}
+
+
+/// Publishes the two lookups user space uses to find a block device by name
+/// and by number: `/sys/class/block/<name>` and `/sys/dev/block/<major>:<minor>`.
+///
+/// Both are symlinks into `/sys/block`, which stays the place the attributes
+/// live. `lsblk` opens `/sys/dev/block` before it will list anything at all --
+/// without the directory it exits with "failed to access sysfs directory" --
+/// and `blkid` and the mount helpers go through `/sys/class/block`. Partitions
+/// resolve one level deeper, because their attributes live under the disk.
+pub(super) fn publish_lookup_links(device: &Arc<dyn BlockDevice>, target: &str) -> SysTreeResult<()> {
+    let class_block = crate::device::sysfs::block_class_node();
+    class_block.add_child(
+        crate::device::sysfs::SysfsSymlink::new(device.name(), target) as Arc<dyn SysObj>
+    )?;
+
+    let dev_block = crate::device::sysfs::dev_block_node();
+    let id = device.id();
+    let key = alloc::format!("{}:{}", id.major().get(), id.minor().get());
+    dev_block.add_child(
+        crate::device::sysfs::SysfsSymlink::new(&key, target) as Arc<dyn SysObj>
+    )?;
+    Ok(())
 }
 
 /// One block device (or partition) directory.
@@ -152,9 +197,23 @@ inherit_sys_branch_node!(GenericBlockSysNode, fields, {
             "ro" => writeln!(printer, "{}", device.is_read_only() as u32)?,
             "removable" => writeln!(printer, "0")?,
             // Reads, read merges, sectors, read ticks, writes, write merges,
-            // sectors, write ticks, in flight, ticks, time in queue. Only the
-            // byte count is tracked elsewhere; the shape is what matters.
-            "stat" => writeln!(printer, "0 0 0 0 0 0 0 0 0 0 0")?,
+            // sectors, write ticks, in flight, ticks, time in queue. Merges and
+            // the timing columns have no source here and read as zero; the rest
+            // come from the same counters `/proc/diskstats` reports.
+            "stat" => {
+                let stats = aster_block::iostats::lookup(device.id())
+                    .map(|stats| stats.snapshot())
+                    .unwrap_or_default();
+                writeln!(
+                    printer,
+                    "{} 0 {} 0 {} 0 {} 0 {} 0 0",
+                    stats.reads,
+                    stats.read_sectors,
+                    stats.writes,
+                    stats.write_sectors,
+                    stats.in_flight
+                )?
+            }
             "inflight" => writeln!(printer, "0 0 0 0")?,
             "partition" => {
                 let number = partition_number(device.name());

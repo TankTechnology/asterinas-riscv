@@ -16,6 +16,7 @@ use self::{
     meminfo::MemInfoFileOps,
     mounts::MountsSymOps,
     net::NetSymOps,
+    diskstats::DiskStatsFileOps,
     partitions::PartitionsFileOps,
     perm_order::PermOrderFileOps,
     pid::{PidDirOps, TidDirOps},
@@ -54,6 +55,7 @@ mod loadavg;
 mod meminfo;
 mod mounts;
 mod net;
+mod diskstats;
 mod partitions;
 mod perm_order;
 mod pid;
@@ -184,6 +186,7 @@ impl RootDirOps {
         ("meminfo", InodeType::File, MemInfoFileOps::new_inode),
         ("mounts", InodeType::SymLink, MountsSymOps::new_inode),
         ("net", InodeType::SymLink, NetSymOps::new_inode),
+        ("diskstats", InodeType::File, DiskStatsFileOps::new_inode),
         ("partitions", InodeType::File, PartitionsFileOps::new_inode),
         ("perm_order", InodeType::File, PermOrderFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),

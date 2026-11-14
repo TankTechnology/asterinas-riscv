@@ -767,8 +767,13 @@ struct LoopSysNode {
 impl LoopSysNode {
     fn new(device: Arc<LoopDevice>) -> Arc<Self> {
         let mut builder = SysAttrSetBuilder::new();
-        builder.add(SysStr::from("ro"), SysPerms::DEFAULT_RO_ATTR_PERMS);
-        builder.add(SysStr::from("size"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        // The generic block attributes every tool reads. `dev` in particular is
+        // what `/sys/dev/block/<major>:<minor>` resolves to and what `lsblk`
+        // opens first: without it the loop devices are listed by the lookup
+        // symlinks and then dropped as unreadable.
+        for name in ["dev", "size", "ro", "removable", "range", "stat", "inflight"] {
+            builder.add(SysStr::from(name), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        }
         let attrs = builder
             .build()
             .expect("failed to build the loop device attribute set");
@@ -798,9 +803,27 @@ inherit_sys_branch_node!(LoopSysNode, fields, {
         writer: &mut VmWriter,
     ) -> SysTreeResult<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
+        let id = self.device.id();
+        let stats = aster_block::iostats::lookup(id)
+            .map(|stats| stats.snapshot())
+            .unwrap_or_default();
         match name {
+            "dev" => writeln!(printer, "{}:{}", id.major().get(), id.minor().get())?,
             "ro" => writeln!(printer, "{}", self.device.is_read_only() as u32)?,
-            "size" => writeln!(printer, "{}", self.device.size_bytes() / SECTOR_SIZE)?,
+            "size" | "range" => {
+                writeln!(printer, "{}", self.device.size_bytes() / SECTOR_SIZE)?
+            }
+            "removable" => writeln!(printer, "0")?,
+            "stat" => writeln!(
+                printer,
+                "{} 0 {} 0 {} 0 {} 0 {} 0 0",
+                stats.reads,
+                stats.read_sectors,
+                stats.writes,
+                stats.write_sectors,
+                stats.in_flight
+            )?,
+            "inflight" => writeln!(printer, "0 0 0 0")?,
             _ => return Err(SysTreeError::AttributeError),
         }
         Ok(printer.bytes_written())
@@ -990,6 +1013,13 @@ pub(super) fn init_in_first_kthread() {
         block_sys_node
             .add_child(LoopSysNode::new(device.clone()) as Arc<dyn SysObj>)
             .expect("failed to register the loop device sysfs node");
+        // `/sys/class/block` and `/sys/dev/block` are how tools find the node
+        // again; the loop driver builds its own `/sys/block` branch, so it has
+        // to publish the lookups itself.
+        let target = alloc::format!("../../block/{}", name);
+        let as_block: Arc<dyn aster_block::BlockDevice> = device.clone();
+        super::block_sysfs::publish_lookup_links(&as_block, &target)
+            .expect("failed to publish the loop device lookups");
         devices.push(device);
     }
 }

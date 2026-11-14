@@ -8,7 +8,8 @@ use aster_bigtcp::{
 };
 use aster_systree::{
     AttrLessBranchNodeFields, BranchNodeFields, Error as SysTreeError, NormalNodeFields,
-    Result as SysTreeResult, SymlinkNodeFields, SysAttrSetBuilder, SysObj, SysPerms, SysStr,
+    Result as SysTreeResult, SymlinkNodeFields, SysAttrSetBuilder, SysBranchNode, SysObj,
+    SysPerms, SysStr,
     inherit_sys_branch_node, inherit_sys_leaf_node, inherit_sys_symlink_node,
 };
 use aster_util::printer::VmPrinter;
@@ -34,20 +35,28 @@ struct DrmSysDevice<'a> {
 }
 
 pub(super) fn init_in_first_process() -> Result<()> {
-    let class_node = build_class_node()?;
+    // Both directories are created through the same entry points the later
+    // contributors use, so a block device that publishes before device init
+    // still ends up under the same nodes instead of creating a second copy.
+    let class_node = class_node();
+    add_class_children(&class_node)?;
+
     let bus_node = AttrLessSysNode::new("bus");
     bus_node.add_child(AttrLessSysNode::new("platform") as Arc<dyn SysObj>)?;
+    crate::fs::sysfs::systree_singleton()
+        .root()
+        .add_child(bus_node as Arc<dyn SysObj>)?;
 
-    let root = crate::fs::sysfs::systree_singleton().root();
-    root.add_child(class_node as Arc<dyn SysObj>)?;
-    root.add_child(bus_node as Arc<dyn SysObj>)?;
     let drm_device = DrmSysDevice {
         nodes: super::dri::exposed_nodes(),
         driver: super::dri::driver_name(),
         modalias: VIRTIO_GPU_MODALIAS,
     };
-    if let Some(dev_node) = build_dev_node(&[drm_device])? {
-        root.add_child(dev_node as Arc<dyn SysObj>)?;
+    // Always present: `/sys/dev/block` is published by the block devices, and
+    // `/sys/dev/char` hangs off the same directory when a DRM node exists.
+    let dev_node = dev_node();
+    if let Some(char_node) = build_char_node(&[drm_device])? {
+        dev_node.add_child(char_node as Arc<dyn SysObj>)?;
     }
     Ok(())
 }
@@ -66,12 +75,11 @@ pub(super) fn init_in_first_process() -> Result<()> {
 /// `/sys/dev` is the one part of the device model that is keyed by the
 /// character device's own major:minor rather than by a bus or class, which is
 /// why it is built here and not from a class node.
-fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<AttrLessSysNode>>> {
+fn build_char_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<AttrLessSysNode>>> {
     if devices.iter().all(|device| device.nodes.is_empty()) {
         return Ok(None);
     }
 
-    let dev_node = AttrLessSysNode::new("dev");
     let char_node = AttrLessSysNode::new("char");
 
     for drm_device in devices {
@@ -124,8 +132,7 @@ fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<Attr
         }
     }
 
-    dev_node.add_child(char_node as Arc<dyn SysObj>)?;
-    Ok(Some(dev_node))
+    Ok(Some(char_node))
 }
 
 /// The `uevent` contents of one DRM device.
@@ -168,9 +175,7 @@ fn char_node_uevent(node_name: &str, minor: u32) -> String {
     )
 }
 
-fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
-    let class_node = AttrLessSysNode::new("class");
-
+fn add_class_children(class_node: &Arc<AttrLessSysNode>) -> SysTreeResult<()> {
     let tty_class_node = AttrLessSysNode::new("tty");
     tty_class_node.add_child(Tty0SysNode::new() as Arc<dyn SysObj>)?;
     class_node.add_child(tty_class_node as Arc<dyn SysObj>)?;
@@ -187,7 +192,7 @@ fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
 
     class_node.add_child(build_net_class_node()?)?;
 
-    Ok(class_node)
+    Ok(())
 }
 
 // The network interface class -------------------------------------------------
@@ -461,8 +466,72 @@ pub(super) fn active_vt_attr_value(index: u32) -> String {
     alloc::format!("tty{}\n", index)
 }
 
+
+/// Handles on the two directories that several subsystems contribute to.
+///
+/// `/sys/class` is filled at init and `/sys/dev` is where the DRM nodes put
+/// `char`; block devices add `block` under both, possibly long after init. The
+/// tree only lets a concrete node add children, so the handles are kept here
+/// instead of being looked up by name later.
+static CLASS_NODE: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
+static DEV_NODE: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
+
+pub(super) fn class_node() -> Arc<AttrLessSysNode> {
+    CLASS_NODE
+        .call_once(|| {
+            let node = AttrLessSysNode::new("class");
+            crate::fs::sysfs::systree_singleton()
+                .root()
+                .add_child(node.clone() as Arc<dyn SysObj>)
+                .expect("failed to create /sys/class");
+            node
+        })
+        .clone()
+}
+
+pub(super) fn dev_node() -> Arc<AttrLessSysNode> {
+    DEV_NODE
+        .call_once(|| {
+            let node = AttrLessSysNode::new("dev");
+            crate::fs::sysfs::systree_singleton()
+                .root()
+                .add_child(node.clone() as Arc<dyn SysObj>)
+                .expect("failed to create /sys/dev");
+            node
+        })
+        .clone()
+}
+
+/// `/sys/class/block`, created on the first block device that needs it.
+pub(super) fn block_class_node() -> Arc<AttrLessSysNode> {
+    static BLOCK: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
+    BLOCK
+        .call_once(|| {
+            let node = AttrLessSysNode::new("block");
+            class_node()
+                .add_child(node.clone() as Arc<dyn SysObj>)
+                .expect("failed to create /sys/class/block");
+            node
+        })
+        .clone()
+}
+
+/// `/sys/dev/block`, created on the first block device that needs it.
+pub(super) fn dev_block_node() -> Arc<AttrLessSysNode> {
+    static BLOCK: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
+    BLOCK
+        .call_once(|| {
+            let node = AttrLessSysNode::new("block");
+            dev_node()
+                .add_child(node.clone() as Arc<dyn SysObj>)
+                .expect("failed to create /sys/dev/block");
+            node
+        })
+        .clone()
+}
+
 #[derive(Debug)]
-struct AttrLessSysNode {
+pub(super) struct AttrLessSysNode {
     fields: AttrLessBranchNodeFields<dyn SysObj, Self>,
 }
 
@@ -474,7 +543,7 @@ impl AttrLessSysNode {
         })
     }
 
-    fn add_child(&self, new_child: Arc<dyn SysObj>) -> SysTreeResult<()>;
+    pub(super) fn add_child(&self, new_child: Arc<dyn SysObj>) -> SysTreeResult<()>;
 }
 
 inherit_sys_branch_node!(AttrLessSysNode, fields, {
@@ -484,12 +553,12 @@ inherit_sys_branch_node!(AttrLessSysNode, fields, {
 });
 
 #[derive(Debug)]
-struct SysfsSymlink {
+pub(super) struct SysfsSymlink {
     fields: SymlinkNodeFields<Self>,
 }
 
 impl SysfsSymlink {
-    fn new(name: &str, target: &str) -> Arc<Self> {
+    pub(super) fn new(name: &str, target: &str) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             fields: SymlinkNodeFields::new(
                 SysStr::from(name.to_string()),
@@ -775,12 +844,19 @@ mod test {
         );
     }
 
-    /// Nothing to describe means nothing in the tree, rather than a device
-    /// node for a device that is not there.
+    /// `/sys/dev` exists whenever sysfs does, because the block devices publish
+    /// `/sys/dev/block` there; only the `char` subtree needs a DRM node.
     #[ktest]
-    fn drm_dev_node_is_absent_without_a_device() {
-        assert!(build_dev_node(&[]).unwrap().is_none());
-        assert!(build_dev_node(&[virtio_device(&[])]).unwrap().is_none());
+    fn dev_node_exists_but_char_needs_a_device() {
+        let empty = build_dev_node(&[]).unwrap();
+        assert!(empty.child("char").is_none());
+        assert_eq!(empty.children().len(), 0);
+
+        let without_nodes = build_dev_node(&[virtio_device(&[])]).unwrap();
+        assert!(without_nodes.child("char").is_none());
+
+        let with_node = build_dev_node(&[virtio_device(&[("card0", 0)])]).unwrap();
+        assert!(with_node.child("char").is_some());
     }
 
     #[ktest]
