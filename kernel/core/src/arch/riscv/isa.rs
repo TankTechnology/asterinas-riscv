@@ -51,6 +51,32 @@ pub(crate) fn mmu_type() -> Option<&'static str> {
     .as_deref()
 }
 
+/// The hart implementation name, as `/proc/cpuinfo` reports it in `uarch`.
+///
+/// Linux prints the `compatible` string of the CPU node here. Tools use it to
+/// decide that all CPUs are the same kind of core: `lscpu` builds one CPU type
+/// from it and then reads per-CPU topology only for CPUs that carry a type, so
+/// without any of the identity fields it reports every per-CPU column as
+/// unknown.
+pub(crate) fn uarch() -> Option<&'static str> {
+    static UARCH: Once<Option<String>> = Once::new();
+    UARCH
+        .call_once(|| {
+            ostd::arch::boot::DEVICE_TREE
+                .get()
+                .and_then(|fdt| fdt.cpus().next())
+                .and_then(|cpu| cpu.property("compatible"))
+                .and_then(|property| property.as_str())
+                // The property is a list of compatible strings; Linux reports
+                // the first one as the hart's implementation name.
+                .map(|value| {
+                    let first = value.split([' ', '\0']).next().unwrap_or(value);
+                    alloc::string::String::from(first)
+                })
+        })
+        .as_deref()
+}
+
 /// The single-letter extensions, i.e. the part between the `rv64` prefix and
 /// the first multi-letter extension.
 fn single_letter_extensions(isa: &str) -> &str {
