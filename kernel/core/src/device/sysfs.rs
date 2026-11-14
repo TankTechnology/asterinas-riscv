@@ -502,6 +502,22 @@ pub(super) fn dev_node() -> Arc<AttrLessSysNode> {
         .clone()
 }
 
+/// `/sys/devices`, the container the CPU topology hangs off.
+static DEVICES_NODE: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
+
+pub(super) fn devices_node() -> Arc<AttrLessSysNode> {
+    DEVICES_NODE
+        .call_once(|| {
+            let node = AttrLessSysNode::new("devices");
+            crate::fs::sysfs::systree_singleton()
+                .root()
+                .add_child(node.clone() as Arc<dyn SysObj>)
+                .expect("failed to create /sys/devices");
+            node
+        })
+        .clone()
+}
+
 /// `/sys/class/block`, created on the first block device that needs it.
 pub(super) fn block_class_node() -> Arc<AttrLessSysNode> {
     static BLOCK: spin::Once<Arc<AttrLessSysNode>> = spin::Once::new();
@@ -537,7 +553,7 @@ pub(super) struct AttrLessSysNode {
 
 #[inherit_methods(from = "self.fields")]
 impl AttrLessSysNode {
-    fn new(name: &str) -> Arc<Self> {
+    pub(super) fn new(name: &str) -> Arc<Self> {
         Arc::new_cyclic(|weak_self| Self {
             fields: AttrLessBranchNodeFields::new(name.to_string().into(), weak_self.clone()),
         })

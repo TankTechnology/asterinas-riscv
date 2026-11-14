@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod block_sysfs;
+mod cpu_sysfs;
 mod dri;
 mod evdev;
 mod fb;
@@ -218,6 +219,10 @@ pub fn init_in_first_process(ctx: &Context) -> Result<()> {
     // devices build their own nodes because they have loop-specific
     // attributes, so they are skipped.
     block_sysfs::add_registered_block_devices();
+
+    // The CPU topology is not part of the device model, so it is built from
+    // the scheduler's view right after the trees it attaches to exist.
+    cpu_sysfs::init_in_first_process()?;
 
     Ok(())
 }
