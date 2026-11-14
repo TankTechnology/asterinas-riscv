@@ -54,6 +54,7 @@ pub(crate) enum RtnlSegment {
     NewLink(LinkSegment),
     SetLink(LinkSegment),
     NewAddr(AddrSegment),
+    DelAddr(AddrSegment),
     GetAddr(AddrSegment),
     GetLink(LinkSegment),
     GetRoute(RouteSegment),
@@ -74,9 +75,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewLink(link_segment)
             | RtnlSegment::SetLink(link_segment)
             | RtnlSegment::GetLink(link_segment) => link_segment.header(),
-            RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
-                addr_segment.header()
-            }
+            RtnlSegment::NewAddr(addr_segment)
+            | RtnlSegment::DelAddr(addr_segment)
+            | RtnlSegment::GetAddr(addr_segment) => addr_segment.header(),
             RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
                 route_segment.header()
             }
@@ -96,9 +97,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewLink(link_segment)
             | RtnlSegment::SetLink(link_segment)
             | RtnlSegment::GetLink(link_segment) => link_segment.header_mut(),
-            RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
-                addr_segment.header_mut()
-            }
+            RtnlSegment::NewAddr(addr_segment)
+            | RtnlSegment::DelAddr(addr_segment)
+            | RtnlSegment::GetAddr(addr_segment) => addr_segment.header_mut(),
             RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
                 route_segment.header_mut()
             }
@@ -137,6 +138,9 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::NEWADDR) => {
                 AddrSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::NewAddr)
             }
+            Ok(CSegmentType::DELADDR) => {
+                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::DelAddr)
+            }
             Ok(CSegmentType::GETROUTE) => {
                 RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
             }
@@ -174,7 +178,9 @@ impl ProtocolSegment for RtnlSegment {
     fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()> {
         match self {
             RtnlSegment::NewLink(link_segment) => link_segment.write_to(writer)?,
-            RtnlSegment::NewAddr(addr_segment) => addr_segment.write_to(writer)?,
+            RtnlSegment::NewAddr(addr_segment) | RtnlSegment::DelAddr(addr_segment) => {
+                addr_segment.write_to(writer)?
+            }
             RtnlSegment::NewRoute(route_segment) => route_segment.write_to(writer)?,
             RtnlSegment::Done(done_segment) => done_segment.write_to(writer)?,
             RtnlSegment::Error(error_segment) => error_segment.write_to(writer)?,

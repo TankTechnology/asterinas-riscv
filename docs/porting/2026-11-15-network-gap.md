@@ -17,6 +17,7 @@
 
 | 功能 | 板上现象 | 缺在哪 | 工作量 |
 | --- | --- | --- | --- |
+| **`ip addr add` / `ip addr del`** | 以前是 `EOPNOTSUPP`（接口只能有启动配置给的地址） | 已支持；地址表从 2 扩到 8（见 §2.3） | 已修 |
 | **`ip link set mtu/name`** | 以前返回成功但改不动（见 §2.1，已修） | — | 已修 |
 | **`ip route add/del`、`ip neigh add`** | 以前**命令挂住不返回**（10 s 超时）；修复后立即返回 `Operation not supported` | 见 §2.2 | 已修 |
 | **veth pair** | `ip link add veth0 type veth peer name veth1` → `RTNETLINK answers: No such device` | `do_new_link` 只按 index 找已有接口，**不解析 LINKINFO kind，也没有"创建接口"的路径**；内核里没有任何虚拟以太网设备 | 大：需要虚拟设备模型 + 双向队列表 + rtnl 创建/删除 + 命名 |
@@ -64,6 +65,32 @@ iproute2 6.15 按 `nlmsg_pid` 过滤回复，pid=0 的回复被当成外来消�
 修复：`bound.rs` 里 `SkippedErr` 分支在回错误前把 `header.pid` 设成 `local_port`，
 与正常路径一致。板上复验：`ip route add/del`、`ip neigh add` 全部立即返回
 `Operation not supported`（rc=2），默认路由与网关不受影响。
+
+## 2.3 已加的：`ip addr add` / `ip addr del`
+
+以前 `RTM_NEWADDR` 直接返回 `EOPNOTSUPP`，一个接口只能有启动 profile 给它的地址。
+现在：
+
+- `aster-bigtcp` 的 `Iface` 暴露 `add_ip_addr` / `del_ip_addr` / `ip_addrs`（走 smoltcp 的地址表）；
+- `RTM_NEWADDR` 真正加地址（重复 → `EEXIST`，表满 → `ENOSPC`）；
+- 新增 `RTM_DELADDR` 的解析与处理（不存在 → `EADDRNOTAVAIL`）；
+- 地址 dump 遍历整张表，而不是每个协议族只报第一个。
+
+**顺带发现地址表太小**：smoltcp 默认 `IFACE_MAX_ADDR_COUNT = 2`，而 loopback 自己就占了
+两个（127.0.0.1/8 和 ::1/128），所以第一次 `ip addr add` 必然 `ENOSPC`。工作区依赖
+改成 `iface-max-addr-count-8`。
+
+板上复验：
+
+```
+$ ip addr add 10.99.99.1/32 dev lo      # rc=0
+$ ip -4 addr show lo
+    inet 127.0.0.1/8 scope host lo
+    inet 10.99.99.1/32 scope global lo
+$ ip addr del 10.99.99.1/32 dev lo      # rc=0，回到单地址
+```
+
+eth0 的地址与默认路由不受影响，网关可达。
 
 ## 3. rtnl 的现状（决定 veth 怎么做）
 

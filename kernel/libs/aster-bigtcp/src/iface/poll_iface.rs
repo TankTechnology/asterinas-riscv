@@ -50,6 +50,18 @@ impl<E: Ext> PollableIface<E> {
         }
     }
 
+    /// Removes an address from the interface. Returns whether it was there.
+    pub(super) fn remove_ip_addr(&mut self, cidr: smoltcp::wire::IpCidr) -> bool {
+        let mut found = false;
+        self.interface.update_ip_addrs(|addrs| {
+            if let Some(index) = addrs.iter().position(|addr| *addr == cidr) {
+                addrs.remove(index);
+                found = true;
+            }
+        });
+        found
+    }
+
     /// Returns every address the interface currently has.
     pub(super) fn ip_addrs(&self) -> &[smoltcp::wire::IpCidr] {
         self.interface.ip_addrs()

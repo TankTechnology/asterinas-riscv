@@ -116,6 +116,50 @@ fn validate_getaddr_request(request_segment: &AddrSegment, strict_check: bool) -
     Ok(())
 }
 
+/// Handles `RTM_DELADDR`.
+///
+/// Only addresses this kernel itself configured can be removed; the boot
+/// profile's address is not special-cased, so `ip addr del` on it is refused
+/// by the same rule Linux applies to an address that is not there.
+pub(super) fn do_del_addr(
+    request_segment: &AddrSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
+    };
+    let Some(iface) = net_ns
+        .ifaces()
+        .iter()
+        .find(|iface| iface.index() == index.get())
+    else {
+        return_errno_with_message!(Errno::ENODEV, "no link found");
+    };
+
+    let Some(requested) = request_segment.attrs().iter().find_map(|attr| match attr {
+        AddrAttr::Local(addr) | AddrAttr::Address(addr) => Some(*addr),
+        _ => None,
+    }) else {
+        return_errno_with_message!(Errno::EINVAL, "no address attribute specified");
+    };
+
+    let cidr = match requested {
+        IpAddr::V4(addr) => {
+            IpCidr::Ipv4(aster_bigtcp::wire::Ipv4Cidr::new(addr.into(), body.prefix_len))
+        }
+        IpAddr::V6(addr) => {
+            IpCidr::Ipv6(aster_bigtcp::wire::Ipv6Cidr::new(addr.into(), body.prefix_len))
+        }
+    };
+    if !iface.del_ip_addr(cidr) {
+        return_errno_with_message!(Errno::EADDRNOTAVAIL, "the address is not configured");
+    }
+
+    Ok(Vec::new())
+}
+
 fn iface_to_new_addrs(
     request_header: &CMsgSegHdr,
     requested_family: u8,
