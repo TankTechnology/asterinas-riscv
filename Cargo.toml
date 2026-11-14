@@ -281,6 +281,10 @@ smoltcp = { git = "https://github.com/asterinas/smoltcp", tag = "r_2026-08-11_1b
     "medium-ip",
     "proto-ipv4",
     "proto-ipv6",
+    # An interface can carry several addresses (`ip addr add`). smoltcp's
+    # default is two, which loopback already fills with 127.0.0.1/8 and
+    # ::1/128 before the user adds anything.
+    "iface-max-addr-count-8",
     "socket-udp",
     "socket-tcp",
     "socket-icmp",

@@ -30,6 +30,31 @@ impl<E: Ext> PollableIface<E> {
         }
     }
 
+    /// Adds an address to the interface.
+    ///
+    /// The interface keeps a small fixed-size address list; a full list is
+    /// reported back as an error rather than silently dropping the address.
+    pub(super) fn add_ip_addr(
+        &mut self,
+        cidr: smoltcp::wire::IpCidr,
+    ) -> Result<(), smoltcp::wire::IpCidr> {
+        let mut rejected = None;
+        self.interface.update_ip_addrs(|addrs| {
+            if addrs.push(cidr).is_err() {
+                rejected = Some(cidr);
+            }
+        });
+        match rejected {
+            Some(cidr) => Err(cidr),
+            None => Ok(()),
+        }
+    }
+
+    /// Returns every address the interface currently has.
+    pub(super) fn ip_addrs(&self) -> &[smoltcp::wire::IpCidr] {
+        self.interface.ip_addrs()
+    }
+
     pub(super) fn as_mut(&mut self) -> PollableIfaceMut<'_, E> {
         PollableIfaceMut {
             context: self.interface.context(),
