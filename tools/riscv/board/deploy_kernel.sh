@@ -28,7 +28,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 
 HOST=${BOARD_HOST:-58.206.232.122}
-PORT=${BOARD_PORT:-2222}
+PORT=${BOARD_PORT:-22}
 KEY=${BOARD_KEY:-$HOME/.ssh/asterinas_megrez}
 REMOTE=/root/kernel-rel.img
 

@@ -68,6 +68,36 @@ const IRQ_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 /// One-shot timer cadence used to re-check a sleeping wait's deadline.
 const IRQ_SLEEP_TICK: Duration = Duration::from_millis(1);
 
+/// How many times one data transfer is attempted before it is reported.
+///
+/// Three attempts covers the busy window the card opens while programming a
+/// page without letting a genuinely dead device hold a request for long.
+const DATA_TRANSFER_ATTEMPTS: usize = 4;
+
+/// How long to let the card finish before retrying a failed transfer.
+///
+/// The failure being retried is the card still programming the previous block
+/// and holding the data line busy, so retrying immediately walks into the same
+/// window. A couple of milliseconds is longer than the shortest reported busy
+/// window and short enough that four attempts still finish promptly.
+const RETRY_BACKOFF: Duration = Duration::from_millis(2);
+
+/// A data transfer's completion deadline, from its size.
+///
+/// One fixed second was too short: sustained writes on this board run at about
+/// 1 MB/s and drop further while the flash collects garbage, so a healthy
+/// 512 KiB SDMA write that took 1.1 s was reported as an I/O error, the page
+/// stayed dirty, and a 1 MiB direct write failed outright. Budget time for a
+/// pessimistic 64 KiB/s, keep one second as the floor so a fast transfer is
+/// never waited on longer than before, and cap it so a genuinely stuck
+/// controller still fails in bounded time.
+fn data_wait_timeout(bytes: usize) -> Duration {
+    const MIN_BYTES_PER_SEC: u64 = 64 * 1024;
+    const CEIL: Duration = Duration::from_secs(30);
+    let seconds = (bytes as u64 / MIN_BYTES_PER_SEC).max(1);
+    Duration::from_secs(seconds).clamp(IRQ_WAIT_TIMEOUT, CEIL)
+}
+
 /// Waiters that sleep on SDHCI interrupt delivery or the one-shot timer.
 static MMC_WAITERS: WaitQueue = WaitQueue::new();
 const DMA_DEVICE_START: usize = 0x2000_0000;
@@ -418,6 +448,7 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         sdma: None,
         irq: None,
         data_sleep_allowed: false,
+        data_wait_timeout: IRQ_WAIT_TIMEOUT,
     };
     host.validate_handoff().map_err(ProbeError::Host)?;
     if sdma_allowed(MMC_BOUNDED_PIO.load(Ordering::Relaxed)) {
@@ -492,6 +523,12 @@ fn duration_ticks(duration: Duration) -> u64 {
     u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
 }
 
+/// The same conversion for the cycle counter used by busy waits.
+fn tsc_duration(duration: Duration) -> u64 {
+    let ticks = u128::from(ostd::arch::tsc_freq()) * duration.as_nanos() / 1_000_000_000;
+    u64::try_from(ticks).unwrap_or(u64::MAX).max(1)
+}
+
 /// Safe MMIO-backed SDHCI host.
 pub(super) struct MmioHost {
     mmio: IoMem,
@@ -500,6 +537,8 @@ pub(super) struct MmioHost {
     irq: Option<IrqCompletion>,
     /// Whether the current data transfer may sleep instead of polling.
     data_sleep_allowed: bool,
+    /// How long the current data transfer may take before it is a failure.
+    data_wait_timeout: Duration,
 }
 
 /// Interrupt delivery for the SDHCI controller.
@@ -592,7 +631,7 @@ impl MmioHost {
     /// until the handler or the one-shot timer wakes it. The timer bounds a
     /// lost interrupt to a timeout; the source is re-armed before every sleep
     /// because the handler masks it on each delivery.
-    fn wait_status(&mut self, wanted: u32, may_sleep: bool) -> Result<u32, HostError> {
+    fn wait_status(&mut self, wanted: u32, may_sleep: bool, timeout: Duration) -> Result<u32, HostError> {
         let mask = wanted | INTERRUPT_ERROR;
         let Some(frequency) = (self.irq.is_some() && may_sleep).then(|| ostd::arch::tsc_freq())
         else {
@@ -615,7 +654,7 @@ impl MmioHost {
             spin_loop();
         }
 
-        let deadline = Jiffies::elapsed().as_u64() + duration_ticks(IRQ_WAIT_TIMEOUT);
+        let deadline = Jiffies::elapsed().as_u64() + duration_ticks(timeout);
         loop {
             let observed = self
                 .irq
@@ -730,7 +769,16 @@ impl MmioHost {
     }
 
     fn wait_interrupt(&mut self, wanted: u32) -> Result<(), HostError> {
-        let status = self.wait_status(wanted, false)?;
+        let status = match self.wait_status(wanted, false, self.data_wait_timeout) {
+            Ok(status) => status,
+            Err(error) => {
+                // A failed transfer leaves the data line busy and the card
+                // waiting for a stop it never received; every later transfer
+                // then fails too. Recover before reporting the error.
+                self.reset_data_line();
+                return Err(error);
+            }
+        };
         if status & INTERRUPT_ERROR != 0 {
             self.write32(Register::InterruptStatus.offset(), status)?;
             let failure =
@@ -754,7 +802,7 @@ impl MmioHost {
     fn wait_command_complete(&mut self, index: u8) -> Result<(), HostError> {
         // Commands finish in microseconds; sleeping would only add the wake
         // latency, so command completion always polls.
-        let status = self.wait_status(INTERRUPT_COMMAND_COMPLETE, false)?;
+        let status = self.wait_status(INTERRUPT_COMMAND_COMPLETE, false, IRQ_WAIT_TIMEOUT)?;
         if status & INTERRUPT_ERROR != 0 {
             self.write32(Register::InterruptStatus.offset(), status)?;
             let failure =
@@ -793,6 +841,40 @@ impl MmioHost {
         self.data_sleep_allowed = self.irq.is_some()
             && command.data == Some(DataDirection::Write)
             && length >= IRQ_SLEEP_MIN_BYTES;
+        self.data_wait_timeout = data_wait_timeout(length);
+
+        // A transfer that fails here is usually transient: the card signals
+        // busy while it programs a page, and an auto CMD12 that arrives during
+        // that window times out and fails the whole request. That error used
+        // to become an I/O error and a dirty page, which is how the root file
+        // system's metadata got corrupted. Retry the same transfer instead --
+        // the data is already in the DMA buffer, so a repeat is idempotent --
+        // and only then report the failure.
+        let mut last_error = HostError::Timeout;
+        for attempt in 0..DATA_TRANSFER_ATTEMPTS {
+            match self.run_sdma(&transfer, command) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    last_error = error;
+                    // The card never received the stop it was waiting for and
+                    // the data line is still busy; without this every later
+                    // transfer fails too.
+                    self.reset_data_line();
+                    if attempt + 1 < DATA_TRANSFER_ATTEMPTS {
+                        ostd::warn!("[mmc] retrying transfer after {:?}", error);
+                        let deadline =
+                            ostd::arch::read_tsc().wrapping_add(tsc_duration(RETRY_BACKOFF));
+                        while ostd::arch::read_tsc() < deadline {
+                            core::hint::spin_loop();
+                        }
+                    }
+                }
+            }
+        }
+        Err(last_error)
+    }
+
+    fn run_sdma(&mut self, transfer: &SdmaTransfer, command: Command) -> Result<(), HostError> {
         self.wait_clear(
             Register::PresentState.offset(),
             PRESENT_COMMAND_INHIBIT | PRESENT_DATA_INHIBIT,
@@ -817,7 +899,11 @@ impl MmioHost {
         let may_sleep = self.data_sleep_allowed;
         loop {
             let status =
-                self.wait_status(INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA, may_sleep)?;
+                self.wait_status(
+                    INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA,
+                    may_sleep,
+                    self.data_wait_timeout,
+                )?;
             match classify_sdma_interrupt(status) {
                 Ok(SdmaInterrupt::Pending) => continue,
                 Ok(SdmaInterrupt::Complete) => {
