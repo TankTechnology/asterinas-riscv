@@ -17,12 +17,51 @@
 
 | 功能 | 板上现象 | 缺在哪 | 工作量 |
 | --- | --- | --- | --- |
+| **`ip link set mtu/name`** | 以前返回成功但改不动（见 §2.1，已修） | — | 已修 |
+| **`ip route add/del`、`ip neigh add`** | **命令挂住不返回**（10 s 超时），而不是报错 | `RtnlSegment::read_from` 没有 `CSegmentType::NEWROUTE` 分支，落到"不支持"；但客户端在收到 `EOPNOTSUPP` 后仍继续 `recvmsg` 等待 | 待查 |
 | **veth pair** | `ip link add veth0 type veth peer name veth1` → `RTNETLINK answers: No such device` | `do_new_link` 只按 index 找已有接口，**不解析 LINKINFO kind，也没有"创建接口"的路径**；内核里没有任何虚拟以太网设备 | 大：需要虚拟设备模型 + 双向队列表 + rtnl 创建/删除 + 命名 |
 | **bridge** | `ip link add br0 type bridge` → 同上 | 同上，且没有转发表 | 大 |
 | **netfilter / iptables / nft** | 内核里没有 netfilter 钩子；`iptables` 也没装（Debian 包可装，但内核不支持会直接报 `can't initialize iptables table`） | 完全没有：需要 `NF_HOOK` 挂点、table/chain/rule 数据结构、`setsockopt(SO_ATTACH_FILTER)` 之外的匹配动作、以及 netlink nfnetlink 协议 | 很大 |
 | **tun/tap** | `ls /dev/net/tun` → 不存在 | 没有 tun 驱动，也没有 `/dev/net` | 中：字符设备 + 队列接 Iface |
 | **IPv6** | `ip -6 addr` 只显示 `::1/128`（来自 netlink dump 的合成），`socket(AF_INET6)` 不可用 | `kernel/src/net/socket/ip` 只有 IPv4 的 tcp/udp/icmp；iface 层没有 IPv6 邻居/地址状态 | 很大 |
 | **`/dev/bus/usb`、`/dev/snd`** | 不存在 | 与本篇无关，记录在 `2026-11-14-system-readiness.md` | — |
+
+## 2.1 已修的：`ip link set` 的三种静默失败
+
+板上实测（修复前）：
+
+```
+$ ip link set dev eth0 mtu 1400     # rc=0，但 MTU 仍是 1500
+$ ip link show eth0
+2: eth0: <BROADCAST,MULTICAST,LOWER_UP> mtu 1500    # 注意：UP 没了
+```
+
+`do_new_link` 只处理 `ifi_flags`/`ifi_change`，属性一律忽略；而"只带属性"的请求
+`ifi_flags == ifi_change == 0`，落到"把 flags 当作新的知名位状态"那个分支，把 `IFF_UP`
+清掉了。改一条 MTU 就等于在核心里把网卡下线。
+
+修复：
+- 请求既没有 `ifi_flags` 也没有 `ifi_change` 时**不动 flags**；
+- `IFLA_MTU`、`IFLA_IFNAME` 与当前值不同时返回 `EOPNOTSUPP`（而不是假装成功）。
+
+板上复验：`ip link set dev eth0 mtu 1400` → `Operation not supported`，MTU 不变、
+`UP` 保持；`ip link set lo down/up` 仍然有效；默认路由与网关 ping 不受影响。
+
+## 2.2 待查的：`ip route add` 挂起
+
+```
+$ timeout 5 ip route add 10.98.0.0/24 dev lo ; echo $?
+124
+```
+
+strace 显示：GETLINK 正常；随后 `sendmsg` 了 `nlmsg_type=0x18`（RTM_NEWROUTE）
+带 `NLM_F_ACK`，收到了 `NLMSG_ERROR error=-EOPNOTSUPP`（seq 对得上），**然后又阻塞在
+`recvmsg`**。同样的 `EOPNOTSUPP` 回复对 `ip addr add` 是正常的（立即返回 rc=2），
+所以差异在 iproute2 对这条消息的处理，或是我们回复里某个字段（GETLINK 回复里
+`nlmsg_pid` 出现过垃圾值）让它不认。
+
+`RtnlSegment::read_from` 确实没有 `NEWROUTE` 分支，落进"不支持"；要修好，要么
+补 `NewRoute` 段解析并返回明确错误，要么实现最小的静态路由添加。
 
 ## 3. rtnl 的现状（决定 veth 怎么做）
 
