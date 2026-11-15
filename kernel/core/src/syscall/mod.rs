@@ -40,6 +40,7 @@ mod chmod;
 mod chown;
 mod chroot;
 mod clock_gettime;
+mod deferred;
 mod diagnostics;
 mod clock_settime;
 mod clone;
