@@ -93,6 +93,17 @@ $ ip addr del 10.99.99.1/32 dev lo      # rc=0，回到单地址
 
 eth0 的地址与默认路由不受影响，网关可达。
 
+**2026-11-15 复查修掉的一处**：重复判断只看接口的**主地址**（`ipv4_cidr()` / `ipv6_cidr()`），
+不是整张地址表。于是第二次 `ip addr add` 同一个非主地址会成功，往表里塞进第二份拷贝，
+之后一次 `ip addr del` 只删掉一份，地址看起来还在。改成查 `ip_addrs()` 全表后：
+
+```
+$ ip addr add 10.99.99.1/32 dev lo   # rc=0
+$ ip addr add 10.99.99.1/32 dev lo   # rc=2  RTNETLINK answers: File exists
+$ ip addr del 10.99.99.1/32 dev lo   # rc=0，地址消失
+$ ip addr del 10.99.99.1/32 dev lo   # rc=2  Cannot assign requested address
+```
+
 ## 2.4 已加的：`ip route add/del`（网关路由）
 
 `RTM_NEWROUTE`/`RTM_DELROUTE` 现在被解析并处理：
@@ -116,6 +127,32 @@ default via 58.206.232.1 dev eth0
 $ ip route del 10.99.0.0/16          # 干净移除
 $ ping 58.206.232.1 && curl https://www.baidu.com/    # 都正常
 ```
+
+## 2.5 复查：`ip link set` 与 netlink 回复端口的副作用矩阵
+
+2026-11-15 早上对 §2.1/§2.2 两个修复做了一次完整回归（脚本 `/root/rtnl_regress.sh`，
+板上跑，全程 SSH 不断、默认路由不变）：
+
+| 动作 | 期望 | 实测 |
+| --- | --- | --- |
+| `ip -d link show eth0`、`ip -[br] addr/route/neigh`、`ip -s link` | 立即返回 | rc=0，约 20 ms |
+| `ip link set eth0 mtu 1500`（同值） | 成功 | rc=0，MTU 1500 |
+| `ip link set eth0 mtu 1400` | `EOPNOTSUPP`，不动 UP | rc=2，MTU 1500，`UP,LOWER_UP` 保持 |
+| `ip link set eth0 name eth0` / `name eth9` | 成功 / `EOPNOTSUPP` | rc=0 / rc=2 |
+| `ip link set eth0 txqueuelen 1000`、`arp on`（只带属性） | 不动 flags | rc=0，`UP,LOWER_UP` 保持 |
+| `ip link set lo down/up` | 生效 | 生效 |
+| `ip link set nosuch0 up` | 立即报错 | rc=1 `Cannot find device` |
+| `ip route add 10.98/24 dev lo`、`ip neigh add ...`、`ip link add ... type veth` | 立即返回 `EOPNOTSUPP`/`ENODEV` | rc=2，无挂起 |
+| `ip route del` 不存在的路由 | `ESRCH` | rc=2 `No such process` |
+| 40 次错误往返 | 无挂起 | 0 次超时，共 1 s |
+| 240 次 dump | 无挂起 | 0 次超时，共 5 s |
+
+开机侧无副作用：rootfs 里没有任何脚本调用 `ip link set` 改 MTU/名字，
+本次启动的 journal 里也没有因 `EOPNOTSUPP` 失败的服务（`systemctl --failed` 为空）。
+
+顺带记一条**不是**我们的问题：`ss` 会打印 `Cannot open netlink socket: Address family
+not supported by protocol`（sock_diag 的 netlink 协议号没实现），然后回落到 `/proc`，
+输出仍然正确。
 
 ## 3. rtnl 的现状（决定 veth 怎么做）
 
