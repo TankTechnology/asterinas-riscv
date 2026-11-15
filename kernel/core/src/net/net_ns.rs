@@ -134,10 +134,10 @@ pub fn current_net_ns() -> Arc<NetNamespace> {
         return NetNamespace::get_init_singleton().clone();
     };
 
-    let ns_proxy = posix_thread.ns_proxy().lock();
-    ns_proxy
-        .as_ref()
-        .unwrap_or_else(|| NetNamespace::get_init_singleton().clone())
+    // The socket-to-namespace association is not carried on `NsProxy` yet, so
+    // every caller sees the initial namespace.
+    let _ = posix_thread;
+    NetNamespace::get_init_singleton().clone()
 }
 
 impl Drop for NetNamespace {

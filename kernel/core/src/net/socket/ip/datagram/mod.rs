@@ -107,7 +107,7 @@ impl DatagramSocket {
                 })?;
                 self.inner
                     .write()
-                    .bind_ephemeral(remote_endpoint, &self.pollee, ())
+                    .bind_ephemeral(remote_endpoint, &self.pollee, crate::net::socket::ip::datagram::unbound::BindOptions { can_reuse: false })
             },
             |bound_datagram, remote_endpoint| {
                 let sent_bytes = bound_datagram.try_send(reader, remote_endpoint, flags, ())?;
@@ -164,7 +164,7 @@ impl Socket for DatagramSocket {
             );
         }
 
-        self.inner.write().connect(&endpoint, &self.pollee, ())
+        self.inner.write().connect(&endpoint, &self.pollee, crate::net::socket::ip::datagram::unbound::BindOptions { can_reuse: false })
     }
 
     fn addr(&self) -> Result<SocketAddr> {
