@@ -37,3 +37,30 @@ macro_rules! trace_event {
         }
     }};
 }
+
+/// Installs the hooks that have to live inside other subsystems.
+///
+/// The interrupt hook is the only one of those; the scheduler, page-fault and
+/// network hooks are emitted at their call sites in the kernel.
+pub fn init() {
+    ostd::irq::inject_irq_hook(trace_irq_hook);
+    aster_block::bio::inject_bio_hook(events::block::trace_hook);
+}
+
+/// Runs around every interrupt handler invocation.
+fn trace_irq_hook(irq_num: u8, entering: bool) {
+    use events::irq::{IRQ_HANDLER_ENTRY, IRQ_HANDLER_EXIT};
+
+    let event: &event::TraceEvent = if entering {
+        &IRQ_HANDLER_ENTRY
+    } else {
+        &IRQ_HANDLER_EXIT
+    };
+    if !event.enabled() {
+        return;
+    }
+    let (pid, tid) = ostd::task::Task::current()
+        .map(|task| crate::thread::task_ids(&task))
+        .unwrap_or((0, 0));
+    event.trace(pid, tid, format_args!("irq={}", irq_num));
+}

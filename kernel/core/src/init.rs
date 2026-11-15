@@ -57,6 +57,7 @@ fn init() {
     crate::power::init();
     crate::arch::init();
     crate::thread::init();
+    crate::trace::init();
     crate::util::random::init();
     crate::driver::init();
     crate::time::init();

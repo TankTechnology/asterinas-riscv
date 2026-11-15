@@ -20,8 +20,26 @@ pub(in crate::net) fn init_in_first_kthread() {
 
 pub(super) fn poll_ifaces() {
     for iface in iter_all_ifaces() {
+        trace_poll(iface.name());
         iface.poll();
     }
+}
+
+/// Emits `net_poll` for one interface.
+fn trace_poll(iface_name: &core::ffi::CStr) {
+    use crate::trace::events::net::NET_POLL;
+
+    if !NET_POLL.enabled() {
+        return;
+    }
+    let (pid, tid) = ostd::task::Task::current()
+        .map(|task| crate::thread::task_ids(&task))
+        .unwrap_or((0, 0));
+    NET_POLL.trace(
+        pid,
+        tid,
+        format_args!("iface={}", iface_name.to_string_lossy()),
+    );
 }
 
 /// Spawns the background polling thread for a newly created interface
@@ -60,6 +78,7 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
             // For a more in-depth discussion, please refer to the following link:
             // <https://github.com/asterinas/asterinas/pull/630#discussion_r1496817030>.
             if now_as_ms >= next_poll_at_ms {
+                trace_poll(iface.name());
                 iface.poll();
                 continue;
             }

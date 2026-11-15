@@ -246,8 +246,29 @@ impl SchedAttr {
     }
 }
 
+/// Emits `sched_wakeup` for a task that becomes runnable, the way Linux does:
+/// a spawn is not a wakeup. The record is attributed to whoever wakes it.
+fn trace_wakeup(task: &Task, flags: EnqueueFlags) {
+    use crate::trace::events::sched::SCHED_WAKEUP;
+
+    if flags == EnqueueFlags::Spawn || !SCHED_WAKEUP.enabled() {
+        return;
+    }
+    let (pid, tid) = crate::thread::task_ids(task);
+    let (waker_pid, waker_tid) = Task::current()
+        .map(|current| crate::thread::task_ids(&current))
+        .unwrap_or((0, 0));
+    SCHED_WAKEUP.trace(
+        waker_pid,
+        waker_tid,
+        format_args!("pid={} tid={}", pid, tid),
+    );
+}
+
 impl Scheduler for ClassScheduler {
     fn enqueue(&self, task: Arc<Task>, flags: EnqueueFlags) -> Option<CpuId> {
+        trace_wakeup(&task, flags);
+
         let thread = task.as_thread()?.clone();
 
         let (still_in_rq, cpu) = {

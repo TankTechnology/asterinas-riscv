@@ -136,6 +136,13 @@ impl Bio {
         );
         assert!(result.is_ok());
 
+        call_bio_hook(&BioHookEvent {
+            submitted: true,
+            sid_range: &metadata.sid_range,
+            type_: metadata.type_,
+            status: BioStatus::Submit,
+        });
+
         let waiter_metadata = metadata.clone();
         let submitted_bio = SubmittedBio {
             metadata,
@@ -261,6 +268,13 @@ impl SubmittedBio {
 
         drop(segments);
 
+        call_bio_hook(&BioHookEvent {
+            submitted: false,
+            sid_range: &metadata.sid_range,
+            type_: metadata.type_,
+            status,
+        });
+
         // The callback may copy read data into a cache page or restore dirty
         // state after failed writeback. Publish completion only after it has
         // finished, so a synchronous waiter can safely use that page.
@@ -363,6 +377,34 @@ pub enum BioType {
     /// Flush the volatile write cache.
     Flush = 2,
     // TODO: Add support for other BIO types, such as discarding sectors.
+}
+
+/// What a BIO hook is told when a request is submitted or completed.
+///
+/// Tracing lives in the kernel, which this crate cannot see, so the kernel
+/// injects a hook the same way it does with `ostd`.
+pub struct BioHookEvent<'a> {
+    /// `true` for submission, `false` for completion.
+    pub submitted: bool,
+    /// The sector range the request covers.
+    pub sid_range: &'a Range<Sid>,
+    /// Read, write or flush.
+    pub type_: BioType,
+    /// The completion status; `Init` for a submission.
+    pub status: BioStatus,
+}
+
+static BIO_HOOK: Once<fn(&BioHookEvent<'_>)> = Once::new();
+
+/// Injects the hook run when a BIO is submitted and when it completes.
+pub fn inject_bio_hook(hook: fn(&BioHookEvent<'_>)) {
+    BIO_HOOK.call_once(|| hook);
+}
+
+fn call_bio_hook(event: &BioHookEvent<'_>) {
+    if let Some(hook) = BIO_HOOK.get() {
+        hook(event);
+    }
 }
 
 /// The status of `Bio`.

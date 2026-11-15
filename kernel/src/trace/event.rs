@@ -118,6 +118,14 @@ impl Write for Payload {
 /// Listing them explicitly keeps the id space visible in one place; adding an
 /// event means adding it here, which is what the interfaces iterate.
 static EVENTS: &[&TraceEvent] = &[
+    &super::events::block::BLOCK_RQ_ISSUE,
+    &super::events::block::BLOCK_RQ_COMPLETE,
+    &super::events::irq::IRQ_HANDLER_ENTRY,
+    &super::events::irq::IRQ_HANDLER_EXIT,
+    &super::events::mm::PAGE_FAULT_USER,
+    &super::events::net::NET_POLL,
+    &super::events::sched::SCHED_SWITCH,
+    &super::events::sched::SCHED_WAKEUP,
     &super::events::syscall::SYS_ENTER,
     &super::events::syscall::SYS_EXIT,
     &super::events::tracing::TRACE_MARKER,

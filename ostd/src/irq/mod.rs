@@ -86,6 +86,8 @@ pub use top_half::{IrqCallbackFunction, IrqLine};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use spin::Once;
+
 use crate::{
     arch::{irq::HwIrqLine, trap::TrapFrame},
     cpu::PrivilegeLevel,
@@ -132,6 +134,7 @@ pub(crate) fn call_irq_callback_functions(
     cpu_priv_at_irq: PrivilegeLevel,
 ) {
     record_irq(hw_irq_line.irq_num());
+    call_irq_hook(hw_irq_line.irq_num(), true);
     level::enter(
         move || {
             top_half::process(trap_frame, hw_irq_line);
@@ -139,4 +142,23 @@ pub(crate) fn call_irq_callback_functions(
         },
         cpu_priv_at_irq,
     );
+    call_irq_hook(hw_irq_line.irq_num(), false);
+}
+
+/// A hook around every interrupt handler invocation, for tracing.
+///
+/// `entering` distinguishes the call before the handlers from the one after
+/// them. It runs in interrupt context with interrupts disabled: no allocation,
+/// no sleeping.
+static IRQ_HOOK: Once<fn(u8, bool)> = Once::new();
+
+/// Injects the hook run around interrupt handlers.
+pub fn inject_irq_hook(hook: fn(u8, bool)) {
+    IRQ_HOOK.call_once(|| hook);
+}
+
+fn call_irq_hook(irq_num: u8, entering: bool) {
+    if let Some(hook) = IRQ_HOOK.get() {
+        hook(irq_num, entering);
+    }
 }
