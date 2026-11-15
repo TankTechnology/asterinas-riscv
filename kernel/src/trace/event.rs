@@ -60,7 +60,14 @@ impl TraceEvent {
     }
 
     /// Whether this event is enabled *and* tracing as a whole is on.
+    ///
+    /// An event with an eBPF program attached counts as enabled even when its
+    /// own switch is off: attaching a program does not also turn the event's
+    /// ring records on.
     pub fn enabled(&self) -> bool {
+        if crate::bpf::attach::is_attached(self.id) {
+            return true;
+        }
         TRACING_ON.load(Ordering::Relaxed) && self.enabled.load(Ordering::Relaxed)
     }
 
@@ -76,8 +83,15 @@ impl TraceEvent {
     /// Appends a record, if the event is enabled.
     ///
     /// The caller formats into a stack buffer first; a disabled event never
-    /// reaches the formatting.
+    /// reaches the formatting. A program attached to the event runs with the
+    /// record's ids, whether or not the event's own switch is on.
     pub fn trace(&self, pid: u32, tid: u32, args: fmt::Arguments<'_>) {
+        if crate::bpf::attach::is_attached(self.id) {
+            crate::bpf::attach::run(self.id, pid, tid);
+        }
+        if !self.enabled_flag() || !TRACING_ON.load(Ordering::Relaxed) {
+            return;
+        }
         let mut payload = Payload::new();
         let _ = payload.write_fmt(args);
         ring::push(self.id, pid, tid, payload.bytes());

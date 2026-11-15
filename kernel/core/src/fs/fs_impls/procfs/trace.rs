@@ -73,6 +73,9 @@ impl TraceDirOps {
         ("profile", InodeType::File, |parent| {
             ProcFile::new(ProfileFileOps, parent, mkmod!(a+r))
         }),
+        ("bpf", InodeType::File, |parent| {
+            ProcFile::new(BpfFileOps, parent, mkmod!(a+r))
+        }),
         ("events", InodeType::Dir, |parent| {
             ProcDir::new(EventsDirOps, parent, mkmod!(a+rx))
         }),
@@ -170,10 +173,20 @@ impl ProcFileOps for ProfileFileOps {
     }
 }
 
-/// `/proc/trace/available_events`.
-struct AvailableEventsFileOps;
+/// `/proc/trace/bpf`: the programs attached to trace events.
+struct BpfFileOps;
 
-impl ProcFileOps for AvailableEventsFileOps {
+impl ProcFileOps for BpfFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        crate::bpf::attach::render(&mut printer)
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to render the bpf table"))?;
+        Ok(printer.bytes_written())
+    }
+}
+
+/// `/proc/trace/available_events`.
+struct AvailableEventsFileOps;impl ProcFileOps for AvailableEventsFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
         for event in event::all_events() {

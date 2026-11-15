@@ -21,10 +21,20 @@
 
 pub mod event;
 pub mod events;
+#[cfg(target_arch = "riscv64")]
 pub mod function;
 pub mod kallsyms;
 pub mod profile;
 pub mod ring;
+
+/// The function tracer is RISC-V assembly; elsewhere it is inert, so the
+/// `/proc/trace` switches still exist and simply do nothing.
+#[cfg(not(target_arch = "riscv64"))]
+pub mod function {
+    pub fn init() {}
+
+    pub fn sync_armed() {}
+}
 
 /// Emits a trace record for `$event`, if it is enabled.
 ///
