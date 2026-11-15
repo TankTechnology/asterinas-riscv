@@ -7,10 +7,9 @@ use crate::{
         file_table::{FdFlags, FileTableInsert},
     },
     net::socket::{
-        ip::{DatagramSocket, IcmpSocket, IpAddressFamily, StreamSocket},
+        ip::{DatagramSocket, IpAddressFamily, StreamSocket},
         netlink::{
-            NetlinkGenericSocket, NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol,
-            is_valid_protocol,
+            NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol, is_valid_protocol,
         },
         unix::{UnixDatagramSocket, UnixStreamSocket},
         vsock::VsockStreamSocket,
@@ -56,27 +55,17 @@ pub(super) fn sys_socket(
                     };
                     StreamSocket::new(is_nonblocking, family) as Arc<dyn FileLike>
                 }
-                _ => return_errno_with_message!(Errno::EPROTONOSUPPORT, "unsupported protocol"),
+                _ => return_errno_with_message!(Errno::EAFNOSUPPORT, "unsupported protocol"),
             }
         }
-        (CSocketAddrFamily::AF_INET | CSocketAddrFamily::AF_INET6, SockType::SOCK_DGRAM) => {
+        (CSocketAddrFamily::AF_INET, SockType::SOCK_DGRAM) => {
             let protocol = Protocol::try_from(protocol)?;
             debug!("protocol = {:?}", protocol);
             match protocol {
                 Protocol::IPPROTO_IP | Protocol::IPPROTO_UDP => {
-                    let family = match domain {
-                        CSocketAddrFamily::AF_INET => IpAddressFamily::IPv4,
-                        CSocketAddrFamily::AF_INET6 => IpAddressFamily::IPv6,
-                        _ => unreachable!(),
-                    };
-                    DatagramSocket::new(is_nonblocking, family) as Arc<dyn FileLike>
+                    DatagramSocket::new(is_nonblocking) as Arc<dyn FileLike>
                 }
-                // A ping socket: `SOCK_DGRAM` with `IPPROTO_ICMP`, as Linux
-                // and iputils open it.
-                Protocol::IPPROTO_ICMP if domain == CSocketAddrFamily::AF_INET => {
-                    IcmpSocket::new(is_nonblocking, IpAddressFamily::IPv4)? as Arc<dyn FileLike>
-                }
-                _ => return_errno_with_message!(Errno::EPROTONOSUPPORT, "unsupported protocol"),
+                _ => return_errno_with_message!(Errno::EAFNOSUPPORT, "unsupported protocol"),
             }
         }
         (CSocketAddrFamily::AF_NETLINK, SockType::SOCK_RAW | SockType::SOCK_DGRAM) => {
@@ -88,9 +77,6 @@ pub(super) fn sys_socket(
                 }
                 Ok(StandardNetlinkProtocol::KOBJECT_UEVENT) => {
                     NetlinkUeventSocket::new(is_nonblocking, sock_type) as Arc<dyn FileLike>
-                }
-                Ok(StandardNetlinkProtocol::GENERIC) => {
-                    NetlinkGenericSocket::new(is_nonblocking, sock_type) as Arc<dyn FileLike>
                 }
                 Ok(_) => {
                     return_errno_with_message!(

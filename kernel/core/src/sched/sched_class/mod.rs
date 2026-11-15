@@ -5,11 +5,7 @@
 #![warn(unused)]
 
 use alloc::{boxed::Box, sync::Arc};
-use core::{
-    fmt,
-    ops::Bound,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{fmt, ops::Bound, sync::atomic::Ordering};
 
 use ostd::{
     arch::read_tsc as sched_clock,
@@ -102,9 +98,9 @@ struct CurrentRuntime {
 }
 
 impl CurrentRuntime {
-    fn new_at(now: u64) -> Self {
+    fn new() -> Self {
         CurrentRuntime {
-            start: now,
+            start: sched_clock(),
             delta: 0,
             period_delta: 0,
         }
@@ -152,7 +148,6 @@ pub(crate) struct SchedAttr {
     last_cpu: AtomicCpuId,
     real_time: real_time::RealTimeAttr,
     fair: fair::FairAttr,
-    reset_on_fork: AtomicBool,
 }
 
 impl SchedAttr {
@@ -169,40 +164,15 @@ impl SchedAttr {
                 real_time::RealTimeAttr::new(prio, policy)
             },
             fair: fair::FairAttr::new(match policy {
-                SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => nice,
+                SchedPolicy::Fair(nice) => nice,
                 _ => Nice::default(),
             }),
-            reset_on_fork: AtomicBool::new(false),
         }
     }
 
     /// Retrieves the current scheduling policy of the thread.
     pub(crate) fn policy(&self) -> SchedPolicy {
         self.policy.get()
-    }
-
-    /// Sets whether the thread's scheduling policy is reset on `fork`.
-    ///
-    /// This corresponds to Linux's `SCHED_RESET_ON_FORK` flag.
-    pub fn set_reset_on_fork(&self, reset: bool) {
-        self.reset_on_fork.store(reset, Ordering::Relaxed);
-    }
-
-    /// Returns whether the thread's scheduling policy is reset on `fork`.
-    pub fn reset_on_fork(&self) -> bool {
-        self.reset_on_fork.load(Ordering::Relaxed)
-    }
-
-    /// Returns the scheduling policy a forked child should inherit.
-    ///
-    /// When `SCHED_RESET_ON_FORK` is set, the child is reset to the default
-    /// `SCHED_NORMAL` policy; otherwise it inherits the parent's policy.
-    pub fn fork_child_policy(&self) -> SchedPolicy {
-        if self.reset_on_fork() {
-            SchedPolicy::Fair(Nice::default())
-        } else {
-            self.policy()
-        }
     }
 
     fn policy_kind(&self) -> SchedPolicyKind {
@@ -218,7 +188,7 @@ impl SchedAttr {
             SchedPolicy::RealTime { rt_prio, rt_policy } => {
                 self.real_time.update(rt_prio.get(), rt_policy);
             }
-            SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => self.fair.update(nice),
+            SchedPolicy::Fair(nice) => self.fair.update(nice),
             _ => {}
         });
     }
@@ -246,34 +216,12 @@ impl SchedAttr {
     }
 }
 
-/// Emits `sched_wakeup` for a task that becomes runnable, the way Linux does:
-/// a spawn is not a wakeup. The record is attributed to whoever wakes it.
-fn trace_wakeup(task: &Task, flags: EnqueueFlags) {
-    use crate::trace::events::sched::SCHED_WAKEUP;
-
-    if flags == EnqueueFlags::Spawn || !SCHED_WAKEUP.enabled() {
-        return;
-    }
-    let (pid, tid) = crate::thread::task_ids(task);
-    let (waker_pid, waker_tid) = Task::current()
-        .map(|current| crate::thread::task_ids(&current))
-        .unwrap_or((0, 0));
-    SCHED_WAKEUP.trace(
-        waker_pid,
-        waker_tid,
-        [pid as u64, tid as u64, 0],
-        format_args!("pid={} tid={}", pid, tid),
-    );
-}
-
 impl Scheduler for ClassScheduler {
     fn enqueue(&self, task: Arc<Task>, flags: EnqueueFlags) -> Option<CpuId> {
-        trace_wakeup(&task, flags);
-
         let thread = task.as_thread()?.clone();
 
         let (still_in_rq, cpu) = {
-            let selected_cpu_id = self.select_cpu(&thread);
+            let selected_cpu_id = self.select_cpu(&thread, flags);
 
             if let Err(task_cpu_id) = task.cpu().set_if_is_none(selected_cpu_id) {
                 debug_assert!(flags != EnqueueFlags::Spawn);
@@ -295,16 +243,13 @@ impl Scheduler for ClassScheduler {
             .current
             .as_ref()
             .is_none_or(|((_, rq_current_thread), _)| {
-                thread
-                    .sched_attr()
-                    .policy()
-                    .outranks(&rq_current_thread.sched_attr().policy())
+                thread.sched_attr().policy() < rq_current_thread.sched_attr().policy()
             });
 
         thread.sched_attr().set_last_cpu(cpu);
-        let wake_preempt = rq.enqueue_entity((task, thread), Some(flags));
+        rq.enqueue_entity((task, thread), Some(flags));
 
-        (should_preempt || wake_preempt).then_some(cpu)
+        should_preempt.then_some(cpu)
     }
 
     fn mut_local_rq_with(&self, f: &mut dyn FnMut(&mut dyn LocalRunQueue)) {
@@ -337,59 +282,29 @@ impl ClassScheduler {
     }
 
     // TODO: Implement a better algorithm and replace the current naive implementation.
-    fn select_cpu(&self, thread: &Thread) -> CpuId {
-        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
-        let guard = disable_local();
-        let last_cpu = thread
-            .sched_attr()
-            .last_cpu()
-            .filter(|cpu| affinity.contains(*cpu));
-
-        if let Some(last_cpu) = last_cpu {
-            // Probe one rotating alternative on each wake instead of scanning every CPU in this
-            // hot path. A tie stays on the previous CPU to retain cache locality.
-            let probe_after = self.last_chosen_cpu.get().unwrap_or(last_cpu);
-            let candidate = Self::cycle_after(probe_after, &affinity).next().unwrap();
-            self.last_chosen_cpu.set_anyway(candidate);
-            if candidate == last_cpu {
-                return last_cpu;
-            }
-
-            let last_load = self.rqs[last_cpu.as_usize()]
-                .lock()
-                .load_stats()
-                .runnable_load();
-            let candidate_load = self.rqs[candidate.as_usize()]
-                .lock()
-                .load_stats()
-                .runnable_load();
-            return if candidate_load < last_load {
-                candidate
-            } else {
-                last_cpu
-            };
+    fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
+        if let Some(last_cpu) = thread.sched_attr().last_cpu() {
+            return last_cpu;
         }
+        debug_assert!(flags == EnqueueFlags::Spawn);
+
+        let guard = disable_local();
 
         let mut selected = guard.current_cpu();
         let mut minimum_load = u32::MAX;
 
         // Set `selected` as `candidate` if the candidate's load is smaller.
-        //
-        // Count the currently running task too: a CPU running one task has
-        // `queue_len == 0`, exactly like an idle CPU, so comparing only the
-        // queue length stacks new tasks on busy CPUs and leaves harts idle
-        // (four CPU-bound processes were observed to occupy three harts).
         let test_candidate = |candidate: CpuId| {
-            let load = self.rqs[candidate.as_usize()]
-                .lock()
-                .load_stats()
-                .runnable_load();
+            let PerCpuLoadStats { queue_len, .. } =
+                self.rqs[candidate.as_usize()].lock().load_stats();
+            let load = queue_len;
             if load < minimum_load {
                 minimum_load = load;
                 selected = candidate;
             }
         };
 
+        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
         match self.last_chosen_cpu.get() {
             Some(cpu) => {
                 // Perform a round-robin selection starting after the last chosen CPU.
@@ -431,53 +346,13 @@ impl PerCpuClassRqSet {
             })
     }
 
-    fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) -> bool {
-        self.enqueue_entity_at((task, thread), flags, sched_clock())
-    }
-
-    /// Enqueues an entity and reports whether it should preempt the current task.
-    ///
-    /// A fair entity whose vruntime is smaller than the current fair task's
-    /// would be picked before it, so it must not wait for the current task to
-    /// exhaust its whole time slice. This is the wakeup preemption rule; without
-    /// it a thread woken on a busy CPU waits up to one scheduling period
-    /// (hundreds of milliseconds were measured for `fork`+`wait`).
-    fn enqueue_entity_at(
-        &mut self,
-        (task, thread): SchedEntity,
-        flags: Option<EnqueueFlags>,
-        now: u64,
-    ) -> bool {
-        thread.sched_attr().sched_info().enqueue_at(now);
-
-        let current_fair_vruntime = self.current.as_ref().and_then(|((_, current), _)| {
-            (current.sched_attr().policy_kind() == SchedPolicyKind::Fair)
-                .then(|| current.sched_attr().fair.vruntime())
-        });
-        let new_is_fair = thread.sched_attr().policy_kind() == SchedPolicyKind::Fair;
-
+    fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) {
         match thread.sched_attr().policy_kind() {
             SchedPolicyKind::Stop => self.stop.enqueue(task, flags),
             SchedPolicyKind::RealTime => self.real_time.enqueue(task, flags),
             SchedPolicyKind::Fair => self.fair.enqueue(task, flags),
             SchedPolicyKind::Idle => self.idle.enqueue(task, flags),
         }
-
-        flags.is_some()
-            && new_is_fair
-            && current_fair_vruntime.is_some_and(|current| self.fair.has_entity_below(current))
-    }
-
-    fn try_pick_next_at(&mut self, now: u64) -> Option<&Arc<Task>> {
-        self.pick_next_entity().and_then(|next| {
-            // A task appears at most once in this runqueue, so `next` cannot
-            // also be the current task.
-            next.1.sched_attr().sched_info().dispatch_at(now);
-            if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new_at(now))) {
-                self.enqueue_entity_at(old, None, now);
-            }
-            self.current.as_ref().map(|((task, _), _)| task)
-        })
     }
 
     fn load_stats(&self) -> PerCpuLoadStats {
@@ -496,7 +371,14 @@ impl LocalRunQueue for PerCpuClassRqSet {
     }
 
     fn try_pick_next(&mut self) -> Option<&Arc<Task>> {
-        self.try_pick_next_at(sched_clock())
+        self.pick_next_entity().and_then(|next| {
+            // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
+            // as the current task here.
+            if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new())) {
+                self.enqueue_entity(old, None);
+            }
+            self.current.as_ref().map(|((task, _), _)| task)
+        })
     }
 
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
@@ -545,172 +427,12 @@ struct PerCpuLoadStats {
     is_idle: bool,
 }
 
-impl PerCpuLoadStats {
-    fn runnable_load(&self) -> u32 {
-        self.queue_len.saturating_add(u32::from(!self.is_idle))
-    }
-}
-
 impl SchedulerStats for ClassScheduler {
     fn nr_queued_and_running(&self) -> (u32, u32) {
         self.rqs.iter().fold((0, 0), |(queued, running), rq| {
             let PerCpuLoadStats { queue_len, is_idle } = rq.lock().load_stats();
             (queued + queue_len, running + u32::from(!is_idle))
         })
-    }
-}
-
-#[cfg(ktest)]
-mod tests {
-    use ostd::prelude::ktest;
-
-    use super::*;
-    use crate::thread::kernel_thread::ThreadOptions;
-
-    #[ktest]
-    fn sched_class() {
-        fixed_ticks_account_dispatch_and_requeue();
-        duplicate_wake_preserves_queued_timestamp();
-    }
-
-    fn fixed_ticks_account_dispatch_and_requeue() {
-        let scheduler = ClassScheduler::new();
-        let higher = ThreadOptions::new(|| {})
-            .sched_policy(SchedPolicy::Stop)
-            .build();
-        let peer = ThreadOptions::new(|| {}).build();
-        let entity = |task: &Arc<Task>| (task.clone(), task.as_thread().unwrap().clone());
-        let mut rq = scheduler.rqs[CpuId::bsp().as_usize()].lock();
-
-        rq.enqueue_entity_at(entity(&higher), None, 10);
-        rq.enqueue_entity_at(entity(&peer), None, 20);
-        assert!(Arc::ptr_eq(rq.try_pick_next_at(50).unwrap(), &higher));
-        assert_eq!(
-            higher
-                .as_thread()
-                .unwrap()
-                .sched_attr()
-                .sched_info()
-                .snapshot_at_frequency(1_000_000_000),
-            Some(sched_info::Snapshot {
-                run_delay_ns: 40,
-                dispatches: 1,
-            })
-        );
-
-        assert!(Arc::ptr_eq(rq.try_pick_next_at(70).unwrap(), &peer));
-        assert_eq!(
-            peer.as_thread()
-                .unwrap()
-                .sched_attr()
-                .sched_info()
-                .snapshot_at_frequency(1_000_000_000),
-            Some(sched_info::Snapshot {
-                run_delay_ns: 50,
-                dispatches: 1,
-            })
-        );
-        assert!(
-            higher
-                .as_thread()
-                .unwrap()
-                .sched_attr()
-                .sched_info()
-                .is_queued()
-        );
-        assert_eq!(
-            higher
-                .as_thread()
-                .unwrap()
-                .sched_attr()
-                .sched_info()
-                .queued_at(),
-            70
-        );
-    }
-
-    fn duplicate_wake_preserves_queued_timestamp() {
-        let scheduler = ClassScheduler::new();
-        let task = ThreadOptions::new(|| {}).build();
-
-        let _ = scheduler.enqueue(task.clone(), EnqueueFlags::Wake);
-        let thread = task.as_thread().unwrap().clone();
-        let info = thread.sched_attr().sched_info();
-        let first_queued_at = info.queued_at();
-        while sched_clock() == first_queued_at {
-            core::hint::spin_loop();
-        }
-        assert_eq!(scheduler.enqueue(task, EnqueueFlags::Wake), None);
-        assert_eq!(info.queued_at(), first_queued_at);
-    }
-
-    #[ktest]
-    fn wake_prefers_less_loaded_allowed_cpu() {
-        let mut cpus = all_cpus();
-        let overloaded_cpu = cpus.next().unwrap();
-        if cpus.next().is_none() {
-            return;
-        }
-
-        let scheduler = ClassScheduler::new();
-        let peer = ThreadOptions::new(|| {}).build();
-        let peer_thread = peer.as_thread().unwrap().clone();
-        scheduler.rqs[overloaded_cpu.as_usize()]
-            .lock()
-            .enqueue_entity((peer, peer_thread), None);
-
-        let waking = ThreadOptions::new(|| {}).build();
-        let waking_thread = waking.as_thread().unwrap();
-        waking_thread.sched_attr().set_last_cpu(overloaded_cpu);
-
-        assert_ne!(scheduler.select_cpu(waking_thread), overloaded_cpu);
-    }
-
-    #[ktest]
-    fn wake_preserves_last_cpu_when_load_is_equal() {
-        let scheduler = ClassScheduler::new();
-        let waking = ThreadOptions::new(|| {}).build();
-        let waking_thread = waking.as_thread().unwrap();
-        let last_cpu = all_cpus().next().unwrap();
-        waking_thread.sched_attr().set_last_cpu(last_cpu);
-
-        assert_eq!(scheduler.select_cpu(waking_thread), last_cpu);
-    }
-
-    #[ktest]
-    fn fair_yield_preserves_class_priority() {
-        // This scheduler is not injected; none of these tasks is spawned.
-        let scheduler = ClassScheduler::new();
-        let first = ThreadOptions::new(|| {}).build();
-        let peer = ThreadOptions::new(|| {}).build();
-        let higher = ThreadOptions::new(|| {})
-            .sched_policy(SchedPolicy::Stop)
-            .build();
-        let entity = |task: &Arc<Task>| (task.clone(), task.as_thread().unwrap().clone());
-        let mut rq = scheduler.rqs[CpuId::bsp().as_usize()].lock();
-
-        rq.enqueue_entity(entity(&first), None);
-        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &first));
-        rq.enqueue_entity(entity(&peer), None);
-        assert!(rq.update_current(UpdateFlags::Yield));
-        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &peer));
-        assert_eq!(rq.fair.len(), 1);
-        assert!(Arc::ptr_eq(rq.current().unwrap(), &peer));
-
-        // A same-class peer must not displace a queued higher-priority task.
-        rq.enqueue_entity(entity(&higher), None);
-        assert!(rq.update_current(UpdateFlags::Yield));
-        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &higher));
-        assert_eq!(rq.fair.len(), 2);
-        assert!(rq.stop.is_empty());
-
-        // The previous tasks each remain queued exactly once.
-        let a = rq.fair.pick_next().unwrap();
-        let b = rq.fair.pick_next().unwrap();
-        assert!(!Arc::ptr_eq(&a, &b));
-        assert!(Arc::ptr_eq(&a, &first) || Arc::ptr_eq(&a, &peer));
-        assert!(Arc::ptr_eq(&b, &first) || Arc::ptr_eq(&b, &peer));
-        assert!(rq.fair.is_empty());
     }
 }
 

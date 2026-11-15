@@ -3,22 +3,17 @@
 use ostd::mm::VmIo;
 
 use super::SyscallReturn;
-#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+#[cfg(target_arch = "x86_64")]
 use crate::arch::ptrace as arch_ptrace;
 use crate::{
     prelude::*,
     process::{
-        pid_table,
         posix_thread::{
             AsPosixThread,
             alien_access::AlienAccessMode,
             ptrace::{PtraceContRequest, PtraceOptions},
         },
-        signal::{
-            constants::{SIGKILL, SIGSTOP},
-            sig_num::SigNum,
-            signals::user::UserSignal,
-        },
+        signal::{constants::SIGKILL, sig_num::SigNum, signals::user::UserSignal},
     },
     thread::{Thread, Tid},
 };
@@ -85,38 +80,7 @@ pub(super) fn sys_ptrace(
             let tracee = ctx.posix_thread.get_tracee(tid)?;
             let tracee = tracee.as_posix_thread().unwrap();
 
-            let signal = Box::new(UserSignal::new_kill(SIGKILL, ctx));
-            crate::process::signal::provenance::trace_user_thread_enqueue(
-                signal.as_ref(),
-                "ptrace-kill",
-                "thread",
-                ctx,
-                tracee,
-            );
-            tracee.enqueue_signal(signal);
-        }
-        PtraceRequest::PTRACE_ATTACH => {
-            let tracee_thread = pid_table::pid_table_mut()
-                .get_thread(tid)
-                .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such thread"))?;
-            let tracer_thread = current_thread!();
-
-            do_ptrace_attach(&tracer_thread, tracee_thread.clone())?;
-
-            let tracee = tracee_thread.as_posix_thread().unwrap();
-            let signal = Box::new(UserSignal::new_kill(SIGSTOP, ctx));
-            crate::process::signal::provenance::trace_user_thread_enqueue(
-                signal.as_ref(),
-                "ptrace-attach",
-                "thread",
-                ctx,
-                tracee,
-            );
-            tracee.enqueue_signal(signal);
-        }
-        PtraceRequest::PTRACE_DETACH => {
-            let sig_num = parse_ptrace_injected_signal(data)?;
-            ctx.posix_thread.detach_from(tid, sig_num, ctx)?;
+            tracee.enqueue_signal(Box::new(UserSignal::new_kill(SIGKILL, ctx)));
         }
         #[cfg(target_arch = "x86_64")]
         PtraceRequest::PTRACE_SINGLESTEP => {
@@ -134,29 +98,6 @@ pub(super) fn sys_ptrace(
 
             let regs = tracee.ptrace_get_regs()?;
             ctx.user_space().write_val(data, &regs)?;
-        }
-        #[cfg(target_arch = "riscv64")]
-        PtraceRequest::PTRACE_GETREGSET => {
-            let tracee = ctx.posix_thread.get_tracee(tid)?;
-            let tracee = tracee.as_posix_thread().unwrap();
-            let regs = tracee.ptrace_get_regset()?;
-            if addr != NT_PRSTATUS {
-                return_errno_with_message!(Errno::EINVAL, "unsupported ptrace regset");
-            }
-
-            let iov: CUserIovec = ctx.user_space().read_val(data)?;
-            if iov.len % size_of::<usize>() != 0 {
-                return_errno_with_message!(Errno::EINVAL, "unaligned ptrace regset length");
-            }
-            let len = iov.len.min(size_of::<arch_ptrace::CUserRegsStruct>());
-            if len != 0 {
-                ctx.user_space()
-                    .write_bytes(iov.base, &regs.as_bytes()[..len])?;
-            }
-            let len_addr = data.checked_add(size_of::<usize>()).ok_or_else(|| {
-                Error::with_message(Errno::EFAULT, "invalid ptrace iovec address")
-            })?;
-            ctx.user_space().write_val(len_addr, &len)?;
         }
         #[cfg(target_arch = "x86_64")]
         PtraceRequest::PTRACE_SETREGS => {
@@ -271,10 +212,6 @@ enum PtraceRequest {
     /// Sets all general-purpose registers used by the thread.
     #[cfg(target_arch = "x86_64")]
     PTRACE_SETREGS = 13,
-    /// Attaches to a thread that is already running.
-    PTRACE_ATTACH = 16,
-    /// Detaches from an attached thread.
-    PTRACE_DETACH = 17,
     /// Continues and stops at the next entry to or return from syscall.
     PTRACE_SYSCALL = 24,
     /// Sets ptrace options.
@@ -288,6 +225,10 @@ enum PtraceRequest {
     // PTRACE_GETFPREGS = 14,
     // /// Sets all floating-point registers used by the thread.
     // PTRACE_SETFPREGS = 15,
+    // /// Attaches to a thread that is already running.
+    // PTRACE_ATTACH = 16,
+    // /// Detaches from an attached thread.
+    // PTRACE_DETACH = 17,
     // /// Gets all extended floating-point registers used by the thread.
     // PTRACE_GETFPXREGS = 18,
     // /// Sets all extended floating-point registers used by the thread.
@@ -296,20 +237,8 @@ enum PtraceRequest {
     // PTRACE_SYSEMU = 31,
     // /// Single-steps the thread, and the next syscall will not be executed.
     // PTRACE_SYSEMU_SINGLESTEP = 32,
-    /// Gets the RISC-V `NT_PRSTATUS` general-purpose register set.
-    #[cfg(target_arch = "riscv64")]
-    PTRACE_GETREGSET = 0x4204,
+    // /// Gets register contents.
+    // PTRACE_GETREGSET = 0x4204,
     // /// Sets register contents.
     // PTRACE_SETREGSET = 0x4205,
-}
-
-#[cfg(target_arch = "riscv64")]
-const NT_PRSTATUS: usize = 1;
-
-#[cfg(target_arch = "riscv64")]
-#[repr(C)]
-#[derive(Clone, Copy, Pod)]
-struct CUserIovec {
-    base: Vaddr,
-    len: usize,
 }

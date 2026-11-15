@@ -24,8 +24,6 @@ pub(super) fn sys_lseek(
         SeekType::SEEK_SET => SeekFrom::Start(offset.cast_unsigned()),
         SeekType::SEEK_CUR => SeekFrom::Current(offset),
         SeekType::SEEK_END => SeekFrom::End(offset),
-        SeekType::SEEK_DATA => SeekFrom::Data(offset),
-        SeekType::SEEK_HOLE => SeekFrom::Hole(offset),
     };
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
@@ -43,6 +41,4 @@ enum SeekType {
     SEEK_SET = 0,
     SEEK_CUR = 1,
     SEEK_END = 2,
-    SEEK_DATA = 3,
-    SEEK_HOLE = 4,
 }

@@ -2,13 +2,12 @@
 
 //! Handle link-related requests.
 
-use aster_bigtcp::{iface::InterfaceFlags, wire::EthernetAddress};
+use aster_bigtcp::wire::EthernetAddress;
 
 use super::util::{self, ResponseMode};
 use crate::{
     net::{
-        iface::{DEFAULT_TX_QUEUE_LEN, Iface},
-        net_ns::current_net_ns,
+        iface::{DEFAULT_TX_QUEUE_LEN, Iface, iter_all_ifaces},
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{CIfinfoMsg, LinkAttr, LinkAttrClass, LinkSegment, RtnlSegment},
@@ -29,12 +28,7 @@ pub(super) fn do_get_link(
 
     let filter_by = FilterBy::from_request(request_segment)?;
 
-    // Only the interfaces visible in the current network namespace are
-    // reported.
-    let net_ns = current_net_ns();
-    let mut response_segments: Vec<RtnlSegment> = net_ns
-        .ifaces()
-        .iter()
+    let mut response_segments: Vec<RtnlSegment> = iter_all_ifaces()
         // Filter to include only requested links.
         .filter(|iface| match &filter_by {
             FilterBy::Index(index) => *index == iface.index(),
@@ -196,40 +190,4 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
     ]);
 
     LinkSegment::new(header, link_message, attrs)
-}
-
-/// Handles a `RTM_NEWLINK` request that changes interface flags.
-///
-/// Only flag changes via `ifi_flags`/`ifi_change` are supported (this is what
-/// `ip link set <dev> up|down` uses); creating or deleting interfaces is not
-/// supported.
-pub(super) fn do_new_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
-    let body = request_segment.body();
-    if body.index == 0 {
-        return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
-    }
-    let index = body.index;
-
-    let net_ns = current_net_ns();
-    let iface = net_ns
-        .ifaces()
-        .iter()
-        .find(|iface| iface.index() == index)
-        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
-
-    // Apply `new = (old & !change) | (flags & change)`, as in Linux. If the
-    // change mask is empty, treat the flags as the new state of the
-    // well-known flag bits (some tools send `ifi_change = 0`).
-    let old_flags = iface.flags();
-    let flags = InterfaceFlags::from_bits_truncate(body.flags);
-    let change = InterfaceFlags::from_bits_truncate(body.change);
-    let new_flags = if change.is_empty() {
-        (old_flags & !(InterfaceFlags::UP | InterfaceFlags::RUNNING))
-            | (flags & (InterfaceFlags::UP | InterfaceFlags::RUNNING))
-    } else {
-        (old_flags & !change) | (flags & change)
-    };
-    iface.set_flags(new_flags);
-
-    Ok(Vec::new())
 }

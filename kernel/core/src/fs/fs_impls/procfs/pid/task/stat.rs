@@ -18,7 +18,7 @@ use crate::{
     process::{
         Process, ResourceType,
         posix_thread::{AsPosixThread, SleepingState},
-        signal::{HandlePendingSignal, sig_action::SigHandler, sig_mask::SigMask},
+        signal::{HandlePendingSignal, sig_action::SigAction, sig_mask::SigMask},
     },
     sched::{LinuxSchedPolicy, RealTimePriority, SchedPolicy},
     thread::Thread,
@@ -171,10 +171,11 @@ impl ProcFileOps for StatFileOps {
 
         // Placeholder: kernel flags are not exposed yet.
         let flags = 0;
-        // The counters are kept per process, so the per-thread `stat` reports
-        // the process-wide numbers (Linux keeps them per task).
-        let (min_flt, maj_flt) = process.io_accounting().faults();
-        let (cmin_flt, cmaj_flt) = process.reaped_children_stats().lock().faults();
+        // Placeholder: page-fault counters are not tracked per process/thread yet.
+        let min_flt = 0;
+        let cmin_flt = 0;
+        let maj_flt = 0;
+        let cmaj_flt = 0;
 
         let (utime, stime) = {
             let prof_clock = match self.mode {
@@ -378,10 +379,7 @@ fn sched_values(thread: &Thread) -> (i32, u8, i32) {
             let rt_priority = RT_PRIORITY_LIMIT - rt_prio.get();
             (-i32::from(rt_priority) - 1, rt_priority)
         }
-        SchedPolicy::Deadline { .. } => (-1, 0),
-        SchedPolicy::Fair(nice) | SchedPolicy::Batch(nice) => {
-            (NICE_TO_PRIORITY_OFFSET + nice.value().get() as i32, 0)
-        }
+        SchedPolicy::Fair(nice) => (NICE_TO_PRIORITY_OFFSET + nice.value().get() as i32, 0),
         SchedPolicy::Idle => (NICE_TO_PRIORITY_OFFSET, 0),
     };
     let linux_policy = LinuxSchedPolicy::from(policy);
@@ -403,12 +401,12 @@ fn signal_disposition_masks(process: &Process) -> (u64, u64) {
         }
 
         let bit = u64::from(SigMask::from(sig_num));
-        match sig_action.handler() {
-            SigHandler::Dfl => {}
+        match sig_action {
+            SigAction::Dfl => {}
             // `sigignore` tracks explicitly ignored signals, while `sigcatch` tracks
             // signals with user-registered handlers.
-            SigHandler::Ign => ignored |= bit,
-            SigHandler::User(_) => caught |= bit,
+            SigAction::Ign => ignored |= bit,
+            SigAction::User { .. } => caught |= bit,
         }
     }
 

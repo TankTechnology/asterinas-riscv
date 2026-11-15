@@ -9,15 +9,12 @@ use crate::{
         procfs::{
             StaticEntryWithOps,
             pid::task::{
-                SyscallFileOps, auxv::AuxvFileOps, cgroup::CgroupFileOps,
-                cmdline::CmdlineFileOps, comm::CommFileOps, environ::EnvironFileOps,
-                exe::ExeSymOps, fd::FdDirOps, gid_map::GidMapFileOps, io::IoFileOps,
-                maps::MapsFileOps, mem::MemFileOps, mountinfo::MountInfoFileOps,
-                mounts::MountsFileOps, mountstats::MountStatsFileOps, net::NetDirOps, ns::NsDirOps,
-                oom_score_adj::OomScoreAdjFileOps, pagemap::PagemapFileOps,
-                schedstat::SchedstatFileOps, setgroups::SetgroupsFileOps, smaps::SmapsFileOps,
-                stat::StatFileOps, status::StatusFileOps, timens_offsets::TimeNsOffsetsFileOps,
-                uid_map::UidMapFileOps,
+                auxv::AuxvFileOps, cgroup::CgroupFileOps, cmdline::CmdlineFileOps,
+                comm::CommFileOps, environ::EnvironFileOps, exe::ExeSymOps, fd::FdDirOps,
+                gid_map::GidMapFileOps, maps::MapsFileOps, mem::MemFileOps,
+                mountinfo::MountInfoFileOps, mounts::MountsFileOps, mountstats::MountStatsFileOps,
+                ns::NsDirOps, oom_score_adj::OomScoreAdjFileOps, stat::StatFileOps,
+                status::StatusFileOps, uid_map::UidMapFileOps,
             },
             template::{
                 ListedEntry, ProcDir, ProcDirOps, ReaddirEntry, keyed_readdir_entries,
@@ -32,7 +29,6 @@ use crate::{
     thread::{Thread, Tid},
 };
 
-mod asterinas_syscall;
 mod auxv;
 mod cgroup;
 mod cmdline;
@@ -41,22 +37,15 @@ mod environ;
 mod exe;
 mod fd;
 mod gid_map;
-mod io;
 mod maps;
 mod mem;
 mod mountinfo;
 mod mounts;
 mod mountstats;
-mod net;
 mod ns;
 mod oom_score_adj;
-mod pagemap;
-mod schedstat;
-mod setgroups;
-mod smaps;
 pub(super) mod stat;
 mod status;
-mod timens_offsets;
 mod uid_map;
 
 /// Represents the inode at `/proc/[pid]/task`.
@@ -116,11 +105,6 @@ impl TidDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntryWithOps<TidDirOps>] = &[
-        (
-            "asterinas_syscall",
-            InodeType::File,
-            asterinas_syscall::SyscallFileOps::new_inode,
-        ),
         ("auxv", InodeType::File, AuxvFileOps::new_inode),
         ("cgroup", InodeType::File, CgroupFileOps::new_inode),
         ("cmdline", InodeType::File, CmdlineFileOps::new_inode),
@@ -134,30 +118,19 @@ impl TidDirOps {
             FdDirOps::<fd::FileInfoOps>::new_inode,
         ),
         ("gid_map", InodeType::File, GidMapFileOps::new_inode),
-        ("io", InodeType::File, IoFileOps::new_inode),
         ("mem", InodeType::File, MemFileOps::new_inode),
         ("mountinfo", InodeType::File, MountInfoFileOps::new_inode),
         ("mountstats", InodeType::File, MountStatsFileOps::new_inode),
-        ("net", InodeType::Dir, NetDirOps::new_inode),
         ("ns", InodeType::Dir, NsDirOps::new_inode),
-        ("pagemap", InodeType::File, PagemapFileOps::new_inode),
         (
             "oom_score_adj",
             InodeType::File,
             OomScoreAdjFileOps::new_inode,
         ),
-        ("schedstat", InodeType::File, SchedstatFileOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_thread_inode),
         ("status", InodeType::File, StatusFileOps::new_inode),
-        (
-            "timens_offsets",
-            InodeType::File,
-            TimeNsOffsetsFileOps::new_inode,
-        ),
-        ("setgroups", InodeType::File, SetgroupsFileOps::new_inode),
         ("uid_map", InodeType::File, UidMapFileOps::new_inode),
         ("maps", InodeType::File, MapsFileOps::new_inode),
-        ("smaps", InodeType::File, SmapsFileOps::new_inode),
         ("mounts", InodeType::File, MountsFileOps::new_inode),
     ];
 }

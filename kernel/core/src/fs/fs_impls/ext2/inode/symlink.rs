@@ -11,11 +11,13 @@
 //! - **Slow symlink** — longer targets are written to an allocated data block
 //!   through the normal page-cache path.
 
+#![short_vis_path::add(ext2)]
+
 use super::{
     super::Ext2, Inode, InodeInner, InodePayload, MAX_FAST_SYMLINK_LEN, RAW_BLOCK_PTRS_LEN,
     block_manager::RawBlockPtrs,
 };
-use crate::fs::ext2::{prelude::*, utils};
+use crate::fs::ext2::{FilePerm, prelude::*, utils};
 
 /// Inline fast-symlink target stored in the raw `i_block` byte area.
 #[derive(Debug)]
@@ -51,7 +53,7 @@ impl FastSymlinkTarget {
 
 impl Inode {
     /// Reads symbolic link target bytes and decodes them as UTF-8.
-    pub(in crate::fs::fs_impls::ext2) fn read_link(&self) -> Result<String> {
+    pub(in ext2) fn read_link(&self) -> Result<String> {
         if self.type_ != InodeType::SymLink {
             return_errno!(Errno::EINVAL);
         }
@@ -60,21 +62,23 @@ impl Inode {
         inner.read_link()
     }
 
-    /// Writes symbolic link target bytes into either fast-inline or slow-page-cache storage.
-    pub(in crate::fs::fs_impls::ext2) fn write_link(&self, target: &str) -> Result<()> {
-        if self.type_ != InodeType::SymLink {
-            return_errno!(Errno::EINVAL);
-        }
-
-        let target_len = target.len();
-        if target_len >= BLOCK_SIZE {
+    /// Creates a symbolic-link inode with its target under this directory.
+    pub(in ext2) fn create_symlink(
+        &self,
+        name: &str,
+        target: &str,
+        perm: FilePerm,
+    ) -> Result<Arc<Inode>> {
+        if target.len() >= BLOCK_SIZE {
             return_errno!(Errno::ENAMETOOLONG);
         }
-        let fs = self.fs()?;
-        let mut inner = self.inner.write();
-        inner.write_link(&fs, target)?;
-        inner.set_mtime_ctime(utils::now());
-        Ok(())
+
+        self.create_initialized_child(name, InodeType::SymLink, perm, |fs, child| {
+            let mut child_inner = child.inner.write();
+            child_inner.write_symlink_target(fs, target)?;
+            child_inner.set_mtime_ctime(utils::now());
+            Ok(())
+        })
     }
 }
 
@@ -84,14 +88,14 @@ impl InodeInner {
         matches!(self.payload, InodePayload::FastSymlink { .. })
     }
 
-    fn write_link(&mut self, fs: &Arc<Ext2>, target: &str) -> Result<()> {
+    fn write_symlink_target(&mut self, fs: &Arc<Ext2>, target: &str) -> Result<()> {
         let target_len = target.len();
 
         // Linux reserves one byte in `i_block` for a trailing NUL.
         if target.len() < MAX_FAST_SYMLINK_LEN {
             // Fast path: store target inline in the block pointer area.
             if let InodePayload::DataBacked { block_manager, .. } = &self.payload {
-                block_manager.truncate_to_byte_len(0)?;
+                block_manager.truncate_to_byte_len(0);
             }
             let mut fast_target = FastSymlinkTarget::new_zeros();
             fast_target.write(target.as_bytes())?;
@@ -109,7 +113,6 @@ impl InodeInner {
                     self.file_size(),
                     raw_block_ptrs,
                     Arc::downgrade(fs),
-                    false,
                 );
             }
             self.prepare_write(fs.as_ref(), 0, target_len)?;

@@ -3,189 +3,38 @@
 use alloc::{borrow::Cow, format};
 use core::{
     cmp::{max, min},
-    fmt::Write,
+    fmt::{Debug, Formatter, Result as FmtResult},
     num::NonZeroUsize,
     ops::Range,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use align_ext::AlignExt;
+use aster_util::printer::VmPrinter;
 use ostd::{
     io::IoMem,
     mm::{
-        CachePolicy, Frame, FrameAllocOptions, PageAccess, PageFlags, PageProperty, UFrame,
-        VmSpace,
-        io::util::HasVmReaderWriter,
-        tlb::TlbFlushOp,
-        vm_space::{CursorMut, VmQueriedItem},
+        CachePolicy, Frame, FrameAllocOptions, HasSize, PageFlags, PageProperty, UFrame, VmSpace,
+        io::util::HasVmReaderWriter, tlb::TlbFlushOp, vm_space::VmQueriedItem,
     },
     task::disable_preempt,
-    timer::Jiffies,
 };
-use spin::Once;
-use tlb_staleness::{Translation, flush_required};
 
-use super::{RssType, Vmar, interval_set::Interval, util::is_intersected, vmar_impls::RssDelta};
+use super::{
+    MmapMode, PageFaultInfo, Rmap, RssType, Vmar, interval_set::Interval, util::is_intersected,
+    vmar_impls::RssDelta,
+};
 use crate::{
-    fs::vfs::{
-        inode::Inode,
-        path::{Path, PathResolver},
+    fs::{
+        file::{FileLike, Mappable, MappedObject},
+        vfs::{inode::Inode, path::PathResolver},
     },
     prelude::*,
-    process::{LockedHeap, posix_thread::AsPosixThread},
+    process::LockedHeap,
     vm::{
-        page_cache::{CachePage, Vmo, VmoCommitError, VmoOptions},
+        page_cache::{CachePage, Vmo, VmoCommitError, VmoMapMode},
         perms::VmPerms,
-        vmar::{PageFaultInfo, PageFaultOutcome},
     },
 };
-
-static VM_PROFILE: AtomicBool = AtomicBool::new(false);
-static VM_LOCAL_ICACHE: AtomicBool = AtomicBool::new(false);
-static FAULT_PROFILE: AtomicBool = AtomicBool::new(false);
-static PAGE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
-static PAGE_FAULT_JIFFIES: AtomicU64 = AtomicU64::new(0);
-static READ_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
-static WRITE_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
-static EXEC_FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
-static EXEC_FAULT_JIFFIES: AtomicU64 = AtomicU64::new(0);
-static EXEC_ICACHE_FENCE_COUNT: AtomicU64 = AtomicU64::new(0);
-const VM_PROFILE_LOG_INTERVAL: u64 = 8_192;
-const VM_PROFILE_PID_SLOTS: usize = 256;
-static VM_PROFILE_PIDS: [AtomicU64; VM_PROFILE_PID_SLOTS] =
-    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
-static VM_PROFILE_PID_FAULTS: [AtomicU64; VM_PROFILE_PID_SLOTS] =
-    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
-static VM_PROFILE_PID_JIFFIES: [AtomicU64; VM_PROFILE_PID_SLOTS] =
-    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
-static VM_PROFILE_PID_EXEC_FAULTS: [AtomicU64; VM_PROFILE_PID_SLOTS] =
-    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
-static VM_PROFILE_PID_EXEC_JIFFIES: [AtomicU64; VM_PROFILE_PID_SLOTS] =
-    [const { AtomicU64::new(0) }; VM_PROFILE_PID_SLOTS];
-
-aster_cmdline::define_flag_param!("asterinas.vm_profile", VM_PROFILE);
-aster_cmdline::define_flag_param!("asterinas.vm_local_icache", VM_LOCAL_ICACHE);
-aster_cmdline::define_flag_param!("asterinas.fault_profile", FAULT_PROFILE);
-
-/// One timed stage of the user page-fault path.
-struct FaultStage {
-    samples: AtomicU64,
-    sum_us: AtomicU64,
-    max_us: AtomicU64,
-}
-
-impl FaultStage {
-    const fn new() -> Self {
-        Self {
-            samples: AtomicU64::new(0),
-            sum_us: AtomicU64::new(0),
-            max_us: AtomicU64::new(0),
-        }
-    }
-
-    fn record(&self, us: u64) {
-        self.samples.fetch_add(1, Ordering::Relaxed);
-        self.sum_us.fetch_add(us, Ordering::Relaxed);
-        self.max_us.fetch_max(us, Ordering::Relaxed);
-    }
-
-    /// Takes the samples recorded since the last call and resets the stage.
-    fn take(&self) -> (u64, u64) {
-        let samples = self.samples.swap(0, Ordering::Relaxed).max(1);
-        let sum_us = self.sum_us.swap(0, Ordering::Relaxed);
-        let max_us = self.max_us.swap(0, Ordering::Relaxed);
-        (sum_us / samples, max_us)
-    }
-}
-
-/// Opt-in (`asterinas.fault_profile`) microsecond breakdown of user page
-/// faults.
-///
-/// Every 128 faults the kernel logs one line with the interval's averages and
-/// maxima: `lk` is the VMAR lookup that finds the mapping (measured by the
-/// caller, so it is disjoint from `tt`), `tt` is the mapping-level fault,
-/// `pp` is frame preparation (`prepare_page`), `mp` is installing the mapping,
-/// and `fa` is the fault-around prefetch. Each stage is averaged over its own
-/// samples, so a line can report fewer samples for a stage than the total.
-static FAULT_PROFILE_FAULTS: AtomicU64 = AtomicU64::new(0);
-static FAULT_STAGE_LOOKUP: FaultStage = FaultStage::new();
-static FAULT_STAGE_TOTAL: FaultStage = FaultStage::new();
-static FAULT_STAGE_PREPARE: FaultStage = FaultStage::new();
-static FAULT_STAGE_MAP: FaultStage = FaultStage::new();
-static FAULT_STAGE_AROUND: FaultStage = FaultStage::new();
-const FAULT_PROFILE_LOG_INTERVAL: u64 = 128;
-
-/// The shared zero page backing read faults on anonymous mappings.
-///
-/// Linux's `do_anonymous_page` maps a shared zero page for anonymous read
-/// faults instead of allocating a private frame; the first write fault then
-/// copies it through the normal COW path. The VMO keeps the frame alive and
-/// each mapping holds its own reference, so the COW decision never mistakes
-/// the page for a uniquely owned frame and upgrades it in place.
-static ZERO_PAGE_VMO: Once<Arc<Vmo>> = Once::new();
-
-fn zero_page_vmo() -> &'static Arc<Vmo> {
-    ZERO_PAGE_VMO.call_once(|| {
-        let vmo = VmoOptions::new(PAGE_SIZE)
-            .alloc()
-            .expect("failed to allocate the shared zero page");
-        // Committing the page allocates and zero-fills the frame.
-        vmo.commit_on(0)
-            .expect("failed to commit the shared zero page");
-        vmo
-    })
-}
-
-/// Starts a page-fault stage timer, or returns `None` when profiling is off.
-#[inline]
-pub(super) fn fault_profile_mark() -> Option<u64> {
-    FAULT_PROFILE
-        .load(Ordering::Relaxed)
-        .then(|| ostd::arch::read_tsc())
-}
-
-/// Records the VMAR lookup stage measured by the caller of this module.
-pub(super) fn record_fault_lookup(start: Option<u64>) {
-    record_fault_stage(&FAULT_STAGE_LOOKUP, start);
-}
-
-/// Converts a mark from [`fault_profile_mark`] into microseconds.
-fn fault_profile_us(start: u64) -> u64 {
-    ostd::arch::read_tsc().saturating_sub(start) * 1_000_000 / ostd::arch::tsc_freq().max(1)
-}
-
-fn record_fault_stage(stage: &FaultStage, start: Option<u64>) {
-    if let Some(start) = start {
-        stage.record(fault_profile_us(start));
-    }
-}
-
-/// Records a completed page fault and periodically logs stage averages.
-fn record_fault_complete() {
-    let faults = FAULT_PROFILE_FAULTS.fetch_add(1, Ordering::Relaxed) + 1;
-    if !faults.is_multiple_of(FAULT_PROFILE_LOG_INTERVAL) {
-        return;
-    }
-    let (lookup_avg, lookup_max) = FAULT_STAGE_LOOKUP.take();
-    let (total_avg, total_max) = FAULT_STAGE_TOTAL.take();
-    let (prepare_avg, prepare_max) = FAULT_STAGE_PREPARE.take();
-    let (map_avg, map_max) = FAULT_STAGE_MAP.take();
-    let (around_avg, around_max) = FAULT_STAGE_AROUND.take();
-    info!(
-        "FAULT_PROFILE n={} lk={}/{} tt={}/{} pp={}/{} mp={}/{} fa={}/{}",
-        faults,
-        lookup_avg,
-        lookup_max,
-        total_avg,
-        total_max,
-        prepare_avg,
-        prepare_max,
-        map_avg,
-        map_max,
-        around_avg,
-        around_max
-    );
-}
 
 /// A memory mapping for a range of virtual addresses in a [`Vmar`].
 ///
@@ -206,8 +55,7 @@ fn record_fault_complete() {
 /// type and cannot be [`Drop`]. To remove a mapping, use [`Self::unmap`].
 ///
 /// [`Vmar`]: crate::vm::vmar::Vmar
-#[derive(Debug)]
-pub struct VmMapping {
+pub(crate) struct VmMapping {
     /// The size of mapping, in bytes. The map size can even be larger than the
     /// size of VMO. Those pages outside VMO range cannot be read or write.
     ///
@@ -222,27 +70,37 @@ pub struct VmMapping {
     /// The start of the virtual address maps to the start of the range
     /// specified in the mapped object.
     mapped_mem: MappedMemory,
-    /// The path of the file that backs the mapping.
+    /// The file that backs the mapping.
     ///
-    /// If the mapping is VMO-backed, the `mapped_mem` field should be the
-    /// page cache of the inode in the path.
-    path: Option<Path>,
-    /// Whether the mapping is shared.
+    /// If the mapping is VMO-backed, the `mapped_mem` field should be the page
+    /// cache of the inode referenced by the file's path.
+    file: Option<Arc<dyn FileLike>>,
+    /// The sharing mode of the mapping.
     ///
     /// The updates to a shared mapping are visible among processes, or carried
     /// through to the underlying file for file-backed shared mappings.
-    is_shared: bool,
+    map_mode: MmapMode,
     /// Whether the mapping needs to handle surrounding pages when handling
     /// page fault.
     handle_page_faults_around: bool,
-    /// Whether faults below this mapping may expand it towards lower addresses.
-    grows_down: bool,
-    /// Whether the mapping is locked in memory.
-    is_locked: bool,
     /// The permissions of pages in the mapping.
     ///
     /// All pages within the same `VmMapping` have the same permissions.
     perms: VmPerms,
+}
+
+impl Debug for VmMapping {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.debug_struct("VmMapping")
+            .field("map_size", &self.map_size)
+            .field("map_to_addr", &self.map_to_addr)
+            .field("mapped_mem", &self.mapped_mem)
+            .field("file", &self.file.as_ref().map(|file| file.path()))
+            .field("map_mode", &self.map_mode)
+            .field("handle_page_faults_around", &self.handle_page_faults_around)
+            .field("perms", &self.perms)
+            .finish()
+    }
 }
 
 impl Interval<Vaddr> for VmMapping {
@@ -258,22 +116,18 @@ impl VmMapping {
         map_size: NonZeroUsize,
         map_to_addr: Vaddr,
         mapped_mem: MappedMemory,
-        path: Option<Path>,
-        is_shared: bool,
+        file: Option<Arc<dyn FileLike>>,
+        map_mode: MmapMode,
         handle_page_faults_around: bool,
-        grows_down: bool,
-        is_locked: bool,
         perms: VmPerms,
     ) -> Self {
         Self {
             map_size,
             map_to_addr,
             mapped_mem,
-            path,
-            is_shared,
+            file,
+            map_mode,
             handle_page_faults_around,
-            grows_down,
-            is_locked,
             perms,
         }
     }
@@ -281,9 +135,7 @@ impl VmMapping {
     pub(super) fn new_fork(&self) -> VmMapping {
         VmMapping {
             mapped_mem: self.mapped_mem.dup(),
-            path: self.path.clone(),
-            // POSIX memory locks and MCL_FUTURE are not inherited across fork.
-            is_locked: false,
+            file: self.file.clone(),
             ..*self
         }
     }
@@ -300,39 +152,34 @@ impl VmMapping {
             map_size: NonZeroUsize::new(range.end - range.start).unwrap(),
             map_to_addr: va,
             mapped_mem: self.mapped_mem.dup_at_offset(offset_in_mapping),
-            path: self.path.clone(),
+            file: self.file.clone(),
             ..*self
         }
     }
 
     /// Returns the mapping's start address.
-    pub fn map_to_addr(&self) -> Vaddr {
+    pub(crate) fn map_to_addr(&self) -> Vaddr {
         self.map_to_addr
     }
 
     /// Returns the mapping's end address.
-    pub fn map_end(&self) -> Vaddr {
+    pub(crate) fn map_end(&self) -> Vaddr {
         self.map_to_addr + self.map_size.get()
     }
 
     /// Returns the mapping's size.
-    pub fn map_size(&self) -> usize {
+    pub(crate) fn map_size(&self) -> usize {
         self.map_size.get()
     }
 
     /// Returns the permissions of pages in the mapping.
-    pub fn perms(&self) -> VmPerms {
+    pub(crate) fn perms(&self) -> VmPerms {
         self.perms
     }
 
-    /// Returns whether the mapping is locked in memory.
-    pub fn is_locked(&self) -> bool {
-        self.is_locked
-    }
-
     /// Returns the inode of the file that backs the mapping.
-    pub fn inode(&self) -> Option<&Arc<dyn Inode>> {
-        self.path.as_ref().map(|path| path.inode())
+    pub(crate) fn inode(&self) -> Option<&Arc<dyn Inode>> {
+        self.file.as_ref().map(|file| file.path().inode())
     }
 
     /// Returns a reference to the VMO if this mapping is VMO-backed.
@@ -343,52 +190,47 @@ impl VmMapping {
         }
     }
 
-    /// Returns the mapping's RSS type.
-    /// Returns how many pages of this mapping are resident in its backing VMO.
+    /// Returns a reference to the VMO for reverse mappings.
     ///
-    /// This is the `Rss` that `/proc/[pid]/smaps` reports. It counts pages
-    /// resident in the page cache rather than present page-table entries:
-    /// those differ while a page is cached but not mapped, and counting the
-    /// cache needs no page-table walk over a process we are only inspecting.
-    pub fn resident_pages(&self) -> usize {
-        let Some(mapped) = self.vmo() else {
-            return 0;
-        };
-        let size = self.map_size();
-        let base = mapped.offset;
-        let mut resident = 0;
-        let mut offset = 0;
-        while offset < size {
-            if mapped.vmo.is_page_resident(base + offset) {
-                resident += 1;
-            }
-            offset += PAGE_SIZE;
+    /// This method will return `Some(_)` if this mapping is shared and
+    /// VMO-backed.
+    //
+    // FIXME: According to Linux behavior, private mappings and COWed pages
+    // are also affected by file operations (e.g., truncation). So reverse
+    // mappings should also include them. We don't do this for now, as the
+    // man pages say that private mappings have unspecified behavior if the
+    // file content changes later on.
+    pub(super) fn vmo_for_rmap(&self) -> Option<&Arc<Vmo>> {
+        match &self.mapped_mem {
+            MappedMemory::Vmo(vmo) if self.map_mode.is_shared() => Some(vmo.vmo()),
+            _ => None,
         }
-        resident
     }
 
-    pub fn rss_type(&self) -> RssType {
+    /// Locks reverse mappings of [`Self::vmo_for_rmap`].
+    pub(super) fn lock_rmap(&self) -> Option<MutexGuard<'_, Rmap>> {
+        self.vmo_for_rmap().map(|vmo| vmo.rmap().lock())
+    }
+
+    /// Returns the mapping's RSS type.
+    pub(crate) fn rss_type(&self) -> RssType {
         match &self.mapped_mem {
             MappedMemory::Anonymous => RssType::Anon,
-            MappedMemory::Vmo(_) | MappedMemory::Device => RssType::File,
+            MappedMemory::Vmo(_) => RssType::File,
+            MappedMemory::Device(_) => MapHandle::DEVICE_RSS_TYPE,
         }
-    }
-
-    /// Returns whether this mapping is backed by device I/O memory.
-    pub fn is_device(&self) -> bool {
-        matches!(&self.mapped_mem, MappedMemory::Device)
     }
 
     /// Returns the shared futex backing identity for the address if available.
-    pub fn futex_backing(&self, addr: Vaddr) -> Result<Option<(Weak<Vmo>, usize)>> {
-        if !self.is_shared {
+    pub(crate) fn futex_backing(&self, addr: Vaddr) -> Result<Option<(Weak<Vmo>, usize)>> {
+        if !self.map_mode.is_shared() {
             return Ok(None);
         }
 
         let mapped_vmo = match &self.mapped_mem {
             MappedMemory::Vmo(mapped_vmo) => mapped_vmo,
             MappedMemory::Anonymous => return Ok(None),
-            MappedMemory::Device => {
+            MappedMemory::Device(_) => {
                 return_errno_with_message!(
                     Errno::EFAULT,
                     "shared futexes on device mappings are not supported"
@@ -406,46 +248,15 @@ impl VmMapping {
     /// Device mappings cannot be expanded as they represent fixed-size MMIO
     /// regions.
     pub(super) fn can_expand(&self) -> bool {
-        !matches!(self.mapped_mem, MappedMemory::Device)
-    }
-
-    /// Returns whether this anonymous mapping may grow towards lower addresses.
-    pub(super) fn can_grow_down(&self) -> bool {
-        self.grows_down && matches!(self.mapped_mem, MappedMemory::Anonymous)
-    }
-
-    /// Populates device memory for this mapping.
-    ///
-    /// This method should only be called for device memory mappings. It maps
-    /// the provided I/O memory region into the virtual address space.
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, this method panics if the mapping is not a device
-    /// memory mapping.
-    pub(super) fn populate_device(
-        &self,
-        vm_space: &VmSpace,
-        io_mem: IoMem,
-        vmo_offset: usize,
-    ) -> Result<()> {
-        debug_assert!(matches!(self.mapped_mem, MappedMemory::Device));
-
-        let preempt_guard = disable_preempt();
-        let map_range = self.map_to_addr..self.map_to_addr + self.map_size.get();
-        let mut cursor = vm_space.cursor_mut(&preempt_guard, &map_range)?;
-        let io_page_prop =
-            PageProperty::new_user(PageFlags::from(self.perms), io_mem.cache_policy());
-        cursor.map_iomem(io_mem, io_page_prop, self.map_size.get(), vmo_offset)?;
-        Ok(())
+        !matches!(self.mapped_mem, MappedMemory::Device(_))
     }
 
     /// Prints the mapping information in the format of `/proc/[pid]/maps`.
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/fs/proc/task_mmu.c#L304-L359>
-    pub fn print_to_maps<W: Write>(
+    pub(crate) fn print_to_maps(
         &self,
-        printer: &mut W,
+        printer: &mut VmPrinter,
         parent_vmar: &Vmar,
         parent_heap_guard: &LockedHeap,
         path_resolver: &PathResolver,
@@ -467,7 +278,7 @@ impl VmMapping {
         } else {
             '-'
         };
-        let shared_char = if self.is_shared { 's' } else { 'p' };
+        let shared_char = if self.map_mode.is_shared() { 's' } else { 'p' };
         let offset = self.vmo().map(|vmo| vmo.offset).unwrap_or(0);
         let (dev_major, dev_minor) = self
             .inode()
@@ -506,7 +317,7 @@ impl VmMapping {
                 return Some(Cow::Borrowed("[heap]"));
             }
 
-            #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+            #[cfg(not(target_arch = "loongarch64"))]
             if let Some(vmo) = self.vmo() {
                 use crate::vdso::{VDSO_VMO_LAYOUT, vdso_vmo};
 
@@ -522,12 +333,14 @@ impl VmMapping {
                 }
             }
 
-            if let Some(path) = &self.path {
-                return Some(Cow::Owned(path_resolver.make_abs_path(path).into_string()));
+            if let Some(file) = &self.file {
+                return Some(Cow::Owned(
+                    path_resolver.make_abs_path(file.path()).into_string(),
+                ));
             }
 
             // Reference: <https://github.com/google/gvisor/blob/38123b53da96ff6983fcc103dfe2a9cc4e0d80c8/test/syscalls/linux/proc.cc#L1158-L1172>
-            if matches!(&self.mapped_mem, MappedMemory::Vmo(_)) && self.is_shared {
+            if matches!(&self.mapped_mem, MappedMemory::Vmo(_)) && self.map_mode.is_shared() {
                 return Some(Cow::Borrowed("/dev/zero (deleted)"));
             }
 
@@ -538,11 +351,9 @@ impl VmMapping {
         let name = name();
 
         if let Some(name) = name {
-            writeln!(printer, "{:<72} {}", line, name)
-                .map_err(|_| Error::with_message(Errno::EFAULT, "failed to format proc maps"))?;
+            writeln!(printer, "{:<72} {}", line, name)?;
         } else {
-            writeln!(printer, "{}", line)
-                .map_err(|_| Error::with_message(Errno::EFAULT, "failed to format proc maps"))?;
+            writeln!(printer, "{}", line)?;
         }
 
         Ok(())
@@ -552,7 +363,7 @@ impl VmMapping {
     ///
     /// Reference: <https://elixir.bootlin.com/linux/v6.16.5/source/include/linux/mm.h#L1470-L1473>
     fn is_cow(&self) -> bool {
-        !self.is_shared && self.perms.contains(VmPerms::MAY_WRITE)
+        !self.map_mode.is_shared() && self.perms.contains(VmPerms::MAY_WRITE)
     }
 }
 
@@ -565,84 +376,45 @@ impl VmMapping {
         vm_space: &VmSpace,
         page_fault_info: &PageFaultInfo,
         rss_delta: &mut RssDelta,
-    ) -> Result<PageFaultOutcome> {
-        let profile_start = VM_PROFILE.load(Ordering::Relaxed).then(Jiffies::elapsed);
-        let fault_start = fault_profile_mark();
-        let mut result = self.handle_page_fault_inner(vm_space, page_fault_info, rss_delta);
-        if result.is_ok()
-            && let Err(e) = sync_instruction_cache_after_fault(page_fault_info.required_perms)
-        {
-            result = Err(e);
-        }
-        if let Some(start) = profile_start {
-            record_page_fault_profile(start, page_fault_info.required_perms);
-        }
-        if fault_start.is_some() {
-            record_fault_stage(&FAULT_STAGE_TOTAL, fault_start);
-            record_fault_complete();
-        }
-        result
-    }
-
-    fn handle_page_fault_inner(
-        &self,
-        vm_space: &VmSpace,
-        page_fault_info: &PageFaultInfo,
-        rss_delta: &mut RssDelta,
-    ) -> Result<PageFaultOutcome> {
+    ) -> Result<()> {
         self.check_perms_for_page_fault(page_fault_info)?;
 
         let page_aligned_addr = page_fault_info.address.align_down(PAGE_SIZE);
         let is_write = page_fault_info.required_perms.contains(VmPerms::WRITE);
 
-        // Anonymous mappings take the same shortcut through their own
-        // implementation: there is no backing object to commit from, but the
-        // pages are still contiguous and can be installed in one batch.
-        if matches!(&self.mapped_mem, MappedMemory::Anonymous) && self.handle_page_faults_around {
-            let around_start = fault_profile_mark();
-            let res = self.handle_anonymous_page_faults_around(
-                vm_space,
-                page_aligned_addr,
-                page_fault_info.required_perms,
-                rss_delta,
-            );
-            record_fault_stage(&FAULT_STAGE_AROUND, around_start);
-
-            if res.is_err() {
-                return self.handle_single_page_fault(
-                    vm_space,
-                    page_aligned_addr,
-                    page_fault_info.required_perms,
-                    rss_delta,
-                );
-            }
-
-            return res;
-        }
-
         if !is_write
             && matches!(&self.mapped_mem, MappedMemory::Vmo(_))
             && self.handle_page_faults_around
         {
-            let around_start = fault_profile_mark();
             let res = self.handle_page_faults_around(
                 vm_space,
                 page_aligned_addr,
                 page_fault_info.required_perms,
                 rss_delta,
             );
-            record_fault_stage(&FAULT_STAGE_AROUND, around_start);
 
-            // Errors caused by the "around" pages should be ignored, but the
-            // actual faulting page must still be handled.
+            // Errors caused by the "around" pages should be ignored, so here we
+            // only return the error if the faulting page is still not mapped.
             if res.is_err() {
-                return self.handle_single_page_fault(
-                    vm_space,
-                    page_aligned_addr,
-                    page_fault_info.required_perms,
-                    rss_delta,
-                );
+                let preempt_guard = disable_preempt();
+                let mut cursor = vm_space.cursor(
+                    &preempt_guard,
+                    &(page_aligned_addr..page_aligned_addr + PAGE_SIZE),
+                )?;
+                if let (_, Some(_)) = cursor.query().unwrap() {
+                    return Ok(());
+                }
             }
+
+            return res;
+        } else if let MappedMemory::Device(ref mapped_obj) = self.mapped_mem {
+            let handle = MapHandle {
+                vm_mapping: self,
+                vm_space,
+                rss_delta,
+            };
+
+            let res = mapped_obj.handle_page_fault(page_aligned_addr - self.map_to_addr(), handle);
 
             return res;
         }
@@ -675,10 +447,7 @@ impl VmMapping {
             }
         }
 
-        if !perms
-            .effective_access_perms()
-            .contains(page_fault_info.required_perms)
-        {
+        if !perms.contains(page_fault_info.required_perms) {
             return_errno_with_message!(
                 Errno::EACCES,
                 "the mapping does not have the required permissions"
@@ -694,20 +463,7 @@ impl VmMapping {
         page_aligned_addr: Vaddr,
         required_perms: VmPerms,
         rss_delta: &mut RssDelta,
-    ) -> Result<PageFaultOutcome> {
-        let mut required_io = false;
-        let is_write = required_perms.contains(VmPerms::WRITE);
-        if is_write
-            && self.is_shared
-            && let Some(vmo) = self.vmo()
-        {
-            let page_offset = page_aligned_addr - self.map_to_addr;
-            if page_offset < vmo.valid_size() {
-                let page_idx = (vmo.offset() + page_offset) / PAGE_SIZE;
-                vmo.vmo().mark_mmap_writable_page(page_idx)?;
-            }
-        }
-
+    ) -> Result<()> {
         'retry: loop {
             let preempt_guard = disable_preempt();
             let mut cursor = vm_space.cursor_mut(
@@ -716,59 +472,52 @@ impl VmMapping {
             )?;
 
             let (va, item) = cursor.query().unwrap();
-            let access = if is_write {
-                PageAccess::Write
-            } else {
-                PageAccess::Read
-            };
+            let is_write = required_perms.contains(VmPerms::WRITE);
             match item {
                 Some(VmQueriedItem::MappedRam { frame, mut prop }) => {
                     if VmPerms::from(prop.flags).contains(required_perms) {
-                        record_page_access(&mut cursor, va, access);
-                        return Ok(PageFaultOutcome::MINOR);
+                        // The page fault is already handled maybe by other threads.
+                        // Just flush the TLB and return.
+                        TlbFlushOp::for_range(va).perform_on_current();
+                        return Ok(());
                     }
                     assert!(is_write);
-                    // Perform COW if it is a write access to a shared mapping.
 
-                    // Skip if the page fault is already handled.
-                    if prop.flags.contains(PageFlags::W) {
-                        return Ok(PageFaultOutcome::MINOR);
+                    // For shared mappings, ensure that the VMO allows the page to be written.
+                    if self.map_mode.is_shared()
+                        && let MappedMemory::Vmo(vmo) = &self.mapped_mem
+                        && let Err(err) = vmo.get_committed_frame(
+                            page_aligned_addr - self.map_to_addr,
+                            VmoMapMode::SharedWrite,
+                        )
+                    {
+                        let index = err.pending_index()?;
+                        drop(cursor);
+                        drop(preempt_guard);
+                        vmo.commit_on(index, VmoMapMode::SharedWrite)?;
+                        continue 'retry;
                     }
 
                     // If the forked child or parent immediately unmaps the page after
                     // the fork without accessing it, we are the only reference to the
                     // frame. We can directly map the frame as writable without copying.
-                    //
-                    // The rule lives in `cow-decision`, where `cargo kani` proves
-                    // that a private mapping is upgraded in place only when it is
-                    // the frame's sole reference.
-                    let action = cow_decision::decide(
-                        is_write,
-                        prop.flags.contains(PageFlags::W),
-                        self.is_shared,
-                        frame.reference_count() as usize,
-                    );
-                    debug_assert_ne!(
-                        action,
-                        cow_decision::CowAction::None,
-                        "the checks above already handled no-op faults"
-                    );
+                    let only_reference = frame.reference_count() == 1;
 
-                    let mut new_flags = PageFlags::W;
-                    new_flags.record_access(PageAccess::Write);
+                    let new_flags = PageFlags::W | PageFlags::ACCESSED | PageFlags::DIRTY;
 
-                    if action == cow_decision::CowAction::Upgrade {
+                    if self.map_mode.is_shared() || only_reference {
                         cursor.protect_next(PAGE_SIZE, |flags, _cache| {
                             *flags |= new_flags;
                         });
                         cursor.flusher().issue_tlb_flush(TlbFlushOp::for_range(va));
                         cursor.flusher().dispatch_tlb_flush();
                     } else {
+                        // Perform COW if it is a write access to a private mapping.
                         let new_frame = duplicate_frame(&frame)?;
                         prop.flags |= new_flags;
                         cursor.unmap(PAGE_SIZE);
                         cursor.jump(va.start).unwrap();
-                        cursor.map(new_frame.into(), prop)?;
+                        cursor.map(new_frame.into(), prop);
                         // FIXME: Linux re-classifies the page from `File` to `Anon` in RSS,
                         // when a COW on a file-backed mapping happens.
                         // We currently do not support this re-classification,
@@ -786,108 +535,60 @@ impl VmMapping {
                 }
                 None => {
                     // Map a new frame to the page fault address.
-                    let prepare_start = fault_profile_mark();
-                    let prepared = self.prepare_page(page_aligned_addr, is_write);
-                    record_fault_stage(&FAULT_STAGE_PREPARE, prepare_start);
-                    let (frame, is_readonly) = match prepared {
+                    let (frame, is_readonly) = match self.prepare_page(page_aligned_addr, is_write)
+                    {
                         Ok((frame, is_readonly)) => (frame, is_readonly),
                         Err(err) => {
                             let index = err.pending_index()?;
                             drop(cursor);
                             drop(preempt_guard);
-                            // The faulting page was not in memory, so the
-                            // commit below reads it from the backing object.
-                            required_io = true;
-                            self.vmo().unwrap().commit_on(index)?;
+                            self.vmo()
+                                .unwrap()
+                                .commit_on(index, self.vmo_map_mode_from_is_write(is_write))?;
                             continue 'retry;
                         }
                     };
 
-                    let mut page_flags = PageFlags::from(self.perms);
-                    if is_readonly {
-                        // COW pages are forced to be read-only. Convert the
-                        // logical VMA permissions first so a write-only VMA
-                        // retains its architecture-implied read access.
-                        page_flags.remove(PageFlags::W);
+                    let vm_perms = {
+                        let mut perms = self.perms;
+                        if is_readonly {
+                            // COW pages are forced to be read-only.
+                            perms -= VmPerms::WRITE;
+                        }
+                        perms
+                    };
+
+                    let mut page_flags = vm_perms.into();
+                    page_flags |= PageFlags::ACCESSED;
+                    if is_write {
+                        page_flags |= PageFlags::DIRTY;
                     }
-                    page_flags.record_access(access);
                     let map_prop = PageProperty::new_user(page_flags, CachePolicy::Writeback);
 
-                    let map_start = fault_profile_mark();
-                    cursor.map(frame, map_prop)?;
-                    // Invalidate the translation the MMU cached when it took
-                    // this fault. The RISC-V manual only promises that an
-                    // `sfence.vma` makes a page-table change visible; it does
-                    // not forbid a core from caching the *invalid* entry it
-                    // walked to raise the fault. The EIC7700 in the Megrez
-                    // board does exactly that: without this flush the retried
-                    // instruction faults a second time, and only that second
-                    // trap (which runs `record_page_access`, and therefore a
-                    // flush) makes the new mapping visible. Measured on the
-                    // board: every cold anonymous page cost two faults and
-                    // about 10 us per trap; QEMU's TCG does not cache invalid
-                    // translations, so the same kernel reported one fault per
-                    // page there, which is how the two runs were told apart.
-                    //
-                    // The COW branch below does not need this because the
-                    // `unmap` it performs already dispatches a flush.
-                    // The rule and its proof live in `tlb-staleness`; the
-                    // entry was absent (that is why this arm ran) and the
-                    // handler is about to install one of these two.
-                    let before = Translation::Absent;
-                    let after = if page_flags.contains(PageFlags::W) {
-                        Translation::Writable
-                    } else {
-                        Translation::ReadOnly
-                    };
-                    if flush_required(before, after) {
-                        cursor
-                            .flusher()
-                            .issue_tlb_flush(TlbFlushOp::for_range(
-                                page_aligned_addr..page_aligned_addr + PAGE_SIZE,
-                            ));
-                        cursor.flusher().dispatch_tlb_flush();
-                        cursor.flusher().sync_tlb_flush();
-                    }
-                    // The shared zero page is counted like any other resident
-                    // page here. Linux excludes it from RSS because it maps
-                    // the page with a special PTE; this VM has no per-PTE
-                    // special marker yet, and unmapping decrements RSS by the
-                    // number of mapped pages, so skipping the increment would
-                    // underflow the counter.
+                    cursor.map(frame, map_prop);
                     rss_delta.add(self.rss_type(), 1);
-                    record_fault_stage(&FAULT_STAGE_MAP, map_start);
                 }
             }
             break 'retry;
         }
 
-        Ok(PageFaultOutcome { required_io })
+        Ok(())
     }
 
     fn prepare_page(
         &self,
         page_aligned_addr: Vaddr,
-        write: bool,
+        is_write: bool,
     ) -> Result<(UFrame, bool), VmoCommitError> {
         let mut is_readonly = false;
 
         let vmo = match &self.mapped_mem {
             MappedMemory::Vmo(vmo) => vmo,
             MappedMemory::Anonymous => {
-                if !write {
-                    // Read faults on anonymous memory map the shared zero
-                    // page, as Linux's `do_anonymous_page` does. A later
-                    // write fault goes through the normal COW path and
-                    // copies the page.
-                    let frame = zero_page_vmo().commit_on(0).map_err(VmoCommitError::Err)?;
-                    return Ok((frame.into(), true));
-                }
-
-                // Anonymous write mapping. Allocate a new frame.
+                // Anonymous mapping. Allocate a new frame.
                 return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
             }
-            MappedMemory::Device => {
+            MappedMemory::Device(_) => {
                 // Device memory is populated when the memory mapping is created.
                 return Err(VmoCommitError::Err(Error::with_message(
                     Errno::EFAULT,
@@ -897,152 +598,46 @@ impl VmMapping {
         };
 
         let page_offset = page_aligned_addr - self.map_to_addr;
-        if self.is_shared && page_offset >= vmo.valid_size() {
-            // Linux delivers SIGBUS when a shared file mapping accesses a page
-            // wholly beyond the backing object's current end.
-            return Err(VmoCommitError::Err(Error::with_message(
-                Errno::ENXIO,
-                "the shared mapping page is beyond the backing object",
-            )));
-        }
-        if !self.is_shared && page_offset >= vmo.valid_size() {
+        if !self.map_mode.is_shared() && page_offset >= vmo.valid_size() {
             // The page index is outside the VMO. This is only allowed in private mapping.
             return Ok((FrameAllocOptions::new().alloc_frame()?.into(), is_readonly));
         }
 
-        let page = vmo.get_committed_frame(page_offset)?;
-        if !self.is_shared && write {
+        let (page, mode) =
+            vmo.get_committed_frame(page_offset, self.vmo_map_mode_from_is_write(is_write))?;
+        if !self.map_mode.is_shared() && is_write {
             // Write access to private VMO-backed mapping. Performs COW directly.
-            Ok((duplicate_frame(&page)?.into(), is_readonly))
+            Ok((duplicate_frame(&page.into())?.into(), is_readonly))
         } else {
             // Operations to shared mapping or read access to private VMO-backed mapping.
             // If read access to private VMO-backed mapping triggers a page fault,
             // the map should be readonly. If user next tries to write to the frame,
             // another page fault will be triggered which will performs a COW (Copy-On-Write).
-            // A backend-backed shared page starts read-only. Its first write
-            // fault marks the cache page before write permission is granted.
-            is_readonly = !self.is_shared || (vmo.vmo().has_backend() && !write);
-            Ok((page, is_readonly))
+            is_readonly = !self.map_mode.is_shared() || mode != VmoMapMode::SharedWrite;
+            Ok((page.into(), is_readonly))
+        }
+    }
+
+    fn vmo_map_mode_from_is_write(&self, is_write: bool) -> VmoMapMode {
+        if !self.map_mode.is_shared() {
+            VmoMapMode::Private
+        } else if !is_write {
+            VmoMapMode::SharedRead
+        } else {
+            VmoMapMode::SharedWrite
         }
     }
 
     /// Handles a page fault and maps additional surrounding pages.
-    /// Installs the pages around an anonymous fault in one batch.
-    ///
-    /// This is the anonymous counterpart of `handle_page_faults_around`: the
-    /// pages are contiguous and belong to this mapping, so one trap can
-    /// install a batch. What it may do is deliberately narrow:
-    ///
-    /// * it only maps pages inside this mapping, never a neighbour's;
-    /// * it never replaces an existing mapping;
-    /// * a read fault installs the shared zero page, exactly like the
-    ///   single-page path, so a later write still takes the COW fault;
-    /// * one TLB invalidation covers the whole batch.
-    fn handle_anonymous_page_faults_around(
-        &self,
-        vm_space: &VmSpace,
-        page_aligned_addr: Vaddr,
-        required_perms: VmPerms,
-        rss_delta: &mut RssDelta,
-    ) -> Result<PageFaultOutcome> {
-        const AROUND_PAGE_NUM: usize = 16;
-
-        let is_write = required_perms.contains(VmPerms::WRITE);
-        let access = if is_write {
-            PageAccess::Write
-        } else {
-            PageAccess::Read
-        };
-
-        let mapping_start = self.map_to_addr;
-        let mapping_end = self.map_to_addr + self.map_size.get();
-        let batch_base = page_aligned_addr & !(AROUND_PAGE_NUM * PAGE_SIZE - 1);
-        let start = max(batch_base, mapping_start);
-        let end = min(start + AROUND_PAGE_NUM * PAGE_SIZE, mapping_end)
-            .max(page_aligned_addr + PAGE_SIZE);
-
-        let preempt_guard = disable_preempt();
-        let mut cursor = vm_space.cursor_mut(&preempt_guard, &(start..end))?;
-
-        let mut faulting_page_handled = false;
-        let mut addr = start;
-        while addr < end {
-            cursor
-                .jump(addr)
-                .map_err(|_| Error::with_message(Errno::EFAULT, "fault-around lost the cursor"))?;
-            let (va, item) = cursor.query().unwrap();
-            addr = va.end.max(addr + PAGE_SIZE);
-
-            match item {
-                None => {
-                    let (frame, is_readonly) = self
-                        .prepare_page(va.start, is_write)
-                        .map_err(|_| Error::with_message(Errno::ENOMEM, "fault-around alloc"))?;
-                    let mut page_flags = PageFlags::from(self.perms);
-                    if is_readonly {
-                        page_flags.remove(PageFlags::W);
-                    }
-                    page_flags.record_access(access);
-                    cursor.map(
-                        frame,
-                        PageProperty::new_user(page_flags, CachePolicy::Writeback),
-                    )?;
-                    rss_delta.add(self.rss_type(), 1);
-                    if va.start == page_aligned_addr {
-                        faulting_page_handled = true;
-                    }
-                }
-                Some(VmQueriedItem::MappedRam { prop, .. }) if va.start == page_aligned_addr => {
-                    if VmPerms::from(prop.flags).contains(required_perms) {
-                        // The entry already permits the access, so the fault
-                        // is about the accessed bit: this core updates A/D in
-                        // software (Svade), and a PTE without ACCESSED faults
-                        // on every access until the handler records one.
-                        // `record_page_access` is the same call the
-                        // single-page path makes, and it flushes.
-                        record_page_access(&mut cursor, va, access);
-                        faulting_page_handled = true;
-                    } else {
-                        // The page is mapped with weaker permissions: a COW
-                        // fault, or a permission upgrade. That is the
-                        // single-page path's job.
-                        drop(cursor);
-                        drop(preempt_guard);
-                        return self.handle_single_page_fault(
-                            vm_space,
-                            page_aligned_addr,
-                            required_perms,
-                            rss_delta,
-                        );
-                    }
-                }
-                Some(_) => {}
-            }
-        }
-
-        if !faulting_page_handled {
-            return_errno_with_message!(Errno::EAGAIN, "fault-around skipped the faulting page");
-        }
-
-        cursor
-            .flusher()
-            .issue_tlb_flush(TlbFlushOp::for_range(start..end));
-        cursor.flusher().dispatch_tlb_flush();
-        cursor.flusher().sync_tlb_flush();
-
-        Ok(PageFaultOutcome::MINOR)
-    }
-
     fn handle_page_faults_around(
         &self,
         vm_space: &VmSpace,
         page_aligned_addr: Vaddr,
         required_perms: VmPerms,
         mut rss_delta: &mut RssDelta,
-    ) -> Result<PageFaultOutcome> {
+    ) -> Result<()> {
         const SURROUNDING_PAGE_NUM: usize = 16;
         const SURROUNDING_PAGE_ADDR_MASK: usize = !(SURROUNDING_PAGE_NUM * PAGE_SIZE - 1);
-        let mut required_io = false;
 
         let vmo = self.vmo().unwrap();
         let around_page_addr = page_aligned_addr & SURROUNDING_PAGE_ADDR_MASK;
@@ -1064,8 +659,12 @@ impl VmMapping {
             );
         }
 
-        let mut page_flags = PageFlags::from(self.perms);
-        page_flags.remove(PageFlags::W);
+        let vm_perms = self.perms - VmPerms::WRITE;
+        let mode = if !self.map_mode.is_shared() {
+            VmoMapMode::Private
+        } else {
+            VmoMapMode::SharedRead
+        };
 
         'retry: loop {
             let preempt_guard = disable_preempt();
@@ -1074,33 +673,19 @@ impl VmMapping {
             let rss_delta_ref = &mut rss_delta;
             let operate =
                 move |commit_fn: &mut dyn FnMut() -> Result<(usize, CachePage), VmoCommitError>| {
-                    let current_addr = cursor.virt_addr();
-                    let (_, item) = cursor.query().unwrap();
-                    match item {
-                        None => {
-                            // We regard all the surrounding pages as accessed, no matter
-                            // if it is really so. Then the hardware won't bother to update
-                            // the accessed bit of the page table on following accesses.
-                            let mut page_flags = page_flags;
-                            page_flags.record_access(PageAccess::Read);
-                            let page_prop =
-                                PageProperty::new_user(page_flags, CachePolicy::Writeback);
-                            let (_, frame) = commit_fn()?;
-                            cursor.map(frame.into(), page_prop)?;
-                            rss_delta_ref.add(self.rss_type(), 1);
-                        }
-                        Some(VmQueriedItem::MappedRam { prop, .. })
-                            if current_addr == page_aligned_addr
-                                && VmPerms::from(prop.flags).contains(required_perms) =>
-                        {
-                            let va = page_aligned_addr..page_aligned_addr + PAGE_SIZE;
-                            record_page_access(&mut cursor, va, PageAccess::Read);
-                        }
-                        Some(_) => {
-                            let next_addr = current_addr + PAGE_SIZE;
-                            if next_addr < end_addr {
-                                let _ = cursor.jump(next_addr);
-                            }
+                    if let (_, None) = cursor.query().unwrap() {
+                        // We regard all the surrounding pages as accessed, no matter
+                        // if it is really so. Then the hardware won't bother to update
+                        // the accessed bit of the page table on following accesses.
+                        let page_flags = PageFlags::from(vm_perms) | PageFlags::ACCESSED;
+                        let page_prop = PageProperty::new_user(page_flags, CachePolicy::Writeback);
+                        let (_, frame) = commit_fn()?;
+                        cursor.map(frame.into(), page_prop);
+                        rss_delta_ref.add(self.rss_type(), 1);
+                    } else {
+                        let next_addr = cursor.virt_addr() + PAGE_SIZE;
+                        if next_addr < end_addr {
+                            let _ = cursor.jump(next_addr);
                         }
                     }
                     Ok(())
@@ -1108,22 +693,12 @@ impl VmMapping {
 
             let start_offset = start_addr - self.map_to_addr;
             let end_offset = end_addr - self.map_to_addr;
-            match vmo.try_operate_on_range(&(start_offset..end_offset), operate) {
-                Ok(_) => return Ok(PageFaultOutcome { required_io }),
+            match vmo.try_operate_on_range(&(start_offset..end_offset), operate, mode) {
+                Ok(_) => return Ok(()),
                 Err(err) => {
                     let index = err.pending_index()?;
                     drop(preempt_guard);
-                    // The mapped VMO offset is page-aligned, so convert it to a page index.
-                    let end_idx = vmo.offset() / PAGE_SIZE + end_offset.div_ceil(PAGE_SIZE);
-                    // Only a commit that covers the faulting page makes this a
-                    // major fault; a missing page elsewhere in the batch is
-                    // readahead and does not change the fault's classification.
-                    let fault_idx =
-                        (page_aligned_addr - self.map_to_addr + vmo.offset()) / PAGE_SIZE;
-                    if index <= fault_idx && fault_idx < end_idx {
-                        required_io = true;
-                    }
-                    vmo.vmo().commit_range_for_fault(index, end_idx)?;
+                    vmo.commit_on(index, mode)?;
                     start_addr = (index * PAGE_SIZE - vmo.offset()) + self.map_to_addr;
                     continue 'retry;
                 }
@@ -1132,162 +707,22 @@ impl VmMapping {
     }
 }
 
-fn sync_instruction_cache_after_fault(required_perms: VmPerms) -> Result<()> {
-    #[cfg(target_arch = "riscv64")]
-    if must_sync_instruction_cache(required_perms) {
-        // RISC-V instruction caches are not required to observe bytes written
-        // through the data side.  Keep the mainline all-hart RFENCE behavior
-        // by default; the local-only variant is an explicit diagnostic mode
-        // selected with `asterinas.vm_local_icache=1` so its performance and
-        // correctness can be measured without changing normal boot semantics.
-        let local_only = VM_LOCAL_ICACHE.load(Ordering::Relaxed);
-        ostd::arch::flush_icache(local_only)?;
-        if VM_PROFILE.load(Ordering::Relaxed) {
-            EXEC_ICACHE_FENCE_COUNT.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    #[cfg(not(target_arch = "riscv64"))]
-    let _ = required_perms;
-
-    Ok(())
-}
-
-fn record_page_fault_profile(start: Jiffies, required_perms: VmPerms) {
-    let count = PAGE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    let elapsed = Jiffies::elapsed().as_u64().saturating_sub(start.as_u64());
-    let pid = crate::process::Process::current()
-        .map(|process| process.pid())
-        .unwrap_or(0) as u64;
-    let slot = if pid == 0 {
-        None
-    } else {
-        let mut selected = None;
-        for (index, key) in VM_PROFILE_PIDS.iter().enumerate() {
-            let observed = key.load(Ordering::Relaxed);
-            if observed == pid {
-                selected = Some(index);
-                break;
-            }
-            if observed == 0
-                && key
-                    .compare_exchange(0, pid, Ordering::Relaxed, Ordering::Relaxed)
-                    .is_ok()
-            {
-                selected = Some(index);
-                break;
-            }
-        }
-        selected
-    };
-    if let Some(index) = slot {
-        VM_PROFILE_PID_FAULTS[index].fetch_add(1, Ordering::Relaxed);
-        VM_PROFILE_PID_JIFFIES[index].fetch_add(elapsed, Ordering::Relaxed);
-        if required_perms.contains(VmPerms::EXEC) {
-            VM_PROFILE_PID_EXEC_FAULTS[index].fetch_add(1, Ordering::Relaxed);
-            VM_PROFILE_PID_EXEC_JIFFIES[index].fetch_add(elapsed, Ordering::Relaxed);
-        }
-    }
-    let total = PAGE_FAULT_JIFFIES.fetch_add(elapsed, Ordering::Relaxed) + elapsed;
-    if required_perms.contains(VmPerms::EXEC) {
-        EXEC_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-        EXEC_FAULT_JIFFIES.fetch_add(elapsed, Ordering::Relaxed);
-    } else if required_perms.contains(VmPerms::WRITE) {
-        WRITE_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-    } else {
-        READ_FAULT_COUNT.fetch_add(1, Ordering::Relaxed);
-    }
-    if count == 1 || count.is_multiple_of(VM_PROFILE_LOG_INTERVAL) {
-        let pid = crate::process::Process::current()
-            .map(|process| process.pid())
-            .unwrap_or(0);
-        let tid = crate::thread::Thread::current()
-            .and_then(|thread| thread.as_posix_thread().map(|posix| posix.tid()))
-            .unwrap_or(0);
-        let mut by_pid = String::new();
-        for index in 0..VM_PROFILE_PID_SLOTS {
-            let observed = VM_PROFILE_PIDS[index].load(Ordering::Relaxed);
-            // Keep the bootstrap daemons and likely application PIDs visible
-            // without emitting a multi-kilobyte line for every helper.
-            if observed != 0 && (observed <= 32 || observed >= 64) {
-                let _ = write!(
-                    by_pid,
-                    " {}:{}/{}/{}/{}",
-                    observed,
-                    VM_PROFILE_PID_FAULTS[index].load(Ordering::Relaxed),
-                    VM_PROFILE_PID_JIFFIES[index].load(Ordering::Relaxed),
-                    VM_PROFILE_PID_EXEC_FAULTS[index].load(Ordering::Relaxed),
-                    VM_PROFILE_PID_EXEC_JIFFIES[index].load(Ordering::Relaxed),
-                );
-            }
-        }
-        let fences = EXEC_ICACHE_FENCE_COUNT.load(Ordering::Relaxed);
-        ostd::early_println!(
-            "ASTERINAS_VM_PROFILE faults={} pid={} tid={} fault_jiffies={} read_faults={} write_faults={} exec_faults={} exec_jiffies={} icache_fences={} by_pid(pid:faults/jiffies/exec_faults/exec_jiffies)={}",
-            count,
-            pid,
-            tid,
-            total,
-            READ_FAULT_COUNT.load(Ordering::Relaxed),
-            WRITE_FAULT_COUNT.load(Ordering::Relaxed),
-            EXEC_FAULT_COUNT.load(Ordering::Relaxed),
-            EXEC_FAULT_JIFFIES.load(Ordering::Relaxed),
-            fences,
-            by_pid,
-        );
-    }
-}
-
-#[cfg(any(target_arch = "riscv64", ktest))]
-fn must_sync_instruction_cache(required_perms: VmPerms) -> bool {
-    required_perms.contains(VmPerms::EXEC)
-}
-
-fn record_page_access(cursor: &mut CursorMut<'_>, va: Range<Vaddr>, access: PageAccess) {
-    let protected_range = cursor.protect_next(PAGE_SIZE, |flags, _| {
-        flags.record_access(access);
-    });
-    debug_assert_eq!(protected_range, Some(va.clone()));
-
-    cursor.flusher().issue_tlb_flush(TlbFlushOp::for_range(va));
-    cursor.flusher().dispatch_tlb_flush();
-    cursor.flusher().sync_tlb_flush();
-}
-
 /**************************** Transformations ********************************/
 
 impl VmMapping {
     /// Enlarges the mapping by `extra_size` bytes to the high end.
-    pub fn enlarge(self, extra_size: usize) -> Self {
+    pub(crate) fn enlarge(self, extra_size: usize) -> Self {
         Self {
             map_size: NonZeroUsize::new(self.map_size.get() + extra_size).unwrap(),
             ..self
         }
-    }
-
-    /// Enlarges an anonymous mapping towards lower virtual addresses.
-    pub(super) fn enlarge_down(self, new_start: Vaddr) -> Self {
-        debug_assert!(new_start < self.map_to_addr);
-        debug_assert!(new_start.is_multiple_of(PAGE_SIZE));
-        debug_assert!(matches!(self.mapped_mem, MappedMemory::Anonymous));
-        let extra_size = self.map_to_addr - new_start;
-        Self {
-            map_size: NonZeroUsize::new(self.map_size.get() + extra_size).unwrap(),
-            map_to_addr: new_start,
-            ..self
-        }
-    }
-
-    /// Changes whether the mapping is locked in memory.
-    pub(super) fn set_locked(self, is_locked: bool) -> Self {
-        Self { is_locked, ..self }
     }
 
     /// Splits the mapping at the specified address.
     ///
     /// The address must be within the mapping and page-aligned. The address
     /// must not be either the start or the end of the mapping.
-    pub fn split(self, at: Vaddr) -> (Self, Self) {
+    pub(crate) fn split(self, at: Vaddr) -> (Self, Self) {
         debug_assert!(self.map_to_addr < at && at < self.map_end());
         debug_assert!(at.is_multiple_of(PAGE_SIZE));
 
@@ -1301,7 +736,7 @@ impl VmMapping {
             map_size: NonZeroUsize::new(left_size).unwrap(),
             map_to_addr: self.map_to_addr,
             mapped_mem: l_mapped_mem,
-            path: self.path.clone(),
+            file: self.file.clone(),
             ..self
         };
         let right = Self {
@@ -1328,7 +763,7 @@ impl VmMapping {
     ///
     /// Panics if the mapping does not contain the range, or if the start or
     /// end of the range is not page-aligned.
-    pub fn split_range(self, range: &Range<Vaddr>) -> (Option<Self>, Self, Option<Self>) {
+    pub(crate) fn split_range(self, range: &Range<Vaddr>) -> (Option<Self>, Self, Option<Self>) {
         let mapping_range = self.range();
         if range.start <= mapping_range.start && mapping_range.end <= range.end {
             // Condition 4.
@@ -1370,7 +805,7 @@ impl VmMapping {
     /// - the merged mapping along with the address of the mapping
     ///   to be removed if successful.
     /// - the original `self` and a `None` otherwise.
-    pub fn try_merge_with(self, vm_mapping: &VmMapping) -> (Self, Option<Vaddr>) {
+    pub(crate) fn try_merge_with(self, vm_mapping: &VmMapping) -> (Self, Option<Vaddr>) {
         debug_assert!(!is_intersected(&self.range(), &vm_mapping.range()));
 
         let (left, right) = if self.map_to_addr < vm_mapping.map_to_addr {
@@ -1406,15 +841,21 @@ impl VmMapping {
 
     /// Change the perms of the mapping.
     pub(super) fn protect(self, vm_space: &VmSpace, perms: VmPerms) -> Self {
-        let mut new_flags = PageFlags::from(perms);
-        if self.is_cow() {
-            // A COW mapping may contain pages that are not exclusively owned
-            // by this VM, such as the shared zero page or pages shared with a
-            // forked child. Never make such a PTE writable from the VMA
-            // permissions alone: the next write fault re-checks ownership and
-            // either upgrades the frame in place or copies it.
-            new_flags.remove(PageFlags::W);
-        }
+        // For device mappings, they're shared as we have checked that when
+        // creating the mapping. Additionally, we need to keep the page flags
+        // in sync with the mapping to avoid handling a write page fault on a
+        // read-only page, which is not yet supported.
+        //
+        // Otherwise, we should never convert a page to a writable page:
+        //  - For private mappings, we may need to perform Copy-On-Write (COW)
+        //    before doing so.
+        //  - For shared mappings, the page may need to be marked as a dirty
+        //    page in the page cache.
+        let new_flags = if matches!(self.mapped_mem, MappedMemory::Device(_)) {
+            PageFlags::from(perms)
+        } else {
+            PageFlags::from(perms) - PageFlags::W
+        };
 
         let preempt_guard = disable_preempt();
         let range = self.range();
@@ -1453,7 +894,7 @@ pub(super) enum MappedMemory {
     ///
     /// These pages are associated with special files (typically device memory). They are populated
     /// when the memory mapping is created via mmap, instead of occurring at page faults.
-    Device,
+    Device(Box<dyn MappedObject>),
 }
 
 impl MappedMemory {
@@ -1462,7 +903,7 @@ impl MappedMemory {
         match self {
             MappedMemory::Anonymous => MappedMemory::Anonymous,
             MappedMemory::Vmo(v) => MappedMemory::Vmo(v.dup()),
-            MappedMemory::Device => MappedMemory::Device,
+            MappedMemory::Device(o) => MappedMemory::Device(o.dup()),
         }
     }
 
@@ -1476,13 +917,12 @@ impl MappedMemory {
         match self {
             MappedMemory::Anonymous => MappedMemory::Anonymous,
             MappedMemory::Vmo(vmo) => {
-                let new_offset = vmo
-                    .offset()
-                    .checked_add(offset)
-                    .expect("mapped VMO offset should not overflow");
+                let new_offset = offset + vmo.offset();
                 MappedMemory::Vmo(vmo.dup_at_offset(new_offset))
             }
-            MappedMemory::Device => MappedMemory::Device,
+            MappedMemory::Device(mapped_obj) => {
+                MappedMemory::Device(mapped_obj.dup_at_offset(offset))
+            }
         }
     }
 }
@@ -1527,19 +967,22 @@ impl MappedVmo {
     /// If the VMO has not committed a frame at this index, it will commit
     /// one first and return it. If the commit operation needs to perform I/O,
     /// it will return a [`VmoCommitError::NeedIo`].
-    fn get_committed_frame(&self, page_offset: usize) -> Result<UFrame, VmoCommitError> {
+    fn get_committed_frame(
+        &self,
+        page_offset: usize,
+        map_mode: VmoMapMode,
+    ) -> Result<(CachePage, VmoMapMode), VmoCommitError> {
         debug_assert!(page_offset.is_multiple_of(PAGE_SIZE));
         self.vmo
-            .try_commit_page(self.offset + page_offset)
-            .map(|frame| frame.into())
+            .try_commit_page(self.offset + page_offset, map_mode)
     }
 
     /// Commits a page at a specific page index.
     ///
     /// This method may involve I/O operations if the VMO needs to fetch
     /// a page from the underlying page cache.
-    pub fn commit_on(&self, page_idx: usize) -> Result<UFrame> {
-        self.vmo.commit_on(page_idx).map(|frame| frame.into())
+    pub(crate) fn commit_on(&self, page_idx: usize, map_mode: VmoMapMode) -> Result<()> {
+        self.vmo.commit_on(page_idx, map_mode)
     }
 
     /// Traverses the indices within a specified range of a VMO sequentially.
@@ -1553,6 +996,7 @@ impl MappedVmo {
         &self,
         range: &Range<usize>,
         operate: F,
+        map_mode: VmoMapMode,
     ) -> Result<(), VmoCommitError>
     where
         F: FnMut(
@@ -1560,21 +1004,21 @@ impl MappedVmo {
         ) -> Result<(), VmoCommitError>,
     {
         let range = self.offset + range.start..self.offset + range.end;
-        self.vmo.try_operate_on_range(&range, operate)
+        self.vmo.try_operate_on_range(&range, operate, map_mode)
     }
 
     /// Gets a reference to the underlying VMO.
-    pub fn vmo(&self) -> &Arc<Vmo> {
+    pub(crate) fn vmo(&self) -> &Arc<Vmo> {
         &self.vmo
     }
 
     /// Gets the offset for the mappings.
-    pub fn offset(&self) -> usize {
+    pub(crate) fn offset(&self) -> usize {
         self.offset
     }
 
     /// Duplicates the capability.
-    pub fn dup(&self) -> Self {
+    pub(crate) fn dup(&self) -> Self {
         self.dup_at_offset(self.offset)
     }
 
@@ -1611,11 +1055,14 @@ impl Drop for MappedVmo {
 /// [`Vmar`]: crate::vm::vmar::Vmar
 fn try_merge(left: &VmMapping, right: &VmMapping) -> Option<VmMapping> {
     let is_adjacent = left.map_end() == right.map_to_addr();
-    let is_type_equal = left.is_shared == right.is_shared
+    let is_type_equal = left.map_mode == right.map_mode
         && left.handle_page_faults_around == right.handle_page_faults_around
-        && left.grows_down == right.grows_down
-        && left.is_locked == right.is_locked
-        && left.perms == right.perms;
+        && left.perms == right.perms
+        && match (&left.file, &right.file) {
+            (Some(left_file), Some(right_file)) => Arc::ptr_eq(left_file, right_file),
+            (None, None) => true,
+            _ => false,
+        };
 
     if !is_adjacent || !is_type_equal {
         return None;
@@ -1650,7 +1097,7 @@ fn try_merge(left: &VmMapping, right: &VmMapping) -> Option<VmMapping> {
     Some(VmMapping {
         map_size,
         mapped_mem,
-        path: left.path.clone(),
+        file: left.file.clone(),
         ..*left
     })
 }
@@ -1661,344 +1108,109 @@ fn duplicate_frame(src: &UFrame) -> Result<Frame<()>> {
     Ok(new_frame)
 }
 
-#[cfg(ktest)]
-mod tests {
-    use io_util::batch::IoBatch;
-    use ostd::{mm::VmIoFill, prelude::ktest};
+/**************************** Device mappings ********************************/
 
-    use super::*;
-    use crate::vm::page_cache::{LockedCachePage, PageCacheBackend, VmoOptions};
+/// The handle used in [`Mappable::map`].
+pub struct MapHandle<'a, 'b, 'c> {
+    vm_mapping: &'a VmMapping,
+    vm_space: &'a VmSpace,
+    rss_delta: &'c mut RssDelta<'b>,
+}
 
-    #[ktest]
-    fn only_executable_faults_require_instruction_cache_sync() {
-        assert!(must_sync_instruction_cache(VmPerms::EXEC));
-        assert!(must_sync_instruction_cache(VmPerms::READ | VmPerms::EXEC));
-        assert!(!must_sync_instruction_cache(VmPerms::READ));
-        assert!(!must_sync_instruction_cache(VmPerms::WRITE));
+impl MapHandle<'_, '_, '_> {
+    pub(super) const DEVICE_RSS_TYPE: RssType = RssType::File;
+
+    /// Returns the size of the target mapping in bytes.
+    pub fn size(&self) -> usize {
+        self.vm_mapping.map_size.get()
     }
 
-    struct FailingPageCacheBackend;
-
-    impl PageCacheBackend for FailingPageCacheBackend {
-        fn read_page_async(
-            &self,
-            _idx: usize,
-            _locked_page: LockedCachePage,
-            _io_batch: &mut IoBatch,
-        ) -> Result<()> {
-            Err(Error::with_message(
-                Errno::EIO,
-                "intentional fault-around read failure",
-            ))
+    /// Maps a [`UFrame`].
+    ///
+    /// `offset` specifies the virtual address offset (from the start of the memory region).
+    pub fn map_frame(&mut self, offset: usize, frame: UFrame) {
+        let map_size = self.size();
+        if offset >= map_size {
+            return;
         }
 
-        fn write_page_async(
-            &self,
-            _idx: usize,
-            _locked_page: LockedCachePage,
-            _io_batch: &mut IoBatch,
-        ) -> Result<()> {
-            Err(Error::with_message(
-                Errno::EIO,
-                "intentional fault-around write failure",
-            ))
-        }
-    }
+        let map_addr = self.vm_mapping.map_to_addr + offset;
+        let map_len = PAGE_SIZE;
+        let map_range = map_addr..(map_addr + map_len);
 
-    struct RecordingPageCacheBackend {
-        reads: SpinLock<Vec<usize>>,
-    }
+        let page_prop = PageProperty::new_user(
+            PageFlags::from(self.vm_mapping.perms),
+            CachePolicy::Writeback,
+        );
 
-    impl PageCacheBackend for RecordingPageCacheBackend {
-        fn read_page_async(
-            &self,
-            idx: usize,
-            locked_page: LockedCachePage,
-            _io_batch: &mut IoBatch,
-        ) -> Result<()> {
-            self.reads.lock().push(idx);
-            locked_page.fill_zeros(0, PAGE_SIZE)?;
-            locked_page.set_up_to_date();
-            Ok(())
-        }
-
-        fn write_page_async(
-            &self,
-            _idx: usize,
-            _locked_page: LockedCachePage,
-            _io_batch: &mut IoBatch,
-        ) -> Result<()> {
-            Err(Error::with_message(
-                Errno::EIO,
-                "unexpected write from fault-around test",
-            ))
-        }
-    }
-
-    fn assert_mapping_prop(vm_space: &VmSpace, range: &Range<Vaddr>, expected_flags: PageFlags) {
         let preempt_guard = disable_preempt();
-        let mut cursor = vm_space.cursor(&preempt_guard, range).unwrap();
-        let (_, Some(VmQueriedItem::MappedRam { prop, .. })) = cursor.query().unwrap() else {
-            panic!("query did not return the RAM mapping");
+        let mut cursor = self
+            .vm_space
+            .cursor_mut(&preempt_guard, &map_range)
+            .unwrap();
+        if cursor.query().unwrap().1.is_some() {
+            // We assume this is a race condition because the page fault has already been handled.
+            // Therefore, no action is required.
+            return;
+        }
+        cursor.map(frame, page_prop);
+        self.rss_delta.add(Self::DEVICE_RSS_TYPE, 1);
+    }
+
+    /// Maps an [`IoMem`].
+    ///
+    /// `offset` specifies the virtual address offset (from the start of the memory region).
+    pub fn map_iomem(&mut self, offset: usize, io_mem: IoMem) {
+        let map_size = self.size();
+        if offset >= map_size {
+            return;
+        }
+
+        let map_addr = self.vm_mapping.map_to_addr + offset;
+        let map_len = io_mem.size().min(map_size - offset);
+        let map_range = map_addr..(map_addr + map_len);
+
+        let page_prop = PageProperty::new_user(
+            PageFlags::from(self.vm_mapping.perms),
+            io_mem.cache_policy(),
+        );
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = self
+            .vm_space
+            .cursor_mut(&preempt_guard, &map_range)
+            .unwrap();
+        if cursor.query().unwrap().1.is_some() {
+            // We assume this is a race condition because the page fault has already been handled.
+            // Therefore, no action is required.
+            return;
+        }
+        cursor.map_iomem(io_mem, page_prop, map_len, 0);
+    }
+}
+
+impl VmMapping {
+    /// Populates device memory for this mapping.
+    ///
+    /// This method should only be called for device memory mappings. It maps
+    /// the provided I/O memory region into the virtual address space.
+    pub(super) fn populate_device(
+        &mut self,
+        vm_space: &VmSpace,
+        mappable: &dyn Mappable,
+        vmo_offset: usize,
+        rss_delta: &mut RssDelta,
+    ) -> Result<()> {
+        debug_assert!(matches!(self.mapped_mem, MappedMemory::Anonymous));
+
+        let handle = MapHandle {
+            vm_mapping: self,
+            vm_space,
+            rss_delta,
         };
-        assert_eq!(prop.flags, expected_flags);
-        assert_eq!(prop.cache, CachePolicy::Writeback);
-    }
+        let mapped_obj = mappable.map(vmo_offset, handle)?;
 
-    // Regression test for Asterinas issue #3589.
-    #[ktest]
-    fn page_fault_handler_resolves_ad_bit_fault_for_read() {
-        const EXPECTED_VALUE: u8 = 0x5a;
-
-        let vm_space = Arc::new(VmSpace::new().unwrap());
-        let map_range = PAGE_SIZE..PAGE_SIZE * 2;
-        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
-        frame.writer().write_val(&EXPECTED_VALUE).unwrap();
-        let preempt_guard = disable_preempt();
-        vm_space
-            .cursor_mut(&preempt_guard, &map_range)
-            .unwrap()
-            .map(
-                frame.into(),
-                PageProperty::new_user(PageFlags::RX | PageFlags::AVAIL2, CachePolicy::Writeback),
-            );
-        vm_space.activate();
-
-        let mapping = VmMapping::new(
-            NonZeroUsize::new(PAGE_SIZE).unwrap(),
-            map_range.start,
-            MappedMemory::Anonymous,
-            None,
-            false,
-            false,
-            false,
-            false,
-            VmPerms::READ | VmPerms::EXEC,
-        );
-        mapping
-            .handle_page_fault(
-                &vm_space,
-                &PageFaultInfo::new(map_range.start, VmPerms::READ),
-                &mut RssDelta::new_for_test(),
-            )
-            .unwrap();
-
-        assert_mapping_prop(
-            &vm_space,
-            &map_range,
-            PageFlags::RX | PageFlags::AVAIL2 | PageFlags::ACCESSED,
-        );
-        assert_eq!(
-            vm_space
-                .reader(map_range.start, size_of::<u8>())
-                .unwrap()
-                .read_val::<u8>()
-                .unwrap(),
-            EXPECTED_VALUE
-        );
-    }
-
-    // Regression test for Asterinas issue #3589.
-    #[ktest]
-    fn page_fault_handler_resolves_ad_bit_fault_for_write() {
-        const EXPECTED_VALUE: u8 = 0xa5;
-
-        let vm_space = Arc::new(VmSpace::new().unwrap());
-        let map_range = PAGE_SIZE..PAGE_SIZE * 2;
-        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
-        let preempt_guard = disable_preempt();
-        vm_space
-            .cursor_mut(&preempt_guard, &map_range)
-            .unwrap()
-            .map(
-                frame.clone().into(),
-                PageProperty::new_user(PageFlags::RW | PageFlags::AVAIL2, CachePolicy::Writeback),
-            );
-        vm_space.activate();
-
-        let mapping = VmMapping::new(
-            NonZeroUsize::new(PAGE_SIZE).unwrap(),
-            map_range.start,
-            MappedMemory::Anonymous,
-            None,
-            false,
-            false,
-            false,
-            false,
-            VmPerms::READ | VmPerms::WRITE,
-        );
-        mapping
-            .handle_page_fault(
-                &vm_space,
-                &PageFaultInfo::new(map_range.start, VmPerms::WRITE),
-                &mut RssDelta::new_for_test(),
-            )
-            .unwrap();
-
-        assert_mapping_prop(
-            &vm_space,
-            &map_range,
-            PageFlags::RW | PageFlags::AVAIL2 | PageFlags::ACCESSED | PageFlags::DIRTY,
-        );
-        vm_space
-            .writer(map_range.start, size_of::<u8>())
-            .unwrap()
-            .write_val(&EXPECTED_VALUE)
-            .unwrap();
-        assert_eq!(frame.reader().read_val::<u8>().unwrap(), EXPECTED_VALUE);
-    }
-
-    // Regression test for Asterinas issue #3589.
-    #[ktest]
-    fn page_fault_handler_resolves_ad_bit_fault_with_fault_around() {
-        let vm_space = Arc::new(VmSpace::new().unwrap());
-        let map_range = PAGE_SIZE..PAGE_SIZE * 2;
-        let vmo = VmoOptions::new_anon(PAGE_SIZE).alloc().unwrap();
-        let mapped_vmo = MappedVmo::new(vmo, 0, false).unwrap();
-        let frame = mapped_vmo.get_committed_frame(0).unwrap();
-        let preempt_guard = disable_preempt();
-        vm_space
-            .cursor_mut(&preempt_guard, &map_range)
-            .unwrap()
-            .map(
-                frame,
-                PageProperty::new_user(PageFlags::R | PageFlags::AVAIL2, CachePolicy::Writeback),
-            );
-        vm_space.activate();
-
-        let mapping = VmMapping::new(
-            NonZeroUsize::new(PAGE_SIZE).unwrap(),
-            map_range.start,
-            MappedMemory::Vmo(mapped_vmo),
-            None,
-            false,
-            true,
-            false,
-            false,
-            VmPerms::READ,
-        );
-        mapping
-            .handle_page_fault(
-                &vm_space,
-                &PageFaultInfo::new(map_range.start, VmPerms::READ),
-                &mut RssDelta::new_for_test(),
-            )
-            .unwrap();
-
-        assert_mapping_prop(
-            &vm_space,
-            &map_range,
-            PageFlags::R | PageFlags::AVAIL2 | PageFlags::ACCESSED,
-        );
-    }
-
-    // Regression test for Asterinas issue #3589.
-    #[ktest]
-    fn page_fault_handler_repairs_ad_bit_when_fault_around_io_fails() {
-        let vm_space = Arc::new(VmSpace::new().unwrap());
-        let mapping_start = PAGE_SIZE;
-        let fault_addr = mapping_start + PAGE_SIZE;
-        let fault_range = fault_addr..fault_addr + PAGE_SIZE;
-        let backend: Arc<dyn PageCacheBackend> = Arc::new(FailingPageCacheBackend);
-        let vmo = VmoOptions::new_page_cache(16 * PAGE_SIZE, Arc::downgrade(&backend))
-            .alloc()
-            .unwrap();
-        let mapped_vmo = MappedVmo::new(vmo, 0, false).unwrap();
-        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
-        let preempt_guard = disable_preempt();
-        vm_space
-            .cursor_mut(&preempt_guard, &fault_range)
-            .unwrap()
-            .map(
-                frame.into(),
-                PageProperty::new_user(PageFlags::R | PageFlags::AVAIL2, CachePolicy::Writeback),
-            );
-        vm_space.activate();
-
-        let mapping = VmMapping::new(
-            NonZeroUsize::new(16 * PAGE_SIZE).unwrap(),
-            mapping_start,
-            MappedMemory::Vmo(mapped_vmo),
-            None,
-            false,
-            true,
-            false,
-            false,
-            VmPerms::READ,
-        );
-        mapping
-            .handle_page_fault(
-                &vm_space,
-                &PageFaultInfo::new(fault_addr, VmPerms::READ),
-                &mut RssDelta::new_for_test(),
-            )
-            .unwrap();
-
-        assert_mapping_prop(
-            &vm_space,
-            &fault_range,
-            PageFlags::R | PageFlags::AVAIL2 | PageFlags::ACCESSED,
-        );
-    }
-
-    #[ktest]
-    fn fault_around_reads_only_the_mapping_window() {
-        const VMO_PAGE_COUNT: usize = 128;
-        const MAPPING_PAGE_COUNT: usize = 16;
-
-        let vm_space = Arc::new(VmSpace::new().unwrap());
-        vm_space.activate();
-        for (iteration, offset) in [0, 8, 120].into_iter().enumerate() {
-            let mapping_start = (iteration + 1) * MAPPING_PAGE_COUNT * PAGE_SIZE;
-            let mapping_range = mapping_start..mapping_start + MAPPING_PAGE_COUNT * PAGE_SIZE;
-            let backend = Arc::new(RecordingPageCacheBackend {
-                reads: SpinLock::new(Vec::new()),
-            });
-            let backend_dyn: Arc<dyn PageCacheBackend> = backend.clone();
-            let vmo = VmoOptions::new_page_cache(
-                VMO_PAGE_COUNT * PAGE_SIZE,
-                Arc::downgrade(&backend_dyn),
-            )
-            .alloc()
-            .unwrap();
-            let mapped_vmo = MappedVmo::new(vmo, offset * PAGE_SIZE, false).unwrap();
-            let mapping = VmMapping::new(
-                NonZeroUsize::new(MAPPING_PAGE_COUNT * PAGE_SIZE).unwrap(),
-                mapping_start,
-                MappedMemory::Vmo(mapped_vmo),
-                None,
-                false,
-                true,
-                false,
-                false,
-                VmPerms::READ,
-            );
-            mapping
-                .handle_page_fault(
-                    &vm_space,
-                    &PageFaultInfo::new(mapping_start, VmPerms::READ),
-                    &mut RssDelta::new_for_test(),
-                )
-                .unwrap();
-
-            let expected_end = (offset + MAPPING_PAGE_COUNT).min(VMO_PAGE_COUNT);
-            assert_eq!(
-                *backend.reads.lock(),
-                (offset..expected_end).collect::<Vec<_>>()
-            );
-            assert_mapping_prop(
-                &vm_space,
-                &(mapping_start..mapping_start + PAGE_SIZE),
-                PageFlags::R | PageFlags::ACCESSED,
-            );
-            assert_eq!(
-                vm_space
-                    .reader(mapping_range.start, size_of::<u8>())
-                    .unwrap()
-                    .read_val::<u8>()
-                    .unwrap(),
-                0
-            );
-        }
+        self.mapped_mem = MappedMemory::Device(mapped_obj);
+        Ok(())
     }
 }

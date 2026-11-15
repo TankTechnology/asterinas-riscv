@@ -18,15 +18,14 @@ use crate::{
         vfs::path::MountNamespace,
     },
     ipc::IpcNamespace,
-    net::{net_ns::NetNamespace, uts_ns::UtsNamespace},
+    net::uts_ns::UtsNamespace,
     prelude::*,
     process::{
-        CloneFlags, ContextSetNsAdminApi, NsProxy, NsProxyBuilder, PidFile, PidNamespace,
+        CloneFlags, ContextSetNsAdminApi, NsProxy, NsProxyBuilder, PidFile,
         check_unsupported_ns_flags, credentials::capabilities::CapSet, posix_thread::AsPosixThread,
     },
     security::lsm::hooks as lsm_hooks,
     syscall::SyscallReturn,
-    time::namespace::TimeNamespace,
 };
 
 pub(super) fn sys_setns(fd: RawFileDesc, flags: u32, ctx: &Context) -> Result<SyscallReturn> {
@@ -106,26 +105,6 @@ fn build_proxy_from_pid_file(
         set_uts_ns(&mut builder, target_ns, ctx)?;
     }
 
-    if flags.contains(CloneFlags::CLONE_NEWNET) {
-        let target_ns = target_proxy.net_ns();
-        set_net_ns(&mut builder, target_ns, ctx)?;
-    }
-
-    if flags.contains(CloneFlags::CLONE_NEWPID) {
-        // With a PID file, the target is the PID namespace the target
-        // process itself lives in (not its children's namespace).
-        let target_ns = pid_file
-            .process_opt()
-            .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process has been reaped"))?
-            .pid_ns()
-            .clone();
-        set_pid_ns(&mut builder, &target_ns, ctx)?;
-    }
-
-    if flags.contains(CloneFlags::CLONE_NEWTIME) {
-        set_time_ns(&mut builder, target_proxy.time_ns(), ctx)?;
-    }
-
     // TODO: Support setting other namespaces from the target process.
 
     Ok(builder.build())
@@ -161,15 +140,6 @@ fn build_proxy_from_ns_file(
         })?
         || try_apply_ns_from_inode::<MountNamespace>(inode_handle, flags, |ns| {
             set_mnt_ns(&mut builder, &ns, ctx)
-        })?
-        || try_apply_ns_from_inode::<NetNamespace>(inode_handle, flags, |ns| {
-            set_net_ns(&mut builder, &ns, ctx)
-        })?
-        || try_apply_ns_from_inode::<PidNamespace>(inode_handle, flags, |ns| {
-            set_pid_ns(&mut builder, &ns, ctx)
-        })?
-        || try_apply_ns_from_inode::<TimeNamespace>(inode_handle, flags, |ns| {
-            set_time_ns(&mut builder, &ns, ctx)
         })?
         || try_apply_ns_from_inode::<UtsNamespace>(inode_handle, flags, |ns| {
             set_uts_ns(&mut builder, &ns, ctx)
@@ -248,28 +218,6 @@ fn set_mnt_ns(
     Ok(())
 }
 
-fn set_net_ns(
-    builder: &mut NsProxyBuilder,
-    target_ns: &Arc<NetNamespace>,
-    ctx: &Context,
-) -> Result<()> {
-    check_set_ns_perms(target_ns, ctx)?;
-
-    builder.net_ns(target_ns.clone());
-
-    Ok(())
-}
-
-fn set_time_ns(
-    builder: &mut NsProxyBuilder,
-    target_ns: &Arc<TimeNamespace>,
-    ctx: &Context,
-) -> Result<()> {
-    check_set_ns_perms(target_ns, ctx)?;
-    builder.time_ns(target_ns.clone());
-    Ok(())
-}
-
 fn set_uts_ns(
     builder: &mut NsProxyBuilder,
     target_ns: &Arc<UtsNamespace>,
@@ -278,31 +226,6 @@ fn set_uts_ns(
     check_set_ns_perms(target_ns, ctx)?;
 
     builder.uts_ns(target_ns.clone());
-
-    Ok(())
-}
-
-fn set_pid_ns(
-    builder: &mut NsProxyBuilder,
-    target_ns: &Arc<PidNamespace>,
-    ctx: &Context,
-) -> Result<()> {
-    check_set_ns_perms(target_ns, ctx)?;
-
-    // Joining a PID namespace via `setns` has deferred semantics: it only
-    // changes the PID namespace *for children*, so the caller keeps its own
-    // PID. As in Linux, the target namespace must be the same as, or a
-    // descendant of, the caller's current PID namespace for children.
-    let current_proxy = ctx.thread_local.borrow_ns_proxy();
-    let current_ns = current_proxy.unwrap();
-    if !target_ns.is_same_or_descendant_of(current_ns.pid_ns_for_children()) {
-        return_errno_with_message!(
-            Errno::EINVAL,
-            "the target PID namespace is not a descendant of the current one"
-        );
-    }
-
-    builder.pid_ns(target_ns.clone());
 
     Ok(())
 }

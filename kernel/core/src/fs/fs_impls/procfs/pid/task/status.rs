@@ -54,7 +54,6 @@ use crate::{
 /// - CapEff: Effective capabilities.
 /// - CapBnd: Bounding set.
 /// - CapAmb: Ambient capabilities.
-/// - NoNewPrivs: Whether this thread has disabled privilege gains across exec.
 /// - Seccomp: Seccomp mode.
 /// - Cpus_allowed: CPUs allowed for this process.
 /// - Cpus_allowed_list: List of CPUs allowed for this process.
@@ -115,38 +114,9 @@ impl ProcFileOps for StatusFileOps {
         };
         writeln!(printer, "State:\t{}", state)?;
 
-        // PID-related fields are reported in the reading process's PID
-        // namespace, as in Linux.
-        let reader_ns = current_thread!()
-            .as_posix_thread()
-            .unwrap()
-            .process()
-            .pid_ns()
-            .clone();
-        let vpid_of =
-            |process: &Arc<crate::process::Process>| process.pid_in_ns(&reader_ns).unwrap_or(0);
-
-        writeln!(printer, "Tgid:\t{}", vpid_of(&process))?;
-        writeln!(
-            printer,
-            "Pid:\t{}",
-            if posix_thread.tid() == process.pid() {
-                vpid_of(&process)
-            } else {
-                posix_thread.tid()
-            }
-        )?;
-        writeln!(
-            printer,
-            "PPid:\t{}",
-            process
-                .parent()
-                .lock()
-                .process()
-                .upgrade()
-                .map(|parent| vpid_of(&parent))
-                .unwrap_or(0)
-        )?;
+        writeln!(printer, "Tgid:\t{}", process.pid())?;
+        writeln!(printer, "Pid:\t{}", posix_thread.tid())?;
+        writeln!(printer, "PPid:\t{}", process.parent().pid())?;
         writeln!(
             printer,
             "TracerPid:\t{}",
@@ -155,23 +125,6 @@ impl ProcFileOps for StatusFileOps {
                 .map(|tracer| tracer.as_posix_thread().unwrap().tid())
                 .unwrap_or(0)
         )?;
-
-        // `NSpid` lists the process's virtual PID in every PID namespace
-        // from the outermost ancestor (that is visible to the reader) down
-        // to the process's own namespace, as in Linux.
-        let mut ns_pids: Vec<u32> = process
-            .ns_vpids()
-            .iter()
-            .filter(|(ns, _)| ns.is_same_or_descendant_of(&reader_ns))
-            .map(|(_, vpid)| *vpid)
-            .collect();
-        ns_pids.reverse();
-        let ns_pids_str = ns_pids
-            .iter()
-            .map(u32::to_string)
-            .collect::<Vec<_>>()
-            .join("\t");
-        writeln!(printer, "NSpid:\t{}", ns_pids_str)?;
 
         writeln!(
             printer,
@@ -203,14 +156,13 @@ impl ProcFileOps for StatusFileOps {
 
         if let Some(vmar_ref) = process.lock_vmar().as_ref() {
             let vsize = vmar_ref.get_mappings_total_size();
-            let locked = vmar_ref.get_locked_size() / 1024;
             let anon = vmar_ref.get_rss_counter(RssType::Anon) * (PAGE_SIZE / 1024);
             let file = vmar_ref.get_rss_counter(RssType::File) * (PAGE_SIZE / 1024);
             let rss = anon + file;
             writeln!(
                 printer,
-                "VmSize:\t{} kB\nVmLck:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
-                vsize, locked, rss, anon, file
+                "VmSize:\t{} kB\nVmRSS:\t{} kB\nRssAnon:\t{} kB\nRssFile:\t{} kB",
+                vsize, rss, anon, file
             )?;
         }
 
@@ -219,11 +171,6 @@ impl ProcFileOps for StatusFileOps {
             "Threads:\t{}",
             process.tasks().lock().as_slice().len()
         )?;
-
-        let (thread_pending, shared_pending) = posix_thread.pending_signal_sets();
-        writeln!(printer, "SigPnd:\t{:016x}", thread_pending)?;
-        writeln!(printer, "ShdPnd:\t{:016x}", shared_pending)?;
-        writeln!(printer, "SigBlk:\t{:016x}", posix_thread.sig_mask())?;
 
         writeln!(
             printer,
@@ -250,14 +197,6 @@ impl ProcFileOps for StatusFileOps {
             "CapAmb:\t{:016x}",
             credentials.ambient_capset().bits()
         )?;
-        writeln!(
-            printer,
-            "NoNewPrivs:\t{}",
-            u8::from(credentials.no_new_privs())
-        )?;
-        // Seccomp is a per-thread policy. In particular, /proc/<pid>/status reports the main
-        // thread while /proc/<pid>/task/<tid>/status reports the selected thread's own mode.
-        writeln!(printer, "Seccomp:\t{}", posix_thread.seccomp_mode())?;
 
         Ok(printer.bytes_written())
     }

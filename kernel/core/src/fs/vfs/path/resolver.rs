@@ -461,6 +461,7 @@ impl PathResolver {
                 "`new_root` or the current root is not a mount point"
             );
         }
+
         let mut topology_guard = MountTopology::write_lock();
 
         let Some(new_root_parent) = new_root_path
@@ -470,17 +471,14 @@ impl PathResolver {
         else {
             return_errno_with_message!(Errno::EINVAL, "`new_root` is on the rootfs mount");
         };
+        let Some(current_root_parent) =
+            self.root.mount.parent().and_then(|parent| parent.upgrade())
+        else {
+            return_errno_with_message!(Errno::EINVAL, "the current root is on the rootfs mount");
+        };
 
-        // `new_root` must not be the namespace root mount itself (it has no
-        // parent mount to be grafted onto). The *current* root, however, may
-        // be the namespace root mount: pivoting off the initramfs rootfs is
-        // the canonical use case.
-        let current_root_parent = self.root.mount.parent().and_then(|parent| parent.upgrade());
-
-        let current_root_parent_is_shared =
-            current_root_parent.as_ref().is_some_and(|parent| parent.is_shared());
         if new_root_parent.is_shared()
-            || current_root_parent_is_shared
+            || current_root_parent.is_shared()
             || put_old_path.mount.is_shared()
         {
             return_errno_with_message!(
@@ -502,29 +500,17 @@ impl PathResolver {
             );
         }
 
-        // Capture the old root's parent and mountpoint before grafting, since
-        // `graft_mount_tree` mutates the parent link.
-        let old_root_parent = self.root.mount.parent().and_then(|parent| parent.upgrade());
-        let old_root_mountpoint = self.root.mount.mountpoint();
+        let parent_path = {
+            let mountpoint = self.root.mount.mountpoint().unwrap();
+            Path::new(current_root_parent, mountpoint)
+        };
 
         self.root
             .mount
             .graft_mount_tree(put_old_path, &mut topology_guard);
-
-        if let (Some(parent_mount), Some(mountpoint)) = (old_root_parent, old_root_mountpoint) {
-            // Normal case: move `new_root` to where the old root used to be.
-            let parent_path = Path::new(parent_mount, mountpoint);
-            new_root_path
-                .mount
-                .graft_mount_tree(parent_path, &mut topology_guard);
-        } else {
-            // The old root is the namespace root mount (e.g. the initramfs
-            // rootfs), which has no parent. `new_root` simply becomes the new
-            // root mount.
-            new_root_path
-                .mount
-                .detach_from_parent(&mut topology_guard);
-        }
+        new_root_path
+            .mount
+            .graft_mount_tree(parent_path, &mut topology_guard);
 
         // Release the mount topology lock before taking other threads' resolver locks.
         drop(topology_guard);
@@ -637,10 +623,7 @@ impl PathResolver {
     pub(crate) fn lookup_at_path(&self, path: &Path, name: &str) -> Result<Path> {
         let dir_dentry = path.dentry.as_dir_dentry_or_err()?;
 
-        let permitted = crate::syscall::profile::measure("lookup", "perm", || {
-            path.inode().check_permission(Permission::MAY_EXEC).is_ok()
-        });
-        if !permitted {
+        if path.inode().check_permission(Permission::MAY_EXEC).is_err() {
             return_errno_with_message!(Errno::EACCES, "the path cannot be looked up");
         }
         if name.len() > NAME_MAX {
@@ -650,21 +633,13 @@ impl PathResolver {
         let target_path = if super::is_dot(name) {
             return Ok(path.this());
         } else if super::is_dotdot(name) {
-            crate::syscall::profile::measure("lookup", "dotdot", || {
-                self.resolve_parent(path).unwrap_or_else(|| path.this())
-            })
+            self.resolve_parent(path).unwrap_or_else(|| path.this())
         } else {
-            let target_dentry = crate::syscall::profile::measure("lookup", "child", || {
-                dir_dentry.lookup_child(name)
-            })?;
-            crate::syscall::profile::measure("lookup", "mount", || {
-                Path::new(path.mount.clone(), target_dentry)
-            })
+            let target_dentry = dir_dentry.lookup_child(name)?;
+            Path::new(path.mount.clone(), target_dentry)
         };
 
-        Ok(crate::syscall::profile::measure("lookup", "top", || {
-            target_path.get_top_path()
-        }))
+        Ok(target_path.get_top_path())
     }
 
     /// Lookups the target `Path` according to the `fs_path`.

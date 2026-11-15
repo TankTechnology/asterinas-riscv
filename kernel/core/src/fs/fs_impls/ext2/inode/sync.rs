@@ -7,28 +7,17 @@
 //! metadata, and inode-table state ordered consistently; reclaim must release
 //! all storage owned by a zero-link inode exactly once.
 
+#![short_vis_path::add(ext2)]
+
 use super::{super::Ext2, Inode, InodeInner, RawInode};
 use crate::fs::ext2::{prelude::*, utils};
 
 impl Inode {
-    /// Returns whether the inode owns metadata that a filesystem-wide sync must
-    /// write back before the next metadata transaction is committed.
-    ///
-    /// Data pages alone do not count. A commit only publishes the inode table
-    /// ranges and allocation bitmaps that dirty inodes staged; an inode with a
-    /// clean descriptor and no new blocks allocated contributes nothing to
-    /// that transaction, so skipping its data writeback cannot expose a
-    /// descriptor that points at missing data. Data durability for such an
-    /// inode is the job of that inode's own `fsync`/`fdatasync`.
-    pub(in crate::fs::fs_impls::ext2) fn has_pending_metadata(&self) -> bool {
-        self.inner.read().is_dirty() || self.xattr.as_ref().is_some_and(|xattr| xattr.is_dirty())
-    }
-
     /// Flushes all dirty state owned by the inode.
     ///
     /// Writes xattrs, data pages, and indirect blocks back before staging dirty
     /// inode metadata in the block group's inode-table page cache.
-    pub(in crate::fs::fs_impls::ext2) fn sync_all(&self) -> Result<()> {
+    pub(in ext2) fn sync_all(&self) -> Result<()> {
         // Step 1: flush the xattr.
         if let Some(xattr) = &self.xattr {
             xattr.flush()?;
@@ -37,7 +26,7 @@ impl Inode {
         // Step 2: flush dirty data pages.
         let fs = self.fs()?;
         let mut inner = self.inner.write();
-        inner.sync_data_pages(&fs)?;
+        inner.sync_data_pages()?;
 
         // Step 3: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -51,12 +40,12 @@ impl Inode {
     /// Writes data pages and indirect blocks back before staging dirty inode
     /// metadata in the block group's inode-table page cache. This does not flush
     /// xattrs.
-    pub(in crate::fs::fs_impls::ext2) fn sync_data(&self) -> Result<()> {
+    pub(in ext2) fn sync_data(&self) -> Result<()> {
         let fs = self.fs()?;
         let mut inner = self.inner.write();
 
         // Step 1: flush dirty data pages.
-        inner.sync_data_pages(&fs)?;
+        inner.sync_data_pages()?;
 
         // Step 2: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -72,15 +61,13 @@ impl Inode {
         }
 
         let fs = self.fs()?;
-        if fs
-            .fs_flags()
-            .contains(crate::fs::vfs::file_system::FsFlags::RDONLY)
-        {
+        let group = fs.block_group(self.block_group_idx);
+        if !group.is_inode_allocated(self.ino) {
             return Ok(false);
         }
-        let group = fs.block_group(self.block_group_idx);
-        if !group.is_inode_allocated(self.ino)? {
-            return Ok(false);
+
+        if let Some(xattr) = self.xattr.as_ref() {
+            xattr.delete_xattr_block()?;
         }
 
         let mut inner = self.inner.write();
@@ -89,15 +76,14 @@ impl Inode {
         if block_manager.is_some() {
             inner.resize_page_cache(0, old_size)?;
         }
-        if let Some(block_manager) = block_manager {
-            block_manager.truncate_to_byte_len(0)?;
-        }
-        if let Some(xattr) = self.xattr.as_ref() {
-            xattr.delete_xattr_block()?;
-        }
         inner.set_dtime(utils::now());
         inner.set_file_size(0);
-        inner.set_file_acl(0)?;
+        inner.set_file_acl(0);
+        if inner.desc.sector_count > 0
+            && let Some(block_manager) = block_manager
+        {
+            block_manager.truncate_to_byte_len(0);
+        }
         inner.write_back_inode_desc(&fs, self.ino)?;
 
         fs.free_inode(self.ino, self.type_)?;
@@ -122,32 +108,9 @@ impl InodeInner {
         Ok(())
     }
 
-    /// Stages inode metadata without publishing a standalone journal
-    /// transaction.  Deletion must be ordered with the parent directory
-    /// update; publishing the zero-link inode first can leave an allocation
-    /// leak if the directory transaction is interrupted.
-    pub(super) fn stage_inode_desc(&mut self, fs: &Ext2, ino: Ext2Ino) -> Result<()> {
-        if !self.is_dirty() {
-            return Ok(());
-        }
-
-        let raw_block_ptrs = self.raw_block_ptrs();
-        self.desc.block_ptrs = raw_block_ptrs.block_ptrs;
-        self.desc.sector_count = raw_block_ptrs.sector_count;
-
-        let raw_inode = RawInode::from(&*self.desc);
-        fs.stage_inode_desc(ino, &raw_inode)?;
-        self.clear_dirty();
-        Ok(())
-    }
-
-    fn sync_data_pages(&self, fs: &Ext2) -> Result<()> {
+    fn sync_data_pages(&self) -> Result<()> {
         let file_size = self.file_size();
         if file_size == 0 {
-            return Ok(());
-        }
-
-        if self.inode_type() == InodeType::Dir && fs.has_journal() {
             return Ok(());
         }
 
@@ -160,7 +123,7 @@ impl InodeInner {
         }
     }
 
-    pub(super) fn sync_indirect_blocks(&self) -> Result<()> {
+    fn sync_indirect_blocks(&self) -> Result<()> {
         match &self.payload {
             super::InodePayload::DataBacked { block_manager, .. } => {
                 block_manager.sync_indirect_blocks()

@@ -17,7 +17,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{Gid, Terminal, Uid},
+    process::{Gid, Uid},
 };
 
 /// Same major number with Linux, the minor number is the index of slave.
@@ -32,17 +32,15 @@ pub(crate) struct PtySlaveInode {
 }
 
 impl PtySlaveInode {
-    pub(crate) fn new(device: Arc<PtySlave>, fs: Weak<DevPts>, owner: Uid, group: Gid) -> Arc<Self> {
+    pub(crate) fn new(device: Arc<PtySlave>, fs: Weak<DevPts>) -> Arc<Self> {
         let devpts = fs.upgrade().unwrap();
-        let mut metadata = Metadata::new_device(
+        let metadata = Metadata::new_device(
             device.index() as u64 + FIRST_SLAVE_INO,
             mkmod!(u+rw, g+w),
             BLOCK_SIZE,
             device.as_ref(),
             devpts.sb().container_dev_id,
         );
-        metadata.uid = owner;
-        metadata.gid = group;
         Arc::new(Self {
             device,
             metadata: RwLock::new(metadata),
@@ -158,18 +156,6 @@ impl Inode for PtySlaveInode {
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
-        Some((|| {
-            let file = self.device.open()?;
-            // Linux assigns a newly opened tty as the controlling terminal of a
-            // session leader that has none (`tty_open_proc_set_tty`). xterm
-            // relies on it: the child calls `setsid`, opens the slave and then
-            // verifies `/dev/tty`; without the assignment it treats the pty as
-            // broken and retries forever.
-            if !status_flags.contains(StatusFlags::O_NOCTTY) {
-                let terminal: Arc<dyn Terminal> = self.device.clone();
-                terminal.acquire_control_on_open(&current!(), access_mode.is_readable());
-            }
-            Ok(file)
-        })())
+        Some(self.device.open())
     }
 }

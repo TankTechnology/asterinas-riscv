@@ -12,7 +12,7 @@ use crate::{
     events::IoEvents,
     fs::file::file_table::{FileDesc, RawFileDesc},
     prelude::*,
-    time::{clocks::MonotonicClock, timer::Timeout, timeval_t},
+    time::timeval_t,
 };
 
 pub(super) fn sys_select(
@@ -33,41 +33,14 @@ pub(super) fn sys_select(
         Some(Duration::try_from(timeval)?)
     };
 
-    let clock = MonotonicClock::timer_manager().clock();
-    let started = timeout.map(|_| clock.read_time());
-    let result = do_sys_select(
+    do_sys_select(
         nfds,
         readfds_addr,
         writefds_addr,
         exceptfds_addr,
         timeout,
         ctx,
-    );
-
-    // Linux v6.12 fs/select.c: poll_select_finish. Like pselect6, select
-    // replays its arguments only when no caught handler runs. Preserve the
-    // remaining duration first; a failed copyback must disable replay without
-    // replacing the original result (including success) with EFAULT.
-    if let Some(duration) = timeout
-        && !duration.is_zero()
-    {
-        let remaining = duration.saturating_sub(clock.read_time() - started.unwrap());
-        if ctx
-            .user_space()
-            .write_val(timeval_addr, &timeval_t::from(remaining))
-            .is_err()
-        {
-            return result;
-        }
-    }
-
-    result.map_err(|err| {
-        if err.error() == Errno::EINTR {
-            Error::new(Errno::ERESTARTNOHAND)
-        } else {
-            err
-        }
-    })
+    )
 }
 
 pub(super) fn do_sys_select(
@@ -109,6 +82,11 @@ pub(super) fn do_sys_select(
         timeout.as_ref(),
         ctx,
     )?;
+
+    // FIXME: The Linux select() and pselect6() system call
+    // modifies its timeout argument to reflect the amount of time not slept.
+    // However, the glibc wrapper function hides this behavior.
+    // Maybe we should follow the Linux behavior.
 
     let set_fdset = |fdset_addr: Vaddr, fdset: Option<FdSet>| -> Result<()> {
         if let Some(fdset) = fdset {
@@ -170,7 +148,7 @@ fn do_select(
     }
 
     // Do the `poll` syscall that is equivalent to the `select` syscall
-    let num_revents = do_poll(&poll_fds, timeout.copied().map(Timeout::After), ctx)?;
+    let num_revents = do_poll(&poll_fds, timeout, ctx)?;
     if num_revents == 0 {
         return Ok(0);
     }

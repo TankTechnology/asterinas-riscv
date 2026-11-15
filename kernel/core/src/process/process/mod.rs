@@ -9,14 +9,11 @@ use ostd::timer::Jiffies;
 
 use self::timer_manager::PosixTimerManager;
 use super::{
-    signal::job_control::SignalJobControl,
-    namespace::pid_ns::{PidNamespace, PidNsReservation},
     pid_table::{self, PidTable},
     posix_thread::{AsPosixThread, FIRST_POSIX_TID},
     process_vm::ProcessVmarGuard,
     rlimit::ResourceLimits,
     signal::{
-        constants::SIGCONT,
         sig_disposition::SigDispositions,
         sig_num::{AtomicSigNum, SigNum},
         signals::Signal,
@@ -40,13 +37,11 @@ use crate::{
 };
 
 mod init_proc;
-pub(crate) mod io_accounting;
-pub use io_accounting::IoAccounting;
 mod job_control;
 mod process_group;
 mod session;
 mod terminal;
-pub(crate) mod timer_manager;
+mod timer_manager;
 
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 pub(crate) use init_proc::spawn_init_process;
@@ -91,14 +86,6 @@ pub(super) fn init_on_each_cpu() {
 pub struct Process {
     // Immutable Part
     pid: Pid,
-    /// The PID namespace this process belongs to.
-    ///
-    /// The process is also visible in all ancestor namespaces under the
-    /// virtual PIDs recorded in `ns_vpids`.
-    pid_ns: Arc<PidNamespace>,
-    /// The process's virtual PID in its own PID namespace and in every
-    /// ancestor namespace, innermost first. Immutable after creation.
-    ns_vpids: Box<[(Arc<PidNamespace>, u32)]>,
 
     vmar: Mutex<Option<Arc<Vmar>>>,
     /// Wait for child status changed
@@ -131,8 +118,6 @@ pub struct Process {
     /// The adjustment value of the out-of-memory (OOM) killer score.
     // FIXME: Support OOM killer.
     oom_score_adj: AtomicI16,
-    /// Per-process I/O and page-fault accounting exposed through procfs.
-    io_accounting: IoAccounting,
 
     // Child reaper attribute
     /// Whether the process is a child subreaper.
@@ -153,8 +138,6 @@ pub struct Process {
     sig_dispositions: Mutex<Arc<Mutex<SigDispositions>>>,
     /// The process-level sigqueue.
     sig_queues: SigQueues,
-    /// Serializes job-control state transitions (stop/continue reporting).
-    signal_job_control: Mutex<SignalJobControl>,
     /// The signal that the process should receive when parent process exits.
     parent_death_signal: AtomicSigNum,
     /// The signal that should be sent to the parent when this process exits.
@@ -251,13 +234,8 @@ impl Process {
         oom_score_adj: i16,
         sig_dispositions: Arc<Mutex<SigDispositions>>,
         user_ns: Arc<UserNamespace>,
-        pid_ns: Arc<PidNamespace>,
-        pid_ns_reservation: PidNsReservation,
     ) -> Arc<Self> {
-        let mut pid_ns_reservation = Some(pid_ns_reservation);
         Arc::new_cyclic(|process_ref: &Weak<Process>| {
-            let ns_vpids = pid_ns_reservation.take().unwrap().commit(process_ref);
-
             // SIGCHID does not interrupt pauser. Child process will
             // resume paused parent when doing exit.
             let children_wait_queue = WaitQueue::new();
@@ -267,8 +245,6 @@ impl Process {
 
             Self {
                 pid,
-                pid_ns,
-                ns_vpids,
                 vmar: Mutex::new(Some(vmar)),
                 children_wait_queue,
                 pidfile_pollee: Pollee::new(),
@@ -282,12 +258,10 @@ impl Process {
                 cgroup: RcuOption::new(None),
                 nice: AtomicNice::new(nice),
                 oom_score_adj: AtomicI16::new(oom_score_adj),
-                io_accounting: IoAccounting::new(),
                 is_child_subreaper: AtomicBool::new(false),
                 has_child_subreaper: AtomicBool::new(false),
                 sig_dispositions: Mutex::new(sig_dispositions),
                 sig_queues: SigQueues::new(),
-                signal_job_control: Mutex::new(SignalJobControl::default()),
                 parent_death_signal: AtomicSigNum::new_empty(),
                 exit_signal: AtomicSigNum::new_empty(),
                 prof_clock,
@@ -313,52 +287,8 @@ impl Process {
 
     // *********** Basic structures ***********
 
-    /// Returns the process-wide job-control state.
-    pub fn signal_job_control(&self) -> &Mutex<SignalJobControl> {
-        &self.signal_job_control
-    }
-
-    /// Returns the per-process I/O and page-fault accounting.
-    pub fn io_accounting(&self) -> &IoAccounting {
-        &self.io_accounting
-    }
-
     pub fn pid(&self) -> u32 {
         self.pid
-    }
-
-    /// Returns the PID namespace this process belongs to.
-    pub fn pid_ns(&self) -> &Arc<PidNamespace> {
-        &self.pid_ns
-    }
-
-    /// Returns the process's virtual PID in the given namespace, or `None`
-    /// if the process is not visible in that namespace.
-    pub fn pid_in_ns(&self, ns: &Arc<PidNamespace>) -> Option<u32> {
-        self.ns_vpids
-            .iter()
-            .find(|(entry_ns, _)| Arc::ptr_eq(entry_ns, ns))
-            .map(|(_, vpid)| *vpid)
-    }
-
-    /// Returns the process's virtual PID in its own PID namespace and in
-    /// every ancestor namespace, innermost first.
-    pub fn ns_vpids(&self) -> &[(Arc<PidNamespace>, u32)] {
-        &self.ns_vpids
-    }
-
-    /// Returns whether this process is the init process of a non-initial
-    /// PID namespace (i.e., virtual PID 1 in its own namespace).
-    pub fn is_ns_init(&self) -> bool {
-        !self.pid_ns.is_init() && self.pid_in_ns(&self.pid_ns.clone()) == Some(1)
-    }
-
-    /// Removes the process's virtual PID registrations from all PID
-    /// namespaces it was visible in. Called when the process is reaped.
-    pub(super) fn remove_from_pid_namespaces(&self) {
-        for (ns, vpid) in self.ns_vpids.iter() {
-            ns.remove_vpid(*vpid);
-        }
     }
 
     /// Gets the profiling clock of the process.
@@ -713,14 +643,7 @@ impl Process {
             return;
         }
 
-        let is_sigcont = signal.num() == SIGCONT;
         self.sig_queues.enqueue(signal);
-
-        // Continuing a stopped process is a generation-time effect, independent
-        // of whether SIGCONT is blocked, ignored, or handled in userspace.
-        if is_sigcont {
-            self.resume();
-        }
 
         for task in self.tasks.lock().as_slice() {
             let posix_thread = task.as_posix_thread().unwrap();
@@ -776,14 +699,11 @@ impl Process {
     /// Resumes the stopped process.
     pub(crate) fn resume(&self) {
         if self.status.stop_status().resume() {
-            // A remote signal sender can race with exit and reaping. Unlike a
-            // running target thread, it cannot assume the parent is still live.
-            if let Some(parent) = self.parent.lock().process().upgrade() {
-                parent.children_wait_queue.wake_all();
-            }
+            self.wake_up_parent();
 
-            // A signal sender or any target thread may resume the process;
-            // all stopped threads must be woken, not just the signal recipient.
+            // Note that the resume function is called by the thread which deals with SIGCONT,
+            // since SIGCONT is handled by any thread in this process, we need to wake
+            // up other stopped threads in the same process.
             for task in self.tasks.lock().as_slice() {
                 let posix_thread = task.as_posix_thread().unwrap();
                 posix_thread.wake_signalled_waker();

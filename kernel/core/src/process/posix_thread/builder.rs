@@ -12,7 +12,7 @@ use ostd::{
 };
 use spin::Once;
 
-use super::{PosixThread, SeccompFilter, ThreadLocal};
+use super::{PosixThread, ThreadLocal};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
@@ -22,7 +22,6 @@ use crate::{
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
-    syscall::SockFilter,
     thread::{Thread, Tid, task},
     time::{TimerManager, clocks::ProfClock},
     vm::vmar::VmarHandle,
@@ -50,8 +49,6 @@ pub(crate) struct PosixThreadBuilder {
     user_ns: Option<Arc<UserNamespace>>,
     ns_proxy: Option<Arc<NsProxy>>,
     default_timer_slack_ns: u64,
-    seccomp_mode: u32,
-    seccomp_filter: Option<Arc<SeccompFilter>>,
 }
 
 impl PosixThreadBuilder {
@@ -80,8 +77,6 @@ impl PosixThreadBuilder {
             user_ns: None,
             ns_proxy: None,
             default_timer_slack_ns: 50_000, // 50 usec default slack
-            seccomp_mode: 0,
-            seccomp_filter: None,
         }
     }
 
@@ -153,21 +148,6 @@ impl PosixThreadBuilder {
         self
     }
 
-    pub(crate) fn seccomp_mode(mut self, seccomp_mode: u32) -> Self {
-        self.seccomp_mode = seccomp_mode;
-        self
-    }
-
-    pub(crate) fn seccomp_filter(mut self, seccomp_filter: Option<Arc<SeccompFilter>>) -> Self {
-        self.seccomp_filter = seccomp_filter;
-        self
-    }
-
-    pub(crate) fn sched_policy(mut self, sched_policy: SchedPolicy) -> Self {
-        self.sched_policy = sched_policy;
-        self
-    }
-
     pub(crate) fn build(self) -> Arc<Task> {
         let Self {
             tid,
@@ -187,8 +167,6 @@ impl PosixThreadBuilder {
             user_ns,
             ns_proxy,
             default_timer_slack_ns,
-            seccomp_mode,
-            seccomp_filter,
         } = self;
 
         let file_table = file_table.unwrap_or_else(FileTable::new);
@@ -216,8 +194,6 @@ impl PosixThreadBuilder {
                     file_table: Mutex::new(Some(file_table.clone_ro())),
                     sig_mask,
                     sig_queues,
-                    selected_stop: Mutex::new(Default::default()),
-                    group_stop_participant: Mutex::new(Default::default()),
                     signalled_waker: SpinLock::new(None),
                     prof_clock,
                     virtual_timer_manager,
@@ -230,8 +206,6 @@ impl PosixThreadBuilder {
                     tracees: Once::new(),
                     exit_code: AtomicU32::new(0),
                     personality: AtomicU32::new(0),
-                    seccomp_mode: AtomicU32::new(seccomp_mode),
-                    seccomp_filter: Mutex::new(seccomp_filter),
                 }
             };
 

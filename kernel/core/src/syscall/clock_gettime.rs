@@ -26,76 +26,12 @@ pub(super) fn sys_clock_gettime(
 ) -> Result<SyscallReturn> {
     debug!("clockid = {:?}", clockid);
 
-    let timespec = read_clock_timespec(clockid, ctx)?;
+    let time_duration = read_clock(clockid, ctx)?;
+
+    let timespec = timespec_t::from(time_duration);
     ctx.user_space().write_val(timespec_addr, &timespec)?;
 
     Ok(SyscallReturn::Return(0))
-}
-
-fn read_clock_timespec(clockid: clockid_t, ctx: &Context) -> Result<timespec_t> {
-    if clockid < 0 {
-        return Ok(timespec_t::from(read_clock(clockid, ctx)?));
-    }
-
-    let clock_id = ClockId::try_from(clockid)?;
-    let (base, boot_time) = match clock_id {
-        ClockId::CLOCK_MONOTONIC => (MonotonicClock::get().read_time(), false),
-        ClockId::CLOCK_MONOTONIC_RAW => (MonotonicRawClock::get().read_time(), false),
-        ClockId::CLOCK_MONOTONIC_COARSE => (MonotonicCoarseClock::get().read_time(), false),
-        ClockId::CLOCK_BOOTTIME => (BootTimeClock::get().read_time(), true),
-        _ => return Ok(timespec_t::from(read_clock(clockid, ctx)?)),
-    };
-
-    let ns_proxy = ctx.thread_local.borrow_ns_proxy();
-    let offset = ns_proxy.unwrap().time_ns().offset_nanos(boot_time);
-    let base_ns = i128::from(base.as_secs()) * 1_000_000_000 + i128::from(base.subsec_nanos());
-    let total = base_ns.saturating_add(offset);
-    Ok(timespec_t {
-        sec: total.div_euclid(1_000_000_000) as i64,
-        nsec: total.rem_euclid(1_000_000_000) as i64,
-    })
-}
-
-pub fn sys_clock_getres(
-    clockid: clockid_t,
-    timespec_addr: Vaddr,
-    ctx: &Context,
-) -> Result<SyscallReturn> {
-    debug!("clockid = {:?}", clockid);
-
-    // Linux validates the clock ID first (EINVAL for invalid clocks), and a
-    // NULL timespec pointer is legal: the resolution is simply not copied out.
-    let resolution = read_clock_resolution(clockid)?;
-
-    if timespec_addr != 0 {
-        let timespec = timespec_t::from(resolution);
-        ctx.user_space().write_val(timespec_addr, &timespec)?;
-    }
-
-    Ok(SyscallReturn::Return(0))
-}
-
-/// Returns the resolution (precision) of the clock specified by `clockid`.
-///
-/// The coarse clocks (`CLOCK_REALTIME_COARSE`/`CLOCK_MONOTONIC_COARSE`) are
-/// updated once per system timer tick (see `ostd::timer::TIMER_FREQ`, 1000 Hz),
-/// so their resolution is one tick (1 ms). Every other supported clock reads a
-/// nanosecond-granular clocksource.
-fn read_clock_resolution(clockid: clockid_t) -> Result<Duration> {
-    if clockid >= 0 {
-        let clock_id = ClockId::try_from(clockid)?;
-        let resolution = match clock_id {
-            ClockId::CLOCK_REALTIME_COARSE | ClockId::CLOCK_MONOTONIC_COARSE => {
-                Duration::from_millis(1)
-            }
-            _ => Duration::from_nanos(1),
-        };
-        Ok(resolution)
-    } else {
-        // Dynamic (process/thread/fd) clocks are nanosecond-granular.
-        let _ = DynamicClockIdInfo::try_from(clockid)?;
-        Ok(Duration::from_nanos(1))
-    }
 }
 
 // The hard-coded clock IDs.
@@ -170,25 +106,13 @@ pub(super) enum DynamicClockType {
 pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> {
     if clockid >= 0 {
         let clock_id = ClockId::try_from(clockid)?;
-        let apply_time_ns = |duration: Duration, boot_time: bool| {
-            let ns_proxy = ctx.thread_local.borrow_ns_proxy();
-            ns_proxy
-                .unwrap()
-                .time_ns()
-                .apply_offset(duration, boot_time)
-        };
         match clock_id {
             ClockId::CLOCK_REALTIME => Ok(RealTimeClock::get().read_time()),
-            ClockId::CLOCK_MONOTONIC => Ok(apply_time_ns(MonotonicClock::get().read_time(), false)),
-            ClockId::CLOCK_MONOTONIC_RAW => {
-                Ok(apply_time_ns(MonotonicRawClock::get().read_time(), false))
-            }
+            ClockId::CLOCK_MONOTONIC => Ok(MonotonicClock::get().read_time()),
+            ClockId::CLOCK_MONOTONIC_RAW => Ok(MonotonicRawClock::get().read_time()),
             ClockId::CLOCK_REALTIME_COARSE => Ok(RealTimeCoarseClock::get().read_time()),
-            ClockId::CLOCK_MONOTONIC_COARSE => Ok(apply_time_ns(
-                MonotonicCoarseClock::get().read_time(),
-                false,
-            )),
-            ClockId::CLOCK_BOOTTIME => Ok(apply_time_ns(BootTimeClock::get().read_time(), true)),
+            ClockId::CLOCK_MONOTONIC_COARSE => Ok(MonotonicCoarseClock::get().read_time()),
+            ClockId::CLOCK_BOOTTIME => Ok(BootTimeClock::get().read_time()),
             ClockId::CLOCK_PROCESS_CPUTIME_ID => Ok(ctx.process.prof_clock().read_time()),
             ClockId::CLOCK_THREAD_CPUTIME_ID => Ok(ctx.posix_thread.prof_clock().read_time()),
         }

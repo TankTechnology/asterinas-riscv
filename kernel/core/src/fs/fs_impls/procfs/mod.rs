@@ -11,24 +11,11 @@ use template::{
 use self::{
     cmdline::CmdLineFileOps,
     cpuinfo::CpuInfoFileOps,
-    drm_scanout::DrmScanoutFileOps,
     loadavg::LoadAvgFileOps,
     meminfo::MemInfoFileOps,
     mounts::MountsSymOps,
-    net::NetSymOps,
-    buddyinfo::BuddyInfoFileOps,
-    cgroups::CgroupsFileOps,
-    interrupts::InterruptsFileOps,
-    kallsyms::KallsymsFileOps,
-    pressure::PressureDirOps,
-    trace::TraceDirOps,
-    pagetypeinfo::PageTypeInfoFileOps,
-    vmstat::VmStatFileOps,
-    zoneinfo::ZoneInfoFileOps,
-    perm_order::PermOrderFileOps,
     pid::{PidDirOps, TidDirOps},
     self_::SelfSymOps,
-    syscall_profile::SyscallProfileFileOps,
     sys::SysDirOps,
     thread_self::ThreadSelfSymOps,
     uptime::UptimeFileOps,
@@ -48,36 +35,21 @@ use crate::{
     },
     prelude::*,
     process::{
-        Pid, PidNamespace,
+        Pid,
         pid_table::{self, PidEntryType},
-        posix_thread::AsPosixThread,
     },
 };
 
 mod cmdline;
 mod cpuinfo;
-mod drm_scanout;
 mod filesystems;
-mod cgroups;
-mod interrupts;
-mod kallsyms;
-mod pressure;
-mod trace;
 mod loadavg;
 mod meminfo;
 mod mounts;
-mod net;
-mod buddyinfo;
-mod pagetypeinfo;
-mod vmstat;
-mod zoneinfo;
-mod perm_order;
 mod pid;
 mod self_;
 mod stat;
-mod syscall_profile;
 mod sys;
-mod sysrq;
 mod template;
 mod thread_self;
 mod uptime;
@@ -89,11 +61,6 @@ pub(super) fn init() {
 
 pub(super) fn init_on_each_cpu() {
     cpuinfo::init_on_each_cpu();
-}
-
-/// Return the process-visible boot identity for early handoff evidence.
-pub(crate) fn boot_id_text() -> &'static str {
-    sys::boot_id_text()
 }
 
 /// Magic number.
@@ -184,11 +151,6 @@ impl RootDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntry] = &[
-        (
-            "asterinas_drm_scanout",
-            InodeType::File,
-            DrmScanoutFileOps::new_inode,
-        ),
         ("cmdline", InodeType::File, CmdLineFileOps::new_inode),
         ("cpuinfo", InodeType::File, CpuInfoFileOps::new_inode),
         (
@@ -199,24 +161,8 @@ impl RootDirOps {
         ("loadavg", InodeType::File, LoadAvgFileOps::new_inode),
         ("meminfo", InodeType::File, MemInfoFileOps::new_inode),
         ("mounts", InodeType::SymLink, MountsSymOps::new_inode),
-        ("net", InodeType::SymLink, NetSymOps::new_inode),
-        ("buddyinfo", InodeType::File, BuddyInfoFileOps::new_inode),
-        ("pagetypeinfo", InodeType::File, PageTypeInfoFileOps::new_inode),
-        ("vmstat", InodeType::File, VmStatFileOps::new_inode),
-        ("zoneinfo", InodeType::File, ZoneInfoFileOps::new_inode),
-        ("interrupts", InodeType::File, InterruptsFileOps::new_inode),
-        ("kallsyms", InodeType::File, KallsymsFileOps::new_inode),
-        ("cgroups", InodeType::File, CgroupsFileOps::new_inode),
-        ("pressure", InodeType::Dir, PressureDirOps::new_inode),
-        ("trace", InodeType::Dir, TraceDirOps::new_inode),
-        ("perm_order", InodeType::File, PermOrderFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_inode),
-        (
-            "syscall_profile",
-            InodeType::File,
-            SyscallProfileFileOps::new_inode,
-        ),
         ("sys", InodeType::Dir, SysDirOps::new_inode),
         (
             "thread-self",
@@ -224,30 +170,16 @@ impl RootDirOps {
             ThreadSelfSymOps::new_inode,
         ),
         ("uptime", InodeType::File, UptimeFileOps::new_inode),
-        (
-            "sysrq-trigger",
-            InodeType::File,
-            sysrq::SysRqTriggerFileOps::new_inode,
-        ),
         ("version", InodeType::File, VersionFileOps::new_inode),
     ];
 }
 
 impl ProcDirOps for RootDirOps {
     fn lookup_child(&self, this_dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
-        if let Ok(vpid) = name.parse::<u32>() {
-            // The PID directory name is interpreted in the reading process's
-            // PID namespace.
+        if let Ok(pid) = name.parse::<Pid>() {
             let pid_entry = {
-                let reader_ns = reader_pid_ns();
                 let pid_table = pid_table::pid_table_mut();
-                if reader_ns.is_init() {
-                    pid_table.get_entry(vpid)
-                } else {
-                    reader_ns
-                        .process_of_vpid(vpid)
-                        .and_then(|process| pid_table.get_entry(process.pid()))
-                }
+                pid_table.get_entry(pid)
             };
             if let Some(pid_entry) = pid_entry
                 && let Some(type_) = pid_entry.type_()
@@ -283,17 +215,11 @@ impl ProcDirOps for RootDirOps {
         )?;
 
         // Collect PIDs before visiting entries, as `visit_fn` may copy data to user memory.
-        //
-        // Only processes visible in the reading process's PID namespace are
-        // listed, under their virtual PIDs in that namespace.
         let process_pids = {
-            let reader_ns = reader_pid_ns();
             let pid_table = pid_table::pid_table_mut();
             pid_table
                 .iter_processes()
-                .filter_map(|process| process.pid_in_ns(&reader_ns))
-                .map(usize::try_from)
-                .filter_map(Result::ok)
+                .filter_map(|process| usize::try_from(process.pid()).ok())
                 .collect::<Vec<_>>()
         };
 
@@ -336,35 +262,17 @@ impl ProcDirOps for RootDirOps {
     }
 
     fn revalidate_absent(&self, name: &str) -> bool {
-        let Ok(vpid) = name.parse::<u32>() else {
+        let Ok(pid) = name.parse::<Pid>() else {
             return true;
         };
 
         let pid_entry = {
-            let reader_ns = reader_pid_ns();
             let pid_table = pid_table::pid_table_mut();
-            if reader_ns.is_init() {
-                pid_table.get_entry(vpid)
-            } else {
-                reader_ns
-                    .process_of_vpid(vpid)
-                    .and_then(|process| pid_table.get_entry(process.pid()))
-            }
+            pid_table.get_entry(pid)
         };
 
         pid_entry.is_none_or(|pid_entry| pid_entry.type_().is_none())
     }
-}
-
-/// Returns the PID namespace of the process reading procfs, used to filter
-/// and translate the PID entries under `/proc`.
-fn reader_pid_ns() -> Arc<PidNamespace> {
-    current_thread!()
-        .as_posix_thread()
-        .unwrap()
-        .process()
-        .pid_ns()
-        .clone()
 }
 
 type StaticEntry = StaticDirEntry<fn(Weak<dyn Inode>) -> Arc<dyn Inode>>;

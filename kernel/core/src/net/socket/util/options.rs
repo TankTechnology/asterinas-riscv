@@ -17,7 +17,7 @@ use crate::{
         options::{
             AcceptConn, Broadcast, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
             RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-            SendTimeout, SocketOption, SocketType, Timestamp, TimestampNs,
+            SendTimeout, SocketOption, SocketType,
             macros::{sock_option_mut, sock_option_ref},
         },
         unix::{CUserCred, UNIX_DATAGRAM_DEFAULT_BUF_SIZE, UNIX_STREAM_DEFAULT_BUF_SIZE},
@@ -41,8 +41,6 @@ pub(crate) struct SocketOptionSet {
     linger: LingerOption,
     reuse_port: bool,
     pass_cred: bool,
-    timestamp: bool,
-    timestamp_ns: bool,
 }
 
 impl Default for SocketOptionSet {
@@ -57,8 +55,6 @@ impl Default for SocketOptionSet {
             linger: LingerOption::default(),
             reuse_port: false,
             pass_cred: false,
-            timestamp: false,
-            timestamp_ns: false,
         }
     }
 }
@@ -187,12 +183,6 @@ impl SocketOptionSet {
             _socket_peer_groups @ PeerGroups => {
                 return_errno_with_message!(Errno::ENODATA, "the socket does not have peer groups");
             }
-            socket_timestamp @ Timestamp => {
-                socket_timestamp.set(self.timestamp());
-            }
-            socket_timestamp_ns @ TimestampNs => {
-                socket_timestamp_ns.set(self.timestamp_ns());
-            }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,
                 "the socket option to get is unknown"
@@ -283,14 +273,6 @@ impl SocketOptionSet {
                 } else {
                     self.set_recv_buf(*recv_buf);
                 }
-            }
-            socket_timestamp @ Timestamp => {
-                let timestamp = socket_timestamp.get().unwrap();
-                self.set_timestamp(*timestamp);
-            }
-            socket_timestamp_ns @ TimestampNs => {
-                let timestamp_ns = socket_timestamp_ns.get().unwrap();
-                self.set_timestamp_ns(*timestamp_ns);
             }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,

@@ -10,8 +10,7 @@ use aster_bigtcp::{iface::InterfaceFlags, wire::IpCidr};
 use super::util::{self, ResponseMode};
 use crate::{
     net::{
-        iface::Iface,
-        net_ns::current_net_ns,
+        iface::{Iface, iter_all_ifaces},
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{
@@ -43,15 +42,10 @@ pub(super) fn do_get_addr(
     // References:
     // - <https://elixir.bootlin.com/linux/v7.1/source/net/ipv4/devinet.c#L1950>
     // - <https://elixir.bootlin.com/linux/v7.1/source/net/ipv6/addrconf.c#L5430>
-    //
-    // Only the interfaces visible in the current network namespace are reported.
     let requested_index = strict_check
         .then(|| NonZeroU32::new(request_segment.body().index))
         .flatten();
-    let net_ns = current_net_ns();
-    let mut ifaces = net_ns
-        .ifaces()
-        .iter()
+    let mut ifaces = iter_all_ifaces()
         .filter(|iface| requested_index.is_none_or(|index| index.get() == iface.index()))
         .peekable();
     if requested_index.is_some() && ifaces.peek().is_none() {
@@ -114,50 +108,6 @@ fn validate_getaddr_request(request_segment: &AddrSegment, strict_check: bool) -
         );
     }
     Ok(())
-}
-
-/// Handles `RTM_DELADDR`.
-///
-/// Only addresses this kernel itself configured can be removed; the boot
-/// profile's address is not special-cased, so `ip addr del` on it is refused
-/// by the same rule Linux applies to an address that is not there.
-pub(super) fn do_del_addr(
-    request_segment: &AddrSegment,
-    net_ns: &NetNamespace,
-) -> Result<Vec<RtnlSegment>> {
-    let body = request_segment.body();
-
-    let Some(index) = body.index else {
-        return_errno_with_message!(Errno::ENODEV, "no interface index specified");
-    };
-    let Some(iface) = net_ns
-        .ifaces()
-        .iter()
-        .find(|iface| iface.index() == index.get())
-    else {
-        return_errno_with_message!(Errno::ENODEV, "no link found");
-    };
-
-    let Some(requested) = request_segment.attrs().iter().find_map(|attr| match attr {
-        AddrAttr::Local(addr) | AddrAttr::Address(addr) => Some(*addr),
-        _ => None,
-    }) else {
-        return_errno_with_message!(Errno::EINVAL, "no address attribute specified");
-    };
-
-    let cidr = match requested {
-        IpAddr::V4(addr) => {
-            IpCidr::Ipv4(aster_bigtcp::wire::Ipv4Cidr::new(addr.into(), body.prefix_len))
-        }
-        IpAddr::V6(addr) => {
-            IpCidr::Ipv6(aster_bigtcp::wire::Ipv6Cidr::new(addr.into(), body.prefix_len))
-        }
-    };
-    if !iface.del_ip_addr(cidr) {
-        return_errno_with_message!(Errno::EADDRNOTAVAIL, "the address is not configured");
-    }
-
-    Ok(Vec::new())
 }
 
 fn iface_to_new_addrs(

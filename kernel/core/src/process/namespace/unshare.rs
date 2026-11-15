@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::{
-    fs::file::file_table::FileTable,
-    prelude::*,
-    process::{
-        CloneFlags, credentials::capabilities::CapSet, posix_thread::ContextPthreadAdminApi,
-    },
-};
+use crate::{fs::file::file_table::FileTable, prelude::*, process::CloneFlags};
 
 /// Provides administrative APIs for disassociating execution contexts.
 pub(crate) trait ContextUnshareAdminApi {
@@ -27,18 +21,6 @@ impl ContextUnshareAdminApi for Context<'_> {
         let mut thread_local_file_table_ref = self.thread_local.borrow_file_table_mut();
         let thread_local_file_table = thread_local_file_table_ref.unwrap();
 
-        // Match Linux's `unshare_files()`: keep the table untouched when it is
-        // not shared (`files_struct->count == 1` there). The two references we
-        // always hold are this thread's `RwArc` and its `PosixThread`'s
-        // `RoArc`; more references mean another thread shares the table (for
-        // example via `CLONE_FILES`), and only then is a private copy needed.
-        // This is the common case at exec time, after all sibling threads
-        // have been terminated.
-        const UNIQUE_FILE_TABLE_REFS: usize = 2;
-        if thread_local_file_table.strong_count() == UNIQUE_FILE_TABLE_REFS {
-            return;
-        }
-
         let new_file_table = FileTable::fork_from(&thread_local_file_table.read());
 
         *pthread_file_table = Some(new_file_table.clone_ro());
@@ -53,40 +35,16 @@ impl ContextUnshareAdminApi for Context<'_> {
     }
 
     fn unshare_sysvsem(&self) {
-        // Unsharing the System V semaphore undo list is a no-op: `SEM_UNDO`
-        // itself is not supported yet, so there is no undo list whose
-        // sharing semantics could be observed.
-        debug!("unshare(CLONE_SYSVSEM) is accepted as a no-op (SEM_UNDO is not supported)");
+        // TODO: Support unsharing System V semaphore.
+        warn!("unsharing System V semaphore is not supported");
     }
 
     fn unshare_namespaces(&self, flags: CloneFlags) -> Result<()> {
-        // Reject `CLONE_NEWPID` for multithreaded processes, as in Linux:
-        // a thread may share its process with other threads, but the PID
-        // namespace for children is a per-process property in effect.
-        if flags.contains(CloneFlags::CLONE_NEWPID)
-            && self.process.tasks().lock().as_slice().len() > 1
-        {
+        if flags.contains(CloneFlags::CLONE_NEWUSER) {
             return_errno_with_message!(
                 Errno::EINVAL,
-                "`CLONE_NEWPID` cannot be unshared by a multithreaded process"
+                "cloning a new user namespace is not supported"
             );
-        }
-
-        // Create the new user namespace first: any other namespaces created
-        // by the same `unshare` call are owned by it, and the calling process
-        // is granted all capabilities within it (so an unprivileged caller
-        // can, e.g., create a UTS namespace in the same call).
-        // Reference: <https://elixir.bootlin.com/linux/v6.18/source/kernel/fork.c#L3282>.
-        if flags.contains(CloneFlags::CLONE_NEWUSER) {
-            let creator_euid = self.posix_thread.credentials().euid();
-            let new_user_ns = self.thread_local.borrow_user_ns().new_child(creator_euid);
-
-            let credentials = self.credentials_mut();
-            credentials.set_permitted_capset(CapSet::all());
-            credentials.set_effective_capset(CapSet::all());
-
-            *self.process.user_ns().lock() = new_user_ns.clone();
-            *self.thread_local.borrow_user_ns_mut() = new_user_ns;
         }
 
         let user_ns_ref = self.thread_local.borrow_user_ns();
@@ -101,7 +59,6 @@ impl ContextUnshareAdminApi for Context<'_> {
             self.process.as_ref(),
             self.posix_thread,
             flags,
-            true,
         )?;
 
         if flags.contains(CloneFlags::CLONE_NEWNS) {

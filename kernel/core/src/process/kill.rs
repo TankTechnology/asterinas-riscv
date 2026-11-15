@@ -3,16 +3,11 @@
 use super::{
     Pgid, Pid, Process, pid_table,
     posix_thread::AsPosixThread,
-    signal::{
-        constants::SIGCONT,
-        provenance::{trace_user_process_enqueue, trace_user_thread_enqueue},
-        sig_num::SigNum,
-        signals::Signal,
-    },
+    signal::{constants::SIGCONT, sig_num::SigNum, signals::Signal},
 };
 use crate::{
     prelude::*,
-    process::{ResourceType, credentials::capabilities::CapSet, posix_thread::PosixThread},
+    process::{credentials::capabilities::CapSet, posix_thread::PosixThread},
     security::lsm::hooks as lsm_hooks,
     thread::Tid,
 };
@@ -26,50 +21,26 @@ use crate::{
 /// any signal.
 pub(crate) fn kill(pid: Pid, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<()> {
     // Fast path: If the signal is sent to self, we can skip most checks.
-    // (Only valid in the initial PID namespace, where virtual PIDs equal
-    // global PIDs; in other namespaces the PID below is a virtual one.)
-    if ctx.process.pid_ns().is_init() && pid == ctx.process.pid() {
+    if pid == ctx.process.pid() {
         let Some(signal) = signal else {
             return Ok(());
         };
 
         if !ctx.posix_thread.has_signal_blocked(signal.num()) {
             // Killing the current thread does not raise any permission issues.
-            trace_user_thread_enqueue(
-                signal.as_ref(),
-                "kill-or-pidfd",
-                "self-thread",
-                ctx,
-                ctx.posix_thread,
-            );
             ctx.posix_thread.enqueue_signal(signal);
             return Ok(());
         }
 
-        return kill_process(ctx.process.as_ref(), Some(signal), "process", ctx);
+        return kill_process(ctx.process.as_ref(), Some(signal), ctx);
     }
 
     // Slow path
-    //
-    // The PID is interpreted in the caller's PID namespace; processes outside
-    // the namespace are invisible and cannot be signaled.
-    let caller_pid_ns = ctx.process.pid_ns();
-    let process = if caller_pid_ns.is_init() {
-        let pid_table = pid_table::pid_table_mut();
-        // Linux resolves the `struct pid` of any task, so the thread ID of a
-        // non-leader names its thread group. LTP's `rt_sigqueueinfo01` sends
-        // to a pthread's TID through `kill(2)`'s path and expects delivery.
-        pid_table.get_process(pid).or_else(|| {
-            pid_table
-                .get_thread(pid)
-                .and_then(|thread| thread.as_posix_thread().map(|t| t.process().clone()))
-        })
-    } else {
-        caller_pid_ns.process_of_vpid(pid)
-    }
-    .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process does not exist"))?;
+    let process = pid_table::pid_table_mut()
+        .get_process(pid)
+        .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target process does not exist"))?;
 
-    kill_process(&process, signal, "process", ctx)
+    kill_process(&process, signal, ctx)
 }
 
 /// Sends a signal to all processes in a group, using the current process
@@ -90,36 +61,17 @@ pub(crate) fn kill_group<S: Signal + Clone>(
         .ok_or_else(|| Error::with_message(Errno::ESRCH, "the target group does not exist"))?;
 
     let mut result = Ok(());
-    let mut any_visible = false;
-
-    // Only group members visible in the caller's PID namespace can be
-    // signaled; if none are visible the group does not exist from the
-    // caller's point of view.
-    let caller_pid_ns = ctx.process.pid_ns().clone();
 
     let inner = process_group.lock();
     for process in inner.iter() {
-        if process.pid_in_ns(&caller_pid_ns).is_none() {
-            continue;
-        }
-        any_visible = true;
-
         let res = kill_process(
             &process,
             signal.clone().map(|s| Box::new(s) as Box<dyn Signal>),
-            "process-group",
             ctx,
         );
         if res.is_err_and(|err| err.error() != Errno::EPERM) {
             result = res;
         }
-    }
-
-    if !any_visible {
-        return_errno_with_message!(
-            Errno::ESRCH,
-            "the target group has no members in the caller's PID namespace"
-        );
     }
 
     result
@@ -163,16 +115,8 @@ pub(crate) fn tgkill(
     }
 
     if let Some(signal) = signal {
-        check_sigpending_limit(target_posix_thread, signal.as_ref())?;
         // We've checked the permission issues above.
         // FIXME: We should take some lock while checking the permission to avoid race conditions.
-        trace_user_thread_enqueue(
-            signal.as_ref(),
-            "tkill-tgkill-or-pidfd",
-            "thread",
-            ctx,
-            target_posix_thread,
-        );
         target_posix_thread.enqueue_signal(signal);
     }
 
@@ -187,27 +131,14 @@ pub(crate) fn tgkill(
 pub(crate) fn kill_all<S: Signal + Clone>(signal: Option<S>, ctx: &Context) -> Result<()> {
     let mut result = Ok(());
 
-    // Only processes visible in the caller's PID namespace are signaled
-    // (except the caller itself and the init process), as in Linux.
-    let caller_pid_ns = ctx.process.pid_ns().clone();
-
     for process in pid_table::pid_table_mut().iter_processes() {
         if Arc::ptr_eq(&ctx.process, &process) || process.is_init_process() {
-            continue;
-        }
-        if process.pid_in_ns(&caller_pid_ns).is_none() {
-            continue;
-        }
-        // The init of the caller's PID namespace is protected from
-        // `kill(-1)`, as in Linux.
-        if !caller_pid_ns.is_init() && process.is_ns_init() {
             continue;
         }
 
         let res = kill_process(
             &process,
             signal.clone().map(|s| Box::new(s) as Box<dyn Signal>),
-            "all-processes",
             ctx,
         );
         if res.is_err_and(|err| err.error() != Errno::EPERM) {
@@ -218,44 +149,15 @@ pub(crate) fn kill_all<S: Signal + Clone>(signal: Option<S>, ctx: &Context) -> R
     result
 }
 
-fn kill_process(
-    process: &Process,
-    signal: Option<Box<dyn Signal>>,
-    route: &'static str,
-    ctx: &Context,
-) -> Result<()> {
+fn kill_process(process: &Process, signal: Option<Box<dyn Signal>>, ctx: &Context) -> Result<()> {
     let signum = signal.as_ref().map(|signal| signal.num());
     let target_main_thread = process.main_thread();
     check_signal_perm(target_main_thread.as_posix_thread().unwrap(), ctx, signum)?;
 
     if let Some(signal) = signal {
-        trace_user_process_enqueue(signal.as_ref(), "kill-or-pidfd", route, ctx, process);
         process.enqueue_signal(signal);
     }
 
-    Ok(())
-}
-
-/// Enforces `RLIMIT_SIGPENDING` for queued (real-time) signals.
-///
-/// Linux counts the signals a user has queued and reports `EAGAIN` when the
-/// limit is reached; the test that exercises this (`tgkill02`) sets the limit
-/// to zero for its own process and sends `SIGRTMIN`.
-fn check_sigpending_limit(target: &PosixThread, signal: &dyn Signal) -> Result<()> {
-    if !signal.num().is_real_time() {
-        return Ok(());
-    }
-
-    let process = target.process();
-    let limit = process
-        .resource_limits()
-        .get_rlimit(ResourceType::RLIMIT_SIGPENDING)
-        .get_raw_rlimit()
-        .cur;
-    let queued = (target.sig_queues().count() + process.sig_queues().count()) as u64;
-    if queued >= limit {
-        return_errno_with_message!(Errno::EAGAIN, "the pending-signal limit has been reached");
-    }
     Ok(())
 }
 

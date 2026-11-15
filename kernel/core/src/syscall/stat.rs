@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use ostd::mm::VmIo;
 
-use super::{SyscallReturn, profile::PhaseProfiler};
+use super::SyscallReturn;
 use crate::{
     fs::{
         file::file_table::{RawFileDesc, get_file_fast},
@@ -18,33 +16,35 @@ use crate::{
     time::timespec_t,
 };
 
-pub fn sys_fstat(raw_fd: RawFileDesc, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_fstat(
+    raw_fd: RawFileDesc,
+    stat_buf_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     debug!("fd = {}, stat_buf_addr = 0x{:x}", raw_fd, stat_buf_ptr);
 
-    let mut profiler = PhaseProfiler::start("fstat");
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
-    profiler.mark("fd");
 
-    let path = file.path().clone();
-    profiler.mark("path");
-    let metadata = path.metadata()?;
-    profiler.mark("meta");
-    let stat = Stat::from(metadata);
-    profiler.mark("conv");
-    drop(file_table);
+    let stat = Stat::from(file.path().metadata()?);
     ctx.user_space().write_val(stat_buf_ptr, &stat)?;
-    profiler.mark("copy");
-    profiler.finish();
 
     Ok(SyscallReturn::Return(0))
 }
 
-pub fn sys_stat(filename_ptr: Vaddr, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_stat(
+    filename_ptr: Vaddr,
+    stat_buf_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     sys_fstatat(AT_FDCWD, filename_ptr, stat_buf_ptr, 0, ctx)
 }
 
-pub fn sys_lstat(filename_ptr: Vaddr, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_lstat(
+    filename_ptr: Vaddr,
+    stat_buf_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     sys_fstatat(
         AT_FDCWD,
         filename_ptr,
@@ -54,62 +54,16 @@ pub fn sys_lstat(filename_ptr: Vaddr, stat_buf_ptr: Vaddr, ctx: &Context) -> Res
     )
 }
 
-/// Whether a path syscall reads its path string into a stack buffer.
-///
-/// Measurement switch: both branches read the same string through the same
-/// fault-checked reader, they differ in whether the bytes land in a stack
-/// array or in a fresh allocation. Paths longer than the buffer always take
-/// the allocating branch.
-static STACK_PATH_READ: AtomicBool = AtomicBool::new(true);
-
-pub(crate) fn stack_path_read() -> bool {
-    STACK_PATH_READ.load(Ordering::Relaxed)
-}
-
-pub(crate) fn set_stack_path_read(enabled: bool) {
-    STACK_PATH_READ.store(enabled, Ordering::Relaxed);
-}
-
-/// Long enough for every path a program passes in practice; longer paths fall
-/// back to the allocating reader rather than failing.
-const PATH_STACK_BYTES: usize = 256;
-
-pub fn sys_fstatat(
+pub(super) fn sys_fstatat(
     dirfd: RawFileDesc,
     filename_ptr: Vaddr,
     stat_buf_ptr: Vaddr,
     flags: u32,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    let mut profiler = PhaseProfiler::start("fstatat");
     let user_space = ctx.user_space();
-
-    let mut stack_path = [0u8; PATH_STACK_BYTES];
-    if stack_path_read()
-        && let Some(len) =
-            user_space.read_cstring_into(filename_ptr, &mut stack_path, MAX_FILENAME_LEN)?
-    {
-        profiler.mark("str");
-        let filename = String::from_utf8_lossy(&stack_path[..len - 1]);
-        return fstatat_path(dirfd, &filename, stat_buf_ptr, flags, ctx, &mut profiler);
-    }
-
     let filename = user_space.read_cstring(filename_ptr, MAX_FILENAME_LEN)?;
-    profiler.mark("str");
-    let filename = filename.to_string_lossy();
-    fstatat_path(dirfd, &filename, stat_buf_ptr, flags, ctx, &mut profiler)
-}
-
-/// Resolves the path named by `filename` and copies its status out.
-fn fstatat_path(
-    dirfd: RawFileDesc,
-    filename: &str,
-    stat_buf_ptr: Vaddr,
-    raw_flags: u32,
-    ctx: &Context,
-    profiler: &mut PhaseProfiler,
-) -> Result<SyscallReturn> {
-    let flags = StatFlags::from_bits(raw_flags)
+    let flags = StatFlags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
     debug!(
         "dirfd = {}, filename = {:?}, stat_buf_ptr = 0x{:x}, flags = {:?}",
@@ -117,34 +71,29 @@ fn fstatat_path(
     );
 
     let path = {
-        profiler.mark("name");
-        let fs_path = FsPath::from_fd_at(dirfd, filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+        let filename = filename.to_string_lossy();
+        let fs_path =
+            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
 
         let fs_ref = ctx.thread_local.borrow_fs();
         let path_resolver = fs_ref.resolver().read();
-        profiler.mark("lock");
         if flags.contains(StatFlags::AT_SYMLINK_NOFOLLOW) {
             path_resolver.lookup_no_follow(&fs_path)?
         } else {
             path_resolver.lookup(&fs_path)?
         }
     };
-    profiler.mark("path");
 
-    let metadata = path.metadata()?;
-    profiler.mark("meta");
-    let stat = Stat::from(metadata);
-    profiler.mark("conv");
-    ctx.user_space().write_val(stat_buf_ptr, &stat)?;
-    profiler.mark("copy");
-    profiler.finish();
+    let stat = Stat::from(path.metadata()?);
+    user_space.write_val(stat_buf_ptr, &stat)?;
     Ok(SyscallReturn::Return(0))
 }
 
 bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug)]
     struct StatFlags: u32 {
-        const AT_EMPTY_PATH = 1 << 12;
-        const AT_NO_AUTOMOUNT = 1 << 11;
+        const AT_EMPTY_PATH       = 1 << 12;
+        const AT_NO_AUTOMOUNT     = 1 << 11;
         const AT_SYMLINK_NOFOLLOW = 1 << 8;
     }
 }

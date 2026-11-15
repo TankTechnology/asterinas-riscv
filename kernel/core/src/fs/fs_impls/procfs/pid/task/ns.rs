@@ -20,11 +20,10 @@ use crate::{
         },
     },
     ipc::IpcNamespace,
-    net::{net_ns::NetNamespace, uts_ns::UtsNamespace},
+    net::uts_ns::UtsNamespace,
     prelude::*,
-    process::{NsProxy, PidNamespace, UserNamespace, posix_thread::AsPosixThread},
+    process::{NsProxy, UserNamespace, posix_thread::AsPosixThread},
     thread::Thread,
-    time::namespace::TimeNamespace,
 };
 
 /// Represents the inode at `/proc/[pid]/task/[tid]/ns` (and also `/proc/[pid]/ns`).
@@ -53,30 +52,13 @@ enum NsProxyEntry {
     Ipc,
     /// The mount namespace.
     Mnt,
-    /// The network namespace.
-    Net,
-    /// The PID namespace for children.
-    PidForChildren,
-    /// The current time namespace.
-    Time,
-    /// The time namespace for child processes.
-    TimeForChildren,
     /// The UTS namespace.
     Uts,
 }
 
 impl NsProxyEntry {
     /// All supported `NsProxy`-backed namespace entries.
-    const ALL: &[Self] = &[
-        Self::Cgroup,
-        Self::Ipc,
-        Self::Mnt,
-        Self::Net,
-        Self::PidForChildren,
-        Self::Time,
-        Self::TimeForChildren,
-        Self::Uts,
-    ];
+    const ALL: &[Self] = &[Self::Cgroup, Self::Ipc, Self::Mnt, Self::Uts];
 
     /// Returns the filename of this namespace entry under `/proc/[pid]/ns/`.
     fn as_str(self) -> &'static str {
@@ -84,10 +66,6 @@ impl NsProxyEntry {
             Self::Cgroup => "cgroup",
             Self::Ipc => "ipc",
             Self::Mnt => "mnt",
-            Self::Net => "net",
-            Self::PidForChildren => "pid_for_children",
-            Self::Time => "time",
-            Self::TimeForChildren => "time_for_children",
             Self::Uts => "uts",
         }
     }
@@ -98,10 +76,6 @@ impl NsProxyEntry {
             "cgroup" => Some(Self::Cgroup),
             "ipc" => Some(Self::Ipc),
             "mnt" => Some(Self::Mnt),
-            "net" => Some(Self::Net),
-            "pid_for_children" => Some(Self::PidForChildren),
-            "time" => Some(Self::Time),
-            "time_for_children" => Some(Self::TimeForChildren),
             "uts" => Some(Self::Uts),
             _ => None,
         }
@@ -130,26 +104,6 @@ impl NsProxyEntry {
                 ns_proxy.mnt_ns().get_path(),
                 parent,
             ),
-            Self::Net => NsSymOps::<NetNamespace>::new_inode(
-                dir.clone(),
-                ns_proxy.net_ns().get_path(),
-                parent,
-            ),
-            Self::PidForChildren => NsSymOps::<PidNamespace>::new_inode(
-                dir.clone(),
-                ns_proxy.pid_ns_for_children().get_path(),
-                parent,
-            ),
-            Self::Time => NsSymOps::<TimeNamespace>::new_inode(
-                dir.clone(),
-                ns_proxy.time_ns().get_path(),
-                parent,
-            ),
-            Self::TimeForChildren => NsSymOps::<TimeNamespace>::new_inode(
-                dir.clone(),
-                ns_proxy.time_ns_for_children().get_path(),
-                parent,
-            ),
             Self::Uts => NsSymOps::<UtsNamespace>::new_inode(
                 dir.clone(),
                 ns_proxy.uts_ns().get_path(),
@@ -167,15 +121,6 @@ fn cached_ns_path(inode: &dyn Inode) -> Option<&Path> {
         return Some(&sym.inner().ns_path);
     }
     if let Some(sym) = inode.downcast_ref::<NsSymlink<IpcNamespace>>() {
-        return Some(&sym.inner().ns_path);
-    }
-    if let Some(sym) = inode.downcast_ref::<NsSymlink<NetNamespace>>() {
-        return Some(&sym.inner().ns_path);
-    }
-    if let Some(sym) = inode.downcast_ref::<NsSymlink<PidNamespace>>() {
-        return Some(&sym.inner().ns_path);
-    }
-    if let Some(sym) = inode.downcast_ref::<NsSymlink<TimeNamespace>>() {
         return Some(&sym.inner().ns_path);
     }
     if let Some(sym) = inode.downcast_ref::<NsSymlink<MountNamespace>>() {
@@ -206,21 +151,6 @@ impl ProcDirOps for NsDirOps {
             return Ok(NsSymOps::<UserNamespace>::new_inode(
                 self.dir.clone(),
                 user_ns.get_path(),
-                this_dir.this_weak().clone(),
-            ));
-        }
-
-        if name == "pid" {
-            // The `pid` entry refers to the PID namespace the process itself
-            // lives in (not the one its children will join, which is the
-            // `pid_for_children` entry backed by the namespace proxy).
-            let Some(process) = self.dir.process() else {
-                return_errno_with_message!(Errno::ESRCH, "the process does not exist");
-            };
-
-            return Ok(NsSymOps::<PidNamespace>::new_inode(
-                self.dir.clone(),
-                process.pid_ns().get_path(),
                 this_dir.this_weak().clone(),
             ));
         }
@@ -265,13 +195,8 @@ impl ProcDirOps for NsDirOps {
             });
 
         let user_entry = Some(ListedEntry::new("user", InodeType::SymLink)).into_iter();
-        let pid_entry = Some(ListedEntry::new("pid", InodeType::SymLink)).into_iter();
 
-        visit_listed_entries(
-            offset,
-            ns_proxy_entries.chain(user_entry).chain(pid_entry),
-            visit_fn,
-        )
+        visit_listed_entries(offset, ns_proxy_entries.chain(user_entry), visit_fn)
     }
 
     fn revalidation_policy(&self) -> RevalidationPolicy {
@@ -280,7 +205,7 @@ impl ProcDirOps for NsDirOps {
         RevalidationPolicy::REVALIDATE_EXISTS
     }
 
-    fn revalidate_exists(&self, name: &str, child: &dyn Inode) -> bool {
+    fn revalidate_exists(&self, _name: &str, child: &dyn Inode) -> bool {
         let Some(cached_path) = cached_ns_path(child) else {
             return false;
         };
@@ -291,44 +216,6 @@ impl ProcDirOps for NsDirOps {
             };
             let user_ns = process.user_ns().lock();
             return cached_path == &user_ns.get_path();
-        }
-
-        if child.downcast_ref::<NsSymlink<PidNamespace>>().is_some() {
-            // The `pid` entry refers to the process's own PID namespace,
-            // while `pid_for_children` refers to the proxy's PID namespace
-            // for children; the two may differ after `unshare(CLONE_NEWPID)`
-            // or `setns(CLONE_NEWPID)`.
-            if name == "pid_for_children" {
-                let Some(thread) = self.dir.thread() else {
-                    return false;
-                };
-                let ns_proxy = thread.as_posix_thread().unwrap().ns_proxy().lock();
-                let Some(ns_proxy) = ns_proxy.as_ref() else {
-                    return false;
-                };
-                return cached_path == &ns_proxy.pid_ns_for_children().get_path();
-            }
-
-            let Some(process) = self.dir.process() else {
-                return false;
-            };
-            return cached_path == &process.pid_ns().get_path();
-        }
-
-        if child.downcast_ref::<NsSymlink<TimeNamespace>>().is_some() {
-            let Some(thread) = self.dir.thread() else {
-                return false;
-            };
-            let ns_proxy = thread.as_posix_thread().unwrap().ns_proxy().lock();
-            let Some(ns_proxy) = ns_proxy.as_ref() else {
-                return false;
-            };
-            let current = if name == "time_for_children" {
-                ns_proxy.time_ns_for_children()
-            } else {
-                ns_proxy.time_ns()
-            };
-            return cached_path == &current.get_path();
         }
 
         let Some(thread) = self.dir.thread() else {
@@ -349,10 +236,6 @@ impl ProcDirOps for NsDirOps {
 
         if child.downcast_ref::<NsSymlink<UtsNamespace>>().is_some() {
             return cached_path == &ns_proxy.uts_ns().get_path();
-        }
-
-        if child.downcast_ref::<NsSymlink<NetNamespace>>().is_some() {
-            return cached_path == &ns_proxy.net_ns().get_path();
         }
 
         if child.downcast_ref::<NsSymlink<IpcNamespace>>().is_some() {

@@ -18,12 +18,10 @@ use crate::{
     },
     prelude::*,
     process::{
-        ExecProfiler,
         posix_thread::AsPosixThread,
         process_vm::{AuxKey, AuxVec},
         program_loader::open_executable_file,
     },
-    time,
     util::random::getrandom,
     vm::{
         perms::VmPerms,
@@ -61,15 +59,12 @@ pub(crate) fn load_elf_to_vmar(
     elf_headers: ElfHeaders,
     argv: Vec<CString>,
     envp: Vec<CString>,
-    profile: &mut ExecProfiler,
 ) -> Result<ElfLoadInfo> {
     let ldso = lookup_and_parse_ldso(&elf_headers, &elf_file, path_resolver)?;
-    profile.mark("ld");
 
     #[cfg_attr(target_arch = "loongarch64", expect(unused_mut))]
     let (elf_mapped_info, entry_point, mut aux_vec) =
         map_vmos_and_build_aux_vec(vmar, ldso, &elf_headers, &elf_file)?;
-    profile.mark("sg");
     vmar.process_vm()
         .set_code_range(elf_mapped_info.code_range.clone());
     vmar.process_vm()
@@ -84,17 +79,14 @@ pub(crate) fn load_elf_to_vmar(
         vmar.process_vm().set_vdso_base(vdso_text_base);
         aux_vec.set(AuxKey::AT_SYSINFO_EHDR, vdso_text_base as u64);
     }
-    profile.mark("vd");
 
     vmar.process_vm()
         .map_and_write_init_stack(vmar, argv, envp, aux_vec)?;
-    profile.mark("sk");
     vmar.process_vm().map_and_init_heap(
         vmar,
         elf_mapped_info.data_range.len(),
         elf_mapped_info.heap_base,
     )?;
-    profile.mark("hp");
 
     let user_stack_top = vmar.process_vm().init_stack().user_stack_top();
     Ok(ElfLoadInfo {
@@ -469,15 +461,6 @@ fn init_aux_vec(
     let mut aux_vec = AuxVec::new();
 
     aux_vec.set(AuxKey::AT_PAGESZ, PAGE_SIZE as _);
-    aux_vec.set(AuxKey::AT_CLKTCK, time::USER_HZ);
-    #[cfg(target_arch = "riscv64")]
-    {
-        // User space learns which single-letter extensions the harts have from
-        // this word; glibc's ifunc dispatch and the language runtimes read it.
-        let (hwcap, hwcap2) = crate::arch::isa::hwcap();
-        aux_vec.set(AuxKey::AT_HWCAP, hwcap);
-        aux_vec.set(AuxKey::AT_HWCAP2, hwcap2);
-    }
 
     let Some(ph_vaddr) = elf_map_range.relocated_addr_of(elf.find_vaddr_of_phdrs()?) else {
         return_errno_with_message!(

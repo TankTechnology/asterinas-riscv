@@ -16,7 +16,7 @@ use crate::{
         netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
         new_socket_common,
         options::{
-            AttachFilter, DetachFilter, Error as SocketError, SocketOption,
+            Error as SocketError, SocketOption,
             macros::{sock_option_mut, sock_option_ref},
         },
         private::SocketPrivate,
@@ -30,7 +30,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
-    util::{MultiRead, MultiWrite, bpf::SockFilter, net::SockType},
+    util::{MultiRead, MultiWrite, net::SockType},
 };
 
 mod bound;
@@ -90,11 +90,9 @@ where
             &self.inner,
             remote,
             || {
-                self.inner.write().bind_ephemeral(
-                    &NetlinkSocketAddr::new_unspecified(),
-                    &self.pollee,
-                    (),
-                )
+                self.inner
+                    .write()
+                    .bind_ephemeral(&NetlinkSocketAddr::new_unspecified(), &self.pollee)
             },
             |bound, remote_endpoint| bound.try_send(reader, remote_endpoint, flags, options),
         )?;
@@ -133,7 +131,7 @@ where
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
 
-        self.inner.write().connect(&endpoint, &self.pollee, ())
+        self.inner.write().connect(&endpoint, &self.pollee)
     }
 
     fn addr(&self) -> Result<SocketAddr> {
@@ -314,13 +312,6 @@ impl<P: SupportedNetlinkProtocol> Inner<UnboundNetlink<P>, BoundNetlink<P::Messa
             Inner::Bound(bound_socket) => bound_socket.drop_groups(groups),
         }
     }
-
-    fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) {
-        match self {
-            Inner::Unbound(unbound_socket) => unbound_socket.set_filter(filter),
-            Inner::Bound(bound_socket) => bound_socket.set_filter(filter),
-        }
-    }
 }
 
 fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
@@ -347,13 +338,6 @@ fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
         }
         strict @ StrictCheck => {
             options.netlink.set_strict_check(*strict.get().unwrap());
-        }
-        attach_filter @ AttachFilter => {
-            let filter = attach_filter.get().unwrap().clone();
-            inner.set_filter(Some(filter));
-        }
-        _detach_filter @ DetachFilter => {
-            inner.set_filter(None);
         }
         _ =>
             return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option to be set is unknown"),

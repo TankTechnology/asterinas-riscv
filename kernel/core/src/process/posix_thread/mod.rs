@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
-    time::Duration,
-};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use aster_rights::{ReadDupOp, ReadOp, ReadWriteOp};
 use aster_util::fixed_str::FixedCStr;
@@ -14,7 +11,6 @@ use ostd::{
 use spin::Once;
 
 use super::{
-    signal::job_control::{GroupStopParticipant, SelectedStop},
     Credentials, Process,
     signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
 };
@@ -26,10 +22,8 @@ use crate::{
         ExitCode, Pid,
         namespace::nsproxy::NsProxy,
         posix_thread::ptrace::TraceeStatus,
-        process::timer_manager::{CpuTimeAccounting, CpuTimeMode},
         signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
-    syscall::SockFilter,
     thread::{Thread, Tid},
     time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
@@ -43,7 +37,6 @@ mod personality;
 mod posix_thread_ext;
 pub(crate) mod ptrace;
 mod robust_list;
-mod rseq;
 mod thread_local;
 
 pub(crate) use builder::PosixThreadBuilder;
@@ -52,92 +45,9 @@ pub(crate) use exit::{do_exit, do_exit_group};
 pub(crate) use personality::Personality;
 pub use posix_thread_ext::AsPosixThread;
 pub(crate) use robust_list::RobustListHead;
-pub(crate) use rseq::{
-    Rseq, RSEQ_ALIGN, RSEQ_CPU_ID_OFFSET, RSEQ_CPU_ID_UNINITIALIZED, RSEQ_FLAG_UNREGISTER,
-    RSEQ_MIN_SIZE, RSEQ_SIG_OFFSET,
-};
 #[cfg(target_arch = "x86_64")]
 pub(crate) use thread_local::SuppUserContext;
 pub(crate) use thread_local::{AsThreadLocal, FileTableRefMut, ThreadLocal};
-
-/// An immutable node in a thread's seccomp filter tree.
-///
-/// Nodes are identity-bearing: installing identical BPF programs twice still
-/// creates distinct nodes, matching Linux's filter-tree ancestry semantics.
-#[derive(Debug)]
-pub struct SeccompFilter {
-    program: Arc<[SockFilter]>,
-    parent: Option<Arc<SeccompFilter>>,
-    path_instructions: usize,
-}
-
-impl SeccompFilter {
-    /// Linux limits a filter path to 32K instructions. Each existing node
-    /// contributes an additional four-instruction accounting overhead when a
-    /// new node is appended.
-    pub const MAX_INSNS_PER_PATH: usize = 1 << 15;
-
-    pub fn try_new(
-        program: Arc<[SockFilter]>,
-        parent: Option<Arc<SeccompFilter>>,
-    ) -> Option<Arc<Self>> {
-        let ancestor_cost = match parent.as_ref() {
-            Some(parent) => parent.path_instructions.checked_add(4)?,
-            None => 0,
-        };
-        let path_instructions = ancestor_cost.checked_add(program.len())?;
-        if path_instructions > Self::MAX_INSNS_PER_PATH {
-            return None;
-        }
-        Some(Arc::new(Self {
-            program,
-            parent,
-            path_instructions,
-        }))
-    }
-
-    pub fn program(&self) -> &[SockFilter] {
-        &self.program
-    }
-
-    pub fn parent(&self) -> Option<&Arc<SeccompFilter>> {
-        self.parent.as_ref()
-    }
-
-    /// Returns whether `ancestor` is the root of, or a node in, `descendant`.
-    /// The empty chain is the root ancestor of every chain.
-    pub fn is_ancestor(
-        ancestor: Option<&Arc<SeccompFilter>>,
-        descendant: Option<&Arc<SeccompFilter>>,
-    ) -> bool {
-        let Some(ancestor) = ancestor else {
-            return true;
-        };
-        let mut current = descendant;
-        while let Some(node) = current {
-            if Arc::ptr_eq(ancestor, node) {
-                return true;
-            }
-            current = node.parent();
-        }
-        false
-    }
-}
-
-impl Drop for SeccompFilter {
-    fn drop(&mut self) {
-        // Arc's normal recursive destruction can exhaust the kernel stack for
-        // a long uniquely-owned chain. Iteratively peel unique ancestors;
-        // stop as soon as an ancestor is shared by another thread/snapshot.
-        let mut parent = self.parent.take();
-        while let Some(parent_arc) = parent {
-            let Ok(mut parent_node) = Arc::try_unwrap(parent_arc) else {
-                break;
-            };
-            parent = parent_node.parent.take();
-        }
-    }
-}
 
 pub struct PosixThread {
     // Immutable part
@@ -164,10 +74,6 @@ pub struct PosixThread {
     sig_mask: AtomicSigMask,
     /// Thread-directed sigqueue
     sig_queues: SigQueues,
-    /// The stop the process has selected for this thread, if any.
-    selected_stop: Mutex<SelectedStop>,
-    /// Membership and checkpoint state for group-stop reporting.
-    group_stop_participant: Mutex<GroupStopParticipant>,
     /// The per-thread signal [`Waker`], which will be used to wake up the thread
     /// when enqueuing a signal, along with the reason why the thread is paused.
     signalled_waker: SpinLock<Option<(Arc<Waker>, PauseReason)>>,
@@ -175,8 +81,6 @@ pub struct PosixThread {
     // Time
     /// A profiling clock measures the user CPU time and kernel CPU time in the thread.
     prof_clock: Arc<ProfClock>,
-    /// Precise CPU-time state while this thread is scheduled.
-    cpu_time_accounting: SpinLock<CpuTimeAccounting>,
     /// A manager that manages timers based on the user CPU time of the current thread.
     virtual_timer_manager: Arc<TimerManager>,
     /// A manager that manages timers based on the profiling clock of the current thread.
@@ -204,14 +108,6 @@ pub struct PosixThread {
 
     /// The personality value for this thread.
     personality: AtomicU32,
-
-    /// The seccomp mode of this thread (`0` = disabled, `1` = strict,
-    /// `2` = filter; see `crate::syscall::seccomp`).
-    seccomp_mode: AtomicU32,
-
-    /// The immutable seccomp BPF filter chain.
-    /// Only meaningful when `seccomp_mode == SECCOMP_MODE_FILTER`.
-    seccomp_filter: Mutex<Option<Arc<SeccompFilter>>>,
 }
 
 impl PosixThread {
@@ -381,82 +277,6 @@ impl PosixThread {
         &self.prof_clock
     }
 
-    fn charge_cpu_delta(&self, mode: CpuTimeMode, elapsed: Duration) {
-        let thread_clock = match mode {
-            CpuTimeMode::User => self.prof_clock.user_clock(),
-            CpuTimeMode::Kernel => self.prof_clock.kernel_clock(),
-        };
-        thread_clock.add_duration(elapsed);
-
-        let Some(process) = self.process.upgrade() else {
-            return;
-        };
-        let process_clock = match mode {
-            CpuTimeMode::User => process.prof_clock().user_clock(),
-            CpuTimeMode::Kernel => process.prof_clock().kernel_clock(),
-        };
-        process_clock.add_duration(elapsed);
-    }
-
-    pub(crate) fn switch_cpu_time_mode(&self, mode: CpuTimeMode) {
-        let elapsed = self
-            .cpu_time_accounting
-            .disable_irq()
-            .lock()
-            .switch_mode(ostd::arch::read_tsc(), mode);
-        if let Some((old_mode, elapsed)) = elapsed {
-            self.charge_cpu_delta(old_mode, elapsed);
-        }
-        self.process_cpu_timers();
-    }
-
-    pub(crate) fn pause_cpu_time(&self) {
-        let elapsed = self
-            .cpu_time_accounting
-            .disable_irq()
-            .lock()
-            .pause(ostd::arch::read_tsc());
-        if let Some((mode, elapsed)) = elapsed {
-            self.charge_cpu_delta(mode, elapsed);
-        }
-        self.process_cpu_timers();
-    }
-
-    pub(crate) fn resume_cpu_time(&self) {
-        self.cpu_time_accounting
-            .disable_irq()
-            .lock()
-            .resume_kernel(ostd::arch::read_tsc());
-    }
-
-    pub(crate) fn account_cpu_time(&self) {
-        let elapsed = self
-            .cpu_time_accounting
-            .disable_irq()
-            .lock()
-            .elapsed_to(ostd::arch::read_tsc());
-        if let Some((mode, elapsed)) = elapsed {
-            self.charge_cpu_delta(mode, elapsed);
-        }
-    }
-
-    pub(crate) fn process_cpu_timers(&self) {
-        if let Some(process) = self.process.upgrade() {
-            process
-                .timer_manager()
-                .virtual_timer()
-                .timer_manager()
-                .process_expired_timers();
-            process
-                .timer_manager()
-                .prof_timer()
-                .timer_manager()
-                .process_expired_timers();
-        }
-        self.virtual_timer_manager.process_expired_timers();
-        self.process_expired_timers();
-    }
-
     /// Creates a timer based on the profiling CPU clock of the current thread.
     pub(crate) fn create_prof_timer<F>(&self, func: F) -> Arc<Timer>
     where
@@ -487,14 +307,6 @@ impl PosixThread {
     /// Gets the duplicatable read-only credentials of the thread.
     pub(crate) fn credentials_dup(&self) -> Credentials<ReadDupOp> {
         self.credentials.dup().restrict()
-    }
-
-    /// Irreversibly enables `no_new_privs` for this thread.
-    ///
-    /// This narrow internal API is used by seccomp TSYNC, which must propagate
-    /// the caller's `no_new_privs` bit to every synchronized sibling.
-    pub(crate) fn set_no_new_privs(&self) {
-        self.credentials.set_no_new_privs();
     }
 
     /// Returns the I/O priority value of the thread.
@@ -531,79 +343,6 @@ impl PosixThread {
     /// Returns the exit code of this thread.
     pub(crate) fn exit_code(&self) -> ExitCode {
         self.exit_code.load(Ordering::Relaxed)
-    }
-
-    /// Returns the seccomp mode of this thread.
-    pub fn seccomp_mode(&self) -> u32 {
-        self.seccomp_mode.load(Ordering::Relaxed)
-    }
-
-    /// Sets the seccomp mode of this thread.
-    ///
-    /// As on Linux, entering seccomp mode is irreversible for the lifetime of
-    /// the thread; this method is only called from `seccomp(2)`.
-    pub fn set_seccomp_mode(&self, mode: u32) {
-        self.seccomp_mode.store(mode, Ordering::Relaxed);
-    }
-
-    /// Returns the head of the seccomp filter chain, if one is installed.
-    pub fn seccomp_filter(&self) -> Option<Arc<SeccompFilter>> {
-        self.seccomp_filter.lock().clone()
-    }
-
-    /// Installs a new head for the seccomp filter chain.
-    ///
-    /// As with [`Self::set_seccomp_mode`], this is only called from `seccomp(2)`
-    /// and is irreversible for the lifetime of the thread.
-    pub fn set_seccomp_filter(&self, filter: Arc<SeccompFilter>) {
-        *self.seccomp_filter.lock() = Some(filter);
-    }
-}
-
-#[cfg(ktest)]
-mod seccomp_filter_tests {
-    use ostd::prelude::ktest;
-
-    use super::*;
-
-    fn program(len: usize) -> Arc<[SockFilter]> {
-        Arc::from(
-            vec![
-                SockFilter {
-                    code: 0x06, // BPF_RET | BPF_K
-                    jt: 0,
-                    jf: 0,
-                    k: 0x7fff_0000, // SECCOMP_RET_ALLOW
-                };
-                len
-            ]
-            .into_boxed_slice(),
-        )
-    }
-
-    #[ktest]
-    fn seccomp_filter_path_budget_boundary() {
-        let mut chain = None;
-        for _ in 0..7 {
-            chain = SeccompFilter::try_new(program(4096), chain);
-            assert!(chain.is_some());
-        }
-        chain = SeccompFilter::try_new(program(4068), chain);
-        assert_eq!(chain.as_ref().unwrap().path_instructions, 1 << 15);
-        assert!(SeccompFilter::try_new(program(1), chain.clone()).is_none());
-    }
-
-    #[ktest]
-    fn dropping_long_unique_filter_chain_is_iterative() {
-        let one_instruction = program(1);
-        let mut chain = None;
-        // 6554 one-insn nodes cost 6554 + 6553*4 = 32766.
-        for _ in 0..6554 {
-            chain = SeccompFilter::try_new(one_instruction.clone(), chain);
-            assert!(chain.is_some());
-        }
-        assert!(SeccompFilter::try_new(one_instruction, chain.clone()).is_none());
-        drop(chain);
     }
 }
 

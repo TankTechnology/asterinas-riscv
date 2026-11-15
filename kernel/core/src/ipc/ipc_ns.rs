@@ -19,18 +19,12 @@ use super::{
         PermissionMode,
         sem_set::{SEMMNI, SemaphoreSet},
     },
-    shared_memory::{
-        PermissionMode as ShmPermissionMode,
-        shm_set::{SHMMNI, ShmSet},
-    },
 };
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,
     process::{
-        Credentials, Pid, UserNamespace,
-        credentials::capabilities::CapSet,
-        posix_thread::{AsPosixThread, PosixThread},
+        Credentials, UserNamespace, credentials::capabilities::CapSet, posix_thread::PosixThread,
     },
     security::lsm::hooks as lsm_hooks,
 };
@@ -47,10 +41,6 @@ use crate::{
 pub(crate) struct IpcNamespace {
     /// Semaphore sets within this namespace.
     sem_ids: IpcIds<SemaphoreSet>,
-    /// Shared memory segments within this namespace.
-    shm_ids: IpcIds<ShmSet>,
-    /// Attachments of shared memory segments, keyed by `(pid, address)`.
-    shm_attachments: RwMutex<BTreeMap<(Pid, Vaddr), IpcId>>,
     /// Owner user namespace.
     owner: Arc<UserNamespace>,
     /// Stashed dentry for nsfs.
@@ -73,19 +63,12 @@ impl IpcNamespace {
             assert!(SEMMNI <= u32::MAX as usize);
             IpcId::new(SEMMNI as u32)
         };
-        const MAX_SHM_ID: IpcId = {
-            assert!(SHMMNI <= u32::MAX as usize);
-            IpcId::new(SHMMNI as u32)
-        };
 
         let sem_ids = IpcIds::new(MAX_SEM_ID);
-        let shm_ids = IpcIds::new(MAX_SHM_ID);
         let stashed_dentry = StashedDentry::new();
 
         Arc::new(Self {
             sem_ids,
-            shm_ids,
-            shm_attachments: RwMutex::new(BTreeMap::new()),
             owner,
             stashed_dentry,
         })
@@ -121,15 +104,6 @@ impl IpcNamespace {
             Self::validate_sem_set(sem_set, required_perm)?;
             op(sem_set)
         })?
-    }
-
-    /// Applies the pending `SEM_UNDO` adjustments recorded for `pid`.
-    ///
-    /// This runs when the process exits. See [`SemaphoreSet::apply_undo`].
-    pub fn apply_sem_undo(&self, pid: Pid) {
-        self.sem_ids.for_each(|sem_set| {
-            sem_set.apply_undo(pid);
-        });
     }
 
     /// Removes the semaphore set identified by `semid`.
@@ -240,167 +214,6 @@ impl IpcNamespace {
     ) -> Result<IpcId> {
         self.sem_ids
             .insert_auto(|_| SemaphoreSet::new(IPC_PRIVATE, num_sems, mode, &credentials))
-    }
-
-    /// Calls `op` with the shared memory segment identified by `shmid`.
-    pub fn with_shm_set<T, F>(
-        &self,
-        shmid: IpcId,
-        required_perm: ShmPermissionMode,
-        op: F,
-    ) -> Result<T>
-    where
-        F: FnOnce(&ShmSet) -> Result<T>,
-    {
-        self.shm_ids.with(shmid, |shm_set| {
-            self.validate_shm_set(shm_set, required_perm)?;
-            op(shm_set)
-        })?
-    }
-
-    /// Marks a shared memory segment for removal.
-    ///
-    /// A segment with active attachments remains addressable by its ID until
-    /// the last detach. Linux allows a new `shmat` during this interval.
-    pub fn mark_shm_set_for_removal<F>(&self, shmid: IpcId, may_remove: F) -> Result<()>
-    where
-        F: FnOnce(&ShmSet) -> Result<()>,
-    {
-        self.shm_ids.remove_if(shmid, |shm_set| {
-            may_remove(shm_set)?;
-            Ok(shm_set.mark_for_removal())
-        })?;
-        Ok(())
-    }
-
-    /// Returns the existing shared memory segment or creates a new one.
-    pub fn get_or_create_shm_set(
-        &self,
-        key: IpcKey,
-        size: usize,
-        flags: IpcFlags,
-        mode: u16,
-        pid: Pid,
-        credentials: Credentials<ReadOp>,
-    ) -> Result<IpcId> {
-        if key == IPC_PRIVATE {
-            return self.create_shm_set(size, mode, pid, credentials);
-        }
-
-        // For now, we compute `shmid` by hashing `key`. If the hash conflicts, we will simply
-        // return an error. See the TODO below.
-        const { assert!(SHMMNI <= u32::MAX as usize) };
-        let shmid = IpcId::new(key.cast_unsigned() % SHMMNI as u32 + 1);
-
-        loop {
-            match self.shm_ids.with(shmid, |shm_set| {
-                if shm_set.permission().key() != key {
-                    if flags.contains(IpcFlags::IPC_CREAT) {
-                        // TODO: Manage all keys in a data structure (e.g., a map)
-                        return_errno_with_message!(Errno::ENOSPC, "key hashes conflict");
-                    }
-                    return_errno_with_message!(Errno::ENOENT, "the key does not exist");
-                }
-
-                self.validate_shm_set(shm_set, ShmPermissionMode::from_requested_mode(mode))?;
-
-                if flags.contains(IpcFlags::IPC_CREAT | IpcFlags::IPC_EXCL) {
-                    return_errno_with_message!(
-                        Errno::EEXIST,
-                        "the segment already exists with IPC_EXCL"
-                    );
-                }
-
-                if shm_set.size() < size {
-                    return_errno_with_message!(Errno::EINVAL, "the segment is too small");
-                }
-
-                Ok(shmid)
-            }) {
-                Err(_id_not_exist) if flags.contains(IpcFlags::IPC_CREAT) => {}
-                Err(_id_not_exist) => {
-                    return_errno_with_message!(Errno::ENOENT, "the key does not exist");
-                }
-                Ok(result) => return result,
-            }
-
-            match self
-                .shm_ids
-                .insert_at(shmid, |_| ShmSet::new(key, size, mode, pid, &credentials))
-            {
-                Ok(()) => return Ok(shmid),
-                Err(err) if err.error() == Errno::EEXIST => continue,
-                Err(err) => return Err(err),
-            }
-        }
-    }
-
-    fn validate_shm_set(&self, shm_set: &ShmSet, required_perm: ShmPermissionMode) -> Result<()> {
-        if required_perm.is_empty() {
-            return Ok(());
-        }
-
-        let current = current_thread!();
-        let posix_thread = current.as_posix_thread().unwrap();
-        if shm_set
-            .permission()
-            .allows(required_perm.bits(), &posix_thread.credentials())
-            || lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-                self.owner.as_ref(),
-                posix_thread,
-                CapSet::IPC_OWNER,
-            ))
-            .is_ok()
-        {
-            return Ok(());
-        }
-
-        return_errno_with_message!(
-            Errno::EACCES,
-            "the process does not have permission to access the shared memory segment"
-        );
-    }
-
-    /// Returns the user namespace that owns this IPC namespace.
-    pub fn owner(&self) -> &Arc<UserNamespace> {
-        &self.owner
-    }
-
-    /// Creates a new shared memory segment and returns its ID.
-    fn create_shm_set(
-        &self,
-        size: usize,
-        mode: u16,
-        pid: Pid,
-        credentials: Credentials<ReadOp>,
-    ) -> Result<IpcId> {
-        self.shm_ids
-            .insert_auto(|_| ShmSet::new(IPC_PRIVATE, size, mode, pid, &credentials))
-    }
-
-    /// Records an attachment of `shmid` at `addr` by the process `pid`.
-    pub fn record_shm_attachment(&self, pid: Pid, addr: Vaddr, shmid: IpcId) {
-        self.shm_attachments.write().insert((pid, addr), shmid);
-    }
-
-    /// Returns the shared memory ID attached at `addr` by the process `pid`.
-    pub fn shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
-        self.shm_attachments.read().get(&(pid, addr)).copied()
-    }
-
-    /// Removes and returns the shared memory ID attached at `addr` by `pid`.
-    pub fn remove_shm_attachment(&self, pid: Pid, addr: Vaddr) -> Option<IpcId> {
-        self.shm_attachments.write().remove(&(pid, addr))
-    }
-
-    /// Releases an attachment and destroys a removed segment after its last
-    /// attachment is gone.
-    pub fn release_shm_attachment(&self, shmid: IpcId, pid: Pid) -> Result<()> {
-        self.shm_ids.remove_if(shmid, |shm_set| {
-            let is_last = shm_set.detach(pid);
-            Ok(is_last && shm_set.is_marked_for_removal())
-        })?;
-        Ok(())
     }
 }
 

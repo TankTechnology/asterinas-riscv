@@ -17,10 +17,7 @@ use crate::{
         posix_thread::{PosixThread, ThreadLocal},
     },
     thread::Thread,
-    vm::{
-        perms::VmPerms,
-        vmar::{PageFaultInfo, VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, Vmar, VmarHandle},
-    },
+    vm::vmar::{VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, Vmar, VmarHandle},
 };
 
 /// The context that can be accessed from the current POSIX thread.
@@ -117,30 +114,6 @@ impl<'a> CurrentUserSpace<'a> {
         // Do NOT attempt to call `check_vaddr_lowerbound` here.
         // See the comments in the `reader` method.
         Ok(self.vmar().vm_space().writer(vaddr, len)?)
-    }
-
-    /// Resolves all user pages in a buffer before entering code that may hold a
-    /// preemption-disabled network lock. User copies themselves remain fallible,
-    /// but a valid anonymous mapping will no longer fault while the network
-    /// stack is in atomic context.
-    pub(crate) fn prefault(&self, vaddr: Vaddr, len: usize, perms: VmPerms) -> Result<()> {
-        if len == 0 {
-            return Ok(());
-        }
-        let end = vaddr
-            .checked_add(len)
-            .ok_or_else(|| Error::with_message(Errno::EFAULT, "user buffer overflows"))?;
-        if vaddr < VMAR_LOWEST_ADDR || end > VMAR_CAP_ADDR {
-            return_errno_with_message!(Errno::EFAULT, "user buffer is outside userspace");
-        }
-
-        let first_page = vaddr & !(PAGE_SIZE - 1);
-        for page_addr in (first_page..end).step_by(PAGE_SIZE) {
-            self.vmar()
-                .handle_page_fault(&PageFaultInfo::new(page_addr, perms))
-                .map_err(|_| Error::with_message(Errno::EFAULT, "user page fault unresolved"))?;
-        }
-        Ok(())
     }
 
     /// Creates a reader/writer pair to read data from or write data into the user space
@@ -245,26 +218,6 @@ impl<'a> CurrentUserSpace<'a> {
                     "the C string does not end before reaching the maximum userspace virtual address"
                 )
             })
-    }
-
-    /// Reads a C string into `buffer` instead of allocating one.
-    ///
-    /// Returns the number of bytes written, including the nul, or `None` when
-    /// the nul does not fit, in which case the caller should read the string
-    /// with [`Self::read_cstring`] instead.
-    pub fn read_cstring_into(
-        &self,
-        vaddr: Vaddr,
-        buffer: &mut [u8],
-        max_len: usize,
-    ) -> Result<Option<usize>> {
-        if max_len > 0 {
-            check_vaddr_lowerbound(vaddr)?;
-        }
-
-        let userspace_max_len = VMAR_CAP_ADDR.saturating_sub(vaddr).min(max_len);
-        let mut user_reader = self.reader(vaddr, userspace_max_len)?;
-        crate::util::read_cstring_into(&mut user_reader, buffer, userspace_max_len)
     }
 }
 

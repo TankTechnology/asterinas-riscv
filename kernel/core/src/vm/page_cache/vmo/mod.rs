@@ -24,7 +24,7 @@ use core::{
 use align_ext::AlignExt;
 use io_util::batch::IoBatch;
 use ostd::{
-    mm::{HasPaddr, Paddr, io::util::HasVmReaderWriter},
+    mm::{HasPaddr, io::util::HasVmReaderWriter},
     task::disable_preempt,
 };
 use xarray::{Cursor, LockedXArray, XArray};
@@ -289,21 +289,6 @@ impl VmoMapMode {
 }
 
 impl Vmo {
-    /// Returns whether the page covering `offset` is resident and initialized.
-    ///
-    /// This method only observes the sparse page array. It neither commits the
-    /// page nor starts backend I/O.
-    pub fn is_page_resident(&self, offset: usize) -> bool {
-        if offset >= self.size() {
-            return false;
-        }
-
-        let guard = disable_preempt();
-        let page_idx = offset / PAGE_SIZE;
-        let mut cursor = self.pages.cursor(&guard, page_idx as u64);
-        cursor.load().is_some_and(|page| !page.is_uninit())
-    }
-
     /// Commits the page at `page_idx`, blocking on backend I/O if required.
     ///
     /// For anonymous VMOs the page is zero-filled on first access.
@@ -311,15 +296,6 @@ impl Vmo {
     pub(crate) fn commit_on(&self, page_idx: usize, map_mode: VmoMapMode) -> Result<()> {
         let page = self.commit_on_internal(page_idx, CommitMode::Read)?;
         map_mode.ensure(page);
-        Ok(())
-    }
-
-    /// Prepares a backend page for a shared writable mapping. The first write
-    /// fault must call this before granting PTE write permission.
-    pub(crate) fn mark_mmap_writable_page(&self, page_idx: usize) -> Result<()> {
-        if self.has_backend() {
-            self.commit_on(page_idx)?.mark_mmap_writable();
-        }
         Ok(())
     }
 
@@ -483,23 +459,6 @@ impl Vmo {
         self.size.load(Ordering::Acquire)
     }
 
-    /// Returns the base physical address of a contiguous VMO.
-    ///
-    /// Only [`VmoFlags::CONTIGUOUS`] VMOs have a well-defined base address:
-    /// their pages are committed up front as one physically contiguous segment,
-    /// so the physical address of page 0 identifies the whole span. This is
-    /// what device drivers need to hand a guest physical address to a device.
-    ///
-    /// Returns `None` if the VMO is not contiguous or its first page has not
-    /// been committed yet.
-    pub fn paddr(&self) -> Option<Paddr> {
-        if !self.flags.contains(VmoFlags::CONTIGUOUS) {
-            return None;
-        }
-        let pages = self.pages.lock();
-        pages.cursor(0).load().map(|page| page.paddr())
-    }
-
     /// Returns the status of writable mappings of the VMO.
     pub(crate) fn writable_mapping_status(&self) -> &WritableMappingStatus {
         // Currently, only VMOs used by `MemfdInode` (anonymous) track writable mapping status.
@@ -562,7 +521,7 @@ impl Vmo {
     }
 
     /// Returns whether this VMO has a backend.
-    pub(crate) fn has_backend(&self) -> bool {
+    fn has_backend(&self) -> bool {
         self.backend.is_some()
     }
 }

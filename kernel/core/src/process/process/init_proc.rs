@@ -12,8 +12,7 @@ use crate::{
     },
     prelude::*,
     process::{
-        Credentials, PidNamespace, ProcessVm, ShebangScriptPath, UndetectedExecutable, UserNamespace,
-        pid_table,
+        Credentials, ProcessVm, ShebangScriptPath, UndetectedExecutable, UserNamespace, pid_table,
         posix_thread::{PosixThreadBuilder, allocate_posix_tid, derive_thread_name},
         program_loader::ProgramToLoad,
         rlimit::new_resource_limits_for_init,
@@ -62,7 +61,6 @@ fn create_init_process(
     let oom_score_adj = 0;
     let sig_dispositions = Arc::new(Mutex::new(SigDispositions::default()));
     let user_ns = UserNamespace::get_init_singleton().clone();
-    let pid_ns = PidNamespace::get_init_singleton().clone();
 
     let init_proc = Process::new(
         pid,
@@ -72,7 +70,6 @@ fn create_init_process(
         oom_score_adj,
         sig_dispositions,
         user_ns,
-        pid_ns,
     );
 
     let init_task = create_init_task(pid, &init_proc, fs, vmar, executable_path, argv, envp)?;

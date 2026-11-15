@@ -8,7 +8,7 @@ use super::{
 use crate::{
     prelude::*,
     process::{
-        PidNamespace, ReapedChildrenStats, Uid, pid_table,
+        ReapedChildrenStats, Uid, pid_table,
         posix_thread::{AsPosixThread, PosixThread, ptrace::PtraceWaitStatus},
         signal::sig_num::SigNum,
         status::StopWaitStatus,
@@ -34,19 +34,10 @@ bitflags! {
 
 impl WaitOptions {
     pub(crate) fn check(&self) -> Result<()> {
-        // `WEXITED` is what systemd's PID 1 passes on every `waitid(2)`;
-        // exited children are always reported (see `try_wait_children`), so it
-        // is fully supported and should not trigger the "unsupported" warning.
         let supported_args = WaitOptions::WNOHANG
             | WaitOptions::WSTOPPED
             | WaitOptions::WCONTINUED
-            | WaitOptions::WEXITED
-            | WaitOptions::WNOWAIT
-            // `__WALL` only widens the child set to every clone type; this
-            // implementation already considers all children, so it is honored.
-            // glibc's waitpid and ptrace (strace, gdb) pass it on every call,
-            // and warning here wrote a line to the serial console per wait.
-            | WaitOptions::WALL;
+            | WaitOptions::WNOWAIT;
         if !supported_args.contains(*self) {
             warn!(
                 "unsupported wait options are found: {:?}",
@@ -133,7 +124,6 @@ pub(crate) enum WaitStatus {
     Continue(Arc<Process>),
     TraceeExit(Arc<Thread>),
     TraceeStop(Arc<Thread>, PtraceWaitStatus),
-    TraceeContinue(Arc<Thread>),
 }
 
 impl WaitStatus {
@@ -141,18 +131,6 @@ impl WaitStatus {
         match self.source() {
             WaitStatusSource::Process(process) => process.pid(),
             WaitStatusSource::Thread(thread) => thread.tid(),
-        }
-    }
-
-    /// Returns the virtual PID of the waited process in the given PID
-    /// namespace, or `None` if the process is not visible there.
-    ///
-    /// For thread sources (ptrace), the global TID is kept; PID namespace
-    /// translation for ptrace is not supported yet.
-    pub(crate) fn pid_in_ns(&self, ns: &Arc<PidNamespace>) -> Option<u32> {
-        match self.source() {
-            WaitStatusSource::Process(process) => process.pid_in_ns(ns),
-            WaitStatusSource::Thread(_) => None,
         }
     }
 
@@ -180,9 +158,7 @@ impl WaitStatus {
             WaitStatus::Zombie(process)
             | WaitStatus::Stop(process, _)
             | WaitStatus::Continue(process) => WaitStatusSource::Process(process.as_ref()),
-            WaitStatus::TraceeExit(thread)
-            | WaitStatus::TraceeStop(thread, _)
-            | WaitStatus::TraceeContinue(thread) => {
+            WaitStatus::TraceeExit(thread) | WaitStatus::TraceeStop(thread, _) => {
                 WaitStatusSource::Thread(thread.as_posix_thread().unwrap())
             }
         }
@@ -204,7 +180,7 @@ enum WaitResult {
     NoMatch,
 }
 
-/// Checks tracees for exits, ptrace stops, or shared continuation events.
+/// Checks tracees for exited or ptrace-stopped threads.
 fn try_wait_tracees(
     child_filter: &ProcessFilter,
     wait_options: WaitOptions,
@@ -268,16 +244,6 @@ fn try_wait_tracees(
         if let Some(sig_num) = tracee.wait_ptrace_stopped(wait_options) {
             return WaitResult::Found(WaitStatus::TraceeStop(thread.clone(), sig_num));
         }
-        // Unlike stopped state, continuation has one process-wide wait slot.
-        // A tracer explicitly requesting WCONTINUED can consume it before the
-        // real parent. Never consume the parent's group-stop slot here.
-        let continued_options = wait_options & (WaitOptions::WCONTINUED | WaitOptions::WNOWAIT);
-        if matches!(
-            process.wait_stopped_or_continued(continued_options),
-            Some(StopWaitStatus::Continue)
-        ) {
-            return WaitResult::Found(WaitStatus::TraceeContinue(thread.clone()));
-        }
     }
 
     fallback_result
@@ -338,13 +304,11 @@ fn try_wait_children(
         // We have found at least one child matching `child_filter`.
         fallback_result = WaitResult::MatchedButUnready;
 
+        if child.main_thread().as_posix_thread().unwrap().is_traced() {
+            continue;
+        }
+
         if child.status().is_zombie() {
-            // Exit remains owned by the tracer until it consumes the result.
-            // This does not hide a live child's independent group-stop state
-            // from its real parent when a different process is the tracer.
-            if child.main_thread().as_posix_thread().unwrap().is_traced() {
-                continue;
-            }
             let child = child.clone();
             if !wait_options.contains(WaitOptions::WNOWAIT) {
                 reap_zombie_child(
@@ -359,12 +323,7 @@ fn try_wait_children(
         if !wait_options.intersects(WaitOptions::WSTOPPED | WaitOptions::WCONTINUED) {
             continue;
         }
-        let Some(stop_wait_status) = child
-            .main_thread()
-            .as_posix_thread()
-            .unwrap()
-            .wait_child_group_status(wait_options, &ctx.process)
-        else {
+        let Some(stop_wait_status) = child.wait_stopped_or_continued(wait_options) else {
             continue;
         };
         let wait_status = match stop_wait_status {
@@ -404,25 +363,14 @@ fn reap_zombie_child(
     // Remove the process from the global table
     pid_table.remove_process(child_process.pid());
 
-    // Remove the process's virtual PID registrations from all PID namespaces
-    child_process.remove_from_pid_namespaces();
-
     // Remove the process group and the session from global table, if necessary
     let mut child_group_mut = child_process.process_group.lock();
     child_process.clear_old_group_and_session(&mut child_group_mut, &mut pid_table);
 
-    let child_stats = child_process.reaped_children_stats().lock();
-    let (mut user_time, mut kernel_time) = child_stats.get();
-    let (mut min_flt, mut maj_flt) = child_stats.faults();
-    drop(child_stats);
+    let (mut user_time, mut kernel_time) = child_process.reaped_children_stats().lock().get();
     user_time += child_process.prof_clock().user_clock().read_time();
     kernel_time += child_process.prof_clock().kernel_clock().read_time();
-    let (own_min_flt, own_maj_flt) = child_process.io_accounting().faults();
-    min_flt = min_flt.saturating_add(own_min_flt);
-    maj_flt = maj_flt.saturating_add(own_maj_flt);
-    let mut reaped_stats = reaped_children_stats.lock();
-    reaped_stats.add(user_time, kernel_time);
-    reaped_stats.add_faults(min_flt, maj_flt);
+    reaped_children_stats.lock().add(user_time, kernel_time);
 
     child_process.status().exit_code()
 }

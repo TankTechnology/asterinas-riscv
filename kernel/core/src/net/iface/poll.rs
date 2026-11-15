@@ -20,33 +20,8 @@ pub(in crate::net) fn init_in_first_kthread() {
 
 pub(super) fn poll_ifaces() {
     for iface in iter_all_ifaces() {
-        trace_poll(iface.name());
         iface.poll();
     }
-}
-
-/// Emits `net_poll` for one interface.
-fn trace_poll(iface_name: &core::ffi::CStr) {
-    use crate::trace::events::net::NET_POLL;
-
-    if !NET_POLL.enabled() {
-        return;
-    }
-    let (pid, tid) = ostd::task::Task::current()
-        .map(|task| crate::thread::task_ids(&task))
-        .unwrap_or((0, 0));
-    NET_POLL.trace(
-        pid,
-        tid,
-        [0, 0, 0],
-        format_args!("iface={}", iface_name.to_string_lossy()),
-    );
-}
-
-/// Spawns the background polling thread for a newly created interface
-/// (e.g., the loopback interface of a new network namespace).
-pub(in crate::net) fn spawn_poll_thread(iface: Arc<Iface>) {
-    spawn_background_poll_thread(iface);
 }
 
 fn spawn_background_poll_thread(iface: Arc<Iface>) {
@@ -57,15 +32,10 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
         let wait_queue = sched_poll.polling_wait_queue();
 
         loop {
-            let next_poll_at_ms = wait_queue.wait_until(|| {
-                if sched_poll.is_stopped() {
-                    Some(None)
-                } else {
-                    sched_poll.next_poll_at_ms().map(Some)
-                }
-            });
-            let Some(next_poll_at_ms) = next_poll_at_ms else {
-                break;
+            let next_poll_at_ms = if let Some(next_poll_at_ms) = sched_poll.next_poll_at_ms() {
+                next_poll_at_ms
+            } else {
+                wait_queue.wait_until(|| sched_poll.next_poll_at_ms())
             };
 
             let now_as_ms = Jiffies::elapsed().as_duration().as_millis() as u64;
@@ -79,7 +49,6 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
             // For a more in-depth discussion, please refer to the following link:
             // <https://github.com/asterinas/asterinas/pull/630#discussion_r1496817030>.
             if now_as_ms >= next_poll_at_ms {
-                trace_poll(iface.name());
                 iface.poll();
                 continue;
             }
@@ -88,13 +57,7 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
             let _ = wait_queue.wait_until_or_timeout(
                 // If `sched_poll.next_poll_at_ms()` changes to an earlier time, we will end the
                 // waiting.
-                || {
-                    if sched_poll.is_stopped() {
-                        Some(())
-                    } else {
-                        (sched_poll.next_poll_at_ms()? < next_poll_at_ms).then_some(())
-                    }
-                },
+                || (sched_poll.next_poll_at_ms()? < next_poll_at_ms).then_some(()),
                 &duration,
             );
         }

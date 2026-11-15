@@ -12,13 +12,9 @@
 //! The Second Extended File System (ext2) is a classic Linux filesystem
 //! introduced in 1993 as a replacement for the original ext filesystem.
 //! It was the default Linux filesystem throughout the 1990s and remains
-//! the on-disk foundation for ext3 and ext4. The ext2 path covers the base
-//! feature set, while the registered ext4 compatibility path additionally
-//! handles journal replay and validated extent mappings. Non-indexed extent
-//! allocation/truncate, allocation into existing indexed leaves, depth-one
-//! root-index leaf creation, and depth-one indexed truncation are supported;
-//! full tree splitting/compaction, inline data, and journaled write
-//! transactions remain separate work.
+//! the on-disk foundation for ext3 and ext4. This implementation covers
+//! the base ext2 feature set; it does not include ext3/ext4 extensions
+//! such as journaling, extents, or inline data.
 //!
 //! # On-disk layout
 //!
@@ -43,7 +39,6 @@
 //! | `inode`        | Inode operations: file I/O, directories, symlinks    |
 //! | `xattr`        | Extended attribute block management                  |
 //! | `block_group`  | Block group descriptor and per-group allocation      |
-//! | `checksum`     | CRC32C primitive for ext4 `metadata_csum`            |
 //! | `super_block`  | On-disk superblock parsing and writeback             |
 //! | `impl_for_vfs` | Wires ext2 types into the VFS trait interfaces       |
 //! | `fs_type`      | `FsType` registration glue                           |
@@ -65,19 +60,17 @@ macro_rules! __log_prefix {
     };
 }
 
-pub use fs::Ext2;
-pub use inode::{FilePerm, Inode};
+pub(crate) use fs::Ext2;
+pub(crate) use inode::{FilePerm, Inode};
 
-use self::fs_type::{EXT2_TYPE, EXT4_TYPE};
+pub(in crate::fs) use self::fs_type::EXT2_TYPE;
 use crate::fs::vfs::registry;
 
 mod block_group;
-mod checksum;
 mod fs;
 mod fs_type;
 mod impl_for_vfs;
 mod inode;
-mod journal;
 mod prelude;
 mod super_block;
 mod utils;
@@ -89,5 +82,4 @@ mod test_utils;
 /// Registers the ext2 filesystem type with the VFS registry.
 pub(super) fn init() {
     registry::register(&EXT2_TYPE).unwrap();
-    registry::register(&EXT4_TYPE).unwrap();
 }

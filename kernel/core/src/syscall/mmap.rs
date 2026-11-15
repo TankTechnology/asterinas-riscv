@@ -65,6 +65,18 @@ fn do_sys_mmap(
     };
     check_offset(offset, len, option.flags())?;
 
+    // On x86_64 and riscv64, `PROT_WRITE` implies `PROT_READ`.
+    // Reference:
+    // <https://man7.org/linux/man-pages/man2/mmap.2.html>,
+    // Section 5.11.3 from <https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-3a-part-1-manual.pdf>,
+    // <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#translation>.
+    #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+    let vm_perms = if !vm_perms.contains(VmPerms::READ) && vm_perms.contains(VmPerms::WRITE) {
+        vm_perms | VmPerms::READ
+    } else {
+        vm_perms
+    };
+
     let mut vm_may_perms = VmPerms::ALL_MAY_PERMS;
 
     let user_space = ctx.user_space();
@@ -97,10 +109,6 @@ fn do_sys_mmap(
             options = options.map_mode(MmapMode::Shared);
         }
 
-        if option.flags().contains(MMapFlags::MAP_GROWSDOWN) {
-            options = options.grows_down();
-        }
-
         if option.flags().contains(MMapFlags::MAP_ANONYMOUS) {
             // Linux rejects MAP_SHARED_VALIDATE for anonymous mappings.
             if option.typ() == MMapType::SharedValidate {
@@ -116,12 +124,6 @@ fn do_sys_mmap(
                     vmo_options.alloc()?
                 };
                 options = options.vmo(shared_vmo);
-            } else if !option.flags().contains(MMapFlags::MAP_POPULATE) {
-                // A private anonymous mapping may install its pages in
-                // batches around the faulting one (see
-                // `handle_anonymous_page_faults_around`). `MAP_POPULATE`
-                // installs everything up front, so batching has nothing to do.
-                options = options.handle_page_faults_around();
             }
 
             options.build()?
@@ -134,9 +136,7 @@ fn do_sys_mmap(
             }
 
             let access_mode = file.access_mode();
-            if vm_perms.effective_access_perms().contains(VmPerms::READ)
-                && !access_mode.is_readable()
-            {
+            if !access_mode.is_readable() {
                 return_errno_with_message!(Errno::EACCES, "the file is not opened readable");
             }
             if option.typ().is_shared() && !access_mode.is_writable() {

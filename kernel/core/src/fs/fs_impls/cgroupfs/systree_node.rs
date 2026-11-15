@@ -63,7 +63,6 @@ use inherit_methods_macro::inherit_methods;
 use ostd::sync::{RwMutexReadGuard, RwMutexWriteGuard};
 use spin::Once;
 
-use super::inode::EventsInodeCache;
 use crate::{
     fs::cgroupfs::controller::{Controller, PidsPreCharge, SubCtrlSet, SubCtrlType},
     prelude::*,
@@ -172,21 +171,17 @@ impl CgroupMembership {
 
         // Remove the process from the old cgroup second.
         if let Some(old_cgroup) = old_cgroup {
-            let changed = old_cgroup
+            old_cgroup
                 .with_inner_mut(|old_cgroup_processes| {
                     old_cgroup_processes.remove(&process.pid()).unwrap();
-                    if old_cgroup_processes.is_empty()
-                        && old_cgroup.populated_count.fetch_sub(1, Ordering::Relaxed) == 1
-                    {
-                        old_cgroup.propagate_sub_populated()
-                    } else {
-                        Vec::new()
+                    if old_cgroup_processes.is_empty() {
+                        let old_count = old_cgroup.populated_count.fetch_sub(1, Ordering::Relaxed);
+                        if old_count == 1 {
+                            old_cgroup.propagate_sub_populated();
+                        }
                     }
                 })
                 .unwrap();
-            for node in changed {
-                node.events_inode.notify_modified();
-            }
 
             // Uncharge the pids sub-controller for the old cgroup.
             old_cgroup.controller.uncharge_pids();
@@ -220,23 +215,19 @@ impl CgroupMembership {
         if !new_cgroup.controller.active_set().is_empty() {
             return Err(Error::ResourceUnavailable);
         }
-        let changed = new_cgroup
+        new_cgroup
             .with_inner_mut(|current_processes| {
-                let became_populated = current_processes.is_empty()
-                    && new_cgroup.populated_count.fetch_add(1, Ordering::Relaxed) == 0;
+                if current_processes.is_empty() {
+                    let old_count = new_cgroup.populated_count.fetch_add(1, Ordering::Relaxed);
+                    if old_count == 0 {
+                        new_cgroup.propagate_add_populated();
+                    }
+                }
 
                 current_processes.insert(process.pid(), Arc::downgrade(process));
                 process.set_cgroup(Some(new_cgroup.fields.weak_self().upgrade().unwrap()));
-                if became_populated {
-                    new_cgroup.propagate_add_populated()
-                } else {
-                    Vec::new()
-                }
             })
             .ok_or(Error::IsDead)?;
-        for node in changed {
-            node.events_inode.notify_modified();
-        }
 
         Ok(())
     }
@@ -252,21 +243,17 @@ impl CgroupMembership {
 
         process.set_cgroup(None);
 
-        let changed = old_cgroup
+        old_cgroup
             .with_inner_mut(|old_cgroup_processes| {
                 old_cgroup_processes.remove(&process.pid()).unwrap();
-                if old_cgroup_processes.is_empty()
-                    && old_cgroup.populated_count.fetch_sub(1, Ordering::Relaxed) == 1
-                {
-                    old_cgroup.propagate_sub_populated()
-                } else {
-                    Vec::new()
+                if old_cgroup_processes.is_empty() {
+                    let old_count = old_cgroup.populated_count.fetch_sub(1, Ordering::Relaxed);
+                    if old_count == 1 {
+                        old_cgroup.propagate_sub_populated();
+                    }
                 }
             })
             .unwrap();
-        for node in changed {
-            node.events_inode.notify_modified();
-        }
 
         // Uncharge the pids sub-controller for the old cgroup.
         old_cgroup.controller.uncharge_pids();
@@ -317,8 +304,6 @@ pub(crate) struct CgroupNode {
     /// either on itself or in any of its descendant nodes. Consequently,
     /// a count > 0 indicates that this node is populated.
     populated_count: AtomicUsize,
-    /// Stable identity for the fixed `cgroup.events` attribute and its watches.
-    pub(super) events_inode: EventsInodeCache,
 }
 
 impl Debug for CgroupNode {
@@ -447,7 +432,6 @@ impl CgroupNode {
                 inner: RwMutex::new(Some(Inner::default())),
                 depth,
                 populated_count: AtomicUsize::new(0),
-                events_inode: EventsInodeCache::new(),
             }
         })
     }
@@ -461,12 +445,9 @@ impl CgroupSysNode for CgroupNode {
 
 // For process management
 impl CgroupNode {
-    // Keep propagation under `inner` so concurrent removal cannot detach the
-    // ancestor chain. Retain changed nodes for notification after unlocking.
-    fn propagate_add_populated(&self) -> Vec<Arc<Self>> {
-        let mut changed = vec![self.fields.weak_self().upgrade().unwrap()];
+    fn propagate_add_populated(&self) {
         if self.depth <= 1 {
-            return changed;
+            return;
         }
 
         let mut current_parent = Arc::downcast::<CgroupNode>(self.parent().unwrap()).unwrap();
@@ -477,7 +458,6 @@ impl CgroupNode {
             if old_count > 0 {
                 break;
             }
-            changed.push(current_parent.clone());
 
             if current_parent.depth == 1 {
                 break;
@@ -485,13 +465,11 @@ impl CgroupNode {
 
             current_parent = Arc::downcast::<CgroupNode>(current_parent.parent().unwrap()).unwrap();
         }
-        changed
     }
 
-    fn propagate_sub_populated(&self) -> Vec<Arc<Self>> {
-        let mut changed = vec![self.fields.weak_self().upgrade().unwrap()];
+    fn propagate_sub_populated(&self) {
         if self.depth <= 1 {
-            return changed;
+            return;
         }
 
         let mut current_parent = Arc::downcast::<CgroupNode>(self.parent().unwrap()).unwrap();
@@ -502,7 +480,6 @@ impl CgroupNode {
             if old_count != 1 {
                 break;
             }
-            changed.push(current_parent.clone());
 
             if current_parent.depth == 1 {
                 break;
@@ -510,7 +487,6 @@ impl CgroupNode {
 
             current_parent = Arc::downcast::<CgroupNode>(current_parent.parent().unwrap()).unwrap();
         }
-        changed
     }
 
     /// Performs a read-only operation on the inner data.
@@ -565,9 +541,6 @@ impl CgroupNode {
         }
 
         *inner = None;
-        drop(children);
-        drop(inner);
-        self.events_inode.remove();
 
         Ok(())
     }

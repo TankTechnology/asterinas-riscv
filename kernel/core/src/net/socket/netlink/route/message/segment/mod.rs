@@ -38,7 +38,6 @@ mod route;
 
 use addr::AddrSegment;
 use link::LinkSegment;
-use route::RouteSegment;
 
 use crate::{
     net::socket::netlink::message::{
@@ -52,20 +51,9 @@ use crate::{
 #[derive(Debug)]
 pub(crate) enum RtnlSegment {
     NewLink(LinkSegment),
-    SetLink(LinkSegment),
-    NewAddr(AddrSegment),
-    DelAddr(AddrSegment),
-    GetAddr(AddrSegment),
     GetLink(LinkSegment),
-    GetRoute(RouteSegment),
-    NewRoute(RouteSegment),
-    DelRoute(RouteSegment),
-    GetQdisc(QdiscSegment),
-    GetTclass(QdiscSegment),
-    GetTfilter(QdiscSegment),
-    GetNeigh(QdiscSegment),
-    GetRule(QdiscSegment),
-    GetNexthop(QdiscSegment),
+    NewAddr(AddrSegment),
+    GetAddr(AddrSegment),
     Done(DoneSegment),
     Error(ErrorSegment),
 }
@@ -73,21 +61,12 @@ pub(crate) enum RtnlSegment {
 impl ProtocolSegment for RtnlSegment {
     fn header(&self) -> &CMsgSegHdr {
         match self {
-            RtnlSegment::NewLink(link_segment)
-            | RtnlSegment::SetLink(link_segment)
-            | RtnlSegment::GetLink(link_segment) => link_segment.header(),
-            RtnlSegment::NewAddr(addr_segment)
-            | RtnlSegment::DelAddr(addr_segment)
-            | RtnlSegment::GetAddr(addr_segment) => addr_segment.header(),
-            RtnlSegment::GetRoute(route_segment)
-            | RtnlSegment::NewRoute(route_segment)
-            | RtnlSegment::DelRoute(route_segment) => route_segment.header(),
-            RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header(),
-            RtnlSegment::GetTclass(qdisc_segment) => qdisc_segment.header(),
-            RtnlSegment::GetTfilter(qdisc_segment) => qdisc_segment.header(),
-            RtnlSegment::GetNeigh(qdisc_segment) => qdisc_segment.header(),
-            RtnlSegment::GetRule(qdisc_segment) => qdisc_segment.header(),
-            RtnlSegment::GetNexthop(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::NewLink(link_segment) | RtnlSegment::GetLink(link_segment) => {
+                link_segment.header()
+            }
+            RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
+                addr_segment.header()
+            }
             RtnlSegment::Done(done_segment) => done_segment.header(),
             RtnlSegment::Error(error_segment) => error_segment.header(),
         }
@@ -95,21 +74,12 @@ impl ProtocolSegment for RtnlSegment {
 
     fn header_mut(&mut self) -> &mut CMsgSegHdr {
         match self {
-            RtnlSegment::NewLink(link_segment)
-            | RtnlSegment::SetLink(link_segment)
-            | RtnlSegment::GetLink(link_segment) => link_segment.header_mut(),
-            RtnlSegment::NewAddr(addr_segment)
-            | RtnlSegment::DelAddr(addr_segment)
-            | RtnlSegment::GetAddr(addr_segment) => addr_segment.header_mut(),
-            RtnlSegment::GetRoute(route_segment)
-            | RtnlSegment::NewRoute(route_segment)
-            | RtnlSegment::DelRoute(route_segment) => route_segment.header_mut(),
-            RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header_mut(),
-            RtnlSegment::GetTclass(qdisc_segment) => qdisc_segment.header_mut(),
-            RtnlSegment::GetTfilter(qdisc_segment) => qdisc_segment.header_mut(),
-            RtnlSegment::GetNeigh(qdisc_segment) => qdisc_segment.header_mut(),
-            RtnlSegment::GetRule(qdisc_segment) => qdisc_segment.header_mut(),
-            RtnlSegment::GetNexthop(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::NewLink(link_segment) | RtnlSegment::GetLink(link_segment) => {
+                link_segment.header_mut()
+            }
+            RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
+                addr_segment.header_mut()
+            }
             RtnlSegment::Done(done_segment) => done_segment.header_mut(),
             RtnlSegment::Error(error_segment) => error_segment.header_mut(),
         }
@@ -130,45 +100,6 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::GETADDR) => {
                 AddrSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::GetAddr)
             }
-            Ok(CSegmentType::NEWLINK) => {
-                LinkSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::NewLink)
-            }
-            Ok(CSegmentType::SETLINK) => {
-                LinkSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::SetLink)
-            }
-            Ok(CSegmentType::NEWADDR) => {
-                AddrSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::NewAddr)
-            }
-            Ok(CSegmentType::DELADDR) => {
-                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::DelAddr)
-            }
-            Ok(CSegmentType::GETROUTE) => {
-                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
-            }
-            Ok(CSegmentType::NEWROUTE) => {
-                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::NewRoute)
-            }
-            Ok(CSegmentType::DELROUTE) => {
-                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::DelRoute)
-            }
-            Ok(CSegmentType::GETQDISC) => {
-                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetQdisc)
-            }
-            Ok(CSegmentType::GETTCLASS) => {
-                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetTclass)
-            }
-            Ok(CSegmentType::GETTFILTER) => {
-                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetTfilter)
-            }
-            Ok(CSegmentType::GETNEIGH) => {
-                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetNeigh)
-            }
-            Ok(CSegmentType::GETRULE) => {
-                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetRule)
-            }
-            Ok(CSegmentType::GETNEXTHOP) => {
-                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetNexthop)
-            }
             _ => {
                 let payload_len = header.calc_payload_len_with_padding(reader)?;
                 reader.skip_some(payload_len);
@@ -185,51 +116,13 @@ impl ProtocolSegment for RtnlSegment {
     fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()> {
         match self {
             RtnlSegment::NewLink(link_segment) => link_segment.write_to(writer)?,
-            RtnlSegment::NewAddr(addr_segment) | RtnlSegment::DelAddr(addr_segment) => {
-                addr_segment.write_to(writer)?
-            }
-            RtnlSegment::NewRoute(route_segment) | RtnlSegment::DelRoute(route_segment) => {
-                route_segment.write_to(writer)?
-            }
+            RtnlSegment::NewAddr(addr_segment) => addr_segment.write_to(writer)?,
             RtnlSegment::Done(done_segment) => done_segment.write_to(writer)?,
             RtnlSegment::Error(error_segment) => error_segment.write_to(writer)?,
-            RtnlSegment::SetLink(_)
-            | RtnlSegment::GetAddr(_)
-            | RtnlSegment::GetLink(_)
-            | RtnlSegment::GetRoute(_)
-            | RtnlSegment::GetQdisc(_)
-            | RtnlSegment::GetTclass(_)
-            | RtnlSegment::GetTfilter(_)
-            | RtnlSegment::GetNeigh(_)
-            | RtnlSegment::GetRule(_)
-            | RtnlSegment::GetNexthop(_) => {
-                unreachable!("kernel should not write set/get requests to user space");
+            RtnlSegment::GetAddr(_) | RtnlSegment::GetLink(_) => {
+                unreachable!("kernel should not write get requests to user space");
             }
         }
         Ok(())
-    }
-}
-
-/// A `RTM_GETQDISC` request. Asterinas currently exposes no traffic-control
-/// qdisc objects, so retaining the header is sufficient to return `NLMSG_DONE`
-/// for an empty dump instead of leaving rtnetlink clients blocked.
-#[derive(Debug)]
-pub struct QdiscSegment {
-    header: CMsgSegHdr,
-}
-
-impl QdiscSegment {
-    fn read_from(header: &CMsgSegHdr, reader: &mut dyn MultiRead) -> Result<ContinueRead<Self>> {
-        let payload_len = header.calc_payload_len_with_padding(reader)?;
-        reader.skip_some(payload_len);
-        Ok(ContinueRead::Parsed(Self { header: *header }))
-    }
-
-    pub fn header(&self) -> &CMsgSegHdr {
-        &self.header
-    }
-
-    pub fn header_mut(&mut self) -> &mut CMsgSegHdr {
-        &mut self.header
     }
 }

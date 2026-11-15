@@ -322,10 +322,6 @@ impl SocketPrivate for UnixStreamSocket {
 }
 
 impl Socket for UnixStreamSocket {
-    fn supports_partial_send(&self) -> bool {
-        !self.is_seqpacket()
-    }
-
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let addr = UnixSocketAddr::try_from(socket_addr)?;
 
@@ -379,11 +375,7 @@ impl Socket for UnixStreamSocket {
                 }
             };
 
-            let listener = match init.listen(
-                backlog,
-                self.pollee.clone(),
-                self.is_seqpacket(),
-            ) {
+            let listener = match init.listen(backlog, self.pollee.clone(), self.is_seqpacket()) {
                 Ok(listener) => listener,
                 Err((err, init)) => {
                     return (State::Init(init), Err(err));
@@ -518,13 +510,9 @@ impl Socket for UnixStreamSocket {
         }
         let mut auxiliary_data = AuxiliaryData::from_control(control_messages)?;
 
-        if flags.contains(SendFlags::MSG_DONTWAIT) {
+        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
             self.try_send(reader, &mut auxiliary_data, flags)
-        } else {
-            self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
-                self.try_send(reader, &mut auxiliary_data, flags)
-            })
-        }
+        })
     }
 
     fn recvmsg(
@@ -537,13 +525,10 @@ impl Socket for UnixStreamSocket {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (output, control_messages) = if flags.contains(RecvFlags::MSG_DONTWAIT) {
-            self.try_recv(writer, flags)?
-        } else {
+        let (output, control_messages) =
             self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
                 self.try_recv(writer, flags)
-            })?
-        };
+            })?;
 
         let message_header = MessageHeader::new(None, control_messages);
 

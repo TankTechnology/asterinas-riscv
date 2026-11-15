@@ -41,7 +41,6 @@ impl NetlinkRouteKernelSocket {
         let request_header = request.header();
 
         let response_segments = match request {
-            RtnlSegment::NewLink(request_segment) => link::do_new_link(request_segment),
             RtnlSegment::GetLink(request_segment) => {
                 link::do_get_link(request_segment, strict_check)
             }

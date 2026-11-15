@@ -49,16 +49,11 @@ impl Init {
         Ok(())
     }
 
-    /// Turns a connecting socket into the two connected ends of a new pair.
-    ///
-    /// `ring_capacity` is decided by the caller, which is the only place that
-    /// still has the socket options the connecting side asked for.
     pub(super) fn into_connected(
         self,
         peer_addr: UnixSocketAddrBound,
         pollee: Pollee,
         peer_cred: SocketCred,
-        ring_capacity: usize,
     ) -> (Connected, Connected) {
         let Init {
             addr,
@@ -76,7 +71,6 @@ impl Init {
             EndpointState::new(Pollee::new(), is_write_shutdown.into_inner()),
             cred,
             peer_cred,
-            ring_capacity,
         );
 
         (this_conn, peer_conn)

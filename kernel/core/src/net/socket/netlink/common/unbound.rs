@@ -3,38 +3,27 @@
 use core::marker::PhantomData;
 
 use crate::{
-    bpf::Program,
     events::IoEvents,
-    net::{
-        net_ns::NetNamespace,
-        socket::{
-            netlink::{
-                GroupIdSet, NetlinkSocketAddr, common::bound::BoundNetlink, receiver::MessageQueue,
-                table::SupportedNetlinkProtocol,
-            },
-            util::datagram_common,
+    net::socket::{
+        netlink::{
+            GroupIdSet, NetlinkSocketAddr, common::bound::BoundNetlink, receiver::MessageQueue,
+            table::SupportedNetlinkProtocol,
         },
+        util::datagram_common,
     },
     prelude::*,
     process::signal::Pollee,
-    util::bpf::SockFilter,
 };
 
 pub(super) struct UnboundNetlink<P: SupportedNetlinkProtocol> {
-    net_ns: Arc<NetNamespace>,
     groups: GroupIdSet,
-    filter: Option<Arc<Vec<SockFilter>>>,
-    ebpf: Option<Arc<Program>>,
     phantom: PhantomData<BoundNetlink<P::Message>>,
 }
 
 impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
-    pub(super) fn new(net_ns: Arc<NetNamespace>) -> Self {
+    pub(super) const fn new() -> Self {
         Self {
-            net_ns,
             groups: GroupIdSet::new_empty(),
-            filter: None,
-            ebpf: None,
             phantom: PhantomData,
         }
     }
@@ -50,41 +39,6 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
     pub(super) fn drop_groups(&mut self, groups: GroupIdSet) {
         self.groups.drop_groups(groups);
     }
-
-    pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) {
-        self.filter = filter;
-    }
-
-    pub(super) fn set_ebpf_filter(&mut self, program: Option<Arc<Program>>) {
-        self.ebpf = program;
-    }
-
-    fn bind_common(
-        &mut self,
-        endpoint: NetlinkSocketAddr,
-        pollee: &Pollee,
-    ) -> Result<BoundNetlink<P::Message>> {
-        let (message_queue, message_receiver) =
-            MessageQueue::<P::Message>::new_pair(pollee.clone());
-
-        let bound_handle = {
-            let mut endpoint = endpoint;
-            endpoint.add_groups(self.groups);
-            <P as SupportedNetlinkProtocol>::bind(
-                self.net_ns.netlink_sockets(),
-                &endpoint,
-                message_receiver,
-            )?
-        };
-
-        Ok(BoundNetlink::new(
-            bound_handle,
-            message_queue,
-            self.filter.take(),
-            self.ebpf.take(),
-            self.net_ns.clone(),
-        ))
-    }
 }
 
 impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P> {
@@ -99,16 +53,39 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
         pollee: &Pollee,
         _options: Self::BindOptions,
     ) -> Result<Self::Bound> {
-        self.bind_common(*endpoint, pollee)
+        let (message_queue, message_receiver) =
+            MessageQueue::<P::Message>::new_pair(pollee.clone());
+
+        let bound_handle = {
+            let endpoint = {
+                let mut endpoint = *endpoint;
+                endpoint.add_groups(self.groups);
+                endpoint
+            };
+            <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
+        };
+
+        Ok(BoundNetlink::new(bound_handle, message_queue))
     }
 
     fn bind_ephemeral(
         &mut self,
         _remote_endpoint: &Self::Endpoint,
         pollee: &Pollee,
-        _options: Self::BindOptions,
     ) -> Result<Self::Bound> {
-        self.bind_common(NetlinkSocketAddr::new_unspecified(), pollee)
+        let (message_queue, message_receiver) =
+            MessageQueue::<P::Message>::new_pair(pollee.clone());
+
+        let bound_handle = {
+            let endpoint = {
+                let mut endpoint = NetlinkSocketAddr::new_unspecified();
+                endpoint.add_groups(self.groups);
+                endpoint
+            };
+            <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
+        };
+
+        Ok(BoundNetlink::new(bound_handle, message_queue))
     }
 
     fn check_io_events(&self) -> IoEvents {

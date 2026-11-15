@@ -2,7 +2,6 @@
 
 mod clone;
 pub mod credentials;
-mod exec_profile;
 mod execve;
 mod exit;
 mod kill;
@@ -26,14 +25,11 @@ mod wait;
 
 pub(crate) use clone::{CloneArgs, CloneFlags, clone_child};
 pub(crate) use credentials::{Credentials, Gid, Uid};
-pub(crate) use exec_profile::ExecProfiler;
 pub(crate) use execve::do_execve;
 pub(crate) use kill::{kill, kill_all, kill_group, tgkill};
 pub use namespace::user_ns::UserNamespace;
-pub(crate) use namespace::user_ns::IdMapExtent;
 pub(crate) use namespace::{
     nsproxy::{ContextSetNsAdminApi, NsProxy, NsProxyBuilder, check_unsupported_ns_flags},
-    pid_ns::PidNamespace,
     unshare::ContextUnshareAdminApi,
 };
 pub(crate) use pid_file::PidFile;
@@ -42,7 +38,6 @@ pub(crate) use process::{
     ExitCode, INIT_PROCESS_PID, JobControl, Pgid, Pid, ProcessGroup, ReapedChildrenStats, Session,
     Sid, Terminal, broadcast_signal_async, enqueue_signal_async, spawn_init_process,
 };
-pub(crate) use process::io_accounting::global_page_faults;
 pub(crate) use process_filter::ProcessFilter;
 pub(crate) use process_vm::{INIT_STACK_SIZE, LockedHeap, ProcessVm, VmarSnapshot};
 pub(crate) use program_loader::{ShebangScriptPath, UndetectedExecutable};

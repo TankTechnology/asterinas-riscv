@@ -107,23 +107,10 @@ pub(super) struct SuperBlock {
     block_group_idx: usize,
     /// Compatible feature set.
     feature_compat: FeatureCompatSet,
-    /// The raw on-disk compatible feature word.
-    ///
-    /// Compatible features are safe to ignore, but they are *not* safe to
-    /// drop: another kernel may rely on them (e.g. `orphan_file` names a
-    /// reserved inode). Write-back must preserve the bits this driver does
-    /// not model.
-    feature_compat_raw: u32,
-    /// On-disk group descriptor size (32 or 64 bytes for ext4 64-bit mode).
-    group_desc_size: usize,
     /// Incompatible feature set.
     feature_incompat: FeatureInCompatSet,
     /// Read-only-compatible feature set.
     feature_ro_compat: FeatureRoCompatSet,
-    /// Whether metadata structures carry CRC32C checksums.
-    metadata_csum: bool,
-    /// Seed every metadata checksum starts from.
-    checksum_seed: u32,
     /// 128-bit UUID for the volume.
     uuid: [u8; 16],
     /// Volume name.
@@ -154,8 +141,10 @@ pub(super) struct SuperBlock {
     reserved: Reserved,
 }
 
-impl SuperBlock {
-    pub(super) fn try_from_with_journal(sb: RawSuperBlock, allow_journal: bool) -> Result<Self> {
+impl TryFrom<RawSuperBlock> for SuperBlock {
+    type Error = Error;
+
+    fn try_from(sb: RawSuperBlock) -> Result<Self> {
         if sb.magic != MAGIC_NUM {
             return_errno_with_message!(Errno::EINVAL, "bad ext2 magic number");
         }
@@ -252,65 +241,20 @@ impl SuperBlock {
         }
 
         let feature_compat = FeatureCompatSet::from_bits_truncate(sb.feature_compat);
-        let feature_compat_raw = sb.feature_compat;
-        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) && !allow_journal {
-            return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
-        }
 
-        let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
-        let group_desc_size = if feature_incompat.contains(FeatureInCompatSet::BIT64) {
-            let size = usize::from(sb.reserved_word_pad);
-            if size < 64 || size > BLOCK_SIZE || !size.is_power_of_two() {
-                return_errno_with_message!(Errno::EINVAL, "invalid ext4 group descriptor size");
-            }
-            // These ext4 counters live in the otherwise preserved tail at
-            // offsets 0x150..0x15c. Never truncate them to the low words while
-            // the allocator and block IDs are still 32-bit.
-            let high_counts = (0x150 - 0x108) / size_of::<u32>();
-            if sb.reserved.0[high_counts..high_counts + 3]
-                .iter()
-                .any(|high| *high != 0)
-            {
-                return_errno_with_message!(
-                    Errno::EOPNOTSUPP,
-                    "ext4 block counters exceed supported range"
-                );
-            }
-            size
-        } else {
-            size_of::<RawBlockGroup>()
-        };
-
-        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
-            | FeatureInCompatSet::FLEX_BG.bits()
-            | FeatureInCompatSet::CSUM_SEED.bits()
-            | if allow_journal {
-                FeatureInCompatSet::RECOVER.bits()
-                    | FeatureInCompatSet::EXTENTS.bits()
-                    | FeatureInCompatSet::BIT64.bits()
-            } else {
-                0
-            };
+        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
+        let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
+
         let allowed_ro_compat = FeatureRoCompatSet::SPARSE_SUPER.bits()
             | FeatureRoCompatSet::LARGE_FILE.bits()
-            | FeatureRoCompatSet::BTREE_DIR.bits()
-            | FeatureRoCompatSet::HUGE_FILE.bits()
-            | FeatureRoCompatSet::DIR_NLINK.bits()
-            | FeatureRoCompatSet::EXTRA_ISIZE.bits()
-            | FeatureRoCompatSet::META_CSUM.bits();
+            | FeatureRoCompatSet::BTREE_DIR.bits();
         if (sb.feature_ro_compat & !allowed_ro_compat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported ro-compatible feature");
         }
         let feature_ro_compat = FeatureRoCompatSet::from_bits_truncate(sb.feature_ro_compat);
-        let metadata_csum = feature_ro_compat.contains(FeatureRoCompatSet::META_CSUM);
-        let checksum_seed = if metadata_csum {
-            super::checksum::fs_seed(&sb.uuid)
-        } else {
-            0
-        };
 
         Ok(Self {
             inodes_count: sb.inodes_count,
@@ -342,12 +286,8 @@ impl SuperBlock {
             inode_size,
             block_group_idx: sb.block_group_idx as _,
             feature_compat,
-            feature_compat_raw,
-            group_desc_size,
             feature_incompat,
             feature_ro_compat,
-            metadata_csum,
-            checksum_seed,
             uuid: sb.uuid,
             volume_name: sb.volume_name,
             last_mounted_dir: sb.last_mounted_dir,
@@ -368,18 +308,6 @@ impl SuperBlock {
             first_meta_bg: sb.first_meta_bg,
             reserved: sb.reserved,
         })
-    }
-
-    fn try_from(sb: RawSuperBlock) -> Result<Self> {
-        Self::try_from_with_journal(sb, false)
-    }
-}
-
-impl TryFrom<RawSuperBlock> for SuperBlock {
-    type Error = Error;
-
-    fn try_from(sb: RawSuperBlock) -> Result<Self> {
-        SuperBlock::try_from(sb)
     }
 }
 
@@ -537,7 +465,7 @@ impl SuperBlock {
 
     /// Returns the number of group descriptor blocks in each superblock copy.
     pub(super) const fn group_descriptor_blocks_count(&self) -> u32 {
-        let group_desc_bytes = (self.nr_block_groups() as usize) * self.group_desc_size();
+        let group_desc_bytes = (self.nr_block_groups() as usize) * size_of::<RawBlockGroup>();
         group_desc_bytes.div_ceil(self.block_size) as u32
     }
 
@@ -676,7 +604,8 @@ impl SuperBlock {
         sb_bid + (SUPER_BLOCK_SIZE.div_ceil(self.block_size) as u32)
     }
 
-    pub(super) const fn state(&self) -> FsState {
+    #[expect(dead_code)]
+    const fn state(&self) -> FsState {
         self.state
     }
 
@@ -685,42 +614,14 @@ impl SuperBlock {
         self.rev_level
     }
 
-    pub(super) const fn feature_compat(&self) -> FeatureCompatSet {
+    #[expect(dead_code)]
+    const fn feature_compat(&self) -> FeatureCompatSet {
         self.feature_compat
     }
 
-    pub(super) const fn feature_incompat(&self) -> FeatureInCompatSet {
+    #[expect(dead_code)]
+    const fn feature_incompat(&self) -> FeatureInCompatSet {
         self.feature_incompat
-    }
-
-    /// Whether metadata structures carry CRC32C checksums.
-    pub(super) const fn metadata_csum(&self) -> bool {
-        self.metadata_csum
-    }
-
-    /// Seed every metadata checksum starts from.
-    pub(super) const fn checksum_seed(&self) -> u32 {
-        self.checksum_seed
-    }
-
-    pub(super) const fn group_desc_size(&self) -> usize {
-        self.group_desc_size
-    }
-
-    pub(super) fn clear_journal_recovery(&mut self) {
-        self.feature_incompat.remove(FeatureInCompatSet::RECOVER);
-    }
-
-    pub(super) fn journal_inode(&self) -> u32 {
-        self.journal_ino
-    }
-
-    pub(super) fn journal_device(&self) -> u32 {
-        self.journal_dev
-    }
-
-    pub(super) const fn journal_uuid(&self) -> [u8; 16] {
-        self.journal_uuid
     }
 
     #[expect(dead_code)]
@@ -731,63 +632,50 @@ impl SuperBlock {
 
 bitflags! {
     /// Compatible feature set.
-    pub(super) struct FeatureCompatSet: u32 {
+    #[derive(Clone, Copy, Debug)]
+    struct FeatureCompatSet: u32 {
         /// Preallocate some number of blocks to a directory when creating a new one.
-        const DIR_PREALLOC = 1 << 0;
+        const DIR_PREALLOC  = 1 << 0;
         /// AFS server inodes exist.
         const IMAGIC_INODES = 1 << 1;
         /// File system has a journal.
-        const HAS_JOURNAL = 1 << 2;
+        const HAS_JOURNAL   = 1 << 2;
         /// Inodes have extended attributes.
-        const EXT_ATTR = 1 << 3;
+        const EXT_ATTR      = 1 << 3;
         /// File system can resize itself for larger partitions.
-        const RESIZE_INO = 1 << 4;
+        const RESIZE_INO    = 1 << 4;
         /// Directories use hash index.
-        const DIR_INDEX = 1 << 5;
+        const DIR_INDEX     = 1 << 5;
     }
 }
 
 bitflags! {
     /// Incompatible feature set.
-    pub(super) struct FeatureInCompatSet: u32 {
+    #[derive(Clone, Copy, Debug)]
+    struct FeatureInCompatSet: u32 {
         /// Compression is used.
         const COMPRESSION = 1 << 0;
         /// Directory entries contain a type field.
-        const FILETYPE = 1 << 1;
+        const FILETYPE    = 1 << 1;
         /// File system needs to replay its journal.
-        const RECOVER = 1 << 2;
+        const RECOVER     = 1 << 2;
         /// File system uses a journal device.
         const JOURNAL_DEV = 1 << 3;
         /// Metablock block group.
-        const META_BG = 1 << 4;
-        /// Inodes use ext4 extent trees rather than indirect block pointers.
-        const EXTENTS = 1 << 6;
-        /// Group descriptors contain high block-number fields.
-        const BIT64 = 1 << 7;
-        /// Block and inode bitmaps may be placed outside their own group.
-        const FLEX_BG = 1 << 9;
-        /// `s_checksum_seed` replaces the UUID as the metadata checksum seed.
-        const CSUM_SEED = 1 << 13;
+        const META_BG     = 1 << 4;
     }
 }
 
 bitflags! {
     /// Read-only-compatible feature set.
+    #[derive(Clone, Copy, Debug)]
     struct FeatureRoCompatSet: u32 {
         /// Sparse superblocks and group descriptor tables.
         const SPARSE_SUPER = 1 << 0;
         /// File system uses a 64-bit file size.
-        const LARGE_FILE = 1 << 1;
+        const LARGE_FILE   = 1 << 1;
         /// Directory contents are stored in a binary tree.
-        const BTREE_DIR = 1 << 2;
-        /// Files can be larger than 2 GiB (`i_blocks` accounting changes).
-        const HUGE_FILE = 1 << 3;
-        /// Directories may exceed 65000 entries with `i_links_count == 1`.
-        const DIR_NLINK = 1 << 5;
-        /// Inodes use the bytes past 128 for extra timestamps and fields.
-        const EXTRA_ISIZE = 1 << 6;
-        /// Metadata blocks and inodes carry CRC32C checksums.
-        const META_CSUM = 1 << 10;
+        const BTREE_DIR    = 1 << 2;
     }
 }
 
@@ -795,6 +683,7 @@ bitflags! {
     /// File system state.
     ///
     /// Reference: <https://www.nongnu.org/ext2-doc/ext2.html#s-state>
+    #[derive(Clone, Copy, Debug)]
     pub(super) struct FsState: u16 {
         /// Unmounted cleanly.
         const VALID = 1 << 0;
@@ -913,7 +802,7 @@ pub(super) struct RawSuperBlock {
 
 impl From<&SuperBlock> for RawSuperBlock {
     fn from(sb: &SuperBlock) -> Self {
-        let mut raw = Self {
+        Self {
             inodes_count: sb.inodes_count,
             blocks_count: sb.blocks_count,
             reserved_blocks_count: sb.reserved_blocks_count,
@@ -942,7 +831,7 @@ impl From<&SuperBlock> for RawSuperBlock {
             first_ino: sb.first_ino,
             inode_size: sb.inode_size as u16,
             block_group_idx: sb.block_group_idx as u16,
-            feature_compat: sb.feature_compat_raw,
+            feature_compat: sb.feature_compat.bits(),
             feature_incompat: sb.feature_incompat.bits(),
             feature_ro_compat: sb.feature_ro_compat.bits(),
             uuid: sb.uuid,
@@ -963,28 +852,9 @@ impl From<&SuperBlock> for RawSuperBlock {
             default_mount_opts: sb.default_mount_opts,
             first_meta_bg: sb.first_meta_bg,
             reserved: sb.reserved,
-        };
-
-        if sb.metadata_csum {
-            // `s_checksum` is the last word of the superblock and is excluded
-            // from its own checksum, so it has to be zero while computing.
-            raw.reserved.0[SUPERBLOCK_CHECKSUM_WORD] = 0;
-            let bytes: &[u8; SUPER_BLOCK_SIZE] = raw
-                .as_bytes()
-                .try_into()
-                .expect("superblock is exactly 1024 bytes");
-            raw.reserved.0[SUPERBLOCK_CHECKSUM_WORD] =
-                super::checksum::superblock(bytes);
         }
-        raw
     }
 }
-
-/// Index of `s_checksum` inside `Reserved`, which starts at `0x108`.
-///
-/// `s_checksum` sits at `0x3FC`, i.e. word 255 of the superblock and word 189
-/// of the 190-word tail.
-const SUPERBLOCK_CHECKSUM_WORD: usize = 189;
 
 /// Reserved padding to fill the on-disk superblock to 1024 bytes.
 #[repr(C)]
@@ -1003,73 +873,6 @@ mod test {
 
     use super::*;
     use crate::fs::fs_impls::ext2::test_utils::make_valid_raw_super_block;
-
-    #[ktest]
-    fn rejects_journaled_volumes_without_replay_support() {
-        let mut raw = make_valid_raw_super_block(1);
-        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
-        assert!(SuperBlock::try_from(raw).is_err());
-    }
-
-    #[ktest]
-    fn accepts_journaled_volume_for_explicit_ext4_mount() {
-        let mut raw = make_valid_raw_super_block(1);
-        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
-        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
-    }
-
-    #[ktest]
-    fn accepts_recovery_feature_only_for_ext4_mount() {
-        let mut raw = make_valid_raw_super_block(1);
-        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
-        raw.feature_incompat |= FeatureInCompatSet::RECOVER.bits();
-        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
-        assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
-    }
-
-    #[ktest]
-    fn accepts_extent_feature_only_for_ext4_mount() {
-        let mut raw = make_valid_raw_super_block(1);
-        raw.feature_incompat |= FeatureInCompatSet::EXTENTS.bits();
-        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
-        assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
-    }
-
-    #[ktest]
-    fn accepts_64bit_group_descriptor_layout_for_ext4_mount() {
-        let mut raw = make_valid_raw_super_block(1);
-        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
-        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
-        raw.reserved_word_pad = 64;
-        let sb = SuperBlock::try_from_with_journal(raw, true).unwrap();
-        assert_eq!(sb.group_desc_size(), 64);
-    }
-
-    #[ktest]
-    fn rejects_oversized_64bit_group_descriptors() {
-        let mut raw = make_valid_raw_super_block(1);
-        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
-        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
-        raw.reserved_word_pad = (BLOCK_SIZE + 8) as u16;
-        assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
-    }
-
-    #[ktest]
-    fn rejects_invalid_64bit_layout_without_truncating_counters() {
-        for size in [32, 40, 56, 72, 96] {
-            let mut raw = make_valid_raw_super_block(1);
-            raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
-            raw.reserved_word_pad = size;
-            assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
-        }
-        for offset in [0x150, 0x154, 0x158] {
-            let mut raw = make_valid_raw_super_block(1);
-            raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
-            raw.reserved_word_pad = 64;
-            raw.reserved.0[(offset - 0x108) / size_of::<u32>()] = 1;
-            assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
-        }
-    }
 
     #[ktest]
     fn max_file_size_matches_ext2_4k_limit() {

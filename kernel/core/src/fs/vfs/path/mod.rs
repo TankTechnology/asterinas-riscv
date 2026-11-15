@@ -149,12 +149,6 @@ impl Path {
         Self { mount, dentry }
     }
 
-    /// Creates a pseudo `Path` for an inode recovered from an opaque file handle
-    /// by `open_by_handle_at`.
-    pub(crate) fn from_inode_and_mount(mount: Arc<Mount>, inode: Arc<dyn Inode>) -> Self {
-        Self::new_pseudo(mount, inode, |inode| inode.ino().to_string())
-    }
-
     /// Gets the mount node of current `Path`.
     pub(crate) fn mount_node(&self) -> &Arc<Mount> {
         &self.mount
@@ -493,58 +487,6 @@ impl Path {
         }
 
         Ok(())
-    }
-
-    /// Changes the mode after applying the credential checks required by
-    /// `chmod(2)` and its variants.
-    ///
-    /// Filesystem implementations expose [`Inode::set_mode`] as a raw
-    /// metadata operation. Keeping the policy here ensures that every chmod
-    /// syscall gets the same owner, capability, and set-group-ID handling
-    /// without affecting trusted in-kernel mode changes.
-    pub fn chmod(&self, mut mode: InodeMode) -> Result<()> {
-        self.check_mount_writable()?;
-
-        let Some(task) = ostd::task::Task::current() else {
-            return self.set_mode(mode);
-        };
-        let Some(posix_thread) = task.as_posix_thread() else {
-            return self.set_mode(mode);
-        };
-        let Some(thread_local) = task.as_thread_local() else {
-            return_errno_with_message!(Errno::EPERM, "POSIX task has no thread-local state");
-        };
-
-        let metadata = self.metadata()?;
-        let credentials = posix_thread.credentials();
-        let owns_inode = credentials.fsuid() == metadata.uid;
-        let belongs_to_inode_group =
-            credentials.fsgid() == metadata.gid || credentials.groups().contains(&metadata.gid);
-
-        let has_capability = |capability| {
-            let user_ns = thread_local.borrow_user_ns();
-            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-                user_ns.as_ref(),
-                posix_thread,
-                capability,
-            ))
-            .is_ok()
-        };
-
-        if !owns_inode && !has_capability(CapSet::FOWNER) {
-            return_errno_with_message!(
-                Errno::EPERM,
-                "chmod requires owning the inode or holding CAP_FOWNER"
-            );
-        }
-
-        // Linux accepts chmod in this case but silently clears S_ISGID.
-        // Keeping it requires membership in the inode's group or CAP_FSETID.
-        if mode.has_set_gid() && !belongs_to_inode_group && !has_capability(CapSet::FSETID) {
-            mode.remove(InodeMode::S_ISGID);
-        }
-
-        self.set_mode(mode)
     }
 
     /// Checks whether a directory entry may be modified in this directory.

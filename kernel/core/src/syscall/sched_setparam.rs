@@ -2,7 +2,7 @@
 
 use ostd::mm::VmIo;
 
-use super::{SyscallReturn, sched_getattr::update_sched_attr_with};
+use super::{SyscallReturn, sched_getattr::access_sched_attr_with};
 use crate::{prelude::*, sched::SchedPolicy, thread::Tid};
 
 pub(super) fn sys_sched_setparam(tid: Tid, addr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
@@ -12,8 +12,8 @@ pub(super) fn sys_sched_setparam(tid: Tid, addr: Vaddr, ctx: &Context) -> Result
 
     let prio: i32 = ctx.user_space().read_val(addr)?;
 
-    let update = |mut policy: SchedPolicy| {
-        match &mut policy {
+    let update = |policy: &mut SchedPolicy| {
+        match policy {
             SchedPolicy::RealTime { rt_prio, .. } => {
                 *rt_prio = u8::try_from(prio)
                     .ok()
@@ -27,9 +27,9 @@ pub(super) fn sys_sched_setparam(tid: Tid, addr: Vaddr, ctx: &Context) -> Result
             }
             _ => {}
         }
-        Ok(policy)
+        Ok(())
     };
-    update_sched_attr_with(tid, ctx, None, update)?;
+    access_sched_attr_with(tid, ctx, |attr| attr.update_policy(update))?;
 
     Ok(SyscallReturn::Return(0))
 }

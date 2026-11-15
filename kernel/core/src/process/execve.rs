@@ -12,10 +12,7 @@ use ostd::{
 
 use super::process_vm::activate_vmar;
 use crate::{
-    fs::vfs::{
-        inode_ext::WriteAccessDenyGuard,
-        path::{Path, PerMountFlags},
-    },
+    fs::vfs::path::{Path, PerMountFlags},
     prelude::*,
     process::{
         ContextUnshareAdminApi, Credentials, Process,
@@ -30,7 +27,6 @@ use crate::{
         signal::{
             HandlePendingSignal, PauseReason, SigStack,
             constants::{SIGCHLD, SIGKILL},
-            provenance::trace_kernel_thread_enqueue,
             signals::kernel::KernelSignal,
         },
     },
@@ -64,12 +60,6 @@ pub(crate) fn do_execve(
     );
 
     let executable_path = executable.path().clone();
-
-    // Deny write access to the executable file while it is being loaded, and
-    // fail with ETXTBSY if it is currently open for writing (the behavior of
-    // Linux's `deny_write_access()` in `open_exec()` before Linux 6.11).
-    let _write_deny_guard = WriteAccessDenyGuard::new(executable_path.inode().clone())?;
-
     let program_to_load = ProgramToLoad::from_executable(executable, &path_resolver, argv, envp)?;
     let exec_cred = prepare_exec_cred(program_to_load.elf_path(), ctx)?;
 
@@ -88,7 +78,7 @@ pub(crate) fn do_execve(
     task_set.start_execve();
 
     // Terminate all other threads
-    sigkill_other_threads(ctx.task, &task_set, "execve-sibling");
+    sigkill_other_threads(ctx.task, &task_set);
     drop(task_set);
 
     let former_tid = ctx.posix_thread.tid();
@@ -109,7 +99,6 @@ pub(crate) fn do_execve(
         ctx.posix_thread
             .ptrace_may_stop_on(PtraceEvent::Exec(former_tid), ctx, user_context);
     } else {
-        trace_kernel_thread_enqueue("execve-fatal-failure", ctx.posix_thread, ctx.posix_thread);
         ctx.posix_thread
             .enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
     }

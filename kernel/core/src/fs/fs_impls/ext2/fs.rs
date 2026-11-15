@@ -23,72 +23,22 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use aster_block::bio::BioCompleteFn;
 use device_id::DeviceId;
-use ostd::mm::HasSize;
 
 use super::{
-    block_group::BlockGroup,
+    block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
-    journal::{
-        JBD2_COMMIT_BLOCK, JBD2_DESCRIPTOR_BLOCK, JBD2_REVOKE_BLOCK, JBD2_SEQUENCE_OFFSET,
-        JBD2_START_OFFSET, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE, JournalRing,
-        JournalSuperBlock, JournalTag, JournalTransaction, parse_descriptor, parse_header,
-        parse_revoke, validate_commit,
-    },
     prelude::*,
-    super_block::{FeatureCompatSet, FsState, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
+    super_block::{RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
 };
 use crate::{
     fs::{
         ext2::utils,
-        file::StatusFlags,
         vfs::file_system::{AtomicFsFlags, FsEventSubscriberStats, FsFlags},
     },
     process::{Gid, UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
     security::lsm::hooks as lsm_hooks,
     thread::Thread,
 };
-
-/// Test hook: hold the metadata writeback between the inode table and the
-/// bitmaps for this many milliseconds (see `hold_metadata_writeback`).
-static SYNC_HOLD_MS: AtomicU32 = AtomicU32::new(0);
-
-aster_cmdline::define_kv_param!("asterinas.ext2_sync_hold_ms", SYNC_HOLD_MS);
-
-static JOURNAL_FAULT_STAGE: AtomicU32 = AtomicU32::new(0);
-
-aster_cmdline::define_kv_param!("asterinas.ext4_fault_stage", JOURNAL_FAULT_STAGE);
-
-const FAULT_AFTER_DESCRIPTOR: u32 = 1;
-const FAULT_AFTER_COMMIT: u32 = 2;
-const FAULT_BEFORE_HOME_FLUSH: u32 = 3;
-const FAULT_BEFORE_CHECKPOINT: u32 = 4;
-
-/// Charges block I/O to the process on whose behalf it is submitted.
-///
-/// The block layer has no notion of a process, and Linux charges a bio to the
-/// task that submits it, so the charge belongs at the filesystem's submission
-/// points. I/O issued by kernel threads (writeback) is not charged.
-fn account_block_io(bio_segment: &BioSegment, write: bool) {
-    account_block_io_bytes(bio_segment.nbytes(), write);
-}
-
-fn account_block_io_bytes(bytes: usize, write: bool) {
-    let Some(process) = crate::process::Process::current() else {
-        return;
-    };
-    if write {
-        process.io_accounting().account_write_bytes(bytes);
-    } else {
-        process.io_accounting().account_read_bytes(bytes);
-    }
-}
-
-fn inject_journal_fault(stage: u32) {
-    if JOURNAL_FAULT_STAGE.swap(0, Ordering::Relaxed) == stage {
-        ostd::early_println!("ASTERINAS_EXT4_FAULT_STOP stage={}", stage);
-        ostd::power::emergency_restart(ostd::power::ExitCode::Failure);
-    }
-}
 
 /// The root inode number defined by the ext2 on-disk format.
 pub(super) const ROOT_INO: u32 = 2;
@@ -99,7 +49,7 @@ pub(super) const ROOT_INO: u32 = 2;
 /// Filesystem-wide operations are routed through the block group selected by
 /// the target inode or block address.
 #[derive(Debug)]
-pub struct Ext2 {
+pub(crate) struct Ext2 {
     /// Backing block device.
     block_device: Arc<dyn BlockDevice>,
     /// Superblock with dirty tracking.
@@ -118,51 +68,8 @@ pub struct Ext2 {
     fs_event_subscriber_stats: FsEventSubscriberStats,
     /// Per-filesystem inode generation counter.
     next_generation: AtomicU32,
-    /// Serializes journal publication, home writes, and checkpointing. Acquired
-    /// after ordinary inode locks; the journal inode never starts a transaction.
-    journal_write_lock: Mutex<()>,
-    /// Serializes the page-cache read/modify snapshot of inode-table blocks.
-    /// This lock is deliberately narrower than the pending-metadata lock:
-    /// snapshotting must not hold a page-cache operation while waiting for
-    /// journal publication or metadata collection.
-    inode_table_write_lock: Mutex<()>,
-    /// Serializes metadata collection and journal submission across concurrent
-    /// inode fsyncs. The journal publication lock alone is too narrow because
-    /// staging and pending-metadata extraction happen before publication.
-    metadata_sync_lock: Mutex<()>,
-    /// Metadata blocks staged by inode/extent writeback until filesystem sync.
-    pending_metadata: Mutex<Vec<(Ext2Bid, Vec<u8>)>>,
     /// Weak self reference for inode back-pointers.
     self_ref: Weak<Ext2>,
-}
-
-fn next_journal_block(position: u32, first: u32, max_length: u32) -> u32 {
-    if position + 1 >= max_length {
-        first
-    } else {
-        position + 1
-    }
-}
-
-/// Returns whether a journal revoke supersedes a descriptor transaction.
-///
-/// JBD2 sequence numbers are unsigned and wrap, so a plain `>=` comparison
-/// would eventually make a newly wrapped transaction look older than every
-/// revoke in the ring.  The half-range comparison is the ordering rule used
-/// for serial numbers in the journal protocol.
-fn journal_revoke_supersedes(
-    target_block: u32,
-    transaction_sequence: u32,
-    revokes: &[(u32, u32)],
-) -> bool {
-    revokes.iter().any(|&(block, revoke_sequence)| {
-        block == target_block && revoke_sequence.wrapping_sub(transaction_sequence) < 0x8000_0000
-    })
-}
-
-struct JournalReplayTransaction {
-    sequence: u32,
-    payloads: Vec<(JournalTag, Vec<u8>)>,
 }
 
 /// Policy for how `statfs` reports the total block count.
@@ -184,7 +91,6 @@ enum StatBlockAccounting {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Ext2MountOptions {
     stat_block_accounting: StatBlockAccounting,
-    noload_journal: bool,
 }
 
 impl Ext2MountOptions {
@@ -199,7 +105,6 @@ impl Ext2MountOptions {
             match token.trim() {
                 "bsddf" => options.stat_block_accounting = StatBlockAccounting::ExcludeOverhead,
                 "minixdf" => options.stat_block_accounting = StatBlockAccounting::IncludeOverhead,
-                "noload" => options.noload_journal = true,
                 _ => {}
             }
         }
@@ -214,21 +119,11 @@ impl Ext2 {
         device: Arc<dyn BlockDevice>,
         flags: FsFlags,
         data: Option<&str>,
-        allow_journal: bool,
     ) -> Result<Arc<Self>> {
         let super_block = {
             let raw_super_block = device.read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)?;
-            SuperBlock::try_from_with_journal(raw_super_block, allow_journal)?
+            SuperBlock::try_from(raw_super_block)?
         };
-        let state = super_block.state();
-        if !flags.contains(FsFlags::RDONLY)
-            && (!state.contains(FsState::VALID) || state.contains(FsState::ERROR))
-        {
-            return_errno_with_message!(
-                Errno::EUCLEAN,
-                "ext2 requires repair before writable mount"
-            );
-        }
         let block_size = super_block.block_size();
         if block_size != BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "currently only 4096-byte block size");
@@ -240,7 +135,7 @@ impl Ext2 {
 
         let group_descriptors_segment = {
             let nr_block_groups = super_block.nr_block_groups() as usize;
-            let group_desc_bytes = nr_block_groups * super_block.group_desc_size();
+            let group_desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
             let nblocks = group_desc_bytes.div_ceil(BLOCK_SIZE);
 
             let segment = FrameAllocOptions::new()
@@ -250,7 +145,7 @@ impl Ext2 {
                 BioSegment::new_from_segment(segment.clone().into(), BioDirection::FromDevice);
             match device.read_blocks(
                 Bid::new(super_block.group_descriptors_bid(0) as u64),
-                bio_segment,
+                vec![bio_segment],
             )? {
                 BioStatus::Complete => {}
                 err_status => {
@@ -290,435 +185,10 @@ impl Ext2 {
             flags: AtomicFsFlags::new(flags),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
-            journal_write_lock: Mutex::new(()),
-            inode_table_write_lock: Mutex::new(()),
-            metadata_sync_lock: Mutex::new(()),
-            pending_metadata: Mutex::new(Vec::new()),
             self_ref: weak_self.clone(),
         });
 
-        if allow_journal
-            && super_block
-                .feature_compat()
-                .contains(FeatureCompatSet::HAS_JOURNAL)
-        {
-            ext2.recover_journal(mount_options.noload_journal)?;
-        }
-
         Ok(ext2)
-    }
-
-    fn recover_journal(&self, noload: bool) -> Result<()> {
-        let (journal_ino, journal_dev) = {
-            let super_block = self.super_block.read();
-            (super_block.journal_inode(), super_block.journal_device())
-        };
-        if journal_ino == 0 || journal_dev != 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
-        }
-        let journal_inode = self.read_inode(journal_ino)?;
-        let mut block = vec![0; BLOCK_SIZE];
-        let mut writer = VmWriter::from(block.as_mut_slice()).to_fallible();
-        if journal_inode.read_at(0, &mut writer, StatusFlags::O_NOATIME)? != BLOCK_SIZE {
-            return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal superblock");
-        }
-        let journal = JournalSuperBlock::parse(&block)?;
-        self.validate_journal_uuid(journal)?;
-        if !journal.needs_recovery() || noload {
-            return Ok(());
-        }
-
-        let mut position = journal.start;
-        let mut sequence = journal.sequence;
-        let mut visited = 0;
-        let mut transactions = Vec::new();
-        let mut revokes = Vec::new();
-        let mut payloads: Vec<(JournalTag, Vec<u8>)> = Vec::new();
-        // One transaction may span several descriptor blocks: each descriptor
-        // block is followed by its own payload blocks, and only the commit
-        // block ends the transaction. Revoke blocks belong to the transaction
-        // and may appear between them.
-        while visited < journal.max_length {
-            let block = self.read_journal_block(&journal_inode, position)?;
-            if block.iter().all(|byte| *byte == 0) {
-                // A crash may leave a descriptor and payload blocks durable
-                // without the commit record. JBD2 treats that transaction as
-                // uncommitted and discards it during recovery.
-                break;
-            }
-            let header = parse_header(&block)?;
-            if header.sequence != sequence {
-                // Stale or partially written data: only the committed prefix
-                // collected so far is replayed.
-                break;
-            }
-            match header.block_type {
-                JBD2_DESCRIPTOR_BLOCK => {
-                    let tags = parse_descriptor(&block, sequence, &journal.uuid)?;
-                    position = next_journal_block(position, journal.first, journal.max_length);
-                    visited += 1;
-                    for tag in tags {
-                        let payload = self.read_journal_block(&journal_inode, position)?;
-                        payloads.push((tag, payload));
-                        position = next_journal_block(position, journal.first, journal.max_length);
-                        visited += 1;
-                    }
-                }
-                JBD2_REVOKE_BLOCK => {
-                    let revoked = parse_revoke(&block, sequence)?;
-                    revokes.extend(revoked.into_iter().map(|block| (block, sequence)));
-                    position = next_journal_block(position, journal.first, journal.max_length);
-                    visited += 1;
-                }
-                JBD2_COMMIT_BLOCK => {
-                    validate_commit(&block, sequence)?;
-                    transactions.push(JournalReplayTransaction {
-                        sequence,
-                        payloads: core::mem::take(&mut payloads),
-                    });
-                    sequence = sequence.wrapping_add(1);
-                    position = next_journal_block(position, journal.first, journal.max_length);
-                    visited += 1;
-                    if position == journal.start {
-                        break;
-                    }
-                }
-                _ => {
-                    return_errno_with_message!(
-                        Errno::EUCLEAN,
-                        "unexpected ext4 journal block inside a transaction"
-                    );
-                }
-            }
-        }
-
-        // Revoke records can appear in a later transaction than the
-        // descriptor they supersede.  Delay all writes until the complete
-        // committed prefix has been scanned so an old transaction cannot
-        // overwrite a block that was subsequently freed and reused.
-        let total_blocks = self.super_block.read().total_blocks();
-        for transaction in transactions {
-            for (tag, mut payload) in transaction.payloads {
-                if tag.flags & JOURNAL_FLAG_DELETED != 0
-                    || journal_revoke_supersedes(tag.block_number, transaction.sequence, &revokes)
-                {
-                    continue;
-                }
-                if tag.block_number >= total_blocks {
-                    return_errno_with_message!(
-                        Errno::EUCLEAN,
-                        "ext4 journal target is out of range"
-                    );
-                }
-                if tag.flags & JOURNAL_FLAG_ESCAPE != 0 {
-                    payload[0..4].copy_from_slice(&0xc03b3998u32.to_be_bytes());
-                }
-                self.block_device
-                    .write_bytes(Bid::new(tag.block_number as u64).to_offset(), &payload)
-                    .map_err(|_| {
-                        Error::with_message(Errno::EIO, "failed to replay ext4 journal")
-                    })?;
-            }
-        }
-
-        // The clean journal's sequence is the next transaction sequence, not
-        // the sequence that was just replayed.  Advancing it prevents the
-        // first post-recovery write from reusing an already committed ID.
-        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
-            .copy_from_slice(&sequence.to_be_bytes());
-        block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].fill(0);
-        let mut reader = VmReader::from(block.as_slice()).to_fallible();
-        journal_inode.write_at(0, &mut reader)?;
-        journal_inode.sync_all()?;
-        self.flush_journal_device()?;
-        self.super_block.write().clear_journal_recovery();
-        self.sync_recovery_superblock()?;
-        let sb = **self.super_block.read();
-        let descriptor_segment = self.group_descriptors_segment.clone();
-        let descriptor_bio =
-            BioSegment::new_from_segment(descriptor_segment.into(), BioDirection::FromDevice);
-        if self
-            .block_device
-            .read_blocks(Bid::new(sb.group_descriptors_bid(0) as u64), descriptor_bio)?
-            != BioStatus::Complete
-        {
-            return_errno_with_message!(Errno::EIO, "failed to refresh ext4 group descriptors");
-        }
-        for group in &self.block_groups {
-            group.refresh_after_recovery(&sb)?;
-        }
-        self.flush_journal_device()?;
-        Ok(())
-    }
-
-    fn read_journal_block(&self, inode: &Arc<Inode>, index: u32) -> Result<Vec<u8>> {
-        let mut block = vec![0; BLOCK_SIZE];
-        let mut writer = VmWriter::from(block.as_mut_slice()).to_fallible();
-        if inode.read_at(
-            index as usize * BLOCK_SIZE,
-            &mut writer,
-            StatusFlags::O_NOATIME,
-        )? != BLOCK_SIZE
-        {
-            return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal block");
-        }
-        Ok(block)
-    }
-
-    fn validate_journal_uuid(&self, journal: JournalSuperBlock) -> Result<()> {
-        let expected = self.super_block.read().journal_uuid();
-        if expected != [0; 16] && expected != journal.uuid {
-            return_errno_with_message!(
-                Errno::EUCLEAN,
-                "ext4 journal UUID does not match superblock"
-            );
-        }
-        Ok(())
-    }
-
-    /// Writes one encoded JBD2 transaction and publishes it as recoverable.
-    ///
-    /// The journal blocks are durable before the superblock's `start` field is
-    /// changed, so a crash can expose either a clean journal or a committed
-    /// transaction that recovery can replay. Home-block writes must happen
-    /// before [`Self::checkpoint_journal`] is called.
-    pub(super) fn begin_journal_transaction(&self) -> Result<JournalTransaction> {
-        if self.fs_flags().contains(FsFlags::RDONLY) {
-            return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
-        }
-        let (journal_ino, journal_dev) = {
-            let super_block = self.super_block.read();
-            (super_block.journal_inode(), super_block.journal_device())
-        };
-        if journal_ino == 0 || journal_dev != 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
-        }
-        let inode = self.read_inode(journal_ino)?;
-        let journal = JournalSuperBlock::parse(&self.read_journal_block(&inode, 0)?)?;
-        self.validate_journal_uuid(journal)?;
-        if journal.needs_recovery() {
-            return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
-        }
-        JournalTransaction::new(journal.sequence, journal.uuid)
-    }
-
-    pub(super) fn write_journal_transaction(&self, transaction: JournalTransaction) -> Result<()> {
-        if self.fs_flags().contains(FsFlags::RDONLY) {
-            return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
-        }
-        let (journal_inode, journal_dev) = {
-            let super_block = self.super_block.read();
-            (super_block.journal_inode(), super_block.journal_device())
-        };
-        if journal_inode == 0 || journal_dev != 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
-        }
-        let inode = self.read_inode(journal_inode)?;
-        let superblock = self.read_journal_block(&inode, 0)?;
-        let journal = JournalSuperBlock::parse(&superblock)?;
-        self.validate_journal_uuid(journal)?;
-        if journal.needs_recovery() {
-            return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
-        }
-        if transaction.sequence() != journal.sequence {
-            return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
-        }
-        let encoded = transaction.encode()?;
-        let mut ring = JournalRing::new(journal)?;
-        let positions = ring.reserve(encoded.len())?;
-        for (position, block) in positions.iter().zip(encoded.iter()) {
-            let mut reader = VmReader::from(block.as_slice()).to_fallible();
-            if inode.write_at(*position as usize * BLOCK_SIZE, &mut reader)? != BLOCK_SIZE {
-                return_errno_with_message!(Errno::EIO, "short ext4 journal write");
-            }
-        }
-        inode.sync_all()?;
-        self.flush_journal_device()?;
-        inject_journal_fault(FAULT_AFTER_DESCRIPTOR);
-
-        let mut published = superblock;
-        published[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
-            .copy_from_slice(&journal.sequence.to_be_bytes());
-        published[JBD2_START_OFFSET..JBD2_START_OFFSET + 4]
-            .copy_from_slice(&positions[0].to_be_bytes());
-        let mut reader = VmReader::from(published.as_slice()).to_fallible();
-        if inode.write_at(0, &mut reader)? != BLOCK_SIZE {
-            return_errno_with_message!(Errno::EIO, "short ext4 journal superblock write");
-        }
-        inode.sync_all()?;
-        self.flush_journal_device()?;
-        inject_journal_fault(FAULT_AFTER_COMMIT);
-        Ok(())
-    }
-
-    /// Writes one filesystem metadata block through JBD2 when an internal
-    /// journal is present, falling back to a direct write for ext2 volumes.
-    /// The home block is not made visible until the committed journal copy is
-    /// durable; it is checkpointed only after the home write and device flush.
-    pub(super) fn write_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) -> Result<()> {
-        if payload.len() != BLOCK_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block size");
-        }
-        if !self
-            .super_block
-            .read()
-            .feature_compat()
-            .contains(FeatureCompatSet::HAS_JOURNAL)
-        {
-            return self.write_metadata_blocks(&[(bid, payload)]);
-        }
-        self.stage_metadata_block(bid, payload);
-        Ok(())
-    }
-
-    pub(super) fn stage_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) {
-        let mut pending = self.pending_metadata.lock();
-        if let Some((_, previous)) = pending.iter_mut().find(|(target, _)| *target == bid) {
-            previous.copy_from_slice(payload);
-        } else {
-            pending.push((bid, payload.to_vec()));
-        }
-    }
-
-    /// Drops journal payloads for blocks that are being released. A directory
-    /// mutation may have staged a page-cache snapshot before truncation frees
-    /// the block; retaining that snapshot would let the next owner of the
-    /// physical block receive stale contents at the next journal commit.
-    fn discard_pending_metadata_range(&self, start: Ext2Bid, count: u32) {
-        let end = start.saturating_add(count);
-        self.pending_metadata
-            .lock()
-            .retain(|(bid, _)| *bid < start || *bid >= end);
-    }
-
-    pub(super) fn has_journal(&self) -> bool {
-        self.super_block
-            .read()
-            .feature_compat()
-            .contains(FeatureCompatSet::HAS_JOURNAL)
-    }
-
-    /// Commits all supplied metadata blocks in one JBD2 transaction. No home
-    /// block is written before publication, and the journal remains recoverable
-    /// if a home write or its durability barrier fails. Callers must supply a
-    /// consistent snapshot and prevent independent cache writeback of it.
-    pub(super) fn write_metadata_blocks(&self, blocks: &[(Ext2Bid, &[u8])]) -> Result<()> {
-        if self.fs_flags().contains(FsFlags::RDONLY) {
-            return_errno_with_message!(Errno::EROFS, "read-only filesystem metadata write");
-        }
-        if blocks.is_empty() {
-            return_errno_with_message!(Errno::EINVAL, "empty filesystem metadata transaction");
-        }
-        let total_blocks = self.super_block.read().total_blocks();
-        for (index, &(bid, payload)) in blocks.iter().enumerate() {
-            if payload.len() != BLOCK_SIZE || bid >= total_blocks {
-                return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block");
-            }
-            if blocks[..index].iter().any(|&(previous, _)| previous == bid) {
-                return_errno_with_message!(Errno::EEXIST, "duplicate filesystem metadata block");
-            }
-        }
-        let _guard = self.journal_write_lock.lock();
-        let transaction = match self.begin_journal_transaction() {
-            Ok(transaction) => Some(transaction),
-            Err(err) if err.error() == Errno::EOPNOTSUPP => None,
-            Err(err) => return Err(err),
-        };
-        let Some(mut transaction) = transaction else {
-            for &(bid, payload) in blocks {
-                self.block_device
-                    .write_bytes(Bid::new(bid as u64).to_offset(), payload)
-                    .map_err(|_| {
-                        Error::with_message(Errno::EIO, "failed to write metadata block")
-                    })?;
-            }
-            return Ok(());
-        };
-        for &(bid, payload) in blocks {
-            transaction.add_block(bid, payload)?;
-        }
-        let sequence = transaction.sequence();
-        self.write_journal_transaction(transaction)?;
-        for &(bid, payload) in blocks {
-            self.block_device
-                .write_bytes(Bid::new(bid as u64).to_offset(), payload)
-                .map_err(|_| {
-                    Error::with_message(Errno::EIO, "failed to write journaled metadata block")
-                })?;
-        }
-        inject_journal_fault(FAULT_BEFORE_HOME_FLUSH);
-        self.flush_journal_device()?;
-        inject_journal_fault(FAULT_BEFORE_CHECKPOINT);
-        self.checkpoint_journal(sequence)
-    }
-
-    /// Checks completion as well as submission of a journal durability barrier.
-    fn flush_journal_device(&self) -> Result<()> {
-        if self.block_device.sync()? != BioStatus::Complete {
-            return_errno_with_message!(Errno::EIO, "failed to flush journal block device");
-        }
-        Ok(())
-    }
-
-    /// Marks a previously published transaction checkpointed after all home
-    /// blocks have reached stable storage.
-    pub(super) fn checkpoint_journal(&self, sequence: u32) -> Result<()> {
-        let journal_ino = self.super_block.read().journal_inode();
-        if journal_ino == 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
-        }
-        let inode = self.read_inode(journal_ino)?;
-        let mut block = self.read_journal_block(&inode, 0)?;
-        let journal = JournalSuperBlock::parse(&block)?;
-        if !journal.needs_recovery() || journal.sequence != sequence {
-            return_errno_with_message!(Errno::EAGAIN, "journal checkpoint sequence mismatch");
-        }
-        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
-            .copy_from_slice(&sequence.wrapping_add(1).to_be_bytes());
-        block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].fill(0);
-        let mut reader = VmReader::from(block.as_slice()).to_fallible();
-        if inode.write_at(0, &mut reader)? != BLOCK_SIZE {
-            return_errno_with_message!(Errno::EIO, "short ext4 journal checkpoint write");
-        }
-        inode.sync_all()?;
-        self.flush_journal_device()?;
-        Ok(())
-    }
-
-    fn sync_recovery_superblock(&self) -> Result<()> {
-        let mut sb_guard = self.super_block.write();
-        if !sb_guard.is_dirty() {
-            return Ok(());
-        }
-        sb_guard.set_wtime(utils::now());
-        let raw_sb = RawSuperBlock::from(&**sb_guard);
-        let nr_block_groups = sb_guard.nr_block_groups() as usize;
-        let primary_offset = SUPER_BLOCK_OFFSET;
-        if self
-            .block_device
-            .write_bytes(primary_offset, raw_sb.as_bytes())
-            .is_err()
-        {
-            return_errno_with_message!(Errno::EIO, "failed to write ext4 recovery superblock");
-        }
-        for group_idx in 1..nr_block_groups {
-            if !sb_guard.is_backup_group(group_idx) {
-                continue;
-            }
-            let offset = Bid::new(sb_guard.bid(group_idx) as u64).to_offset();
-            if self
-                .block_device
-                .write_bytes(offset, raw_sb.as_bytes())
-                .is_err()
-            {
-                return_errno_with_message!(
-                    Errno::EIO,
-                    "failed to write ext4 recovery backup superblock"
-                );
-            }
-        }
-        sb_guard.clear_dirty();
-        Ok(())
     }
 
     /// Returns the block device.
@@ -745,42 +215,11 @@ impl Ext2 {
     }
 
     /// Sets the per file system flags.
-    pub(super) fn set_fs_flags(&self, flags: FsFlags) -> Result<()> {
-        let old_flags = self.fs_flags();
-        if old_flags.contains(FsFlags::RDONLY) && !flags.contains(FsFlags::RDONLY) {
-            let state = self.super_block.read().state();
-            if !state.contains(FsState::VALID) || state.contains(FsState::ERROR) {
-                return_errno_with_message!(
-                    Errno::EUCLEAN,
-                    "ext2 requires repair before writable remount"
-                );
-            }
-        }
-        if !old_flags.contains(FsFlags::RDONLY) && flags.contains(FsFlags::RDONLY) {
-            self.sync_all()?;
-            if self.block_device.sync()? != BioStatus::Complete {
-                return_errno_with_message!(Errno::EIO, "failed to flush block device");
-            }
-        }
+    pub(super) fn set_fs_flags(&self, flags: FsFlags) {
         self.flags.store(flags, Ordering::Relaxed);
-        Ok(())
     }
 
     /// Returns a reference to the block group at `group_idx`.
-    /// Reads every group's block and inode bitmaps.
-    ///
-    /// Mount no longer reads them (`BlockGroup::ensure_bitmaps_loaded` does it
-    /// on first use), but the test fixtures want the eager validation a mount
-    /// used to perform, so a test that builds a deliberately inconsistent
-    /// image still fails at build time rather than at first allocation.
-    #[cfg(ktest)]
-    pub(super) fn warm_all_group_bitmaps(&self) -> Result<()> {
-        for group in &self.block_groups {
-            group.ensure_bitmaps_loaded()?;
-        }
-        Ok(())
-    }
-
     pub(super) fn block_group(&self, group_idx: usize) -> &BlockGroup {
         &self.block_groups[group_idx]
     }
@@ -809,9 +248,6 @@ impl Ext2 {
     pub(super) fn read_inode(&self, ino: Ext2Ino) -> Result<Arc<Inode>> {
         if ino == 0 {
             return_errno_with_message!(Errno::ENOENT, "inode 0 is not valid in ext2");
-        }
-        if ino > self.super_block.read().total_inodes() {
-            return_errno_with_message!(Errno::EIO, "inode number outside filesystem");
         }
         let group = self
             .find_group(ino)
@@ -844,10 +280,7 @@ impl Ext2 {
         {
             let sb = self.super_block.read();
             // Apply ext2 inode-number validity rules before indexing groups.
-            let journal_ino = sb.journal_inode();
-            if (ino != ROOT_INO && ino != journal_ino && ino < sb.first_ino())
-                || ino > sb.total_inodes()
-            {
+            if (ino != ROOT_INO && ino < sb.first_ino()) || ino > sb.total_inodes() {
                 return_errno_with_message!(Errno::EINVAL, "inode number out of valid range");
             }
         }
@@ -856,66 +289,7 @@ impl Ext2 {
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        let journal_ino = self.super_block.read().journal_inode();
-        let has_journal = self.has_journal();
-
-        // Serialize page-cache read/modify/stage snapshots without taking the
-        // journal publication lock, which is also used by checkpointing.
-        if has_journal && ino != journal_ino {
-            let _inode_table_guard = self.inode_table_write_lock.lock();
-            let (block_bid, block) = {
-                group.write_back_inode_desc(ino, raw_inode)?;
-                let inode_idx =
-                    ((ino - 1) % self.super_block.read().nr_inodes_per_group()) as usize;
-                let inode_offset = inode_idx.checked_mul(group.inode_size()).ok_or_else(|| {
-                    Error::with_message(Errno::EIO, "inode table offset overflow")
-                })?;
-                let block_offset = inode_offset / BLOCK_SIZE;
-                let in_block_offset = inode_offset % BLOCK_SIZE;
-                if in_block_offset + size_of::<RawInode>() > BLOCK_SIZE {
-                    return_errno_with_message!(
-                        Errno::EUCLEAN,
-                        "inode crosses filesystem block boundary"
-                    );
-                }
-                let block_bid = group
-                    .inode_table_bid()
-                    .checked_add(block_offset as u32)
-                    .ok_or_else(|| Error::with_message(Errno::EIO, "inode table block overflow"))?;
-                let mut block = vec![0u8; BLOCK_SIZE];
-                group.read_inode_table_block(block_offset, &mut block)?;
-                // Publish the whole inode slot, not just the 128-byte ext2
-                // inode: the tail carries `i_checksum_hi`, and `i_checksum_lo`
-                // lives inside the first 128 bytes, so copying `RawInode`
-                // alone would stage an inode whose checksum no longer matches.
-                let image = group.inode_slot_image(ino, raw_inode)?;
-                let end = in_block_offset + image.len();
-                if end > BLOCK_SIZE {
-                    return_errno_with_message!(
-                        Errno::EUCLEAN,
-                        "inode slot crosses filesystem block boundary"
-                    );
-                }
-                block[in_block_offset..end].copy_from_slice(&image);
-                (block_bid, block)
-            };
-            self.stage_metadata_block(block_bid, &block);
-            return Ok(());
-        }
-
-        group.write_back_inode_desc(ino, raw_inode)?;
-
-        // The journal inode is the backing store for journal transactions. Its
-        // descriptor must be written directly; trying to journal this write
-        // would recursively start a transaction through the same inode.
-        if ino == self.super_block.read().journal_inode() {
-            return Ok(());
-        }
-
-        if !has_journal {
-            return Ok(());
-        }
-        Ok(())
+        group.write_back_inode_desc(ino, raw_inode)
     }
 
     /// Allocates up to `count` contiguous blocks.
@@ -924,7 +298,6 @@ impl Ext2 {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
         }
 
-        let _metadata_sync_guard = self.metadata_sync_lock.lock();
         let mut sb = self.super_block.write();
         let nr_block_groups = sb.nr_block_groups() as usize;
         let sb_free_blocks = sb.free_blocks_count();
@@ -974,50 +347,12 @@ impl Ext2 {
             return Ok(());
         }
 
-        let _metadata_sync_guard = self.metadata_sync_lock.lock();
         let mut sb = self.super_block.write();
         if !sb.is_data_block_valid(start, count) {
             return_errno_with_message!(Errno::EIO, "freeing invalid data block range");
         }
-        let end = start
-            .checked_add(count)
-            .ok_or_else(|| Error::with_message(Errno::EIO, "free block range overflow"))?;
-        if sb
-            .free_blocks_count()
-            .checked_add(count)
-            .is_none_or(|new_count| new_count > sb.total_blocks())
-        {
-            return_errno_with_message!(Errno::EIO, "free block count overflow in filesystem");
-        }
         let nr_blocks_per_group = sb.nr_blocks_per_group();
         let first_data_block = sb.first_data_block();
-
-        // Allocated runs normally stay within one group. For a caller-supplied
-        // cross-group range, reject any bad segment before freeing the first.
-        let first_group_idx = (start - first_data_block) / nr_blocks_per_group;
-        let last_group_idx = (end - 1 - first_data_block) / nr_blocks_per_group;
-        if first_group_idx != last_group_idx {
-            let mut current_block = start;
-            let mut remaining_blocks = count;
-            while remaining_blocks > 0 {
-                let group_idx = ((current_block - first_data_block) / nr_blocks_per_group) as usize;
-                let group = &self.block_groups[group_idx];
-                let group_start_bit = current_block - group.first_block();
-                let blocks_in_group = remaining_blocks.min(group.last_block() - current_block + 1);
-                group.validate_free_blocks(group_start_bit..(group_start_bit + blocks_in_group))?;
-                current_block += blocks_in_group;
-                remaining_blocks -= blocks_in_group;
-            }
-        } else {
-            let group = &self.block_groups[first_group_idx as usize];
-            let group_start_bit = start - group.first_block();
-            group.validate_free_blocks(group_start_bit..(group_start_bit + count))?;
-        }
-
-        // Invalidate staged snapshots only after the entire range has been
-        // validated. Otherwise a failed free request could discard a payload
-        // for a block that remains allocated.
-        self.discard_pending_metadata_range(start, count);
 
         let mut current_block = start;
         let mut remaining_blocks = count;
@@ -1078,23 +413,10 @@ impl Ext2 {
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        // A newly allocated inode must not be published through its own journal
-        // transaction before the parent directory entry is durable.  Stage it
-        // in the inode-table cache instead; the filesystem sync path flushes
-        // the inode, directory, and allocation metadata as one writeback unit.
-        //
-        // The slot's ext4 extension (`i_extra_isize` and friends) is
-        // initialized first: it lives past the 128-byte ext2 descriptor and
-        // may still contain a previous inode's values.
-        if let Err(err) = block_group.init_inode_extra(ino) {
-            if block_group.free_inode(ino, inode_type).is_ok() {
-                let _ = self.super_block.write().inc_free_inodes();
-            }
-
-            return Err(err);
-        }
-        if let Err(err) = self.stage_inode_desc(ino, &raw_inode) {
-            if block_group.free_inode(ino, inode_type).is_ok() {
+        if let Err(err) = self.write_back_inode_desc(ino, &raw_inode) {
+            if let Ok(was_allocated) = block_group.free_inode(ino, inode_type)
+                && was_allocated
+            {
                 let _ = self.super_block.write().inc_free_inodes();
             }
 
@@ -1111,10 +433,6 @@ impl Ext2 {
         ))
     }
 
-    pub(super) fn stage_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
-        self.write_back_inode_desc(ino, raw_inode)
-    }
-
     /// Frees an inode by number.
     pub(super) fn free_inode(&self, ino: Ext2Ino, inode_type: InodeType) -> Result<()> {
         let mut sb = self.super_block.write();
@@ -1123,16 +441,15 @@ impl Ext2 {
         if ino < first_ino || ino > total_inodes {
             return_errno_with_message!(Errno::EIO, "inode number out of valid range for free");
         }
-        if sb.free_inodes_count() >= total_inodes {
-            return_errno_with_message!(Errno::EIO, "free inode count overflow in filesystem");
-        }
 
         let group = self
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        group.free_inode(ino, inode_type)?;
-        sb.inc_free_inodes()?;
+        let was_allocated = group.free_inode(ino, inode_type)?;
+        if was_allocated {
+            sb.inc_free_inodes()?;
+        }
 
         Ok(())
     }
@@ -1145,10 +462,9 @@ impl Ext2 {
         complete_fn: Option<BioCompleteFn>,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
-        account_block_io(&bio_segment, false);
         self.block_device.read_blocks_async(
             Bid::new(bid as u64),
-            bio_segment,
+            vec![bio_segment],
             complete_fn,
             io_batch,
         )?;
@@ -1157,10 +473,9 @@ impl Ext2 {
 
     /// Reads blocks synchronously starting at `bid`.
     pub(super) fn read_blocks(&self, bid: Ext2Bid, bio_segment: BioSegment) -> Result<()> {
-        account_block_io(&bio_segment, false);
         let bio_status = self
             .block_device
-            .read_blocks(Bid::new(bid as u64), bio_segment)?;
+            .read_blocks(Bid::new(bid as u64), vec![bio_segment])?;
         match bio_status {
             BioStatus::Complete => Ok(()),
             _ => {
@@ -1177,38 +492,9 @@ impl Ext2 {
         complete_fn: Option<BioCompleteFn>,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
-        account_block_io(&bio_segment, true);
         self.block_device.write_blocks_async(
             Bid::new(bid as u64),
-            bio_segment,
-            complete_fn,
-            io_batch,
-        )?;
-        Ok(())
-    }
-
-    /// Returns the largest number of segments a single BIO may carry on the
-    /// underlying device.
-    pub(super) fn max_bio_segments(&self) -> usize {
-        self.block_device.metadata().max_nr_segments_per_bio
-    }
-
-    /// Submits one asynchronous write for a physically contiguous run.
-    ///
-    /// The segments are written in order starting at `bid`, so callers must
-    /// have established that their device blocks are contiguous.
-    pub(super) fn write_blocks_multi_async(
-        &self,
-        bid: Ext2Bid,
-        segments: Vec<BioSegment>,
-        complete_fn: Option<BioCompleteFn>,
-        io_batch: &mut IoBatch,
-    ) -> Result<()> {
-        let bytes = segments.iter().map(|segment| segment.nbytes()).sum();
-        account_block_io_bytes(bytes, true);
-        self.block_device.write_blocks_multi_async(
-            Bid::new(bid as u64),
-            segments,
+            vec![bio_segment],
             complete_fn,
             io_batch,
         )?;
@@ -1217,10 +503,9 @@ impl Ext2 {
 
     /// Writes blocks synchronously starting at `bid`.
     pub(super) fn write_blocks(&self, bid: Ext2Bid, bio_segment: BioSegment) -> Result<()> {
-        account_block_io(&bio_segment, true);
         let bio_status = self
             .block_device
-            .write_blocks(Bid::new(bid as u64), bio_segment)?;
+            .write_blocks(Bid::new(bid as u64), vec![bio_segment])?;
         match bio_status {
             BioStatus::Complete => Ok(()),
             _ => {
@@ -1236,130 +521,10 @@ impl Ext2 {
         // `metadata.write()` guard.  Because groups are synced sequentially and
         // their descriptor offsets are disjoint, no two writers touch the same
         // bytes, so the segment is always consistent.
-        if !self.has_journal() {
-            return self.sync_all_without_journal();
-        }
         for group in &self.block_groups {
-            group.sync_inodes_without_table()?;
+            group.sync_all(&self.group_descriptors_segment)?;
         }
-        self.sync_allocation_metadata()
-    }
-
-    /// Syncs a volume that has no journal.
-    ///
-    /// The inode table and the allocation bitmaps are independent writes to the
-    /// device here, so their order decides what a power loss leaves behind.
-    /// Writing the inode table first would publish an inode that points at a
-    /// block the bitmap still calls free; writing the bitmaps first would
-    /// advertise a block as free while an inode that has not been written back
-    /// yet still points at it, and the next allocation could hand it to another
-    /// file. Running the bitmaps twice -- once with the blocks freed since the
-    /// last writeback held back, once for real after the inode table -- closes
-    /// both windows. A crash between the passes leaks blocks, which `e2fsck`
-    /// reclaims; it cannot produce a dangling reference.
-    fn sync_all_without_journal(&self) -> Result<()> {
-        let group_descs = &self.group_descriptors_segment;
-        for group in &self.block_groups {
-            group.sync_inodes_without_table()?;
-        }
-        let mut desc_dirty = false;
-        for group in &self.block_groups {
-            desc_dirty |= group.write_pre_inode_bitmap(group_descs)?;
-        }
-        if desc_dirty {
-            self.sync_metadata(true)?;
-        }
-        for group in &self.block_groups {
-            group.sync_inode_table()?;
-        }
-        Self::hold_metadata_writeback();
-        let mut final_desc_dirty = false;
-        for group in &self.block_groups {
-            final_desc_dirty |= group.sync_metadata(group_descs)?;
-        }
-        self.sync_metadata(final_desc_dirty || desc_dirty)
-    }
-
-    /// Pauses the metadata writeback between the inode table and the bitmaps
-    /// when `asterinas.ext2_sync_hold_ms` is set.
-    ///
-    /// Test hook for `crash_consistency_gate.py --writer churn`: on a real boot
-    /// the window between those two writes is a few microseconds wide, so a
-    /// randomly timed kill can never land in it deliberately. Holding it open
-    /// turns "the crash has to hit the window" into "the crash hits the window
-    /// unless the write order is wrong". Off by default, and free when off.
-    fn hold_metadata_writeback() {
-        let millis = SYNC_HOLD_MS.load(Ordering::Relaxed);
-        if millis == 0 {
-            return;
-        }
-        warn!("ext2: holding metadata writeback for {millis} ms");
-        let start = ostd::timer::Jiffies::elapsed().as_duration();
-        let hold = core::time::Duration::from_millis(millis as u64);
-        while ostd::timer::Jiffies::elapsed()
-            .as_duration()
-            .saturating_sub(start)
-            < hold
-        {
-            core::hint::spin_loop();
-        }
-    }
-
-    /// Publishes one group's inode table on a volume without a journal, with
-    /// the same ordering as [`Self::sync_all_without_journal`].
-    pub(super) fn sync_inode_table_without_journal(&self, group: &BlockGroup) -> Result<()> {
-        let group_descs = &self.group_descriptors_segment;
-        if group.write_pre_inode_bitmap(group_descs)? {
-            self.sync_metadata(true)?;
-        }
-        group.sync_inode_table()
-    }
-
-    /// Persists allocation bitmaps, group descriptors, and the superblock
-    /// before an inode-level fsync reports that its block flush completed.
-    pub(super) fn sync_allocation_metadata(&self) -> Result<()> {
-        let _metadata_sync_guard = self.metadata_sync_lock.lock();
-        let mut bitmap_payloads = Vec::new();
-        let mut group_desc_dirty = false;
-        for group in &self.block_groups {
-            bitmap_payloads.extend(group.allocation_bitmap_snapshots());
-            if self.has_journal() {
-                group_desc_dirty |= group.stage_descriptor(&self.group_descriptors_segment)?;
-            }
-        }
-        if self.has_journal() {
-            // Stage superblock and descriptor blocks before taking the pending
-            // snapshot so every filesystem metadata class is published by the
-            // same journal transaction.
-            self.sync_metadata(group_desc_dirty)?;
-        }
-        let pending = core::mem::take(&mut *self.pending_metadata.lock());
-        let pending_for_restore = pending.clone();
-        if !pending.is_empty() || !bitmap_payloads.is_empty() {
-            let mut metadata_payloads = pending;
-            metadata_payloads.extend(bitmap_payloads);
-            let blocks: Vec<(Ext2Bid, &[u8])> = metadata_payloads
-                .iter()
-                .map(|(bid, payload)| (*bid, payload.as_slice()))
-                .collect();
-            if let Err(err) = self.write_metadata_blocks(&blocks) {
-                self.pending_metadata.lock().extend(pending_for_restore);
-                return Err(err);
-            }
-            for group in &self.block_groups {
-                group.clear_allocation_bitmap_dirty();
-            }
-        }
-        for group in &self.block_groups {
-            if !self.has_journal() {
-                group_desc_dirty |= group.sync_metadata(&self.group_descriptors_segment)?;
-            }
-        }
-        if self.has_journal() {
-            Ok(())
-        } else {
-            self.sync_metadata(group_desc_dirty)
-        }
+        self.sync_metadata()
     }
 
     /// Allocates a new inode number.
@@ -1385,7 +550,6 @@ impl Ext2 {
 
             let ino = (group_idx as u32) * nr_inodes_per_group + inode_idx + 1;
             if ino < sb.first_ino() || ino > total_inodes {
-                group.free_inode(ino, inode_type)?;
                 return_errno_with_message!(Errno::EIO, "allocated inode number out of valid range");
             }
             sb.dec_free_inodes()?;
@@ -1453,10 +617,11 @@ impl Ext2 {
     }
 
     /// Flushes the superblock and all dirty group descriptors to the device.
-    fn sync_metadata(&self, group_desc_dirty: bool) -> Result<()> {
+    fn sync_metadata(&self) -> Result<()> {
         let mut sb_guard = self.super_block.write();
 
-        if !sb_guard.is_dirty() && !group_desc_dirty {
+        let any_group_dirty = self.block_groups.iter().any(|group| group.is_desc_dirty());
+        if !sb_guard.is_dirty() && !any_group_dirty {
             return Ok(());
         }
 
@@ -1472,31 +637,26 @@ impl Ext2 {
         sb_guard.set_free_inodes_count(total_free_inodes);
         sb_guard.set_wtime(utils::now());
 
-        let mut writes = Vec::new();
-        let raw_sb = RawSuperBlock::from(&**sb_guard);
-        writes.push((
-            raw_sb,
+        let mut raw_sb = RawSuperBlock::from(&**sb_guard);
+        self.write_sb_and_group_descs(
+            &raw_sb,
             SUPER_BLOCK_OFFSET,
             sb_guard.group_descriptors_bid(0),
-        ));
+        )?;
+
         for group_idx in 1..nr_block_groups {
             if !sb_guard.is_backup_group(group_idx) {
                 continue;
             }
-            let mut backup_sb = raw_sb;
-            backup_sb.block_group_idx = group_idx as u16;
-            writes.push((
-                backup_sb,
+            raw_sb.block_group_idx = group_idx as u16;
+            self.write_sb_and_group_descs(
+                &raw_sb,
                 Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),
                 sb_guard.group_descriptors_bid(group_idx),
-            ));
+            )?;
         }
 
-        drop(sb_guard);
-        for (raw_sb, sb_offset, group_desc_bid) in writes {
-            self.write_sb_and_group_descs(&raw_sb, sb_offset, group_desc_bid)?;
-        }
-        self.super_block.write().clear_dirty();
+        sb_guard.clear_dirty();
         Ok(())
     }
 
@@ -1507,41 +667,6 @@ impl Ext2 {
         sb_offset: usize,
         group_desc_bid: Ext2Bid,
     ) -> Result<()> {
-        if raw_sb.feature_compat & FeatureCompatSet::HAS_JOURNAL.bits() != 0 {
-            let group_desc_bytes = self.group_descriptors_segment.size();
-            let mut blocks = Vec::with_capacity(group_desc_bytes.div_ceil(BLOCK_SIZE) + 1);
-            for index in 0..group_desc_bytes.div_ceil(BLOCK_SIZE) {
-                let mut payload = vec![0; BLOCK_SIZE];
-                let offset = index * BLOCK_SIZE;
-                let len = (group_desc_bytes - offset).min(BLOCK_SIZE);
-                self.group_descriptors_segment
-                    .read_bytes(offset, &mut payload[..len])?;
-                blocks.push((group_desc_bid + index as u32, payload));
-            }
-
-            // The superblock lives at byte 1024 inside its containing block.
-            // Preserve unrelated bytes while journaling the complete home block.
-            let superblock_bid = (sb_offset / BLOCK_SIZE) as u32;
-            let superblock_base = superblock_bid as usize * BLOCK_SIZE;
-            let mut superblock_payload = vec![0; BLOCK_SIZE];
-            self.block_device
-                .read_bytes(superblock_base, &mut superblock_payload)
-                .map_err(|_| Error::with_message(Errno::EIO, "failed to read superblock block"))?;
-            let superblock_offset = sb_offset - superblock_base;
-            let raw_superblock = raw_sb.as_bytes();
-            if superblock_offset + raw_superblock.len() > BLOCK_SIZE {
-                return_errno_with_message!(Errno::EUCLEAN, "superblock crosses block boundary");
-            }
-            superblock_payload[superblock_offset..superblock_offset + raw_superblock.len()]
-                .copy_from_slice(raw_superblock);
-            blocks.push((superblock_bid, superblock_payload));
-
-            for (bid, payload) in blocks {
-                self.stage_metadata_block(bid, &payload);
-            }
-            return Ok(());
-        }
-
         let group_desc_segment = self.group_descriptors_segment.clone();
         let bio_segment = BioSegment::new_from_segment(group_desc_segment, BioDirection::ToDevice);
         self.write_blocks(group_desc_bid, bio_segment)
@@ -1567,156 +692,20 @@ mod test {
     use super::*;
     use crate::{
         fs::{
-            fs_impls::ext2::{
-                block_group::RawBlockGroup,
-                test_utils::{
-                    BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
-                    RawInodeBuilder, assert_errno, create_file, default_fixture,
-                    make_valid_group_desc, make_valid_super_block,
-                },
+            fs_impls::ext2::test_utils::{
+                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
+                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
+                make_valid_super_block,
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },
         time::clocks,
     };
 
-    #[ktest]
-    fn journal_revoke_applies_across_transactions() {
-        let revokes = vec![(77, 12)];
-        assert!(journal_revoke_supersedes(77, 11, &revokes));
-        assert!(journal_revoke_supersedes(77, 12, &revokes));
-        assert!(!journal_revoke_supersedes(77, 13, &revokes));
-        assert!(!journal_revoke_supersedes(78, 11, &revokes));
-    }
-
-    #[ktest]
-    fn journal_revoke_sequence_wrap_is_ordered() {
-        let revokes = vec![(77, 1)];
-        assert!(journal_revoke_supersedes(77, u32::MAX, &revokes));
-        assert!(!journal_revoke_supersedes(77, 2, &revokes));
-    }
-
-    #[ktest]
-    fn journal_barrier_propagates_completion_failure() {
-        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
-        fixture.ext2.flush_journal_device().unwrap();
-        fixture.disk.set_fail_flush(true);
-        assert_errno!(fixture.ext2.flush_journal_device(), Errno::EIO);
-        fixture.disk.set_fail_flush(false);
-        fixture.ext2.flush_journal_device().unwrap();
-    }
-
-    #[ktest]
-    fn metadata_batch_validates_all_targets_before_writing() {
-        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
-        let payload = [0x5a; BLOCK_SIZE];
-        let bid = fixture.sb.total_blocks() - 1;
-        let offset = Bid::new(bid as u64).to_offset();
-        let mut original = [0; BLOCK_SIZE];
-        fixture
-            .disk
-            .segment()
-            .read_bytes(offset, &mut original)
-            .unwrap();
-        assert_errno!(
-            fixture
-                .ext2
-                .write_metadata_blocks(&[(bid, &payload), (bid, &payload)]),
-            Errno::EEXIST
-        );
-        assert_errno!(
-            fixture
-                .ext2
-                .write_metadata_blocks(&[(bid, &payload), (bid - 1, &payload[..1])]),
-            Errno::EINVAL
-        );
-        assert_errno!(
-            fixture
-                .ext2
-                .write_metadata_blocks(&[(bid, &payload), (fixture.sb.total_blocks(), &payload)]),
-            Errno::EINVAL
-        );
-        let mut actual = [0; BLOCK_SIZE];
-        fixture
-            .disk
-            .segment()
-            .read_bytes(offset, &mut actual)
-            .unwrap();
-        assert_eq!(actual, original);
-        fixture
-            .ext2
-            .write_metadata_blocks(&[(bid, &payload), (bid - 1, &payload)])
-            .unwrap();
-        fixture
-            .disk
-            .segment()
-            .read_bytes(offset, &mut actual)
-            .unwrap();
-        assert_eq!(actual, payload);
-    }
-
-    #[ktest]
-    fn unclean_ext2_allows_readonly_but_rejects_writable_mount() {
-        clocks::init_for_ktest();
-        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
-        let disk = fixture.disk.clone();
-        let mut raw = disk
-            .segment()
-            .read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)
-            .unwrap();
-
-        for state in [
-            FsState::empty(),
-            FsState::ERROR,
-            FsState::VALID | FsState::ERROR,
-        ] {
-            raw.state = state.bits();
-            disk.write_super_block(&raw);
-            assert_errno!(
-                Ext2::open(
-                    disk.clone() as Arc<dyn BlockDevice>,
-                    FsFlags::empty(),
-                    None,
-                    false,
-                ),
-                Errno::EUCLEAN
-            );
-            let readonly = Ext2::open(
-                disk.clone() as Arc<dyn BlockDevice>,
-                FsFlags::RDONLY,
-                None,
-                false,
-            )
-            .unwrap();
-            assert_errno!(readonly.set_fs_flags(FsFlags::empty()), Errno::EUCLEAN);
-            disk.set_fail_flush(true);
-            FileSystemTrait::sync(readonly.as_ref()).unwrap();
-            let root = readonly.root_inode().unwrap();
-            crate::fs::vfs::inode::Inode::sync_all(root.as_ref()).unwrap();
-            crate::fs::vfs::inode::Inode::sync_data(root.as_ref()).unwrap();
-            disk.set_fail_flush(false);
-        }
-
-        raw.state = FsState::VALID.bits();
-        disk.write_super_block(&raw);
-        let readwrite = Ext2::open(
-            disk.clone() as Arc<dyn BlockDevice>,
-            FsFlags::empty(),
-            None,
-            false,
-        )
-        .unwrap();
-        disk.set_fail_flush(true);
-        assert_errno!(readwrite.set_fs_flags(FsFlags::RDONLY), Errno::EIO);
-        assert!(!readwrite.fs_flags().contains(FsFlags::RDONLY));
-        disk.set_fail_flush(false);
-        readwrite.set_fs_flags(FsFlags::RDONLY).unwrap();
-        readwrite.set_fs_flags(FsFlags::empty()).unwrap();
-    }
-
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let gdb_count = ((nr_block_groups * sb.group_desc_size()).div_ceil(BLOCK_SIZE)) as u32;
+        let gdb_count =
+            ((nr_block_groups * size_of::<RawBlockGroup>()).div_ceil(BLOCK_SIZE)) as u32;
         let mut overhead = sb.first_data_block();
 
         for group_idx in 0..nr_block_groups {
@@ -1756,7 +745,6 @@ mod test {
             f.disk.clone() as Arc<dyn BlockDevice>,
             FsFlags::empty(),
             Some("minixdf"),
-            false,
         )
         .unwrap();
 
@@ -1786,7 +774,7 @@ mod test {
         assert!(!ext2.block_group(0).is_desc_dirty());
 
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let desc_bytes = nr_block_groups * sb.group_desc_size();
+        let desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
         let primary_desc_offset = Bid::new(sb.group_descriptors_bid(0) as u64).to_offset();
 
         let mut primary_desc = vec![0u8; desc_bytes];
@@ -1868,32 +856,6 @@ mod test {
     }
 
     #[ktest]
-    fn block_free_rejects_already_free_bit_without_partial_release() {
-        clocks::init_for_ktest();
-        let f = Ext2FixtureBuilder::new(1, 128)
-            .with_free_blocks(31, 31)
-            .block_bitmap(BlockBitmapInit::MetadataOnly)
-            .build()
-            .unwrap();
-        let goal = f.sb.group_first_block_no(0);
-        let range = f.ext2.alloc_blocks(2, goal).unwrap();
-        assert_eq!(range.len(), 2);
-
-        f.ext2.free_blocks(range.start, 1).unwrap();
-        let sb_free = f.ext2.super_block().free_blocks_count();
-        let group = f.ext2.block_group(0);
-        let group_free = group.free_blocks_count();
-
-        assert_errno!(f.ext2.free_blocks(range.start, 2), Errno::EIO);
-        assert_eq!(f.ext2.super_block().free_blocks_count(), sb_free);
-        assert_eq!(group.free_blocks_count(), group_free);
-        let second_bit = (range.start + 1 - group.first_block()) as u16;
-        assert!(group.metadata().block_bitmap.is_allocated(second_bit));
-
-        f.ext2.free_blocks(range.start + 1, 1).unwrap();
-    }
-
-    #[ktest]
     fn block_alloc_and_free_invalid_returns_err() {
         // No-space and invalid-request checks.
         let f_nospc = Ext2FixtureBuilder::new(1, 128)
@@ -1910,13 +872,7 @@ mod test {
             Errno::EINVAL
         );
 
-        // A descriptor that claims a free block its bitmap does not have used
-        // to fail the whole allocation. The bitmap is what allocation actually
-        // consults, so the group now corrects its own counter, reports itself
-        // full, and the caller answers ENOSPC once the last group is
-        // exhausted. That is the answer e2fsck's viewpoint gives, and it keeps
-        // a filesystem whose counters drifted (which is what a full root
-        // partition left behind) usable instead of failing every write.
+        // Inconsistent counters/bitmap shape should surface as EIO on allocation.
         let f_corrupt = Ext2FixtureBuilder::new(1, 128)
             .with_free_blocks(1, 1)
             .block_bitmap(BlockBitmapInit::Full)
@@ -1926,15 +882,7 @@ mod test {
             f_corrupt
                 .ext2
                 .alloc_blocks(1, f_corrupt.sb.first_data_block()),
-            Errno::ENOSPC
-        );
-        // The correction is per group and idempotent, so a second attempt is
-        // just as harmless as the first.
-        assert_errno!(
-            f_corrupt
-                .ext2
-                .alloc_blocks(1, f_corrupt.sb.first_data_block()),
-            Errno::ENOSPC
+            Errno::EIO
         );
 
         // Free-path boundary and system-zone guards.
@@ -1997,7 +945,6 @@ mod test {
 
     #[ktest]
     fn inode_alloc_and_free_invalid_returns_err() {
-        clocks::init_for_ktest();
         // No free inode counter means ENOSPC without bitmap scan.
         let f_nospc = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(0, 0)
@@ -2015,35 +962,16 @@ mod test {
             Errno::EIO
         );
 
-        // A zero group count with free bitmap bits is corruption, even when
-        // the filesystem-wide counter still claims free inodes.
-        let f_zero_group = Ext2FixtureBuilder::new(1, 128)
-            .with_free_inodes(1, 0)
-            .inode_bitmap(InodeBitmapInit::ReservedOnly)
-            .build()
-            .unwrap();
-        assert_errno!(
-            f_zero_group.ext2.alloc_ino(ROOT_INO, InodeType::File),
-            Errno::EIO
-        );
-
-        let f_clean_full = Ext2FixtureBuilder::new(1, 128)
-            .with_free_inodes(0, 0)
-            .inode_bitmap(InodeBitmapInit::Full)
-            .build()
-            .unwrap();
-        assert_errno!(
-            f_clean_full.ext2.alloc_ino(ROOT_INO, InodeType::File),
-            Errno::ENOSPC
-        );
-
-        // A positive free count and a full bitmap disagree: report corruption.
+        // All inode bitmap bits set -> no allocatable inode.
         let f_full = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(8, 8)
             .inode_bitmap(InodeBitmapInit::Full)
             .build()
             .unwrap();
-        assert_errno!(f_full.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
+        assert_errno!(
+            f_full.ext2.alloc_ino(ROOT_INO, InodeType::File),
+            Errno::ENOSPC
+        );
 
         let f_free = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(8, 8)
@@ -2057,7 +985,7 @@ mod test {
             Errno::EIO
         );
 
-        // An already-free inode is corruption, not a successful reclaim.
+        // Already-free inode: should return Ok and keep counters unchanged.
         let target_ino = f_free.sb.first_ino();
         let raw_file = make_raw_inode(0o100644, 1, 0);
         f_free
@@ -2067,48 +995,9 @@ mod test {
 
         let before_sb = f_free.ext2.super_block().free_inodes_count();
         let before_group = f_free.ext2.block_group(0).free_inodes_count();
-        assert_errno!(
-            f_free.ext2.free_inode(target_ino, InodeType::File),
-            Errno::EIO
-        );
+        f_free.ext2.free_inode(target_ino, InodeType::File).unwrap();
         assert_eq!(f_free.ext2.super_block().free_inodes_count(), before_sb);
         assert_eq!(f_free.ext2.block_group(0).free_inodes_count(), before_group);
-    }
-
-    #[ktest]
-    fn inode_alloc_invalid_reserved_bit_leaves_bitmap_and_counts_unchanged() {
-        clocks::init_for_ktest();
-        let f = Ext2FixtureBuilder::new(1, 128)
-            .with_free_inodes(1000, 1000)
-            .inode_bitmap(InodeBitmapInit::Empty)
-            .build()
-            .unwrap();
-        let group = f.ext2.block_group(0);
-        assert!(!group.is_inode_allocated(1).unwrap());
-
-        assert_errno!(f.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
-        assert!(!group.is_inode_allocated(1).unwrap());
-        assert_eq!(group.free_inodes_count(), 1000);
-        assert_eq!(f.ext2.super_block().free_inodes_count(), 1000);
-        f.ext2.sync_all().unwrap();
-    }
-
-    #[ktest]
-    fn inode_free_rejects_superblock_counter_overflow_without_bitmap_change() {
-        clocks::init_for_ktest();
-        let target_ino = make_valid_super_block(1).first_ino();
-        let f = Ext2FixtureBuilder::new(1, 128)
-            .with_free_inodes(1024, 1013)
-            .inode_bitmap(InodeBitmapInit::ReservedPlus(vec![target_ino]))
-            .build()
-            .unwrap();
-        let group = f.ext2.block_group(0);
-        assert!(group.is_inode_allocated(target_ino).unwrap());
-
-        assert_errno!(f.ext2.free_inode(target_ino, InodeType::File), Errno::EIO);
-        assert!(group.is_inode_allocated(target_ino).unwrap());
-        assert_eq!(group.free_inodes_count(), 1013);
-        assert_eq!(f.ext2.super_block().free_inodes_count(), 1024);
     }
 
     #[ktest]

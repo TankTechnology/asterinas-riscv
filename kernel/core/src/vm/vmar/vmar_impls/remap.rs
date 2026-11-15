@@ -261,7 +261,7 @@ impl Vmar {
                     cursor.unmap(PAGE_SIZE);
                     cursor.jump(new_map_va).unwrap();
 
-                    cursor.map(frame, prop)?;
+                    cursor.map(frame, prop);
                 }
                 VmQueriedItem::MappedIoMem { paddr, prop } => {
                     cursor.unmap(PAGE_SIZE);
@@ -270,7 +270,7 @@ impl Vmar {
                     // For MMIO pages, find the corresponding `IoMem` and map it
                     // at the new location
                     let (iomem, offset) = cursor.find_iomem_by_paddr(paddr).unwrap();
-                    cursor.map_iomem(iomem, prop, PAGE_SIZE, offset)?;
+                    cursor.map_iomem(iomem, prop, PAGE_SIZE, offset);
                 }
             }
 

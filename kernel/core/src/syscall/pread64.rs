@@ -30,17 +30,11 @@ pub(super) fn sys_pread64(
         return_errno_with_message!(Errno::EINVAL, "offset + user_buf_len overflow");
     }
 
-    let read_result = {
+    let read_len = {
         let user_space = ctx.user_space();
         let mut writer = user_space.writer(user_buf_ptr, user_buf_len)?;
-        file.read_at(offset as usize, &mut writer)
+        file.read_at(offset as usize, &mut writer)?
     };
-    let io_accounting = ctx.process.io_accounting();
-    io_accounting.account_read_syscall();
-    let read_len = read_result?;
-    if read_len > 0 {
-        io_accounting.account_read_chars(read_len);
-    }
 
     if read_len > 0 {
         fs::vfs::notify::on_access(&file);

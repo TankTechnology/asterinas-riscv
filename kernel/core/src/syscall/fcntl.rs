@@ -6,12 +6,11 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::{
-            AccessMode, FileLike, InodeHandle, StatusFlags, StatusFlagsUpdate,
+            FileLike, StatusFlags, StatusFlagsUpdate,
             file_table::{FdFlags, FileDesc, FileTable, RawFileDesc, WithFileTable, get_file_fast},
         },
-        pipe::{PIPE_MAX_SIZE, PipeHandle},
         ramfs::memfd::{FileSeals, MemfdInodeHandle},
-        vfs::range_lock::{FileRange, OFFSET_MAX, RangeLockItem, RangeLockOwner, RangeLockType},
+        vfs::range_lock::{FileRange, OFFSET_MAX, RangeLockItem, RangeLockType},
     },
     prelude::*,
     process::{Pid, pid_table},
@@ -33,34 +32,14 @@ pub(super) fn sys_fcntl(
         FcntlCmd::F_SETFD => handle_setfd(fd, arg, ctx),
         FcntlCmd::F_GETFL => handle_getfl(fd, ctx),
         FcntlCmd::F_SETFL => handle_setfl(fd, arg, ctx),
-        FcntlCmd::F_GETLK => handle_getlk(fd, arg, LockOwnerKind::Process, ctx),
-        FcntlCmd::F_SETLK => handle_setlk(fd, arg, true, LockOwnerKind::Process, ctx),
-        FcntlCmd::F_SETLKW => {
-            handle_setlk(fd, arg, false, LockOwnerKind::Process, ctx).map_err(|err| {
-                match err.error() {
-                    Errno::EINTR => Error::new(Errno::ERESTARTSYS),
-                    _ => err,
-                }
-            })
-        }
-        FcntlCmd::F_OFD_GETLK => handle_getlk(fd, arg, LockOwnerKind::OpenFileDescription, ctx),
-        FcntlCmd::F_OFD_SETLK => {
-            handle_setlk(fd, arg, true, LockOwnerKind::OpenFileDescription, ctx)
-        }
-        FcntlCmd::F_OFD_SETLKW => {
-            handle_setlk(fd, arg, false, LockOwnerKind::OpenFileDescription, ctx).map_err(|err| {
-                match err.error() {
-                    Errno::EINTR => Error::new(Errno::ERESTARTSYS),
-                    _ => err,
-                }
-            })
-        }
+        FcntlCmd::F_GETLK => handle_getlk(fd, arg, ctx),
+        FcntlCmd::F_SETLK => handle_setlk(fd, arg, true, ctx),
+        FcntlCmd::F_SETLKW => handle_setlk(fd, arg, false, ctx).map_err(|err| match err.error() {
+            Errno::EINTR => Error::new(Errno::ERESTARTSYS),
+            _ => err,
+        }),
         FcntlCmd::F_GETOWN => handle_getown(fd, ctx),
         FcntlCmd::F_SETOWN => handle_setown(fd, arg, ctx),
-        FcntlCmd::F_SETLEASE => handle_setlease(fd, arg, ctx),
-        FcntlCmd::F_GETLEASE => handle_getlease(fd, ctx),
-        FcntlCmd::F_SETPIPE_SZ => handle_setpipe_sz(fd, arg, ctx),
-        FcntlCmd::F_GETPIPE_SZ => handle_getpipe_sz(fd, ctx),
         FcntlCmd::F_ADD_SEALS => handle_addseal(fd, arg, ctx),
         FcntlCmd::F_GET_SEALS => handle_getseal(fd, ctx),
     }
@@ -74,11 +53,6 @@ fn handle_dupfd(fd: FileDesc, arg: u64, flags: FdFlags, ctx: &Context) -> Result
     let ceil_fd: FileDesc = (arg as RawFileDesc)
         .try_into()
         .map_err(|_| Error::with_message(Errno::EINVAL, "invalid fd"))?;
-
-    // Linux returns EINVAL when the target fd equals the source fd in F_DUPFD.
-    if fd == ceil_fd {
-        return_errno_with_message!(Errno::EINVAL, "F_DUPFD arg must not equal fd");
-    }
 
     let new_fd = match file_table.insert_ceil(file, Some(ceil_fd), flags) {
         Ok(fd) => fd,
@@ -135,53 +109,25 @@ fn handle_setfl(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> 
     Ok(SyscallReturn::Return(0))
 }
 
-#[derive(Clone, Copy)]
-enum LockOwnerKind {
-    Process,
-    OpenFileDescription,
-}
-
-impl LockOwnerKind {
-    fn validate_pid(self, lock: &c_flock) -> Result<()> {
-        if matches!(self, Self::OpenFileDescription) && lock.l_pid != 0 {
-            return_errno_with_message!(Errno::EINVAL, "OFD lock PID must be zero");
-        }
-        Ok(())
-    }
-
-    fn owner(self, file: &dyn FileLike, process_owner: RangeLockOwner) -> RangeLockOwner {
-        match self {
-            Self::Process => process_owner,
-            Self::OpenFileDescription => file.common().ofd_lock_owner(),
-        }
-    }
-}
-
-fn handle_getlk(
-    fd: FileDesc,
-    arg: u64,
-    owner_kind: LockOwnerKind,
-    ctx: &Context,
-) -> Result<SyscallReturn> {
+fn handle_getlk(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let posix_owner = FileTable::range_lock_owner(file_table.unwrap());
+    let owner = FileTable::range_lock_owner(file_table.unwrap());
     let file = get_file_fast!(&mut file_table, fd);
 
     let lock_mut_ptr = arg as Vaddr;
     let mut lock_mut_c = ctx.user_space().read_val::<c_flock>(lock_mut_ptr)?;
-    owner_kind.validate_pid(&lock_mut_c)?;
     let lock_type = RangeLockType::try_from(lock_mut_c.l_type)?;
     if lock_type == RangeLockType::Unlock {
         return_errno_with_message!(Errno::EINVAL, "invalid flock type for getlk");
     }
     let lock = RangeLockItem::new(
-        owner_kind.owner(&**file, posix_owner),
+        owner,
         ctx.process.pid(),
         lock_type,
         from_c_flock_and_file(&lock_mut_c, &**file)?,
     );
 
-    let lock = file.test_range_lock(lock)?;
+    let lock = file.as_inode_handle_or_err()?.test_range_lock(lock)?;
 
     lock_mut_c.copy_from_range_lock(&lock);
     ctx.user_space().write_val(lock_mut_ptr, &lock_mut_c)?;
@@ -193,18 +139,15 @@ fn handle_setlk(
     fd: FileDesc,
     arg: u64,
     is_nonblocking: bool,
-    owner_kind: LockOwnerKind,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let posix_owner = FileTable::range_lock_owner(file_table.unwrap());
+    let owner = FileTable::range_lock_owner(file_table.unwrap());
     let file = get_file_fast!(&mut file_table, fd).into_owned();
 
     let lock_mut_ptr = arg as Vaddr;
     let lock_mut_c = ctx.user_space().read_val::<c_flock>(lock_mut_ptr)?;
-    owner_kind.validate_pid(&lock_mut_c)?;
     let lock_type = RangeLockType::try_from(lock_mut_c.l_type)?;
-    let owner = owner_kind.owner(&*file, posix_owner);
     let lock = RangeLockItem::new(
         owner,
         ctx.process.pid(),
@@ -212,15 +155,13 @@ fn handle_setlk(
         from_c_flock_and_file(&lock_mut_c, &*file)?,
     );
 
-    file.set_range_lock(&lock, is_nonblocking)?;
+    let inode_file = file.as_inode_handle_or_err()?;
+    inode_file.set_range_lock(&lock, is_nonblocking)?;
 
-    if matches!(owner_kind, LockOwnerKind::OpenFileDescription) {
-        return Ok(SyscallReturn::Return(0));
-    }
     if lock.type_() == RangeLockType::Unlock {
         return Ok(SyscallReturn::Return(0));
     }
-    // A concurrent close will release the range locks for this owner and file
+    // A concurrent close will release the range locks for this owner and inode
     // but may miss the new one. If it happens, release the new lock to prevent
     // it from leaking forever.
     let file_is_still_open = file_table.read_with(|table| {
@@ -229,7 +170,7 @@ fn handle_setlk(
             .is_ok_and(|current_file| Arc::ptr_eq(current_file, &file))
     });
     if !file_is_still_open {
-        file.release_range_locks(owner);
+        inode_file.release_range_locks(owner);
         return_errno_with_message!(
             Errno::EBADF,
             "the file descriptor was closed while setting a range lock"
@@ -273,86 +214,6 @@ fn handle_setown(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn>
     Ok(SyscallReturn::Return(0))
 }
 
-/// The three lease types, as defined by `<fcntl.h>`.
-const LEASE_RDLCK: u16 = 0;
-const LEASE_WRLCK: u16 = 1;
-
-fn handle_setlease(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
-    let lease = match arg as i32 {
-        lease @ (0..=2) => lease as u16,
-        _ => return_errno_with_message!(Errno::EINVAL, "invalid lease type"),
-    };
-
-    let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-
-    match lease {
-        LEASE_RDLCK => {
-            // A read lease is only possible when the file is not open for
-            // writing; Linux reports the conflict as EAGAIN.
-            if file.access_mode() != AccessMode::O_RDONLY {
-                return_errno_with_message!(Errno::EAGAIN, "the file is open for writing");
-            }
-        }
-        LEASE_WRLCK => {
-            if file.access_mode() == AccessMode::O_RDONLY {
-                return_errno_with_message!(Errno::EAGAIN, "the file is open read-only");
-            }
-        }
-        _ => {}
-    }
-
-    file.common().set_lease_type(lease);
-    Ok(SyscallReturn::Return(0))
-}
-
-fn handle_getlease(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
-    let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-
-    Ok(SyscallReturn::Return(file.common().lease_type() as _))
-}
-
-/// Returns the pipe handle behind `file`, or `EINVAL` for anything else.
-fn pipe_handle(file: &dyn FileLike) -> Result<&PipeHandle> {
-    file.downcast_ref::<InodeHandle>()
-        .and_then(|handle| handle.downcast_open_file::<PipeHandle>().ok().flatten())
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "the file is not a pipe"))
-}
-
-fn handle_getpipe_sz(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
-    let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-
-    let pipe = pipe_handle(&**file)?;
-    Ok(SyscallReturn::Return(pipe.buffer_capacity() as _))
-}
-
-fn handle_setpipe_sz(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
-    let requested: usize = arg
-        .try_into()
-        .map_err(|_| Error::with_message(Errno::EINVAL, "invalid pipe size"))?;
-    if requested == 0 {
-        return_errno_with_message!(Errno::EINVAL, "the pipe size cannot be zero");
-    }
-
-    // Linux reports EPERM for an unprivileged request above `pipe-max-size`.
-    let max_size = PIPE_MAX_SIZE.load(core::sync::atomic::Ordering::Relaxed);
-    if requested > max_size {
-        return_errno_with_message!(
-            Errno::EPERM,
-            "the requested size exceeds the pipe-max-size limit"
-        );
-    }
-
-    let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, fd);
-
-    let pipe = pipe_handle(&**file)?;
-    let new_size = pipe.resize_buffer(requested)?;
-    Ok(SyscallReturn::Return(new_size as _))
-}
-
 fn handle_addseal(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
     let new_seals = FileSeals::from_bits(arg as u32)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid seals"))?;
@@ -387,13 +248,6 @@ enum FcntlCmd {
     F_SETLKW = 7,
     F_SETOWN = 8,
     F_GETOWN = 9,
-    F_SETLEASE = 1024,
-    F_GETLEASE = 1025,
-    F_SETPIPE_SZ = 1031,
-    F_GETPIPE_SZ = 1032,
-    F_OFD_GETLK = 36,
-    F_OFD_SETLK = 37,
-    F_OFD_SETLKW = 38,
     F_DUPFD_CLOEXEC = 1030,
     F_ADD_SEALS = 1033,
     F_GET_SEALS = 1034,
@@ -439,11 +293,7 @@ impl c_flock {
             } else {
                 lock.range().len() as off_t
             };
-            self.l_pid = if lock.owner().is_open_file_description() {
-                u32::MAX
-            } else {
-                lock.pid()
-            };
+            self.l_pid = lock.pid();
         }
     }
 }

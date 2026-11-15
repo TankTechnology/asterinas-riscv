@@ -15,10 +15,7 @@ use crate::{
         TermStatus,
         exit::{drop_after, exit_process},
         pid_table,
-        signal::{
-            constants::SIGKILL, provenance::trace_kernel_thread_enqueue,
-            signals::kernel::KernelSignal,
-        },
+        signal::{constants::SIGKILL, signals::kernel::KernelSignal},
         task_set::TaskSet,
     },
     thread::{AsThread, Tid},
@@ -63,19 +60,13 @@ fn exit_internal(
     let thread_local = current_task.as_thread_local().unwrap();
     let posix_process = posix_thread.process();
 
-    let (is_last_thread, completed_stop) = {
+    let is_last_thread = {
         let mut tasks = posix_process.tasks().lock();
         let has_exited_group = tasks.has_exited_group();
         let in_evecve = tasks.in_execve();
 
         if is_exiting_group && !has_exited_group && !in_evecve {
-            // This is group-exit commitment, unlike the sibling SIGKILLs used
-            // by exec. Serialize it with selected STOP commitment.
-            posix_process
-                .signal_job_control()
-                .lock()
-                .commit_exit(posix_process.status());
-            sigkill_other_threads(&current_task, &tasks, "exit-group-sibling");
+            sigkill_other_threads(&current_task, &tasks);
             tasks.set_exited_group();
         }
 
@@ -94,23 +85,8 @@ fn exit_internal(
         }
         current_thread.exit();
 
-        let is_last = tasks.remove_exited(&current_task);
-        let mut control = posix_process.signal_job_control().lock();
-        if is_last {
-            control.commit_exit(posix_process.status());
-        }
-        let completed = control.leave(
-            &mut posix_thread.group_stop_participant().lock(),
-            posix_process.status(),
-        );
-        (is_last, completed)
+        tasks.remove_exited(&current_task)
     };
-
-    if completed_stop {
-        posix_process.notify_group_stop();
-    }
-
-    crate::syscall::diagnostics::on_exit(ctx, term_status);
 
     // This is put after `current_thread.exit()`,
     // so `attach_tracee` will observe that the tracer has exited while
@@ -132,19 +108,6 @@ fn exit_internal(
         pid_table::pid_table_mut().remove_thread(posix_thread.tid());
     }
 
-    // Apply the process's pending `SEM_UNDO` adjustments while the namespace
-    // proxy is still available, as Linux does in `sem_exit`.
-    if is_last_thread {
-        let ipc_ns = posix_thread
-            .ns_proxy()
-            .lock()
-            .as_ref()
-            .map(|ns_proxy| ns_proxy.ipc_ns().clone());
-        if let Some(ipc_ns) = ipc_ns {
-            ipc_ns.apply_sem_undo(posix_process.pid());
-        }
-    }
-
     // Drop fields in `PosixThread`.
     drop_after!(posix_thread.file_table().lock().take());
     drop_after!(posix_thread.ns_proxy().lock().take());
@@ -160,11 +123,7 @@ fn exit_internal(
 }
 
 /// Sends `SIGKILL` to all other threads in the current process.
-pub(in crate::process) fn sigkill_other_threads(
-    current_task: &Task,
-    task_set: &TaskSet,
-    reason: &'static str,
-) {
+pub(in crate::process) fn sigkill_other_threads(current_task: &Task, task_set: &TaskSet) {
     debug_assert!(
         task_set
             .as_slice()
@@ -176,10 +135,9 @@ pub(in crate::process) fn sigkill_other_threads(
         if core::ptr::eq(current_task, task.as_ref()) {
             continue;
         }
-        let sender = current_task.as_posix_thread().unwrap();
-        let target = task.as_posix_thread().unwrap();
-        trace_kernel_thread_enqueue(reason, sender, target);
-        target.enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
+        task.as_posix_thread()
+            .unwrap()
+            .enqueue_signal(Box::new(KernelSignal::new(SIGKILL)));
     }
 }
 

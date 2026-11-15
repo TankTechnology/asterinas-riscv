@@ -10,5 +10,4 @@ impl aster_bigtcp::ext::Ext for BigtcpExt {
 
     type TcpEventObserver = StreamObserver;
     type UdpEventObserver = DatagramObserver;
-    type IcmpEventObserver = DatagramObserver;
 }
