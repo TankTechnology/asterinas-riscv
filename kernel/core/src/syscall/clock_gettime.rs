@@ -143,3 +143,26 @@ pub(super) fn read_clock(clockid: clockid_t, ctx: &Context) -> Result<Duration> 
         }
     }
 }
+
+/// Returns the resolution of the requested clock.
+pub(super) fn sys_clock_getres(
+    clockid: clockid_t,
+    timespec_addr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    debug!("clockid = {:?}", clockid);
+
+    // Every clock this kernel exposes is backed by the monotonic or
+    // real-time counter, whose resolution is one nanosecond.
+    let _ = read_clock(clockid, ctx)?;
+    let resolution = {
+        use crate::time::timespec_t;
+        timespec_t { sec: 0, nsec: 1 }
+    };
+
+    if timespec_addr != 0 {
+        ctx.user_space().write_val(timespec_addr, &resolution)?;
+    }
+
+    Ok(SyscallReturn::Return(0))
+}

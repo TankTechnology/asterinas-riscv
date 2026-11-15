@@ -9,7 +9,6 @@ mod model;
 mod pty;
 pub mod registry;
 mod snd;
-pub(crate) mod sysfs;
 pub(crate) mod tty;
 mod r#loop;
 
@@ -74,7 +73,6 @@ pub(crate) fn init_in_first_process() -> Result<()> {
     tty::init_in_first_process()?;
     registry::init_in_first_process()?;
     r#loop::init_in_first_process()?;
-    sysfs::init_in_first_process()?;
 
     Ok(())
 }

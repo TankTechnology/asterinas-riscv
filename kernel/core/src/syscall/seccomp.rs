@@ -40,3 +40,13 @@ pub(super) fn sys_seccomp(
 ) -> Result<SyscallReturn> {
     return_errno_with_message!(Errno::ENOSYS, "seccomp is not implemented yet");
 }
+
+/// The `SIGSYS` signal delivered when a filter rejects a syscall.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct SigsysSignal;
+
+impl SigsysSignal {
+    pub(super) fn new() -> Self {
+        Self
+    }
+}
