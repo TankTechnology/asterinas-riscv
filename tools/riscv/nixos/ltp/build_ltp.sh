@@ -29,6 +29,7 @@ OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
 STAGE="${REPO_ROOT}/target/ltp/stage"
 BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 PACKAGE_IDENTITY="${REPO_ROOT}/target/ltp/package.json"
+SCHED_VARIANT_PATCH="${SRC_DIR}/sched_setscheduler04-variant-getters.patch"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
@@ -80,7 +81,7 @@ rm -f "${PACKAGE_IDENTITY}"
 
 required_tools=("${CC}" "${STRIP}")
 if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
-    required_tools+=(aclocal autoconf automake)
+    required_tools+=(aclocal autoconf automake git)
 fi
 for tool in "${required_tools[@]}"; do
     if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -107,6 +108,17 @@ if [[ ! -x "${BUSYBOX}" ]]; then
 fi
 
 if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
+    # Musl's legacy scheduler wrappers are ENOSYS stubs. Keep LTP's syscall
+    # variant on raw syscalls for both the operation and its verification.
+    if git -C "${LTP_SRC}" apply --unidiff-zero --check "${SCHED_VARIANT_PATCH}"; then
+        git -C "${LTP_SRC}" apply --unidiff-zero "${SCHED_VARIANT_PATCH}"
+    elif git -C "${LTP_SRC}" apply --unidiff-zero --reverse --check "${SCHED_VARIANT_PATCH}"; then
+        echo "LTP scheduler variant patch already applied"
+    else
+        echo "LTP scheduler variant patch does not apply cleanly" >&2
+        exit 2
+    fi
+
     echo "=== configure LTP for riscv64 (musl, dynamic, cross) ==="
     cd "${LTP_SRC}"
     make autotools >/dev/null 2>&1 || { echo "make autotools failed" >&2; exit 2; }

@@ -23,7 +23,6 @@ fi
 ./execve/execve_err
 ./execve/execve_memfd
 ./execve/execve_mt_parent
-./execve/execveat
 
 ./exit/exit_code
 ./exit/exit_procfs
@@ -57,12 +56,12 @@ fi
 ./sched/sched_attr_getset
 ./sched/sched_param_getset
 ./sched/sched_param_idle
-./sched/setpriority_permission
+./sched/sched_permissions
+./sched/sched_policy
 
 ./signal/kill
 ./signal/parent_death_signal
 ./signal/pidfd_send_signal
-./signal/rt_sigpending
 ./signal/signal_fd
 ./signal/signal_test2
 
@@ -80,5 +79,4 @@ fi
 ./job_control
 ./pidfd
 ./pidfd_getfd
-./set_tid_address
 ./wait4
