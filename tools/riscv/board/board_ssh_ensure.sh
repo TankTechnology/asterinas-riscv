@@ -5,27 +5,40 @@
 #
 #   tools/riscv/board/board_ssh_ensure.sh [timeout-seconds]
 #
-# The board has no unit that starts dropbear, so after every boot SSH is dead
-# until someone types the command at the debug console. This helper tries SSH
-# first, and when that fails it asks the serial bridge to type the dropbear
-# line, then waits for the port. It is the difference between "the board came
-# back" and "the board came back and we can reach it".
+# The image starts OpenSSH on port 22 from asterinas-debug-console.target, so
+# a healthy boot needs nothing from this script. It exists for the boots where
+# that did not happen: it tries SSH first, and when that fails it asks the
+# serial bridge to start the server unit, and as a last resort starts a
+# dropbear on the spare port, independent of systemd.
 set -uo pipefail
 
 KEY=${BOARD_KEY:-$HOME/.ssh/asterinas_megrez}
-PORT=${BOARD_PORT:-2222}
+PORT=${BOARD_PORT:-22}
+EMERGENCY_PORT=${BOARD_EMERGENCY_PORT:-2222}
 TARGET=${BOARD_TARGET:-root@58.206.232.122}
 FIFO=${BOARD_CONSOLE_FIFO:-/tmp/megrez.cmd}
 DEADLINE=$((SECONDS + ${1:-180}))
 
 ssh_ok() {
-    timeout 6 ssh -i "$KEY" -p "$PORT" -o StrictHostKeyChecking=no \
+    local port=${1:-$PORT}
+    timeout 6 ssh -i "$KEY" -p "$port" -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=4 \
         "$TARGET" true 2>/dev/null
 }
 
-if ssh_ok; then
-    echo "ssh already up"
+wait_up() { # port, rounds of 4 seconds
+    local port=$1 rounds=${2:-4}
+    for _ in $(seq 1 "$rounds"); do
+        sleep 4
+        if ssh_ok "$port"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ssh_ok "$PORT"; then
+    echo "ssh already up on $PORT"
     exit 0
 fi
 
@@ -36,15 +49,27 @@ if [ ! -w "$FIFO" ]; then
     exit 1
 fi
 
+printf 'systemctl start asterinas-openssh.service 2>/dev/null\n' > "$FIFO"
+if wait_up "$PORT"; then
+    echo "ssh up after starting asterinas-openssh on the console"
+    exit 0
+fi
+
+printf 'systemctl start asterinas-dropbear.service 2>/dev/null\n' > "$FIFO"
+if wait_up "$PORT"; then
+    echo "ssh up after starting asterinas-dropbear on the console"
+    exit 0
+fi
+
+# Last resort: a dropbear on the spare port, with no unit in between. It does
+# not touch port 22, so it cannot fight a half-started OpenSSH.
 while [ $SECONDS -lt $DEADLINE ]; do
-    printf 'dropbear -p 2222 -r /etc/dropbear/dropbear_ed25519_host_key -E >/dev/null 2>&1 &\n' > "$FIFO"
-    for _ in $(seq 1 4); do
-        sleep 4
-        if ssh_ok; then
-            echo "ssh up after starting dropbear on the console"
-            exit 0
-        fi
-    done
+    printf 'dropbear -p %s -r /etc/dropbear/dropbear_ed25519_host_key -E >/dev/null 2>&1 &\n' \
+        "$EMERGENCY_PORT" > "$FIFO"
+    if wait_up "$EMERGENCY_PORT"; then
+        echo "ssh up on $EMERGENCY_PORT via a console dropbear"
+        exit 0
+    fi
 done
 
 echo "ssh did not come up within the deadline" >&2
