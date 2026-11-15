@@ -31,6 +31,7 @@ members = [
     "kernel/comps/i8042",
     "kernel/comps/simpledrm",
     "kernel/comps/mmc",
+    "kernel/comps/dwmac",
     "kernel/comps/uart",
     "kernel/comps/usb",
     "kernel/core",
@@ -188,6 +189,7 @@ aster-input = { path = "kernel/core/comps/input" }
 aster-logger = { path = "kernel/core/comps/logger" }
 aster-mlsdisk = { path = "kernel/core/comps/mlsdisk" }
 aster-mmc = { path = "kernel/comps/mmc" }
+aster-dwmac = { path = "kernel/comps/dwmac" }
 aster-network = { path = "kernel/core/comps/network" }
 aster-nvme = { path = "kernel/core/comps/nvme" }
 aster-pci = { path = "kernel/core/comps/pci" }
