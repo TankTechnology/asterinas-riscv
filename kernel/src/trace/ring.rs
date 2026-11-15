@@ -237,6 +237,12 @@ mod test {
 
     use super::*;
 
+    /// Pushes with a fixed timestamp: the ktest kernel does not initialize the
+    /// monotonic clock, and these tests are about the ring, not the clock.
+    fn push_for_test(event: u16, pid: u32, tid: u32, data: &[u8]) {
+        push_at(event, pid, tid, data, Duration::ZERO);
+    }
+
     /// Reads the payloads currently in the ring, in visit order.
     fn payloads() -> alloc::vec::Vec<alloc::string::String> {
         let mut out = alloc::vec::Vec::new();
@@ -250,8 +256,8 @@ mod test {
     #[ktest]
     fn records_round_trip() {
         clear();
-        push(1, 10, 11, b"one");
-        push(1, 20, 21, b"two");
+        push_for_test(1, 10, 11, b"one");
+        push_for_test(1, 20, 21, b"two");
 
         let mut seen = alloc::vec::Vec::new();
         for_each_record(|record| {
@@ -270,7 +276,7 @@ mod test {
         let total = RING_SLOTS + 5;
         for index in 0..total {
             let pid = index as u32;
-            push(1, pid, pid, b"x");
+            push_for_test(1, pid, pid, b"x");
         }
 
         let mut pids = alloc::vec::Vec::new();
@@ -287,7 +293,7 @@ mod test {
     fn bounds_stop_the_reader() {
         clear();
         let head = heads();
-        push(1, 1, 1, b"after");
+        push_for_test(1, 1, 1, b"after");
         // A reader that took its bounds before the push must not see it.
         let mut seen = 0;
         for_each_record_bounded(
@@ -302,7 +308,7 @@ mod test {
 
     #[ktest]
     fn clear_empties_the_ring() {
-        push(1, 1, 1, b"gone");
+        push_for_test(1, 1, 1, b"gone");
         clear();
         assert_eq!(payloads().len(), 0);
     }
