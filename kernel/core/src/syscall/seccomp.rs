@@ -43,10 +43,10 @@ pub(super) fn sys_seccomp(
 
 /// The `SIGSYS` signal delivered when a filter rejects a syscall.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct SigsysSignal;
+pub(super) struct SigsysSignal(pub(super) u32);
 
 impl SigsysSignal {
-    pub(super) fn new() -> Self {
-        Self
+    pub(super) const fn new(syscall_number: u32) -> Self {
+        Self(syscall_number)
     }
 }
