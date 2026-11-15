@@ -10,7 +10,7 @@ use ostd::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::PollingUsbKeyboard,
+    bus::usb::{PollingUsbHidHost as PollingUsbKeyboard, UsbHidReport},
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
@@ -325,7 +325,11 @@ fn process_deferred_keyboard() {
     loop {
         let mut keyboard_guard = keyboard.lock();
         let report = match keyboard_guard.poll_report() {
-            Ok(Some(report)) => report,
+            Ok(Some(UsbHidReport::Keyboard(report))) => report,
+            Ok(Some(_)) => {
+                // Mouse reports are routed separately once mouse support lands.
+                continue;
+            }
             Ok(None) => {
                 // No report ready; the interrupt will schedule us again.
                 return;
@@ -344,7 +348,10 @@ fn process_deferred_keyboard() {
         );
         if !events.is_empty() {
             let device = deferred_guard.registered.get_or_insert_with(|| {
-                let info = keyboard_guard.info();
+                let info = keyboard_guard
+                    .info()
+                    .keyboard
+                    .expect("a keyboard report implies a boot keyboard");
                 ostd::info!(
                     "USB boot keyboard registered: {:04x}:{:04x}",
                     info.vendor_id,

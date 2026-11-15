@@ -38,6 +38,7 @@
 //!
 
 mod addr;
+mod ctrl_msg;
 mod common;
 mod kobject_uevent;
 mod message;
@@ -47,6 +48,7 @@ mod route;
 mod table;
 
 pub(crate) use addr::{GroupIdSet, NetlinkSocketAddr};
+pub(crate) use ctrl_msg::NetlinkControlMessage;
 pub(crate) use kobject_uevent::NetlinkUeventSocket;
 pub(crate) use options::{AddMembership, DropMembership, StrictCheck};
 pub(super) use receiver::NETLINK_DEFAULT_BUF_SIZE;

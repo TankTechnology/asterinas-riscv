@@ -14,17 +14,34 @@ pub(crate) struct BoundNetlink<Message: 'static> {
     pub(in netlink) handle: BoundHandle<Message>,
     pub(in netlink) remote_addr: NetlinkSocketAddr,
     pub(in netlink) receive_queue: Arc<Mutex<MessageQueue<Message>>>,
+    /// An attached classic-BPF filter (`SO_ATTACH_FILTER`), if any.
+    pub(in netlink) filter: Option<Arc<Vec<crate::util::bpf::SockFilter>>>,
 }
 
 impl<Message: 'static> BoundNetlink<Message> {
     pub(super) fn new(
         handle: BoundHandle<Message>,
         message_queue: Arc<Mutex<MessageQueue<Message>>>,
+        filter: Option<Arc<Vec<crate::util::bpf::SockFilter>>>,
     ) -> Self {
         Self {
             handle,
             remote_addr: NetlinkSocketAddr::new_unspecified(),
             receive_queue: message_queue,
+            filter,
+        }
+    }
+
+    /// Replaces the attached classic-BPF filter.
+    pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<crate::util::bpf::SockFilter>>>) {
+        self.filter = filter;
+    }
+
+    /// Returns whether the attached filter accepts `payload` (always true without a filter).
+    pub(in netlink) fn filter_allows(&self, payload: &[u8]) -> bool {
+        match &self.filter {
+            Some(filter) => crate::util::bpf::run_filter(filter, payload, true).is_some_and(|ret| ret != 0),
+            None => true,
         }
     }
 

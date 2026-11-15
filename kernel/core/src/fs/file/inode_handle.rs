@@ -613,6 +613,15 @@ pub(crate) enum SeekFrom {
 /// operations that are not purely inode-backed, such as state and operations for
 /// devices, pipes, namespace files, and procfs files.
 pub trait PerOpenFileOps: Pollable + FileOps + Any + Send + Sync + 'static {
+    /// Returns whether this per-open object is an audited SCM_RIGHTS ownership leaf.
+    ///
+    /// The default must remain conservative: an implementation may strongly retain arbitrary
+    /// [`FileLike`] objects even when its inode type looks harmless. Override this only after
+    /// proving that neither the object nor anything it owns can retain a file description.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        false
+    }
+
     /// Checks whether the `seek()` operation should fail.
     fn check_seekable(&self) -> Result<()>;
 

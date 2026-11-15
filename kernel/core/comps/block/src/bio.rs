@@ -13,7 +13,7 @@ use io_util::{
 use ostd::{
     Error,
     mm::{
-        HasSize, Infallible, USegment, VmReader, VmWriter,
+        FallibleVmRead, FallibleVmWrite, HasSize, Infallible, USegment, VmReader, VmWriter,
         dma::{DmaStream, FromAndToDevice},
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
     },
@@ -484,7 +484,7 @@ impl BioSegment {
         let mut writer = self.inner.dma_slice().writer()?;
         writer.skip(offset);
         let mut reader = VmReader::from(buf).to_fallible();
-        writer.write_fallible(&mut reader);
+        let _ = writer.write_fallible(&mut reader).map_err(|(err, _)| err)?;
         Ok(())
     }
 
@@ -496,9 +496,8 @@ impl BioSegment {
         let mut reader = self.inner.dma_slice().reader()?;
         reader.skip(offset);
         let mut writer = VmWriter::from(buf).to_fallible();
-        reader.read_fallible(&mut writer);
+        let _ = reader.read_fallible(&mut writer).map_err(|(err, _)| err)?;
         Ok(())
-    }
     }
 }
 
@@ -609,112 +608,31 @@ fn target_pool(direction: BioDirection) -> Option<&'static Arc<BioSegmentPool>> 
 pub(crate) fn is_sector_aligned(offset: usize) -> bool {
     offset.is_multiple_of(SECTOR_SIZE)
 }
+
 #[cfg(ktest)]
 mod tests {
-    use ostd::prelude::ktest;
+    use ostd::{mm::io::util::HasVmReaderWriter, prelude::ktest};
 
     use super::*;
 
     #[ktest]
-    fn device_fills_only_from_device_segments() {
-        let segment = BioSegment::alloc(1, BioDirection::FromDevice);
+    fn pio_copy_paths_respect_segment_direction() {
         let expected = [0x5au8; SECTOR_SIZE];
-        segment.write_from_device(0, &expected).unwrap();
 
-        let mut actual = [0u8; SECTOR_SIZE];
-        segment.read_bytes(0, &mut actual).unwrap();
-        assert_eq!(actual, expected);
+        // A read segment accepts bytes produced by a PIO device.
+        let read_segment = BioSegment::alloc(1, BioDirection::FromDevice);
+        read_segment.write_from_device(0, &expected).unwrap();
+        let mut device_buf = [0u8; SECTOR_SIZE];
+        assert!(read_segment.read_for_device(0, &mut device_buf).is_err());
 
+        // A write segment hands its bytes to a PIO device.
         let write_segment = BioSegment::alloc(1, BioDirection::ToDevice);
         assert!(write_segment.write_from_device(0, &expected).is_err());
-    }
-}
-
-/// An aligned unsigned integer number.
-///
-/// An instance of `AlignedUsize<const N: u16>` is guaranteed to have a value that is a multiple
-/// of `N`, a predetermined const value. It is preferable to express an unsigned integer value
-/// in type `AlignedUsize<_>` instead of `usize` if the value must satisfy an alignment requirement.
-/// This helps readability and prevents bugs.
-///
-/// # Examples
-///
-/// ```rust
-/// const SECTOR_SIZE: u16 = 512;
-///
-/// let sector_num = 1234; // The 1234-th sector
-/// let sector_offset: AlignedUsize<SECTOR_SIZE> = {
-///     let sector_offset = sector_num * (SECTOR_SIZE as usize);
-///     AlignedUsize::<SECTOR_SIZE>::new(sector_offset).unwrap()
-/// };
-/// assert!(sector_offset.value().is_multiple_of(sector_offset.align()));
-/// ```
-///
-/// # Limitation
-///
-/// Currently, the alignment const value must be expressed in `u16`;
-/// it is not possible to use a larger or smaller type.
-/// This limitation is inherited from that of Rust's const generics:
-/// your code can be generic over the _value_ of a const, but not the _type_ of the const.
-/// We choose `u16` because it is reasonably large to represent any alignment value
-/// used in practice.
-#[derive(Clone, Debug)]
-pub struct AlignedUsize<const N: u16>(usize);
-
-impl<const N: u16> AlignedUsize<N> {
-    /// Constructs a new instance of aligned integer if the given value is aligned.
-    pub fn new(val: usize) -> Option<Self> {
-        if val.is_multiple_of(N as usize) {
-            Some(Self(val))
-        } else {
-            None
-        }
-    }
-
-    /// Returns the value.
-    pub fn value(&self) -> usize {
-        self.0
-    }
-
-    /// Returns the corresponding ID.
-    ///
-    /// The so-called "ID" of an aligned integer is defined to be `self.value() / self.align()`.
-    /// This value is named ID because one common use case is using `Aligned` to express
-    /// the byte offset of a sector, block, or page. In this case, the `id` method returns
-    /// the ID of the corresponding sector, block, or page.
-    pub fn id(&self) -> usize {
-        self.value() / self.align()
-    }
-
-    /// Returns the alignment.
-    pub fn align(&self) -> usize {
-        N as usize
-    }
-}
-#[cfg(ktest)]
-mod tests {
-    use ostd::prelude::ktest;
-
-    use super::*;
-
-    #[ktest]
-    fn device_fills_only_from_device_segments() {
-        let segment = BioSegment::alloc(1, BioDirection::FromDevice);
-        let expected = [0x5au8; SECTOR_SIZE];
-        segment.write_from_device(0, &expected).unwrap();
-
-        let mut actual = [0u8; SECTOR_SIZE];
-        segment.read_bytes(0, &mut actual).unwrap();
-        assert_eq!(actual, expected);
-
-        let write_segment = BioSegment::alloc(1, BioDirection::ToDevice);
-        assert!(write_segment.write_from_device(0, &expected).is_err());
-
-        write_segment.write_bytes(0, &expected).unwrap();
+        let mut writer = write_segment.writer().unwrap();
+        let mut reader = VmReader::from(expected.as_slice()).to_fallible();
+        writer.write_fallible(&mut reader).unwrap();
         let mut device_buf = [0u8; SECTOR_SIZE];
         write_segment.read_for_device(0, &mut device_buf).unwrap();
         assert_eq!(device_buf, expected);
-        assert!(segment.read_for_device(0, &mut device_buf).is_err());
     }
 }
-

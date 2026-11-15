@@ -37,6 +37,7 @@ sleep 0.2
 ./udp_err
 ./unix_datagram_err
 ./unix_seqpacket_err
+./unix_scm_rights_acyclic
 ./unix_stream_err
 
 ./netlink_padding

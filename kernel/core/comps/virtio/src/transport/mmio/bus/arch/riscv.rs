@@ -3,10 +3,7 @@
 use alloc::vec::Vec;
 
 use fdt_util::{AcquireIoMems, AcquireIrqLines};
-use ostd::{
-    arch::{boot::DEVICE_TREE, irq::MappedIrqLine},
-    mm::HasPaddr,
-};
+use ostd::{arch::boot::DEVICE_TREE, mm::HasPaddr};
 pub(super) use ostd::arch::irq::MappedIrqLine;
 
 use crate::transport::mmio::{

@@ -12,7 +12,7 @@ use ostd::{
 };
 use spin::Once;
 
-use super::{PosixThread, ThreadLocal};
+use super::{PosixThread, SeccompFilter, ThreadLocal};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
@@ -51,7 +51,7 @@ pub(crate) struct PosixThreadBuilder {
     ns_proxy: Option<Arc<NsProxy>>,
     default_timer_slack_ns: u64,
     seccomp_mode: u32,
-    seccomp_filter: Option<Arc<[SockFilter]>>,
+    seccomp_filter: Option<Arc<SeccompFilter>>,
 }
 
 impl PosixThreadBuilder {
@@ -158,7 +158,7 @@ impl PosixThreadBuilder {
         self
     }
 
-    pub(crate) fn seccomp_filter(mut self, seccomp_filter: Option<Arc<[SockFilter]>>) -> Self {
+    pub(crate) fn seccomp_filter(mut self, seccomp_filter: Option<Arc<SeccompFilter>>) -> Self {
         self.seccomp_filter = seccomp_filter;
         self
     }

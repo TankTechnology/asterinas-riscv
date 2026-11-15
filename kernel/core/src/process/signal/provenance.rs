@@ -16,12 +16,8 @@ fn should_trace(sig_num: SigNum) -> bool {
 }
 
 fn comm(thread: &PosixThread) -> String {
-    thread
-        .thread_name()
-        .lock()
-        .name()
-        .to_string_lossy()
-        .into_owned()
+    let name = *thread.thread_name().lock();
+    String::from_utf8_lossy(name.as_bytes()).into_owned()
 }
 
 pub(crate) fn trace_user_process_enqueue(

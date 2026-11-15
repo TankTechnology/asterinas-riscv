@@ -19,6 +19,13 @@ pub(crate) trait TtyDriver: Send + Sync + 'static {
     /// The device major ID.
     const DEVICE_MAJOR_ID: u32;
 
+    /// Whether this driver is an audited SCM_RIGHTS ownership leaf.
+    ///
+    /// A [`Tty`] strongly owns its driver, so the default must stay conservative for current and
+    /// future drivers. A concrete driver may opt in only after proving that it cannot retain an
+    /// arbitrary file description.
+    const SCM_RIGHTS_PROVEN_LEAF: bool = false;
+
     /// Returns the metadata that specifies a TTY device inode to be created in devtmpfs, if any.
     fn devtmpfs_meta(&self, _index: u32) -> Option<DevtmpfsNodeMeta>;
 

@@ -31,7 +31,6 @@ members = [
     "kernel/comps/i8042",
     "kernel/comps/simpledrm",
     "kernel/comps/mmc",
-    "kernel/comps/dwmac",
     "kernel/comps/uart",
     "kernel/comps/usb",
     "kernel/core",

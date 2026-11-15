@@ -243,6 +243,10 @@ impl Component {
 
 #[cfg(ktest)]
 mod tests {
+    use aster_bigtcp::{
+        device::{DeviceCapabilities, EthernetAddress, NetError},
+        packet::{FreshTxPacket, LinkLayer, RxPacket, TxPacket},
+    };
     use ostd::prelude::ktest;
 
     use super::*;
@@ -251,8 +255,8 @@ mod tests {
     struct FakeNetworkDevice;
 
     impl AnyNetworkDevice for FakeNetworkDevice {
-        fn mac_addr(&self) -> EthernetAddr {
-            EthernetAddr([0x02, 0, 0, 0, 0, 1])
+        fn mac_addr(&self) -> EthernetAddress {
+            EthernetAddress([0x02, 0, 0, 0, 0, 1])
         }
 
         fn capabilities(&self) -> DeviceCapabilities {
@@ -267,12 +271,16 @@ mod tests {
             false
         }
 
-        fn receive(&mut self) -> Result<RxBuffer, NetError> {
+        fn receive(&mut self) -> Result<RxPacket<LinkLayer>, NetError> {
             Err(NetError::NotReady)
         }
 
-        fn send(&mut self, _packet: &[u8]) -> Result<(), NetError> {
+        fn send(&mut self, _packet: TxPacket<LinkLayer>) -> Result<(), NetError> {
             Err(NetError::NotReady)
+        }
+
+        fn alloc_tx_buffer(_payload_len: usize) -> Result<FreshTxPacket, ostd::Error> {
+            Err(ostd::Error::InvalidArgs)
         }
 
         fn free_processed_tx_buffers(&mut self) {}

@@ -2,6 +2,8 @@
 
 // The boot routine executed by the bootstrap processor (BSP) on RISC-V.
 
+SATP_MODE_SV39         = 8 << 60
+SATP_MODE_SV48         = 9 << 60
 SATP_PPN_SHIFT         = 0
 
 PTE_V                  = 0x01
@@ -59,13 +61,55 @@ bsp_boot_entry:
     #   a0 = hart id
     #   a1 = device tree paddr
     # We do not touch them here. They are passed to the Rust entrypoint `riscv_boot`.
+    # Discover the physical load address and require 2 MiB alignment for the
+    # kernel leaves. The whole image must fit in the first 128 GiB so that the
+    # Sv39 boot page table can identity-map it.
+    lla    t0, _start
+    li     t1, (1 << L2_PAGE_SHIFT) - 1
+    and    t1, t0, t1
+    bnez   t1, bsp_unreachable_pa
+.extern __kernel_end
+    lla    t2, __kernel_end - KERNEL_VMA_OFFSET
+    li     t1, BOOT_IDENTITY_MAP_SIZE
+    bgtu   t2, t1, bsp_unreachable_pa
 
-    # Make the newly written page tables visible to the page-table walker.
-    sfence.vma
+    # Compute the offset from the physical load address to the fixed virtual address.
+    lui    t1, %hi(_start + KERNEL_VMA_OFFSET)
+    addi   t1, t1, %lo(_start + KERNEL_VMA_OFFSET)
+    sub    t1, t1, t0
+    lla    t3, __kernel_loaded_offset - KERNEL_VMA_OFFSET
+    sd     t1, 0(t3)
 
-    # Load the page table mode selected by the Rust build. Probing Sv48 first
-    # is incorrect for an Sv39 build on hardware that implements both modes:
-    # Rust uses the Sv39 linear-map base while the active table is then Sv48.
+    # Map the image at 0xffffffff80200000, starting at level-2 index 1.
+    #   bsp_boot_l2pt[1] = (PPN(0xffffffff80200000) << PTE_PPN_SHIFT) | PTE_VRWXAD
+    #   bsp_boot_l2pt[2] = (PPN(0xffffffff80400000) << PTE_PPN_SHIFT) | PTE_VRWXAD
+    #   ...
+    lla    t3, bsp_boot_l2pt
+    addi   t3, t3, PTE_SIZE
+    li     t4, 1 << L2_PAGE_SHIFT
+bsp_map_kernel:
+    srli   t1, t0, PAGE_SHIFT - PTE_PPN_SHIFT
+    ori    t1, t1, PTE_VRWXAD
+    sd     t1, 0(t3)
+    addi   t3, t3, PTE_SIZE
+    add    t0, t0, t4
+    bltu   t0, t2, bsp_map_kernel
+
+    # Both paging modes use the same level-2 kernel table.
+    #   sv39_boot_l3pt[510] = (PPN(bsp_boot_l2pt) << PTE_PPN_SHIFT) | PTE_V
+    #   sv48_boot_l3pt[510] = (PPN(bsp_boot_l2pt) << PTE_PPN_SHIFT) | PTE_V
+    lla    t0, bsp_boot_l2pt
+    srli   t0, t0, PAGE_SHIFT - PTE_PPN_SHIFT
+    ori    t0, t0, PTE_V
+    li     t2, 510 * PTE_SIZE
+    lla    t1, sv39_boot_l3pt
+    add    t1, t1, t2
+    sd     t0, 0(t1)
+    lla    t1, sv48_boot_l3pt
+    add    t1, t1, t2
+    sd     t0, 0(t1)
+
+    # Set up the Sv48 page table.
     #   sv48_boot_l4pt[511] = (PPN(sv48_boot_l3pt) << PTE_PPN_SHIFT) | PTE_V
     lla    t1, sv48_boot_l4pt
     li     t0, 511 * PTE_SIZE
@@ -75,6 +119,12 @@ bsp_boot_entry:
     ori    t0, t0, PTE_V
     sd     t0, 0(t1)
 
+    # Make the newly written page tables visible to the page-table walker.
+    sfence.vma
+
+    # Load the page table mode selected by the Rust build. Probing Sv48 first
+    # is incorrect for an Sv39 build on hardware that implements both modes:
+    # Rust uses the Sv39 linear-map base while the active table is then Sv48.
     lla    t0, sv48_boot_l4pt
     li     t1, {SATP_MODE}
     li     t2, 8 << 60
@@ -90,6 +140,7 @@ bsp_write_satp:
     # Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#satp>.
     csrr   t1, satp
     beq    t0, t1, bsp_flush_tlb
+
 bsp_unreachable_pa:
     j      bsp_unreachable_pa
 

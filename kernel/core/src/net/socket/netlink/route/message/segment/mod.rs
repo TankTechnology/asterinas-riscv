@@ -98,20 +98,17 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::GETLINK) => {
                 LinkSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::GetLink)
             }
-            Ok(CSegmentType::NEWLINK) => {
-                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::NewLink)
-            }
             Ok(CSegmentType::GETADDR) => {
                 AddrSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::GetAddr)
             }
             Ok(CSegmentType::NEWLINK) => {
-                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::NewLink)
+                LinkSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::NewLink)
             }
             Ok(CSegmentType::SETLINK) => {
-                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::SetLink)
+                LinkSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::SetLink)
             }
             Ok(CSegmentType::NEWADDR) => {
-                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::NewAddr)
+                AddrSegment::read_from(&header, reader, strict_check)?.map(RtnlSegment::NewAddr)
             }
             _ => {
                 let payload_len = header.calc_payload_len_with_padding(reader)?;

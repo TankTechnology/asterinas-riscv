@@ -178,7 +178,7 @@ impl UserNamespace {
             .lock()
             .map_down(u32::from(kuid))
             .map(Uid::new)
-            .unwrap_or(Uid::OVERFLOW)
+            .unwrap_or(Uid::new(65534))
     }
 
     /// Maps a global kernel GID to the GID visible inside this namespace.
@@ -187,7 +187,7 @@ impl UserNamespace {
             .lock()
             .map_down(u32::from(kgid))
             .map(Gid::new)
-            .unwrap_or(Gid::OVERFLOW)
+            .unwrap_or(Gid::new(65534))
     }
 
     /// Maps a UID visible inside this namespace to a global kernel UID.

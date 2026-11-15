@@ -2,7 +2,7 @@
 
 //! Handle link-related requests.
 
-use aster_bigtcp::wire::EthernetAddress;
+use aster_bigtcp::{iface::InterfaceFlags, wire::EthernetAddress};
 
 use super::util::{self, ResponseMode};
 use crate::{
@@ -174,7 +174,6 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
         flags: iface.flags().bits(),
         change: 0,
     };
-    };
 
     // Linux may report dozens of attributes in a fixed order.
     // See the reference below for the complete attribute list and ordering.
@@ -206,26 +205,29 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
 /// supported.
 pub(super) fn do_new_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
     let body = request_segment.body();
-    let Some(index) = body.index else {
+    if body.index == 0 {
         return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
-    };
+    }
+    let index = body.index;
 
     let net_ns = current_net_ns();
     let iface = net_ns
         .ifaces()
         .iter()
-        .find(|iface| iface.index() == index.get())
+        .find(|iface| iface.index() == index)
         .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
 
     // Apply `new = (old & !change) | (flags & change)`, as in Linux. If the
     // change mask is empty, treat the flags as the new state of the
     // well-known flag bits (some tools send `ifi_change = 0`).
     let old_flags = iface.flags();
-    let new_flags = if body.change.is_empty() {
+    let flags = InterfaceFlags::from_bits_truncate(body.flags);
+    let change = InterfaceFlags::from_bits_truncate(body.change);
+    let new_flags = if change.is_empty() {
         (old_flags & !(InterfaceFlags::UP | InterfaceFlags::RUNNING))
-            | (body.flags & (InterfaceFlags::UP | InterfaceFlags::RUNNING))
+            | (flags & (InterfaceFlags::UP | InterfaceFlags::RUNNING))
     } else {
-        (old_flags & !body.change) | (body.flags & body.change)
+        (old_flags & !change) | (flags & change)
     };
     iface.set_flags(new_flags);
 

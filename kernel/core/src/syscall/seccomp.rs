@@ -96,10 +96,29 @@ pub fn check(
                 return SeccompDecision::Allow;
             };
             let data = build_seccomp_data(syscall_number, args, instruction_pointer);
-            seccomp_action_to_decision(run_filter(&filter, &data))
+            seccomp_action_to_decision(filter_eval(&filter, &data))
         }
         _ => SeccompDecision::Allow,
     }
+}
+
+/// Evaluates a seccomp filter chain, from the newest node outward.
+///
+/// The first filter that returns a non-`ALLOW` action decides the outcome, as
+/// in Linux's `seccomp_run_filters`.
+fn filter_eval(
+    filter: &Arc<crate::process::posix_thread::SeccompFilter>,
+    data: &[u8; 64],
+) -> u32 {
+    let mut node = Some(filter);
+    while let Some(current) = node {
+        let action = run_filter(current.program(), data);
+        if action != SECCOMP_RET_ALLOW {
+            return action;
+        }
+        node = current.parent();
+    }
+    SECCOMP_RET_ALLOW
 }
 
 /// Builds the `seccomp_data` structure (64 bytes on riscv64) that a filter's
@@ -328,8 +347,13 @@ pub fn sys_seccomp(operation: u32, flags: u32, args: Vaddr, ctx: &Context) -> Re
                 }
             }
 
-            ctx.posix_thread
-                .set_seccomp_filter(Arc::from(filters.into_boxed_slice()));
+            let program: Arc<[SockFilter]> = Arc::from(filters.into_boxed_slice());
+            let parent = ctx.posix_thread.seccomp_filter();
+            let Some(filter) = crate::process::posix_thread::SeccompFilter::try_new(program, parent)
+            else {
+                return_errno_with_message!(Errno::ENOMEM, "the seccomp filter chain is too long");
+            };
+            ctx.posix_thread.set_seccomp_filter(filter);
             ctx.posix_thread.set_seccomp_mode(SECCOMP_MODE_FILTER);
             Ok(SyscallReturn::Return(0))
         }

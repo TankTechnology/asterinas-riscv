@@ -38,6 +38,8 @@ impl SerialDriver {
 impl TtyDriver for SerialDriver {
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/linux/major.h#L18>.
     const DEVICE_MAJOR_ID: u32 = 4;
+    // The serial driver owns only the console transport, which cannot retain a file description.
+    const SCM_RIGHTS_PROVEN_LEAF: bool = true;
 
     fn devtmpfs_meta(&self, index: u32) -> Option<DevtmpfsNodeMeta> {
         Some(DevtmpfsNodeMeta::new(format!("ttyS{}", index - Self::MINOR_ID_BASE)).unwrap())
