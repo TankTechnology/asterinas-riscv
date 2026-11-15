@@ -6,7 +6,6 @@
 //! to directly, which is why the guard branch in `trace_event!` folds away to
 //! nothing when the event is off.
 
-pub mod block;
 pub mod ftrace;
 pub mod irq;
 pub mod mm;

@@ -721,9 +721,6 @@ impl Pollable for MapFile {
 }
 
 impl FileLike for MapFile {
-    fn access_mode(&self) -> AccessMode {
-        AccessMode::O_RDWR
-    }
 
     fn common(&self) -> &FileCommon {
         &self.common

@@ -181,9 +181,6 @@ impl Pollable for ProgFile {
 }
 
 impl FileLike for ProgFile {
-    fn access_mode(&self) -> AccessMode {
-        AccessMode::O_RDWR
-    }
 
     fn common(&self) -> &FileCommon {
         &self.common

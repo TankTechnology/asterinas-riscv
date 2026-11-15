@@ -167,7 +167,7 @@ mod sched_setparam;
 mod sched_setscheduler;
 mod sched_yield;
 mod seccomp;
-pub use seccomp::SockFilter;
+pub use crate::util::bpf::SockFilter;
 mod select;
 mod semctl;
 mod semget;
@@ -486,3 +486,11 @@ macro_rules! log_syscall_entry {
 }
 
 use log_syscall_entry;
+
+// Downstream syscall modules restored from the pre-rebase tree.
+mod adjtimex;
+mod kcmp;
+mod quotactl;
+mod readahead;
+mod sigqueueinfo;
+mod sync_file_range;

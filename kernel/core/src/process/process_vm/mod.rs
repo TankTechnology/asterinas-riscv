@@ -14,7 +14,7 @@ mod init_stack;
 
 use core::ops::Range;
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use ostd::task::disable_preempt;
 
@@ -77,12 +77,25 @@ pub(crate) struct ProcessVm {
     data_range: SpinLock<Range<Vaddr>>,
     /// The path of the executable file.
     executable_path: Path,
+    /// Successful `membarrier(2)` registration commands for this address space.
+    membarrier_registrations: AtomicU32,
     /// The base address for vDSO segment
     #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
     vdso_base: AtomicUsize,
 }
 
 impl ProcessVm {
+
+    /// Records a successful `membarrier(2)` registration command.
+    pub fn register_membarrier(&self, command: u32) {
+        self.membarrier_registrations
+            .fetch_or(command, Ordering::Release);
+    }
+
+    /// Returns all successful `membarrier(2)` registration commands.
+    pub fn membarrier_registrations(&self) -> u32 {
+        self.membarrier_registrations.load(Ordering::Acquire)
+    }
     /// Creates a new `ProcessVm` without mapping anything.
     pub(crate) fn new(executable_path: Path) -> Self {
         Self {
@@ -91,6 +104,7 @@ impl ProcessVm {
             code_range: SpinLock::new(0..0),
             data_range: SpinLock::new(0..0),
             executable_path,
+            membarrier_registrations: AtomicU32::new(0),
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             vdso_base: AtomicUsize::new(0),
         }
@@ -104,6 +118,7 @@ impl ProcessVm {
             code_range: SpinLock::new(process_vm.code_range.lock().clone()),
             data_range: SpinLock::new(process_vm.data_range.lock().clone()),
             executable_path: process_vm.executable_path.clone(),
+            membarrier_registrations: AtomicU32::new(process_vm.membarrier_registrations()),
             #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
             vdso_base: AtomicUsize::new(process_vm.vdso_base.load(Ordering::Relaxed)),
         }

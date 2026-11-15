@@ -190,6 +190,7 @@ dependencies = [
  "atomic-integer-wrapper",
  "bitflags 2.13.0",
  "bitvec",
+ "boot-recovery",
  "component",
  "const_format",
  "cow-decision",

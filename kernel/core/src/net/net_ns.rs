@@ -19,7 +19,6 @@ use spin::Once;
 
 use super::{
     iface::{self, Iface},
-    socket::{netlink::NetlinkSocketTable, proc_net::ProcNetRegistry},
 };
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
@@ -35,8 +34,6 @@ pub struct NetNamespace {
     owner: Arc<UserNamespace>,
     default_ipv4_tag: AtomicI32,
     loopback_ipv4_tag: AtomicI32,
-    netlink_sockets: Arc<NetlinkSocketTable>,
-    proc_net_sockets: Arc<ProcNetRegistry>,
     stashed_dentry: StashedDentry,
 }
 
@@ -51,8 +48,6 @@ impl NetNamespace {
                 owner: UserNamespace::get_init_singleton().clone(),
                 default_ipv4_tag: AtomicI32::new(0),
                 loopback_ipv4_tag: AtomicI32::new(0),
-                netlink_sockets: Arc::new(NetlinkSocketTable::new()),
-                proc_net_sockets: Arc::new(ProcNetRegistry::new()),
                 stashed_dentry: StashedDentry::new(),
             })
         })
@@ -69,8 +64,6 @@ impl NetNamespace {
             owner,
             default_ipv4_tag: AtomicI32::new(0),
             loopback_ipv4_tag: AtomicI32::new(0),
-            netlink_sockets: Arc::new(NetlinkSocketTable::new()),
-            proc_net_sockets: Arc::new(ProcNetRegistry::new()),
             stashed_dentry: StashedDentry::new(),
         })
     }
@@ -78,10 +71,6 @@ impl NetNamespace {
     /// Returns the interfaces visible in this namespace.
     pub fn ifaces(&self) -> &[Arc<Iface>] {
         &self.ifaces
-    }
-
-    pub(in crate::net) fn netlink_sockets(&self) -> &Arc<NetlinkSocketTable> {
-        &self.netlink_sockets
     }
 
     /// Counts the sockets that exist in this namespace.
@@ -96,12 +85,7 @@ impl NetNamespace {
             .iter()
             .map(|iface| iface.icmp_socket_count())
             .sum();
-        self.proc_net_sockets.live_count() + self.netlink_sockets.socket_count() + icmp
-    }
-
-    /// Returns the registry of sockets that `/proc/net` reports.
-    pub(crate) fn proc_net_sockets(&self) -> &Arc<ProcNetRegistry> {
-        &self.proc_net_sockets
+        icmp
     }
 
     /// Returns the owner user namespace of this namespace.

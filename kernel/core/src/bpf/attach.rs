@@ -199,9 +199,6 @@ impl Pollable for LinkFile {
 }
 
 impl FileLike for LinkFile {
-    fn access_mode(&self) -> AccessMode {
-        AccessMode::O_RDONLY
-    }
 
     fn common(&self) -> &FileCommon {
         &self.common

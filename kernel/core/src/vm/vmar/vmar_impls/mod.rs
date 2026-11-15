@@ -2,7 +2,6 @@
 
 mod access_alien;
 mod fork;
-mod lock;
 pub(super) mod map;
 pub(super) mod page_fault;
 mod protect;

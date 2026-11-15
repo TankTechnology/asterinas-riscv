@@ -23,7 +23,7 @@ macro_rules! import_generic_syscall_entries {
             chmod::{sys_fchmod, sys_fchmodat, sys_fchmodat2},
             chown::{sys_fchown, sys_fchownat},
             chroot::sys_chroot,
-            clock_gettime::{sys_clock_getres, sys_clock_gettime},
+            clock_gettime::sys_clock_gettime,
             clock_settime::sys_clock_settime,
             clone::{sys_clone, sys_clone3},
             close::{sys_close, sys_close_range},

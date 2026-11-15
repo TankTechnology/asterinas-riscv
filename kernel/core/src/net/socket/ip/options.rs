@@ -106,6 +106,7 @@ impl IpOptionSet {
 }
 
 impl_socket_options!(
+    pub(crate) struct V6Only(bool);
     pub(crate) struct Tos(i32);
     pub(crate) struct Ttl(IpTtl);
     pub(crate) struct Hdrincl(bool);
