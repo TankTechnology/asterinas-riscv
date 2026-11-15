@@ -28,7 +28,7 @@ pub fn sys_shmctl(shmid: i32, op: i32, arg: Vaddr, ctx: &Context) -> Result<Sysc
         IpcControlCmd::IPC_RMID => {
             let euid = ctx.posix_thread.credentials().euid();
             let has_sys_admin = lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-                ipc_ns.owner().as_ref(),
+                ipc_ns.owner_user_ns().as_ref(),
                 ctx.posix_thread,
                 CapSet::SYS_ADMIN,
             ))

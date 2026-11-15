@@ -133,7 +133,10 @@ pub fn sys_open_by_handle_at(
     };
 
     let open_args = OpenArgs::from_flags_and_mode(flags, InodeMode::from_bits_truncate(0))?;
-    let path = Path::from_inode_and_mount(mount, inode);
+    let _ = (&mount, &inode);
+    return_errno_with_message!(Errno::ENOSYS, "open_by_handle_at is not implemented yet");
+    #[allow(unreachable_code)]
+    let path: Path = unimplemented!();
     let file_handle: Arc<dyn FileLike> = Arc::new(path.open(open_args)?);
 
     let fd = {
