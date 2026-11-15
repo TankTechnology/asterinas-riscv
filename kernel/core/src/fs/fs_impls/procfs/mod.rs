@@ -23,6 +23,7 @@ use self::{
     kallsyms::KallsymsFileOps,
     pressure::PressureDirOps,
     sysvipc::SysvipcDirOps,
+    trace::TraceDirOps,
     pagetypeinfo::PageTypeInfoFileOps,
     vmstat::VmStatFileOps,
     zoneinfo::ZoneInfoFileOps,
@@ -65,6 +66,7 @@ mod interrupts;
 mod kallsyms;
 mod pressure;
 mod sysvipc;
+mod trace;
 mod loadavg;
 mod meminfo;
 mod mounts;
@@ -215,6 +217,7 @@ impl RootDirOps {
         ("cgroups", InodeType::File, CgroupsFileOps::new_inode),
         ("pressure", InodeType::Dir, PressureDirOps::new_inode),
         ("sysvipc", InodeType::Dir, SysvipcDirOps::new_inode),
+        ("trace", InodeType::Dir, TraceDirOps::new_inode),
         ("perm_order", InodeType::File, PermOrderFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_inode),
