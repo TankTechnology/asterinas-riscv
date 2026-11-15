@@ -28,8 +28,8 @@ pub(super) fn check(
     _syscall_number: u64,
     _args: &[u64; 6],
     _instruction_pointer: usize,
-) -> Result<SeccompDecision> {
-    Ok(SeccompDecision::Allow)
+) -> SeccompDecision {
+    SeccompDecision::Allow
 }
 
 pub(super) fn sys_seccomp(

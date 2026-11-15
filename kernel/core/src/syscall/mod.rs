@@ -426,7 +426,7 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
         syscall_frame.syscall_number,
         &syscall_frame.args,
         user_ctx.instruction_pointer(),
-    )? {
+    ) {
         seccomp::SeccompDecision::Allow => {}
         seccomp::SeccompDecision::Kill => {
             ctx.posix_thread

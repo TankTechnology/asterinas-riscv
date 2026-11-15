@@ -30,7 +30,7 @@ pub fn sys_sync_file_range2(
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
     let path = file.as_inode_handle_or_err()?.path();
-    path.sync_data()?;
+    return_errno_with_message!(Errno::ENOSYS, "sync_file_range is not implemented yet");
 
     Ok(SyscallReturn::Return(0))
 }
