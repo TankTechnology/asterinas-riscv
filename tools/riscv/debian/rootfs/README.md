@@ -5,24 +5,23 @@ boots it twice on current Asterinas. The first boot writes and syncs a random
 nonce; the second boot must read the same nonce from the same writable root
 disk. The runtime is headless, has four harts, and uses `-nic none`.
 
-Run all commands from the repository root. The validated development image is
-`asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached`.
+Run all commands from the repository root. Build and use the dedicated rootfs
+image described in `tools/docker/riscv-rootfs/README.md`; its default
+explicit-QEMU/proot path does not modify host binfmt state.
 
 ## Proxy and container setup
 
 ### binfmt safety boundary
 
-The rootfs builder needs a `qemu-riscv64` binfmt handler for the target-side
-`chroot` steps.  **Do not enable or register that handler on the host** with
-`update-binfmts`, `tonistiigi/binfmt`, or a write to
-`/proc/sys/fs/binfmt_misc/register`: Docker's privileged mount can propagate
-the registration back to the host and leave a persistent global interpreter.
-Before any build, inspect the host registration read-only and stop if it is
-missing or unexpected.  The supported build runner must provide an already
-audited, isolated binfmt boundary and pass its mounted tree through
-`ASTERINAS_BINFMT_ROOT`; the builder only verifies the tree and never mutates
-it.  If that boundary is unavailable, keep the rootfs build deferred and run
-the unit/contract tests instead of changing host binfmt state.
+The supported default is `ASTERINAS_EXPLICIT_QEMU=1`: `proot` dispatches every
+target-side exec through `qemu-riscv64-static`, including maintainer-script
+children. It neither needs nor changes a host `binfmt_misc` registration.
+
+**Do not enable or register a handler on the host** with `update-binfmts`,
+`tonistiigi/binfmt`, or a write to `/proc/sys/fs/binfmt_misc/register`.
+Docker's privileged mount can propagate the registration back to the host and
+leave a persistent global interpreter. A pre-existing isolated binfmt boundary
+may be used only as an explicit compatibility mode after read-only audit.
 
 Check Clash without changing Docker, apt, Cargo, or Git configuration:
 
@@ -39,28 +38,12 @@ docker run --rm -it --network=host \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   -e http_proxy="$ASTERINAS_PROXY" -e https_proxy="$ASTERINAS_PROXY" \
   -e HTTP_PROXY="$ASTERINAS_PROXY" -e HTTPS_PROXY="$ASTERINAS_PROXY" \
-  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
+  asterinas/asterinas:0.18.0-20260702-riscv-rootfs --check
 ```
 
-Inside the container, install the build, signature, filesystem, and emulation
-dependencies. This does not weaken Debian signature verification.
-
-```bash
-apt-get update
-apt-get install -y --no-install-recommends \
-  debootstrap qemu-user-static binfmt-support debian-archive-keyring \
-  gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
-  linux-libc-dev-riscv64-cross cpio e2fsprogs curl gpgv device-tree-compiler \
-  qemu-system-misc
-# Historical host-mutating command; do not run:
-# update-binfmts --enable qemu-riscv64
-cat /proc/sys/fs/binfmt_misc/qemu-riscv64
-```
-
-The final read-only check must show `enabled`, the
-`qemu-riscv64-static` interpreter, and the `F` flag. If the registration is
-already supplied by the host kernel, do not replace it with handwritten
-binfmt magic.
+Do not install dependencies interactively. If `--check` does not report
+`execution=explicit-proot` and `host_binfmt=unchanged`, rebuild the pinned
+Dockerfile instead of changing the running container or host.
 
 ## Build the frozen root once
 
@@ -422,6 +405,11 @@ The current non-blank framebuffer check proves the desktop, not that the
 foreground window has finished rendering Baidu.
 
 ### QEMU M6 browser evidence gate
+
+> This is a historical NetSurf milestone gate. Its `limited-pass`, `disabled`,
+> and `failed` JavaScript classifications must not be reported as Firefox-ready
+> or as modern-browser compatibility. Use the schema-seven Firefox Web gate for
+> current Firefox acceptance.
 
 After rebuilding the `desktop-m5-network` root, use the M6 gate to foreground
 and capture a Baidu-hosted PNG in NetSurf before navigating the same window to

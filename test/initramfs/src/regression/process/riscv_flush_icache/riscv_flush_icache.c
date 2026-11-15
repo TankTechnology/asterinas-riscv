@@ -32,6 +32,7 @@ typedef int (*jit_function_t)(void);
 struct worker_context {
 	void *code;
 	int cpu;
+	int initial_result;
 	pthread_barrier_t ready;
 	atomic_uint generation;
 	atomic_uint completed_generation;
@@ -101,6 +102,8 @@ static void *execute_on_remote_hart(void *argument)
 		atomic_store(&context->error, errno);
 	else if (sched_getcpu() != context->cpu)
 		atomic_store(&context->error, EXDEV);
+	else if (execute_code(context->code) != context->initial_result)
+		atomic_store(&context->error, EILSEQ);
 
 	pthread_barrier_wait(&context->ready);
 	if (atomic_load(&context->error) != 0)
@@ -132,28 +135,20 @@ static void *execute_on_remote_hart(void *argument)
 	return NULL;
 }
 
-static int select_two_cpus(cpu_set_t *original_mask, int *local_cpu,
-			   int *remote_cpu)
+static int select_available_cpus(cpu_set_t *original_mask, int *cpus)
 {
 	int cpu;
+	int count = 0;
 
 	if (sched_getaffinity(0, sizeof(*original_mask), original_mask) < 0)
 		return -1;
 
-	*local_cpu = -1;
-	*remote_cpu = -1;
 	for (cpu = 0; cpu < CPU_SETSIZE; cpu++) {
-		if (!CPU_ISSET(cpu, original_mask))
-			continue;
-		if (*local_cpu < 0)
-			*local_cpu = cpu;
-		else {
-			*remote_cpu = cpu;
-			break;
-		}
+		if (CPU_ISSET(cpu, original_mask))
+			cpus[count++] = cpu;
 	}
 
-	return 0;
+	return count;
 }
 
 static int test_local_flush(void *code)
@@ -185,9 +180,11 @@ static int test_local_flush(void *code)
 
 static int test_cross_hart_flush(void *code, int remote_cpu)
 {
+	const int initial_result = 73 + remote_cpu;
 	struct worker_context context = {
 		.code = code,
 		.cpu = remote_cpu,
+		.initial_result = initial_result,
 	};
 	pthread_t worker;
 	unsigned int generation;
@@ -197,9 +194,16 @@ static int test_cross_hart_flush(void *code, int remote_cpu)
 
 	atomic_init(&context.generation, 0);
 	atomic_init(&context.completed_generation, 0);
-	atomic_init(&context.expected_result, 0);
+	atomic_init(&context.expected_result, initial_result);
 	atomic_init(&context.error, 0);
 	atomic_init(&context.stop, false);
+
+	write_return_value(code, initial_result);
+	if (syscall(__NR_riscv_flush_icache, code, code_end,
+		    SYS_RISCV_FLUSH_ICACHE_LOCAL) < 0) {
+		perror("prepare remote-hart instruction stream");
+		return -1;
+	}
 
 	pthread_error = pthread_barrier_init(&context.ready, NULL, 2);
 	if (pthread_error != 0) {
@@ -259,32 +263,48 @@ destroy_barrier:
 	return result;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
 	cpu_set_t original_mask;
+	int cpus[CPU_SETSIZE];
 	long page_size = sysconf(_SC_PAGESIZE);
 	void *code;
-	int local_cpu;
-	int remote_cpu;
+	bool require_smp4 = false;
+	int cpu_count;
+	int remote_index;
 	int result = EXIT_FAILURE;
+
+	if (argc == 2 && strcmp(argv[1], "--require-smp4") == 0)
+		require_smp4 = true;
+	else if (argc != 1) {
+		fprintf(stderr, "usage: %s [--require-smp4]\n", argv[0]);
+		return EXIT_FAILURE;
+	}
 
 	if (page_size <= 0) {
 		perror("sysconf(_SC_PAGESIZE)");
 		return EXIT_FAILURE;
 	}
-	if (select_two_cpus(&original_mask, &local_cpu, &remote_cpu) < 0) {
+	cpu_count = select_available_cpus(&original_mask, cpus);
+	if (cpu_count < 0) {
 		perror("sched_getaffinity");
 		return EXIT_FAILURE;
 	}
-	if (remote_cpu < 0) {
+	if (require_smp4 && cpu_count != 4) {
+		fprintf(stderr,
+			"riscv_flush_icache SMP4 requirement failed: available_cpus=%d\n",
+			cpu_count);
+		return EXIT_FAILURE;
+	}
+	if (cpu_count < 2) {
 		puts("riscv_flush_icache cross-hart skipped: fewer than two CPUs");
 		return EXIT_SUCCESS;
 	}
-	if (pin_current_thread(local_cpu) < 0) {
+	if (pin_current_thread(cpus[0]) < 0) {
 		perror("pin local-hart thread");
 		return EXIT_FAILURE;
 	}
-	if (sched_getcpu() != local_cpu) {
+	if (sched_getcpu() != cpus[0]) {
 		errno = EXDEV;
 		perror("verify local-hart placement");
 		return EXIT_FAILURE;
@@ -298,12 +318,16 @@ int main(void)
 	}
 	if (test_local_flush(code) < 0)
 		goto unmap_code;
-	if (test_cross_hart_flush(code, remote_cpu) < 0)
-		goto unmap_code;
+	for (remote_index = 1; remote_index < cpu_count; remote_index++) {
+		if (test_cross_hart_flush(code, cpus[remote_index]) < 0)
+			goto unmap_code;
+	}
 
-	printf("riscv_flush_icache cross-hart passed: cpu %d -> %d, "
-	       "%u generations\n",
-	       local_cpu, remote_cpu, CROSS_HART_ITERATIONS);
+	printf("riscv_flush_icache cross-hart passed: cpus=%d local=%d remotes=",
+	       cpu_count, cpus[0]);
+	for (remote_index = 1; remote_index < cpu_count; remote_index++)
+		printf("%s%d", remote_index == 1 ? "" : ",", cpus[remote_index]);
+	printf(" generations=%u\n", CROSS_HART_ITERATIONS);
 	result = EXIT_SUCCESS;
 
 unmap_code:

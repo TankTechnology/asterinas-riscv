@@ -28,7 +28,7 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
 
     def test_dockerfile_is_derived_and_installs_build_contract(self) -> None:
         self.assertIn(
-            "ARG BASE_IMAGE=asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached",
+            "ARG BASE_IMAGE=asterinas/asterinas:0.18.0-20260702",
             self.dockerfile,
         )
         self.assertIn("ARG DEBIAN_ARCHIVE_KEYRING_VERSION=2025.1", self.dockerfile)
@@ -38,7 +38,6 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             self.dockerfile,
         )
         for package in (
-            "binfmt-support",
             "ca-certificates",
             "cpio",
             "curl",
@@ -49,6 +48,7 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             "gpgv",
             "libc6-dev-riscv64-cross",
             "linux-libc-dev-riscv64-cross",
+            "proot",
             "qemu-system-misc",
             "qemu-user-static",
             "util-linux",
@@ -64,10 +64,12 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             self.dockerfile,
         )
 
-    def test_entrypoint_enforces_binfmt_keyring_and_tools(self) -> None:
+    def test_entrypoint_defaults_to_non_mutating_explicit_qemu(self) -> None:
         for required_text in (
-            "/proc/sys/fs/binfmt_misc",
-            "update-binfmts --enable qemu-riscv64",
+            'ASTERINAS_EXPLICIT_QEMU="${ASTERINAS_EXPLICIT_QEMU:-1}"',
+            "explicit-proot",
+            "host_binfmt=unchanged",
+            "debootstrap proot qemu-riscv64-static",
             "grep -q '^flags:.*F'",
             "qemu-riscv64-static",
             "/usr/share/keyrings/debian-archive-keyring.gpg",
@@ -78,15 +80,17 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.entrypoint)
+        self.assertNotIn("update-binfmts", self.entrypoint)
+        self.assertNotIn("mount -t binfmt_misc", self.entrypoint)
+        self.assertNotIn("binfmt-support", self.dockerfile)
 
     def test_documentation_explains_runtime_contract(self) -> None:
         for required_text in (
-            "binfmt_misc",
+            "explicit-QEMU",
             "qemu-riscv64-static",
             "qemu-system-riscv64",
-            "--privileged",
+            "changes the host's `binfmt_misc` registration",
             "target/debian-riscv/cache",
-            "F` (fix-binary)",
         ):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.readme)

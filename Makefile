@@ -16,18 +16,13 @@ RELEASE_LTO ?= 0
 LOG_LEVEL ?= error
 SCHEME ?= ""
 SMP ?= 1
+RISCV_ICACHE_REQUIRE_SMP4 ?= 0
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
-DEBIAN_BROWSER_WEB_NETWORK_MODE ?= direct
-DEBIAN_BROWSER_WEB_BASE_ROOTFS ?= $(CURDIR)/target/debian-riscv/browser-web/rootfs
-DEBIAN_BROWSER_WEB_DEV_ROOTFS ?= $(CURDIR)/target/dev-overlays/browser-web/rootfs
-DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC ?= $(CURDIR)/tools/riscv/debian/rootfs/browser_web_dev_overlay.json
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
 COVERAGE ?= 0
-INITRAMFS ?= on
-CMDLINE ?=
 
 # Specify the primary system console (supported: tty0, ttyS0, hvc0).
 # - tty0: The active virtual terminal (VT).
@@ -36,11 +31,7 @@ CMDLINE ?=
 # Asterinas will automatically fall back to tty0 if hvc0 is not available.
 # Note that currently the virtual terminal (tty0) can only work with
 # linux-efi-handover64 and linux-efi-pe64 boot protocol.
-ifeq ($(SCHEME), sifive_u)
-CONSOLE ?= ttyS0
-else
 CONSOLE ?= hvc0
-endif
 # End of global build options.
 
 # GDB debugging and profiling options.
@@ -58,58 +49,31 @@ AUTO_TEST ?= none
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
 CONFORMANCE_TEST_WORKDIR ?= /tmp
-# Comma-separated extra blocklists for conformance runners.
+# Whitespace-separated extra blocklist paths for conformance runners.
 # - `gvisor` treats each entry as a directory relative to its runner directory,
 #   and loads a per-test blocklist file from that directory.
 # - `kselftest` treats each entry as a blocklist file relative to its runner
 #   directory, and appends that file directly.
-CONFORMANCE_TEST_EXTRA_BLOCKLISTS ?= ""
-# Comma-separated tests to run within the selected conformance suite.
-#
-# This variable allows one to select one or multiple tests to run.
-# When this environment variable is present,
-# the blocklist of a conformance test will be ignored.
-#
-# - gvisor:    a test *binary* name, e.g. `epoll_test` (narrow the cases inside
-#              it with `CONFORMANCE_TEST_GVISOR_FILTER`).
-# - kselftest: a `<collection>:<case>` entry, e.g. `timers:posix_timers`.
-# - ltp:       a syscall testcase id, e.g. `rename01`.
-# - pjdfstest: a test case path, e.g. `rename/24.t`.
-# - xfstests:  a test id, e.g. `generic/001`.
-CONFORMANCE_TEST_SELECTOR ?= ""
-# gVisor-only positive gtest filter, applied inside one selected gVisor test
-# binary, e.g. `EpollTest.CloseFile:EpollTest.Oneshot`.
-CONFORMANCE_TEST_GVISOR_FILTER ?= ""
+EXTRA_BLOCKLISTS ?= ""
 # Parameters for xfstests.
-XFSTESTS_FS_TYPE ?= ext2
-XFSTESTS_RUNLIST ?= short.list
+XFSTESTS_RUNLIST ?= /opt/xfstests/short.list
 XFSTESTS_DISK_SIZE ?= 12G
-
-# Parameters for pjdfstest. Supported value: 'ext2', 'ramfs'.
-PJDFSTEST_FS_TYPE ?= ext2
-
+XFSTESTS_TEST_DEV ?= /dev/vdd
+XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
 ENABLE_REGRESSION_TEST ?= false
 # End of auto test features.
 
 # Network settings
-# NETDEV possible values are user, tap, and none. SCHEME=microvm does not support none.
+# NETDEV possible values are user,tap
 NETDEV ?= user
 VHOST ?= off
 # The name server listed by /etc/resolv.conf inside the Asterinas VM
 DNS_SERVER ?= none
 # End of network settings
 
-# Virtio-fs settings. Set VIRTIOFS=on to attach a virtio-fs device. Set
-# VIRTIOFS_SCRATCH=on to attach a second device (requires VIRTIOFS=on).
-# VIRTIOFS_CACHE accepts auto, always, never, or metadata.
-VIRTIOFS ?= off
-VIRTIOFS_SCRATCH ?= off
-VIRTIOFS_CACHE ?= auto
-# End of Virtio-fs settings.
-
 # NixOS settings
-NIXOS_DISK_SIZE_IN_MB ?= 16384
+NIXOS_DISK_SIZE_IN_MB ?= 8192
 NIXOS_DISABLE_SYSTEMD ?= false
 # The following option is only effective when NIXOS_DISABLE_SYSTEMD is set to 'true'.
 # Use a login shell to ensure that environment variables are initialized correctly.
@@ -144,47 +108,26 @@ CARGO_OSDK_COMMON_ARGS :=
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="loglevel=$(LOG_LEVEL)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="earlycon"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
-ifneq ($(strip $(CMDLINE)),)
-CARGO_OSDK_BUILD_ARGS += $(foreach arg,$(CMDLINE),--kcmd-args="$(arg)")
-endif
 CARGO_OSDK_TEST_ARGS :=
 
 ifeq ($(AUTO_TEST), conformance)
 ENABLE_CONFORMANCE_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TEST_WORKDIR)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_EXTRA_BLOCKLISTS=$(CONFORMANCE_TEST_EXTRA_BLOCKLISTS)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SELECTOR=$(CONFORMANCE_TEST_SELECTOR)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_GVISOR_FILTER=$(CONFORMANCE_TEST_GVISOR_FILTER)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
 ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
-include test/initramfs/src/conformance/xfstests/build_config.mk
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_FS_TYPE=$(XFSTESTS_FS_TYPE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
-endif
-ifeq ($(CONFORMANCE_TEST_SUITE), pjdfstest)
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="PJDFSTEST_FS_TYPE=$(PJDFSTEST_FS_TYPE)"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
+ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
+endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
-else ifeq ($(AUTO_TEST), sched_policy)
-ENABLE_REGRESSION_TEST := true
-CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
-else ifeq ($(AUTO_TEST), riscv_icache_smp4)
-ifneq ($(TARGET_ARCH), riscv64)
-$(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
-endif
-ifneq ($(SMP), 4)
-$(error AUTO_TEST=riscv_icache_smp4 requires SMP=4)
-endif
-ENABLE_REGRESSION_TEST := true
-# Keep this gate independent of QEMU's incomplete Zkr seed-CSR emulation.
-RISCV_QEMU_CPU := rv64,svpbmt=true,zkr=false
-CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_icache_smp4_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -218,16 +161,12 @@ BOOT_PROTOCOL = linux-efi-handover64
 CARGO_OSDK_COMMON_ARGS += --scheme tdx
 endif
 
-ifneq (,$(filter multiboot pvh,$(BOOT_PROTOCOL)))
-BOOT_METHOD = vmm-direct
-endif
-
-ifeq ($(BOOT_PROTOCOL), pvh)
-override FEATURES += pvh_boot
+ifeq ($(BOOT_PROTOCOL), multiboot)
+BOOT_METHOD = qemu-direct
 endif
 
 ifeq ($(SCHEME), microvm)
-BOOT_METHOD = vmm-direct
+BOOT_METHOD = qemu-direct
 endif
 
 ifeq ($(SCHEME), "")
@@ -235,8 +174,6 @@ ifeq ($(SCHEME), "")
 	SCHEME = riscv
 	else ifeq ($(TARGET_ARCH), loongarch64)
 	SCHEME = loongarch
-	else ifeq ($(TARGET_ARCH), aarch64)
-	SCHEME = aarch64
 	endif
 endif
 
@@ -259,21 +196,18 @@ endif
 
 # To test the linux-efi-handover64 boot protocol, we need to use Debian's
 # GRUB release, which is installed in /usr/bin in our Docker image.
-GRUB_MKRESCUE ?= /usr/bin/grub-mkrescue
 ifeq ($(BOOT_PROTOCOL), linux-efi-handover64)
-CARGO_OSDK_COMMON_ARGS += --grub-mkrescue="$(GRUB_MKRESCUE)" --grub-boot-protocol="linux"
+CARGO_OSDK_COMMON_ARGS += --grub-mkrescue=/usr/bin/grub-mkrescue --grub-boot-protocol="linux"
 else ifeq ($(BOOT_PROTOCOL), linux-efi-pe64)
 CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol="linux"
 else ifeq ($(BOOT_PROTOCOL), linux-legacy32)
 CARGO_OSDK_COMMON_ARGS += --linux-x86-legacy-boot --grub-boot-protocol="linux" --strip-elf
-else ifeq ($(BOOT_PROTOCOL), pvh)
-# PVH uses the vmm-direct boot method, so there is no GRUB boot protocol to pass.
 else
 CARGO_OSDK_COMMON_ARGS += --grub-boot-protocol=$(BOOT_PROTOCOL)
 endif
 
 ifeq ($(ENABLE_KVM), 1)
-	ifeq ($(shell [ -e /dev/kvm ] && [ "$$(uname -m)" = "$(TARGET_ARCH)" ] && echo yes),yes)
+	ifeq ($(TARGET_ARCH), x86_64)
 	CARGO_OSDK_COMMON_ARGS += --qemu-args="-accel kvm"
 	endif
 endif
@@ -281,21 +215,7 @@ endif
 # Skip GZIP to make encoding and decoding of initramfs faster
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
 CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio)
-else
-CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio.gz)
-endif
-
-ifeq ($(INITRAMFS),on)
 CARGO_OSDK_COMMON_ARGS += $(CARGO_OSDK_INITRAMFS_OPTION)
-endif
-CARGO_OSDK_VIRTIOFSD := ./tools/run_virtiofsd.sh --cache-mode $(VIRTIOFS_CACHE) --work-dir
-ifeq ($(VIRTIOFS),on)
-# Each Make invocation gets an isolated virtio-fs work directory under /tmp.
-VIRTIOFS_WORK_DIR := $(shell mktemp -d -p /tmp asterinas-virtiofs-XXXXXX)
-CARGO_OSDK_COMMON_ARGS += --qemu-with-daemon="$(CARGO_OSDK_VIRTIOFSD) $(VIRTIOFS_WORK_DIR)"
-endif
-ifeq ($(VIRTIOFS_SCRATCH),on)
-CARGO_OSDK_COMMON_ARGS += --qemu-with-daemon="$(CARGO_OSDK_VIRTIOFSD) $(VIRTIOFS_WORK_DIR)/scratch"
 endif
 
 CARGO_OSDK_BUILD_ARGS += $(CARGO_OSDK_COMMON_ARGS)
@@ -345,10 +265,7 @@ MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
-
-DEBIAN_WEB_NETWORK_MODE ?=
-DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
-RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
+RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702
 RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
 RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
 
@@ -382,20 +299,12 @@ test_riscv_ltp_unit:
 .PHONY: test_riscv_debian_rootfs_unit
 test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu \
 		tools.riscv.tests.test_debian_m8_browser_quality \
 		tools.riscv.tests.test_debian_m9_software -v
-
-.PHONY: build_riscv_debian_browser_web_dev_overlay
-build_riscv_debian_browser_web_dev_overlay:
-	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
-		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
-		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
-		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
@@ -407,13 +316,17 @@ test_riscv_rootfs_builder_image_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_riscv_rootfs_builder_image -v
 
+.PHONY: test_riscv_run_kernel_log_unit
+test_riscv_run_kernel_log_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_validate_run_kernel_log -v
+
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_gmac_contract \
 		tools.riscv.tests.test_megrez_gmac_gate \
 		tools.riscv.tests.test_megrez_network_fixture \
-		tools.riscv.tests.test_megrez_proxy_bridge \
 		tools.riscv.tests.test_megrez_xmodem -v
 
 .PHONY: test_riscv_dwmac_rx_model
@@ -555,7 +468,6 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
 		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
-		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -566,18 +478,6 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
-
-.PHONY: test_riscv_debian_web_network_proxy_qemu
-test_riscv_debian_web_network_proxy_qemu:
-	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
-		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
-		DEBIAN_WEB_NETWORK_MODE=proxy
-
-.PHONY: test_riscv_debian_web_network_direct_qemu
-test_riscv_debian_web_network_direct_qemu:
-	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
-		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
-		DEBIAN_WEB_NETWORK_MODE=direct
 
 .PHONY: test_riscv_debian_browser_m5_qemu_gate
 test_riscv_debian_browser_m5_qemu_gate:
@@ -623,7 +523,6 @@ test_riscv_debian_browser_web_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
-		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
@@ -864,101 +763,59 @@ check_vdso:
 
 .PHONY: initramfs
 initramfs: check_vdso
-	@$(MAKE) --no-print-directory -C test/initramfs initramfs-boot-images
-
-.PHONY: rootfs
-rootfs: check_vdso
-	@$(MAKE) --no-print-directory -C test/initramfs rootfs-boot-images
+	@$(MAKE) --no-print-directory -C test/initramfs
 
 # Build the kernel with an initramfs
 .PHONY: kernel
-kernel: $(CARGO_OSDK)
-ifeq ($(INITRAMFS),on)
-kernel: initramfs
-else
-kernel: rootfs
-endif
-kernel:
+kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk build $(CARGO_OSDK_BUILD_ARGS)
 
 # Build the kernel with an initramfs and then run it
 .PHONY: run_kernel
-run_kernel: $(CARGO_OSDK)
-ifeq ($(INITRAMFS),on)
-run_kernel: initramfs
-else
-run_kernel: rootfs
-endif
-run_kernel:
+run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
-# Check the running status of auto tests from the QEMU log
-ifeq ($(AUTO_TEST), conformance)
-	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
-		grep -q "^All conformance tests passed." \
-		|| (echo "Conformance test failed" && exit 1)
-else ifeq ($(AUTO_TEST), regression)
-	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
-		grep -q "^All regression tests passed." \
-		|| (echo "Regression test failed" && exit 1)
-else ifeq ($(AUTO_TEST), sched_policy)
-	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
-		grep -Fxq "Scheduler policy regression passed." \
-		|| (echo "Scheduler policy regression failed" && exit 1)
-else ifeq ($(AUTO_TEST), riscv_icache_smp4)
-	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
-		grep -Fxq "RISC-V SMP4 icache regression passed." \
-		|| (echo "RISC-V SMP4 icache regression failed" && exit 1)
-else ifeq ($(AUTO_TEST), boot)
-	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
-		grep -q "^Successfully booted." \
-		|| (echo "Boot test failed" && exit 1)
-else ifeq ($(AUTO_TEST), vsock)
-	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | \
-		grep -q "^Vsock test passed." \
-		|| (echo "Vsock test failed" && exit 1)
+# Validate the complete QEMU transcript, including fatal output after success.
+ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
+	@python3 tools/riscv/validate_run_kernel_log.py --log qemu.log \
+		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
 endif
 
 # Build the Asterinas NixOS ISO installer image
-.PHONY: iso
 iso: BOOT_PROTOCOL = linux-efi-handover64
 iso:
 	@make kernel
 	@if [ -n "$(NIXOS_TEST_SUITE)" ]; then \
-		$(MAKE) --no-print-directory -C test/nixos iso; \
-	else \
-		./tools/nixos/build_iso.sh; \
-	fi
+        $(MAKE) --no-print-directory -C test/nixos iso; \
+    else \
+        ./tools/nixos/build_iso.sh; \
+    fi
 
 # Build the Asterinas NixOS ISO installer image and then do installation
-.PHONY: run_iso
 run_iso: OVMF = off
 run_iso:
 	@./tools/nixos/run.sh iso
 
 # Create an Asterinas NixOS installation on host
-.PHONY: nixos
 nixos: BOOT_PROTOCOL = linux-efi-handover64
 nixos:
 	@make kernel
 	@if [ -n "$(NIXOS_TEST_SUITE)" ]; then \
-		$(MAKE) --no-print-directory -C test/nixos nixos; \
-	else \
-		./tools/nixos/build_nixos.sh; \
-	fi
+        $(MAKE) --no-print-directory -C test/nixos nixos; \
+    else \
+        ./tools/nixos/build_nixos.sh; \
+    fi
 
 # After creating a Asterinas NixOS installation (via either the `run_iso` or `nixos` target),
 # run the NixOS
-.PHONY: run_nixos
 run_nixos: OVMF = off
 run_nixos:
 	@if [ -n "$(NIXOS_TEST_SUITE)" ]; then \
-		$(MAKE) --no-print-directory -C test/nixos run_nixos; \
-	else \
-		./tools/nixos/run.sh nixos; \
-	fi
+        $(MAKE) --no-print-directory -C test/nixos run_nixos; \
+    else \
+        ./tools/nixos/run.sh nixos; \
+    fi
 
 # Build the Asterinas NixOS patched packages
-.PHONY: cachix
 cachix:
 	@nix-build distro/cachix \
 		--option extra-substituters "${RELEASE_SUBSTITUTER} ${DEV_SUBSTITUTER}" \
@@ -994,9 +851,9 @@ profile_client: initramfs $(CARGO_OSDK)
 
 .PHONY: test
 test: NON_DEFAULT_PACKAGE_NAMES = \
-	$(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
+    $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
 test: TEST_PACKAGE_NAMES = \
-	$(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
+    $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
 test:
 	@if [ -n "$(TEST_PACKAGE_NAMES)" ]; then \
 		cargo test $(addprefix -p ,$(TEST_PACKAGE_NAMES)); \
@@ -1012,27 +869,34 @@ ktest: initramfs $(CARGO_OSDK)
 
 .PHONY: docs
 docs: private DEFAULT_PACKAGE_NAMES = \
-	$(shell ./tools/print_workspace_members.sh --default-ones --package-names)
-docs: private DEFAULT_NON_CORE_PACKAGE_NAMES = \
-	$(filter-out aster-core,$(DEFAULT_PACKAGE_NAMES))
+    $(shell ./tools/print_workspace_members.sh --default-ones --package-names)
+docs: private DEFAULT_NON_KERNEL_PACKAGE_NAMES = \
+    $(filter-out aster-kernel,$(DEFAULT_PACKAGE_NAMES))
 docs: private NON_DEFAULT_PACKAGE_NAMES = \
-	$(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
+    $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
 docs: private DOC_NON_DEFAULT_PACKAGE_NAMES = \
-	$(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
+    $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
 docs: $(CARGO_OSDK)
-	@if [ -n "$(DEFAULT_NON_CORE_PACKAGE_NAMES)" ]; then \
-		RUSTDOCFLAGS="-Dwarnings" cargo osdk doc $(addprefix -p ,$(DEFAULT_NON_CORE_PACKAGE_NAMES)) --no-deps; \
+	@if [ -n "$(DEFAULT_NON_KERNEL_PACKAGE_NAMES)" ]; then \
+		RUSTDOCFLAGS="-Dwarnings" cargo osdk doc $(addprefix -p ,$(DEFAULT_NON_KERNEL_PACKAGE_NAMES)) --no-deps; \
 	fi
 	@if [ -n "$(DOC_NON_DEFAULT_PACKAGE_NAMES)" ]; then \
 		RUSTDOCFLAGS="-Dwarnings" cargo doc $(addprefix -p ,$(DOC_NON_DEFAULT_PACKAGE_NAMES)) --no-deps; \
 	fi
-	@# The aster-core crate is primarily composed of private items.
+	@# The kernel crate is primarily composed of private items.
 	@# Include --document-private-items to fully check internal documentation.
 	@RUSTDOCFLAGS="-Dwarnings --document-private-items -Arustdoc::private_intra_doc_links" \
-		cargo osdk doc -p aster-core --no-deps
+		cargo osdk doc -p aster-kernel --no-deps
 	@if [ "$(TARGET_ARCH)" = "x86_64" ]; then \
 		cd ostd/libs/linux-bzimage/setup && RUSTDOCFLAGS="-Dwarnings" cargo osdk doc --no-deps; \
 	fi
+
+.PHONY: book
+book: book/mermaid.min.js book/mermaid-init.js
+	@cd book && mdbook build
+
+book/mermaid.min.js book/mermaid-init.js:
+	@mdbook-mermaid install book/
 
 .PHONY: format
 format:
@@ -1040,23 +904,22 @@ format:
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
 	@git --git-dir=$$PWD/.git ls-files --no-directory | \
 		grep -v '[.]patch$$' | \
-		grep -v '[.]dtb$$' `# Binary device tree blobs are not text` | \
 		grep -v '^.claude/skills/aster-code-review$$' `# This is a symbolic link` | \
 		xargs sed -i 's/ *$$//'
 	@
 	@# Format the code using various tools
 	@./tools/format_all.sh
-	@./tools/nixfmt.sh flake.nix distro tools/dev_env/nix
+	@nixfmt ./distro
 	@$(MAKE) --no-print-directory -C test/initramfs format
 	@$(MAKE) --no-print-directory -C test/nixos format
 
 .PHONY: check
 check: private WORKSPACE_MEMBER_DIRS = \
-	$(shell ./tools/print_workspace_members.sh)
+    $(shell ./tools/print_workspace_members.sh)
 check: $(CARGO_OSDK)
 	@# Check if any git-tracked, non-patch files contain trailing whitespace
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
-	@if git --git-dir=$$PWD/.git grep -n ' $$' -- ':!*.patch' ':!*.dtb' ; then \
+	@if git --git-dir=$$PWD/.git ls-files | grep -v '[.]patch$$' | xargs grep -I -d skip ' $$' ; then \
 		echo "Error: Files (as listed above) contain trailing whitespaces"; \
 		exit 1; \
 	fi
@@ -1075,8 +938,8 @@ check: $(CARGO_OSDK)
 	@# Check compilation of the Rust code
 	@./tools/clippy_check.sh workspace
 	@
-	@# Check Nix formatting
-	@./tools/nixfmt.sh --check flake.nix distro tools/dev_env/nix
+	@# Check formatting issues of Nix files under distro directory
+	@nixfmt --check ./distro
 	@
 	@# Check formatting issues of the C code and Nix files (regression tests)
 	@$(MAKE) --no-print-directory -C test/initramfs check

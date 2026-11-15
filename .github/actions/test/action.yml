@@ -9,7 +9,7 @@ inputs:
     description: 'Test type (general, osdk, boot, conformance, regression)'
     required: true
   arch:
-    description: 'Architecture (x86_64/riscv64/loongarch64/aarch64)'
+    description: 'Architecture (x86_64/riscv64/loongarch64)'
     required: false
   release:
     description: 'Whether to run in release mode'
@@ -20,7 +20,7 @@ inputs:
 
   # VM Setup
   boot_protocol:
-    description: 'Boot protocol (linux-efi-handover64/linux-efi-pe64/linux-legacy32/multiboot/multiboot2/pvh)'
+    description: 'Boot protocol (linux-efi-handover64/linux-efi-pe64/linux-legacy32/multiboot/multiboot2)'
     required: false
   enable_kvm:
     description: 'Enable KVM acceleration'
@@ -37,9 +37,6 @@ inputs:
   mem:
     description: 'Guest memory size'
     required: false
-  rootfs_boot:
-    description: 'Boot directly from rootfs'
-    required: false
 
   # Conformance Test
   conformance_test_suite:
@@ -48,24 +45,16 @@ inputs:
   conformance_test_workdir:
     description: 'Conformance test working directory'
     required: false
-  conformance_test_extra_blocklists:
+  extra_blocklists:
     description: 'Extra blocklists directories or files'
     required: false
 
   # Xfstest-specific parameters
-  xfstests_fs_type:
-    description: 'Filesystem type for xfstests (ext2, tmpfs, etc.)'
-    required: false
-  xfstests_runlist:
-    description: 'Run list filename for xfstests'
-    required: false
   xfstests_disk_size:
     description: 'The disk size for xfstests'
     required: false
-
-  # Pjdfstest-specific parameters
-  pjdfstest_fs_type:
-    description: 'Filesystem under test for pjdfstest (ramfs, ext2, etc.)'
+  xfstests_runlist:
+    description: 'Run list file for xfstests'
     required: false
 
 runs:
@@ -78,11 +67,6 @@ runs:
       shell: bash
       run: |
         # Set common environment variables using GitHub's environment files
-        #
-        # Container jobs run with HOME=/github/home, and GitHub mounts a runner
-        # directory there. Point rustup at the toolchain installed in the image
-        # so that it is not downloaded again in every job.
-        echo "RUSTUP_HOME=/root/.rustup" >> $GITHUB_ENV
         if [[ "${{ inputs.intel_tdx }}" == "true" ]]; then
           echo "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static" >> $GITHUB_ENV
           echo "RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup" >> $GITHUB_ENV
@@ -114,16 +98,14 @@ runs:
         [[ -n "${{ inputs.netdev }}" ]] && CMD+=" NETDEV=${{ inputs.netdev }}"
         [[ -n "${{ inputs.scheme }}" ]] && CMD+=" SCHEME=${{ inputs.scheme }}"
         [[ -n "${{ inputs.arch }}" ]] && CMD+=" TARGET_ARCH=${{ inputs.arch }}"
+        [[ -n "${{ inputs.extra_blocklists }}" ]] && CMD+=" EXTRA_BLOCKLISTS=${{ inputs.extra_blocklists }}"
         [[ -n "${{ inputs.conformance_test_suite }}" ]] && CMD+=" CONFORMANCE_TEST_SUITE=${{ inputs.conformance_test_suite }}"
         [[ -n "${{ inputs.conformance_test_workdir }}" ]] && CMD+=" CONFORMANCE_TEST_WORKDIR=${{ inputs.conformance_test_workdir }}"
-        [[ -n "${{ inputs.conformance_test_extra_blocklists }}" ]] && CMD+=" CONFORMANCE_TEST_EXTRA_BLOCKLISTS=${{ inputs.conformance_test_extra_blocklists }}"
         [[ -n "${{ inputs.boot_protocol }}" ]] && CMD+=" BOOT_PROTOCOL=${{ inputs.boot_protocol }}"
         [[ -n "${{ inputs.mem }}" ]] && CMD+=" MEM=${{ inputs.mem }}"
-        [[ "${{ inputs.rootfs_boot }}" == "true" ]] && CMD+=" INITRAMFS=off CMDLINE='root=/dev/vdd rootfstype=ext2 init=/init'"
-        [[ -n "${{ inputs.xfstests_fs_type }}" ]] && CMD+=" XFSTESTS_FS_TYPE=${{ inputs.xfstests_fs_type }}"
-        [[ -n "${{ inputs.xfstests_runlist }}" ]] && CMD+=" XFSTESTS_RUNLIST=${{ inputs.xfstests_runlist }}"
+        [[ -n "${RISCV_ICACHE_REQUIRE_SMP4:-}" ]] && CMD+=" RISCV_ICACHE_REQUIRE_SMP4=${RISCV_ICACHE_REQUIRE_SMP4}"
         [[ -n "${{ inputs.xfstests_disk_size }}" ]] && CMD+=" XFSTESTS_DISK_SIZE=${{ inputs.xfstests_disk_size }}"
-        [[ -n "${{ inputs.pjdfstest_fs_type }}" ]] && CMD+=" PJDFSTEST_FS_TYPE=${{ inputs.pjdfstest_fs_type }}"
+        [[ -n "${{ inputs.xfstests_runlist }}" ]] && CMD+=" XFSTESTS_RUNLIST=${{ inputs.xfstests_runlist }}"
 
         echo "Executing: $CMD"
         eval $CMD
@@ -134,7 +116,7 @@ runs:
       run: |
         [[ "${{ !contains(matrix.container, 'osdk') }}" == "true" ]] && make check_osdk
         if [[ "${{ inputs.intel_tdx }}" == "true" ]]; then
-          make test_osdk INTEL_TDX=1
+          RUSTUP_HOME=/root/.rustup make test_osdk INTEL_TDX=1
         else
-          make test_osdk
+          RUSTUP_HOME=/root/.rustup make test_osdk
         fi

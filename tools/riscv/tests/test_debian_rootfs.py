@@ -4913,16 +4913,27 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
         guide = (REPOSITORY_ROOT / "tools/riscv/debian/rootfs/README.md").read_text(
             encoding="utf-8"
         )
+        image_guide = (
+            REPOSITORY_ROOT / "tools/docker/riscv-rootfs/README.md"
+        ).read_text(encoding="utf-8")
+        dockerfile = (
+            REPOSITORY_ROOT / "tools/docker/riscv-rootfs/Dockerfile"
+        ).read_text(encoding="utf-8")
+        entrypoint = (
+            REPOSITORY_ROOT / "tools/docker/riscv-rootfs/entrypoint.sh"
+        ).read_text(encoding="utf-8")
+        documented_contract = "\n".join((guide, image_guide, dockerfile))
 
         for required in (
             "127.0.0.1:17892",
             "mirrors.tuna.tsinghua.edu.cn/debian",
             "mirrors.ustc.edu.cn/debian",
             "deb.debian.org/debian",
-            "asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached",
+            "asterinas/asterinas:0.18.0-20260702",
+            "asterinas/asterinas:0.18.0-20260702-riscv-rootfs",
             "debootstrap",
             "qemu-user-static",
-            "binfmt-support",
+            "proot",
             "debian-archive-keyring",
             "libc6-dev-riscv64-cross",
             "linux-libc-dev-riscv64-cross",
@@ -4930,10 +4941,10 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             "e2fsprogs",
             "curl",
             "gpgv",
-            "update-binfmts --enable qemu-riscv64",
-            "Do not enable or register that handler on the host",
+            "Do not enable or register a handler on the host",
+            "ASTERINAS_EXPLICIT_QEMU=1",
             "ASTERINAS_BINFMT_ROOT",
-            "never mutates",
+            "host_binfmt=unchanged",
             "make test_riscv_debian_rootfs_unit",
             "make test_riscv_debian_rootfs_gate",
             "-nic none",
@@ -4948,7 +4959,9 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             "--reboot-after 420",
         ):
             with self.subTest(required=required):
-                self.assertIn(required, guide)
+                self.assertIn(required, documented_contract)
+        self.assertNotIn("update-binfmts", entrypoint)
+        self.assertNotIn("mount -t binfmt_misc", entrypoint)
 
     def test_runtime_make_target_requires_artifacts_and_never_builds_rootfs(
         self,

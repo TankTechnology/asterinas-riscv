@@ -8,7 +8,8 @@
 // which needs a Python interpreter; a few hundred lines of static C is far
 // lighter to pack into the initramfs. Results stream to the serial console and
 // a final __LTP_GATE_DONE__ marker followed by __LTP_GATE_PASS__ or
-// __LTP_GATE_FAIL__ lets the QEMU driver decide pass/fail.
+// __LTP_GATE_FAIL__. PID 1 emits __LTP_GATE_TERMINAL__ after the runner exits;
+// the host result parser then validates both stages and classifies the verdict.
 
 #define _GNU_SOURCE
 #include <ctype.h>
