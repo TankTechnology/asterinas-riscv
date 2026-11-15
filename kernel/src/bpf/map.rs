@@ -16,6 +16,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ostd::sync::LocalIrqDisabled;
 
 use crate::{
+    events::IoEvents,
     fs::{
         file::{AccessMode, FileCommon, FileLike, StatusFlags},
         pseudofs::AnonInodeFs,
@@ -23,7 +24,6 @@ use crate::{
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
 };
-use crate::events::IoEvents;
 
 pub const BPF_MAP_TYPE_HASH: u32 = 1;
 pub const BPF_MAP_TYPE_ARRAY: u32 = 2;

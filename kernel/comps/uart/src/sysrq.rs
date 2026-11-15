@@ -98,10 +98,7 @@ mod tests {
         assert_eq!(filter(&mut empty[..0], 0, 1_100), (0, None));
 
         let mut key = [b'b'];
-        assert_eq!(
-            filter(&mut key, 1, 1_200),
-            (0, Some(Action::Restart))
-        );
+        assert_eq!(filter(&mut key, 1, 1_200), (0, Some(Action::Restart)));
     }
 
     #[ktest]
@@ -132,10 +129,7 @@ mod tests {
 
         // The window is one-shot: a later 'b' is ordinary input.
         let mut later = [b'b'];
-        assert_eq!(
-            filter(&mut later, 1, 1_200),
-            (1, None)
-        );
+        assert_eq!(filter(&mut later, 1, 1_200), (1, None));
     }
 
     #[ktest]
@@ -143,10 +137,7 @@ mod tests {
         reset();
         note_break(1_000);
         let mut buf = [b'b'];
-        assert_eq!(
-            filter(&mut buf, 1, 1_000 + WINDOW_MS + 1),
-            (1, None)
-        );
+        assert_eq!(filter(&mut buf, 1, 1_000 + WINDOW_MS + 1), (1, None));
     }
 
     #[ktest]
@@ -168,9 +159,6 @@ mod tests {
         );
         reset();
         note_break(10_000);
-        assert_eq!(
-            filter(&mut buf, 1, 10_001 + WINDOW_MS),
-            (1, None)
-        );
+        assert_eq!(filter(&mut buf, 1, 10_001 + WINDOW_MS), (1, None));
     }
 }

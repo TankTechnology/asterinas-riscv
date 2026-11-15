@@ -21,7 +21,7 @@ use crate::{
         CTX_SIZE, Map, Program,
         attach::{self, LinkFile},
         insn::{Insn, MAX_INSNS},
-        map::{MapFile, BPF_MAP_TYPE_ARRAY, MAX_ENTRIES, MAX_KEY_SIZE, MAX_VALUE_SIZE},
+        map::{BPF_MAP_TYPE_ARRAY, MAX_ENTRIES, MAX_KEY_SIZE, MAX_VALUE_SIZE, MapFile},
         prog::{BPF_PROG_TYPE_SOCKET_FILTER, BPF_PROG_TYPE_TRACE_EVENT, ProgFile},
         verifier,
     },
@@ -98,7 +98,10 @@ fn u64_at(bytes: &[u8], offset: usize) -> u64 {
 /// Reads a fixed name field, stopping at the first NUL.
 fn name_at(bytes: &[u8], offset: usize) -> String {
     let field = &bytes[offset..offset + NAME_LEN];
-    let end = field.iter().position(|byte| *byte == 0).unwrap_or(field.len());
+    let end = field
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len());
     String::from_utf8_lossy(&field[..end]).into_owned()
 }
 
@@ -128,7 +131,10 @@ fn write_user_bytes(ctx: &Context, addr: u64, bytes: &[u8]) -> Result<()> {
 /// Reads a NUL-terminated string of at most `max` bytes from the caller.
 fn read_user_string(ctx: &Context, addr: u64, max: usize) -> Result<String> {
     let bytes = read_user_bytes(ctx, addr, max)?;
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     Ok(String::from_utf8_lossy(&bytes[..end]).into_owned())
 }
 

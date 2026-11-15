@@ -22,11 +22,11 @@
 //! would need the CPU id in assembly, which ostd does not expose; this is the
 //! documented cost of the feature.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use ostd::{cpu::PinCurrentCpu, cpu_local, task::disable_preempt};
 
-use super::{event::TraceEvent, events::ftrace::FUNCTION, ring};
+use super::{events::ftrace::FUNCTION, ring};
 
 /// The assembly-facing half lives in its own module so the crate's
 /// `deny(unsafe_code)` can be lifted just here. `#[expect]` is not allowed on
@@ -158,9 +158,4 @@ pub extern "C" fn mcount_slow(caller_ra: u64) {
         );
     }
     ring::push_at(FUNCTION.id(), pid, tid, &caller_ra.to_le_bytes(), elapsed);
-}
-
-/// The function trace's own switch, kept next to the stub that reads it.
-pub fn event() -> &'static TraceEvent {
-    &FUNCTION
 }

@@ -12,11 +12,9 @@
 //! the timer interrupt, and the clocksource's own update runs there too -- the
 //! same hazard the function tracer has.
 
-use alloc::{string::String, vec::Vec};
-
 use aster_util::printer::VmPrinter;
 
-use super::{event::TraceEvent, events::profile::SAMPLE, kallsyms, ring};
+use super::{events::profile::SAMPLE, kallsyms, ring};
 use crate::prelude::*;
 
 /// Installs the sampling hook.

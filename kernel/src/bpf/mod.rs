@@ -134,22 +134,22 @@ mod test {
     /// read-modify-write of a map value.
     fn counter_program() -> Vec<Insn> {
         vec![
-            insn(0xbf, 6, 1, 0, 0),            // r6 = r1
+            insn(0xbf, 6, 1, 0, 0),             // r6 = r1
             insn(0x18, 1, PSEUDO_MAP_FD, 0, 0), // r1 = map
             insn(0, 0, 0, 0, 0),
-            insn(0xbf, 3, 6, 0, 0),  // r3 = r6
-            insn(0x61, 4, 3, 8, 0),  // r4 = *(u32 *)(r3 + 8)
+            insn(0xbf, 3, 6, 0, 0),    // r3 = r6
+            insn(0x61, 4, 3, 8, 0),    // r4 = *(u32 *)(r3 + 8)
             insn(0x57, 4, 0, 0, 1023), // r4 &= 1023
-            insn(0x63, 10, 4, -4, 0), // *(u32 *)(r10 - 4) = r4
-            insn(0xbf, 2, 10, 0, 0), // r2 = r10
-            insn(0x07, 2, 0, 0, -4), // r2 += -4
-            insn(0x85, 0, 0, 0, 1),  // call map_lookup_elem
-            insn(0x15, 0, 0, 4, 0),  // if r0 == 0 goto exit
-            insn(0x79, 1, 0, 0, 0),  // r1 = *(u64 *)(r0 + 0)
-            insn(0x07, 1, 0, 0, 1),  // r1 += 1
-            insn(0x7b, 0, 1, 0, 0),  // *(u64 *)(r0 + 0) = r1
-            insn(0xb7, 0, 0, 0, 0),  // r0 = 0
-            insn(0x95, 0, 0, 0, 0),  // exit
+            insn(0x63, 10, 4, -4, 0),  // *(u32 *)(r10 - 4) = r4
+            insn(0xbf, 2, 10, 0, 0),   // r2 = r10
+            insn(0x07, 2, 0, 0, -4),   // r2 += -4
+            insn(0x85, 0, 0, 0, 1),    // call map_lookup_elem
+            insn(0x15, 0, 0, 4, 0),    // if r0 == 0 goto exit
+            insn(0x79, 1, 0, 0, 0),    // r1 = *(u64 *)(r0 + 0)
+            insn(0x07, 1, 0, 0, 1),    // r1 += 1
+            insn(0x7b, 0, 1, 0, 0),    // *(u64 *)(r0 + 0) = r1
+            insn(0xb7, 0, 0, 0, 0),    // r0 = 0
+            insn(0x95, 0, 0, 0, 0),    // exit
         ]
     }
 
@@ -270,22 +270,30 @@ mod test {
         // A jump inside the 64-bit immediate load.
         let mut program = counter_program();
         program[10].off = -8;
-        assert!(load(program, map.clone()).is_err(), "a bad target was accepted");
+        assert!(
+            load(program, map.clone()).is_err(),
+            "a bad target was accepted"
+        );
 
         // Arithmetic on a map pointer.
         let mut program = counter_program();
         program.insert(11, insn(0x07, 0, 0, 0, 8)); // r0 += 8
-        assert!(load(program, map.clone()).is_err(), "pointer arithmetic was accepted");
+        assert!(
+            load(program, map.clone()).is_err(),
+            "pointer arithmetic was accepted"
+        );
 
         // Reading the stack before writing it.
         let mut program = counter_program();
         program[6] = insn(0x00, 0, 0, 0, 0); // drop the stack store
-        assert!(load(program, map.clone()).is_err(), "an uninitialised read was accepted");
+        assert!(
+            load(program, map.clone()).is_err(),
+            "an uninitialised read was accepted"
+        );
 
         // A program that does not end with exit.
         let mut program = counter_program();
         program.pop();
         assert!(load(program, map).is_err(), "a missing exit was accepted");
     }
-
 }

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use ostd::mm::VmIo;
 
 use super::{SyscallReturn, profile::PhaseProfiler};
@@ -16,11 +18,7 @@ use crate::{
     time::timespec_t,
 };
 
-pub(super) fn sys_fstat(
-    raw_fd: RawFileDesc,
-    stat_buf_ptr: Vaddr,
-    ctx: &Context,
-) -> Result<SyscallReturn> {
+pub fn sys_fstat(raw_fd: RawFileDesc, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
     debug!("fd = {}, stat_buf_addr = 0x{:x}", raw_fd, stat_buf_ptr);
 
     let mut profiler = PhaseProfiler::start("fstat");
@@ -42,19 +40,11 @@ pub(super) fn sys_fstat(
     Ok(SyscallReturn::Return(0))
 }
 
-pub(super) fn sys_stat(
-    filename_ptr: Vaddr,
-    stat_buf_ptr: Vaddr,
-    ctx: &Context,
-) -> Result<SyscallReturn> {
+pub fn sys_stat(filename_ptr: Vaddr, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
     sys_fstatat(AT_FDCWD, filename_ptr, stat_buf_ptr, 0, ctx)
 }
 
-pub(super) fn sys_lstat(
-    filename_ptr: Vaddr,
-    stat_buf_ptr: Vaddr,
-    ctx: &Context,
-) -> Result<SyscallReturn> {
+pub fn sys_lstat(filename_ptr: Vaddr, stat_buf_ptr: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
     sys_fstatat(
         AT_FDCWD,
         filename_ptr,
@@ -64,7 +54,27 @@ pub(super) fn sys_lstat(
     )
 }
 
-pub(super) fn sys_fstatat(
+/// Whether a path syscall reads its path string into a stack buffer.
+///
+/// Measurement switch: both branches read the same string through the same
+/// fault-checked reader, they differ in whether the bytes land in a stack
+/// array or in a fresh allocation. Paths longer than the buffer always take
+/// the allocating branch.
+static STACK_PATH_READ: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn stack_path_read() -> bool {
+    STACK_PATH_READ.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_stack_path_read(enabled: bool) {
+    STACK_PATH_READ.store(enabled, Ordering::Relaxed);
+}
+
+/// Long enough for every path a program passes in practice; longer paths fall
+/// back to the allocating reader rather than failing.
+const PATH_STACK_BYTES: usize = 256;
+
+pub fn sys_fstatat(
     dirfd: RawFileDesc,
     filename_ptr: Vaddr,
     stat_buf_ptr: Vaddr,
@@ -73,9 +83,33 @@ pub(super) fn sys_fstatat(
 ) -> Result<SyscallReturn> {
     let mut profiler = PhaseProfiler::start("fstatat");
     let user_space = ctx.user_space();
+
+    let mut stack_path = [0u8; PATH_STACK_BYTES];
+    if stack_path_read()
+        && let Some(len) =
+            user_space.read_cstring_into(filename_ptr, &mut stack_path, MAX_FILENAME_LEN)?
+    {
+        profiler.mark("str");
+        let filename = String::from_utf8_lossy(&stack_path[..len - 1]);
+        return fstatat_path(dirfd, &filename, stat_buf_ptr, flags, ctx, &mut profiler);
+    }
+
     let filename = user_space.read_cstring(filename_ptr, MAX_FILENAME_LEN)?;
     profiler.mark("str");
-    let flags = StatFlags::from_bits(flags)
+    let filename = filename.to_string_lossy();
+    fstatat_path(dirfd, &filename, stat_buf_ptr, flags, ctx, &mut profiler)
+}
+
+/// Resolves the path named by `filename` and copies its status out.
+fn fstatat_path(
+    dirfd: RawFileDesc,
+    filename: &str,
+    stat_buf_ptr: Vaddr,
+    raw_flags: u32,
+    ctx: &Context,
+    profiler: &mut PhaseProfiler,
+) -> Result<SyscallReturn> {
+    let flags = StatFlags::from_bits(raw_flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;
     debug!(
         "dirfd = {}, filename = {:?}, stat_buf_ptr = 0x{:x}, flags = {:?}",
@@ -83,10 +117,8 @@ pub(super) fn sys_fstatat(
     );
 
     let path = {
-        let filename = filename.to_string_lossy();
         profiler.mark("name");
-        let fs_path =
-            FsPath::from_fd_at(dirfd, &filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
+        let fs_path = FsPath::from_fd_at(dirfd, filename, EmptyPathStr::AllowIfFlag(flags.bits()))?;
 
         let fs_ref = ctx.thread_local.borrow_fs();
         let path_resolver = fs_ref.resolver().read();
@@ -103,17 +135,16 @@ pub(super) fn sys_fstatat(
     profiler.mark("meta");
     let stat = Stat::from(metadata);
     profiler.mark("conv");
-    user_space.write_val(stat_buf_ptr, &stat)?;
+    ctx.user_space().write_val(stat_buf_ptr, &stat)?;
     profiler.mark("copy");
     profiler.finish();
     Ok(SyscallReturn::Return(0))
 }
 
 bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug)]
     struct StatFlags: u32 {
-        const AT_EMPTY_PATH       = 1 << 12;
-        const AT_NO_AUTOMOUNT     = 1 << 11;
+        const AT_EMPTY_PATH = 1 << 12;
+        const AT_NO_AUTOMOUNT = 1 << 11;
         const AT_SYMLINK_NOFOLLOW = 1 << 8;
     }
 }

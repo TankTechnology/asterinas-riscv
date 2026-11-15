@@ -13,11 +13,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use ostd::{
-    cpu::PinCurrentCpu,
-    sync::LocalIrqDisabled,
-    util::id_set::Id,
-};
+use ostd::{cpu::PinCurrentCpu, sync::LocalIrqDisabled, util::id_set::Id};
 
 use super::{TraceCtx, prog::Program};
 use crate::{

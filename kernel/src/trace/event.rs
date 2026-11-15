@@ -85,13 +85,7 @@ impl TraceEvent {
     /// The caller formats into a stack buffer first; a disabled event never
     /// reaches the formatting. A program attached to the event runs with the
     /// record's ids, whether or not the event's own switch is on.
-    pub fn trace(
-        &self,
-        pid: u32,
-        tid: u32,
-        event_args: [u64; 3],
-        args: fmt::Arguments<'_>,
-    ) {
+    pub fn trace(&self, pid: u32, tid: u32, event_args: [u64; 3], args: fmt::Arguments<'_>) {
         if crate::bpf::attach::is_attached(self.id) {
             crate::bpf::attach::run(self.id, pid, tid, event_args);
         }

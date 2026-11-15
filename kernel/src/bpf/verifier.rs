@@ -19,15 +19,17 @@
 //! scalar's value, a stack pointer that was merged from two branches) it stops
 //! reasoning and leaves the check to the interpreter.
 
-use crate::bpf::{
-    insn::{
-        Class, Insn, MAX_INSNS, PSEUDO_MAP_FD, PSEUDO_MAP_INDEX, R0, R1, R2, R3, R4, R10,
-        REG_COUNT, STACK_SIZE, helper_id, op,
+use crate::{
+    bpf::{
+        insn::{
+            Class, Insn, MAX_INSNS, PSEUDO_MAP_FD, PSEUDO_MAP_INDEX, R0, R1, R2, R3, R4, R10,
+            REG_COUNT, STACK_SIZE, helper_id, op,
+        },
+        interp::{Kind, Reg},
+        map::Map,
     },
-    interp::{Kind, Reg},
-    map::Map,
+    prelude::*,
 };
-use crate::prelude::*;
 
 /// Stack words in the initialisation bitmap.
 const STACK_WORDS: usize = STACK_SIZE / 64;
@@ -92,7 +94,11 @@ fn liveness(insns: &[Insn], boundaries: &[bool]) -> Vec<u16> {
 
         if !boundaries[index] {
             // The second half of a 64-bit load simply passes through.
-            live_in[index] = if index + 1 < len { live_in[index + 1] } else { 0 };
+            live_in[index] = if index + 1 < len {
+                live_in[index + 1]
+            } else {
+                0
+            };
             continue;
         }
 
@@ -146,7 +152,11 @@ fn use_def(insn: Insn) -> (u16, u16) {
         Class::St => (bit(insn.dst), 0),
         Class::Stx => (bit(insn.dst) | bit(insn.src), 0),
         Class::Alu | Class::Alu64 => {
-            let mut used = if insn.op() == op::MOV { 0 } else { bit(insn.dst) };
+            let mut used = if insn.op() == op::MOV {
+                0
+            } else {
+                bit(insn.dst)
+            };
             if insn.uses_src_reg() {
                 used |= bit(insn.src);
             }
@@ -299,10 +309,7 @@ pub fn verify(
                 match insn.op() {
                     op::EXIT => {
                         if state.regs[R0 as usize].kind != Kind::Scalar {
-                            return_errno_with_message!(
-                                Errno::EINVAL,
-                                "r0 is not a value at exit"
-                            );
+                            return_errno_with_message!(Errno::EINVAL, "r0 is not a value at exit");
                         }
                         fallthrough = false;
                     }
@@ -453,7 +460,10 @@ fn verify_structure(insns: &[Insn]) -> Result<()> {
 }
 
 fn writes_dst(insn: Insn) -> bool {
-    matches!(insn.class(), Class::Ld | Class::Ldx | Class::Alu | Class::Alu64)
+    matches!(
+        insn.class(),
+        Class::Ld | Class::Ldx | Class::Alu | Class::Alu64
+    )
 }
 
 fn alu(state: &mut State, insn: Insn, is_32: bool) -> Result<()> {
@@ -608,9 +618,7 @@ fn check_condition(state: &State, insn: Insn, is_32: bool) -> Result<()> {
         // a map lookup for null.
         let pointer = if dst.kind == Kind::Scalar { src } else { dst };
         let scalar = if dst.kind == Kind::Scalar { dst } else { src };
-        let null_check = !is_32
-            && scalar.val == 0
-            && matches!(insn.op(), op::JEQ | op::JNE);
+        let null_check = !is_32 && scalar.val == 0 && matches!(insn.op(), op::JEQ | op::JNE);
         if null_check && pointer.kind != Kind::Uninit {
             return Ok(());
         }

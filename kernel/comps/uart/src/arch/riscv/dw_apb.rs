@@ -1134,10 +1134,7 @@ mod tests {
             write_error.enable_rx_interrupt(prepared),
             Err(RxEnableError::Mmio)
         );
-        assert_eq!(
-            observation.writes(),
-            vec![(IER_OFFSET, IER_RDI | IER_ELSI)]
-        );
+        assert_eq!(observation.writes(), vec![(IER_OFFSET, IER_RDI | IER_ELSI)]);
     }
 
     #[ktest]

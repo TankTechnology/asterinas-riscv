@@ -89,6 +89,7 @@ pub fn symbol_count() -> usize {
 }
 
 /// Answers whether an image carries a usable table.
+#[allow(dead_code)] // the bpf kallsyms helper and the trace interfaces ask this
 pub fn is_available() -> bool {
     symbol_count() > 0
 }
@@ -162,6 +163,7 @@ fn normalize(addr: u64) -> u64 {
 /// The table is sorted by address; the answer is the last entry at or below
 /// the address, which is how a symbol table is normally read for a program
 /// counter.
+#[allow(dead_code)] // `lookup_with_offset` is what the interfaces use today
 pub fn lookup(addr: u64) -> Option<&'static str> {
     let layout = layout()?;
     let target = normalize(addr);
@@ -206,6 +208,7 @@ pub fn lookup_with_offset(addr: u64) -> Option<(&'static str, u64)> {
 }
 
 /// Calls `visit` for every symbol, in address order, as `(addr, name)`.
+#[allow(dead_code)] // the bpf kallsyms helper walks the table
 pub fn for_each_symbol<F: FnMut(u64, &'static str)>(mut visit: F) {
     let Some(layout) = layout() else {
         return;

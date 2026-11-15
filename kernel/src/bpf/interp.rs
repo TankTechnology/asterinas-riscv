@@ -207,10 +207,9 @@ pub fn run(prog: &Program, ctx: &TraceCtx) -> Result<(u64, u64)> {
         if steps > MAX_STEPS {
             return_errno_with_message!(Errno::EINVAL, "the program ran too long");
         }
-        let insn = *prog
-            .insns()
-            .get(pc)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "the program counter left the code"))?;
+        let insn = *prog.insns().get(pc).ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "the program counter left the code")
+        })?;
 
         let mut next = pc + 1;
         match insn.class() {
@@ -339,7 +338,11 @@ fn alu(vm: &mut Vm, insn: Insn, is_32: bool) -> Result<()> {
     }
 
     let bits = if is_32 { 32 } else { 64 };
-    let a = if is_32 { dst.val as u32 as u64 } else { dst.val };
+    let a = if is_32 {
+        dst.val as u32 as u64
+    } else {
+        dst.val
+    };
     let b = if is_32 {
         src.val as u32 as u64
     } else {
@@ -475,7 +478,12 @@ fn compare(op: u8, a: u64, b: u64, is_32: bool) -> bool {
 /// Collects the key bytes a helper was handed.
 fn helper_key(vm: &Vm, prog: &Program, reg: u8, key_size: u32) -> Result<[u8; 8]> {
     let mut key = [0u8; 8];
-    vm.read_bytes(prog, vm.regs[reg as usize], 0, &mut key[..key_size as usize])?;
+    vm.read_bytes(
+        prog,
+        vm.regs[reg as usize],
+        0,
+        &mut key[..key_size as usize],
+    )?;
     Ok(key)
 }
 
@@ -525,12 +533,9 @@ fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn, ctx: &TraceCtx) -> Resul
                 let mut offset = 0;
                 while offset < value_size {
                     let chunk = (value_size - offset).min(COPY_CHUNK);
-                    if let Err(error) = vm.read_bytes(
-                        prog,
-                        vm.regs[R3 as usize],
-                        offset as i64,
-                        &mut buf[..chunk],
-                    ) {
+                    if let Err(error) =
+                        vm.read_bytes(prog, vm.regs[R3 as usize], offset as i64, &mut buf[..chunk])
+                    {
                         result = Ok(Reg::scalar(errno_value(&error)));
                         break;
                     }

@@ -32,15 +32,14 @@ use crate::{
     prelude::*,
     process::posix_thread::AsPosixThread,
     trace::{
-        event::{self, TraceEvent, TRACING_ON},
+        event::{self, TRACING_ON, TraceEvent},
         events::tracing::TRACE_MARKER,
         ring::{self, Record},
     },
 };
 
 /// The ring bounds of the read in progress; see `render_records`.
-static SNAPSHOT: ostd::sync::SpinLock<Option<[u64; ring::MAX_CPUS]>> =
-    ostd::sync::SpinLock::new(None);
+static SNAPSHOT: SpinLock<Option<[u64; ring::MAX_CPUS]>> = SpinLock::new(None);
 
 /// The inode at `/proc/trace`.
 pub struct TraceDirOps;
@@ -186,7 +185,8 @@ impl ProcFileOps for BpfFileOps {
 }
 
 /// `/proc/trace/available_events`.
-struct AvailableEventsFileOps;impl ProcFileOps for AvailableEventsFileOps {
+struct AvailableEventsFileOps;
+impl ProcFileOps for AvailableEventsFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
         for event in event::all_events() {
@@ -335,10 +335,10 @@ impl ProcFileOps for FormatFileOps {
 }
 
 /// Reads up to `limit` bytes of a write into a string, tolerating garbage.
-fn read_user_text(reader: &mut VmReader, limit: usize) -> Result<alloc::string::String> {
+fn read_user_text(reader: &mut VmReader, limit: usize) -> Result<String> {
     let mut buffer = [0u8; 512];
     let limit = limit.min(buffer.len());
-    let mut text = alloc::string::String::new();
+    let mut text = String::new();
     let mut consumed = 0;
     while consumed < limit {
         let read = reader
@@ -391,18 +391,21 @@ fn render_records(offset: usize, writer: &mut VmWriter, clear_when_done: bool) -
 
     sink.push(HEADER)?;
     let mut complete = true;
-    ring::for_each_record_bounded(|record| {
-        if sink.stopped {
-            complete = false;
-            return false;
-        }
-        let mut line = LineBuf::new();
-        if format_record(&mut line, &record).is_err() || sink.push(line.as_bytes()).is_err() {
-            complete = false;
-            return false;
-        }
-        true
-    }, bounds);
+    ring::for_each_record_bounded(
+        |record| {
+            if sink.stopped {
+                complete = false;
+                return false;
+            }
+            let mut line = LineBuf::new();
+            if format_record(&mut line, &record).is_err() || sink.push(line.as_bytes()).is_err() {
+                complete = false;
+                return false;
+            }
+            true
+        },
+        bounds,
+    );
     if complete && !sink.stopped {
         // The snapshot has been handed out in full.
         *SNAPSHOT.lock() = None;
