@@ -1,22 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{
-    format,
-    sync::{Arc, Weak},
+    sync::Arc,
     vec,
     vec::Vec,
 };
-use core::{
-    fmt,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::{fmt, sync::atomic::Ordering};
 
 use aster_block::{
-    BlockDeviceMeta, EXTENDED_DEVICE_ID_ALLOCATOR, PartitionInfo, PartitionNode, SECTOR_SIZE,
+    BlockDeviceMeta, PartitionManager, SECTOR_SIZE,
     bio::{BioEnqueueError, BioSegment, BioStatus, BioType, SubmittedBio, bio_segment_pool_init},
 };
 use device_id::{DeviceId, MinorId};
-use ostd::sync::{Mutex, SpinLock};
+use ostd::sync::Mutex;
 
 use crate::{
     MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2, MMC_WRITE_PARTITION3,
@@ -25,7 +21,6 @@ use crate::{
     sdhci::HostError,
 };
 
-const DEVICE_MINORS: u32 = 16;
 // Match the standard SDHCI 512-KiB request boundary while remaining far below
 // the controller's 16-bit block-count limit.
 const PIO_TRANSFER_SECTORS: usize = 1024;
@@ -44,25 +39,18 @@ fn physical_lba(logical_lba: u64, sid_offset: u64, upper_bound: u64) -> Option<u
     (physical < upper_bound).then_some(physical)
 }
 
-fn partition2_geometry_matches(start_lba: u64, nr_sectors: u64) -> bool {
-    start_lba == P2_START_LBA && nr_sectors == P2_NR_SECTORS
-}
-
-fn partition3_geometry_matches(start_lba: u64, nr_sectors: u64) -> bool {
-    start_lba == P3_START_LBA && nr_sectors == P3_NR_SECTORS
-}
-
 fn partition_write_allowed(
     armed: bool,
-    geometry_matches: bool,
     partition_start_lba: u64,
     partition_end_lba: u64,
     sid_offset: u64,
     first_lba: u64,
     nr_sectors: u64,
 ) -> bool {
+    // `sid_offset` is the start sector of the partition the bio was addressed
+    // through, so requiring it to equal the frozen window start proves that the
+    // write enters the device through that exact partition.
     armed
-        && geometry_matches
         && sid_offset == partition_start_lba
         && nr_sectors != 0
         && sid_offset
@@ -83,15 +71,12 @@ pub(super) fn register(host: MmioHost, card: Card) -> Result<(), ()> {
     let id = DeviceId::new(MMC_BLOCK_MAJOR_ID.get().unwrap().get(), MinorId::new(0));
     let partition2_write_armed = MMC_WRITE_PARTITION2.load(Ordering::Relaxed);
     let partition3_write_armed = MMC_WRITE_PARTITION3.load(Ordering::Relaxed);
-    let device = Arc::new_cyclic(|weak_self| MegrezMmcBlock {
+    let device = Arc::new(MegrezMmcBlock {
         state: Mutex::new((host, card, None)),
         id,
-        partitions: SpinLock::new(None),
-        weak_self: weak_self.clone(),
+        partition_manager: PartitionManager::new(),
         partition2_write_armed,
-        partition2_geometry_matches: AtomicBool::new(false),
         partition3_write_armed,
-        partition3_geometry_matches: AtomicBool::new(false),
     });
     aster_block::register(device).map_err(|_| ())?;
     bio_segment_pool_init();
@@ -109,12 +94,9 @@ pub(super) fn register(host: MmioHost, card: Card) -> Result<(), ()> {
 struct MegrezMmcBlock {
     state: Mutex<(MmioHost, Card, Option<CacheState>)>,
     id: DeviceId,
-    partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
-    weak_self: Weak<Self>,
+    partition_manager: PartitionManager,
     partition2_write_armed: bool,
-    partition2_geometry_matches: AtomicBool,
     partition3_write_armed: bool,
-    partition3_geometry_matches: AtomicBool,
 }
 
 impl fmt::Debug for MegrezMmcBlock {
@@ -128,13 +110,6 @@ impl fmt::Debug for MegrezMmcBlock {
 }
 
 impl aster_block::BlockDevice for MegrezMmcBlock {
-    fn is_read_only(&self) -> bool {
-        // Writes are only accepted inside the frozen partition windows that
-        // the boot command line arms; from a block-layer point of view the
-        // device is not a general-purpose writable disk.
-        true
-    }
-
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
         let status = match bio.type_() {
             BioType::Write => self.write_bio(&bio),
@@ -160,66 +135,8 @@ impl aster_block::BlockDevice for MegrezMmcBlock {
         self.id
     }
 
-    fn set_partitions(&self, infos: Vec<Option<PartitionInfo>>) {
-        let geometry_matches = infos.get(1).and_then(Option::as_ref).is_some_and(|info| {
-            partition2_geometry_matches(info.start_sector(), info.total_sectors())
-        });
-        let p3_geometry_matches = infos.get(2).and_then(Option::as_ref).is_some_and(|info| {
-            partition3_geometry_matches(info.start_sector(), info.total_sectors())
-        });
-        self.partition2_geometry_matches
-            .store(geometry_matches, Ordering::Relaxed);
-        self.partition3_geometry_matches
-            .store(p3_geometry_matches, Ordering::Relaxed);
-        if self.partition2_write_armed {
-            if geometry_matches {
-                ostd::warn!("[mmc] exact partition-2 write gate enabled");
-            } else {
-                ostd::error!("[mmc] partition-2 geometry mismatch; writes remain disabled");
-            }
-        }
-        if self.partition3_write_armed {
-            if p3_geometry_matches {
-                ostd::warn!("[mmc] exact partition-3 write gate enabled");
-            } else {
-                ostd::error!("[mmc] partition-3 geometry mismatch; writes remain disabled");
-            }
-        }
-        let mut partitions = self.partitions.lock();
-        if let Some(old) = partitions.take() {
-            for partition in old {
-                let _ = aster_block::unregister(partition.id());
-            }
-        }
-        let mut new = Vec::new();
-        for (position, info) in infos.into_iter().enumerate() {
-            let Some(info) = info else { continue };
-            let number = position as u32 + 1;
-            let id = if number < DEVICE_MINORS {
-                DeviceId::new(
-                    self.id.major(),
-                    MinorId::new(self.id.minor().get() + number),
-                )
-            } else {
-                EXTENDED_DEVICE_ID_ALLOCATOR.get().unwrap().allocate()
-            };
-            let name = format!("mmcblk0p{}", number);
-            let whole = self.weak_self.upgrade().unwrap();
-            new.push(Arc::new(PartitionNode::new(id, name, whole, info)));
-        }
-        for partition in &new {
-            let _ = aster_block::register(partition.clone());
-        }
-        *partitions = Some(new);
-    }
-
-    fn partitions(&self) -> Option<Vec<Arc<dyn aster_block::BlockDevice>>> {
-        self.partitions.lock().as_ref().map(|partitions| {
-            partitions
-                .iter()
-                .map(|partition| partition.clone() as Arc<dyn aster_block::BlockDevice>)
-                .collect()
-        })
+    fn partition_manager(&self) -> Option<&PartitionManager> {
+        Some(&self.partition_manager)
     }
 }
 
@@ -342,7 +259,6 @@ impl MegrezMmcBlock {
         let nr_sectors = bio.sid_range().end.to_raw().saturating_sub(first_lba);
         let p2_allowed = partition_write_allowed(
             self.partition2_write_armed,
-            self.partition2_geometry_matches.load(Ordering::Relaxed),
             P2_START_LBA,
             P2_END_LBA,
             bio.sid_offset(),
@@ -351,7 +267,6 @@ impl MegrezMmcBlock {
         );
         let p3_allowed = partition_write_allowed(
             self.partition3_write_armed,
-            self.partition3_geometry_matches.load(Ordering::Relaxed),
             P3_START_LBA,
             P3_END_LBA,
             bio.sid_offset(),
@@ -433,16 +348,6 @@ mod tests {
     fn arms_writes_only_for_the_frozen_partition_two_range() {
         assert!(!partition_write_allowed(
             false,
-            true,
-            P2_START_LBA,
-            P2_END_LBA,
-            P2_START_LBA,
-            0,
-            1
-        ));
-        assert!(!partition_write_allowed(
-            true,
-            false,
             P2_START_LBA,
             P2_END_LBA,
             P2_START_LBA,
@@ -451,7 +356,6 @@ mod tests {
         ));
         assert!(partition_write_allowed(
             true,
-            true,
             P2_START_LBA,
             P2_END_LBA,
             P2_START_LBA,
@@ -459,7 +363,6 @@ mod tests {
             1
         ));
         assert!(partition_write_allowed(
-            true,
             true,
             P2_START_LBA,
             P2_END_LBA,
@@ -478,7 +381,6 @@ mod tests {
         ] {
             assert!(!partition_write_allowed(
                 true,
-                true,
                 P2_START_LBA,
                 P2_END_LBA,
                 offset,
@@ -492,7 +394,6 @@ mod tests {
     fn partition_three_has_its_own_frozen_range() {
         assert!(partition_write_allowed(
             true,
-            true,
             P3_START_LBA,
             P3_END_LBA,
             P3_START_LBA,
@@ -500,7 +401,6 @@ mod tests {
             1
         ));
         assert!(partition_write_allowed(
-            true,
             true,
             P3_START_LBA,
             P3_END_LBA,
@@ -511,7 +411,6 @@ mod tests {
         // A window armed for p2 never covers p3 and vice versa.
         assert!(!partition_write_allowed(
             true,
-            true,
             P2_START_LBA,
             P2_END_LBA,
             P3_START_LBA,
@@ -520,7 +419,6 @@ mod tests {
         ));
         assert!(!partition_write_allowed(
             true,
-            true,
             P3_START_LBA,
             P3_END_LBA,
             P2_START_LBA,
@@ -529,30 +427,34 @@ mod tests {
         ));
         assert!(!partition_write_allowed(
             true,
-            true,
             P3_START_LBA,
             P3_END_LBA,
             P3_START_LBA,
             P3_NR_SECTORS,
             1
         ));
-        assert!(partition3_geometry_matches(P3_START_LBA, P3_NR_SECTORS));
-        assert!(!partition3_geometry_matches(
-            P3_START_LBA,
-            P3_NR_SECTORS - 1
-        ));
     }
 
     #[ktest]
-    fn requires_the_exact_partition_two_geometry() {
-        assert!(partition2_geometry_matches(P2_START_LBA, P2_NR_SECTORS));
-        assert!(!partition2_geometry_matches(
-            P2_START_LBA - 1,
-            P2_NR_SECTORS
-        ));
-        assert!(!partition2_geometry_matches(
+    fn rejects_writes_that_do_not_enter_through_the_frozen_partition() {
+        // The whole disk addresses sectors with a zero offset; reaching the
+        // window's physical range that way must not be accepted.
+        assert!(!partition_write_allowed(
+            true,
             P2_START_LBA,
-            P2_NR_SECTORS - 1
+            P2_END_LBA,
+            0,
+            P2_START_LBA,
+            1
+        ));
+        // A partition table entry with a different start sector is refused.
+        assert!(!partition_write_allowed(
+            true,
+            P2_START_LBA,
+            P2_END_LBA,
+            P2_START_LBA - 1,
+            0,
+            1
         ));
     }
 

@@ -586,7 +586,7 @@ impl MmioHost {
             .map_fdt_pin_to_masked(
                 InterruptSourceInFdt {
                     interrupt_parent: parent,
-                    interrupt,
+                    arguments: [interrupt],
                 },
                 irq_line,
             )
