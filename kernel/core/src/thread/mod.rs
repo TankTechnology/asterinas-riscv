@@ -190,3 +190,18 @@ impl AsThread for Task {
         self.data().downcast_ref::<Arc<Thread>>()
     }
 }
+
+/// Returns `(pid, tid)` for the task that `task` belongs to.
+pub(crate) fn task_ids(task: &Task) -> (u32, u32) {
+    match task.as_thread().and_then(|thread| thread.as_posix_thread()) {
+        Some(posix_thread) => (
+            posix_thread
+                .weak_process()
+                .upgrade()
+                .map(|process| process.pid())
+                .unwrap_or(0),
+            posix_thread.tid(),
+        ),
+        None => (0, 0),
+    }
+}

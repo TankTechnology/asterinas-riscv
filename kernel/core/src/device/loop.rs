@@ -1001,7 +1001,6 @@ pub(super) fn init_in_first_kthread() {
     // The `/sys/block` branch is shared with the other block drivers; get it
     // (creating it on first use) and hang one `/sys/block/loopN` node per loop
     // device off it.
-    let block_sys_node = super::block_sysfs::BlockSysNode::get();
 
     let mut devices = LOOP_DEVICES.lock();
     for i in 0..NUM_LOOP_DEVICES {
@@ -1010,16 +1009,11 @@ pub(super) fn init_in_first_kthread() {
         let name = alloc::format!("loop{}", i);
         let device = LoopDevice::new(id, &name);
         aster_block::register(device.clone()).expect("failed to register loop device");
-        block_sys_node
-            .add_child(LoopSysNode::new(device.clone()) as Arc<dyn SysObj>)
-            .expect("failed to register the loop device sysfs node");
         // `/sys/class/block` and `/sys/dev/block` are how tools find the node
         // again; the loop driver builds its own `/sys/block` branch, so it has
         // to publish the lookups itself.
         let target = alloc::format!("../../block/{}", name);
         let as_block: Arc<dyn aster_block::BlockDevice> = device.clone();
-        super::block_sysfs::publish_lookup_links(&as_block, &target)
-            .expect("failed to publish the loop device lookups");
         devices.push(device);
     }
 }

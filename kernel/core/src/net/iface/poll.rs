@@ -67,3 +67,8 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
         .sched_policy(SchedPolicy::Fair(Nice::MIN))
         .spawn();
 }
+
+/// Spawns the background polling thread for a newly created interface.
+pub(in crate::net) fn spawn_poll_thread(iface: Arc<Iface>) {
+    spawn_background_poll_thread(iface);
+}
