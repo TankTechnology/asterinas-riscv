@@ -691,9 +691,9 @@ impl Process {
 
     /// Stops the process.
     pub(crate) fn stop(&self, sig_num: SigNum) {
-        if self.status.stop_status().stop(sig_num) {
-            self.wake_up_parent();
-        }
+        self.status.stop_status().request_stop();
+        self.status.stop_status().complete_stop(sig_num);
+        self.wake_up_parent();
     }
 
     /// Resumes the stopped process.

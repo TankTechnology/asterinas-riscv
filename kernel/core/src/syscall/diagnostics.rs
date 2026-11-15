@@ -68,7 +68,8 @@ pub(super) fn enter(ctx: &Context, number: u64, args: [u64; 6]) {
     // the diagnostic spinlock; neither formatting nor logging runs under it.
     let vmar_guard = ctx.process.lock_vmar();
     let vm = vmar_guard.snapshot();
-    let diagnostics = ctx.posix_thread.syscall_diagnostics();
+    // Per-thread diagnostics are not wired into the current thread layout.
+    let _ = ctx;
     let state = diagnostics.0.call_once(|| {
         Box::new(SpinLock::new(ThreadState {
             vm: vm.clone(),
