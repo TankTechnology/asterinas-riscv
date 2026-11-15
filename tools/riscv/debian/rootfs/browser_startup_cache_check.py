@@ -208,9 +208,20 @@ def _validate_maintenance_units(root: Path) -> None:
             )
 
 
-def check_cache_profile(root: Path, *, profile: str = "browser-web") -> str:
-    if profile not in ("browser-web", "desktop-m5-network", "desktop-m9-software"):
+def check_cache_profile(
+    root: Path,
+    *,
+    profile: str = "browser-web",
+    service_name: str | None = None,
+) -> str:
+    if profile not in (
+        "browser-web",
+        "desktop-m5-network",
+        "desktop-m9-software",
+    ):
         raise CacheCheckError(f"unsupported startup-cache profile: {profile}")
+    if service_name is not None and profile != "browser-web":
+        raise CacheCheckError("service-name is only valid for the browser-web profile")
     root = root.resolve()
     passwd = _account_rows(root / "etc/passwd", 7)
     groups = _account_rows(root / "etc/group", 4)
@@ -312,8 +323,23 @@ def check_cache_profile(root: Path, *, profile: str = "browser-web") -> str:
             )
 
     if profile == "browser-web":
+        mime_cache_path = _regular(root / "usr/share/mime/mime.cache", nonempty=True)
+        mime_globs_path = _regular(root / "usr/share/mime/globs2", nonempty=True)
+        if any(
+            path.stat().st_mode & 0o444 != 0o444
+            for path in (mime_cache_path, mime_globs_path)
+        ):
+            raise CacheCheckError("desktop MIME database is not readable by desktop users")
+        mime_cache = mime_cache_path.read_bytes()
+        if len(mime_cache) < 32 or not mime_cache.startswith(b"\0\x01\0\x02"):
+            raise CacheCheckError("desktop MIME cache has an invalid header")
+        mime_globs = mime_globs_path.read_text()
+        for glob in ("50:application/x-desktop:*.desktop", "50:image/svg+xml:*.svg"):
+            if glob not in mime_globs.splitlines():
+                raise CacheCheckError(f"desktop MIME database misses {glob}")
+        browser_unit = service_name or "asterinas-browser-web.service"
         unit = _regular(
-            root / "etc/systemd/system/asterinas-browser-web.service", nonempty=True
+            root / "etc/systemd/system" / browser_unit, nonempty=True
         ).read_text(encoding="utf-8")
         for line in (
             "User=asterinas",
@@ -344,9 +370,20 @@ def main() -> int:
         choices=("browser-web", "desktop-m5-network", "desktop-m9-software"),
         default="browser-web",
     )
+    parser.add_argument(
+        "--service-name",
+        default=None,
+        help="browser systemd unit to validate (default: profile unit)",
+    )
     values = parser.parse_args()
     try:
-        print(check_cache_profile(values.root, profile=values.profile))
+        print(
+            check_cache_profile(
+                values.root,
+                profile=values.profile,
+                service_name=values.service_name,
+            )
+        )
     except (CacheCheckError, OSError, ValueError) as error:
         parser.error(str(error))
     return 0

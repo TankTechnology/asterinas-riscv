@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MPL-2.0
+[Desktop Entry]
+Type=Application
+Name=Firefox
+Comment=Browse the web
+Exec=/usr/lib/asterinas/browser-web-open-firefox
+Icon=firefox-esr
+Terminal=false
+Categories=Network;WebBrowser;
