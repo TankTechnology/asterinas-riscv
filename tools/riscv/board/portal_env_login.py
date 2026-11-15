@@ -19,6 +19,12 @@ duration of one command and never writes them anywhere:
     sudo tools/riscv/board/portal_env_login.py --board-ip 192.0.2.10 \\
         --bridge-log /tmp/megrez2.log --fifo /tmp/megrez.cmd
 
+`--browser` drives the board's own Firefox instead (`/root/portal_browser_login.py`,
+Marionette on `127.0.0.1:2828`) and types the credentials into its stdin once it
+prints `READY`. Use it when the srun protocol answers `sign_error`, which is what
+happens when the portal still believes the address is online; the portal's own
+JavaScript then does the signing.
+
 `--board-ip` is site configuration; the default is a documentation address on
 purpose. Exit status: 0 verified online, 1 the portal refused, 2 setup failed.
 """
@@ -94,12 +100,47 @@ def stop_bridge() -> list[int]:
 def start_bridge(log: str, fifo: str) -> None:
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))))
-    subprocess.Popen(
-        [sys.executable, os.path.join(repo, "tools/riscv/board/megrez_console.py"),
-         "bridge", DEVICE, "--log", log, "--fifo", fifo],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
-    time.sleep(0.5)
+    # A fifo a previous run left behind as root stops the next bridge as the
+    # invoking user ("Operation not permitted" on unlink). Remove it here,
+    # while the privileges that can still do so are in hand.
+    try:
+        os.unlink(fifo)
+    except OSError:
+        pass
+    # Run the bridge as whoever invoked sudo. Started as root it cannot even
+    # open the log: `fs.protected_regular=2` makes /tmp/megrez2.log -- owned by
+    # the invoking user, in a sticky directory -- refuse root's append, and the
+    # bridge dies before it reads a byte. The supplementary groups have to come
+    # along too: `/dev/ttyUSB0` is `root:uucp`, and a process without `uucp`
+    # gets EACCES on open.
+    as_user = {}
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if os.geteuid() == 0 and uid and gid:
+        import pwd
+
+        as_user = {
+            "user": int(uid),
+            "group": int(gid),
+            "extra_groups": os.getgrouplist(pwd.getpwuid(int(uid)).pw_name, int(gid)),
+        }
+    errors = "/tmp/tp/bridge-restart.log"
+    os.makedirs(os.path.dirname(errors), exist_ok=True)
+    with open(errors, "wb") as err:
+        subprocess.Popen(
+            [sys.executable, os.path.join(repo, "tools/riscv/board/megrez_console.py"),
+             "bridge", DEVICE, "--log", log, "--fifo", fifo],
+            stdout=subprocess.DEVNULL, stderr=err, start_new_session=True, **as_user,
+        )
+    # A bridge that loses the race for the port exits at once and leaves the
+    # console silent, which looks exactly like a board that stopped talking.
+    # Say so here instead of leaving the next command to time out.
+    for _ in range(15):
+        if bridge_pids():
+            break
+        time.sleep(0.2)
+    else:
+        print("warning: the serial bridge did not come back; start it by hand",
+              file=sys.stderr)
     # This tool runs under sudo, so the bridge it leaves behind recreates the
     # fifo as root, and the next bridge started as the normal user cannot
     # unlink it ("Operation not permitted") and refuses to start. Hand the
@@ -120,6 +161,11 @@ def main() -> int:
     parser.add_argument("--bridge-log", default="/tmp/megrez2.log")
     parser.add_argument("--fifo", default="/tmp/megrez.cmd")
     parser.add_argument("--wait", type=float, default=45.0)
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="drive the board's Firefox via /root/portal_browser_login.py instead of srun",
+    )
     parser.add_argument("--logout", action="store_true", help="log the address out first")
     args = parser.parse_args()
 
@@ -145,25 +191,48 @@ def main() -> int:
             time.sleep(1.5)
             os.write(fd, b"\n")
             time.sleep(0.5)
-            extra = " --logout" if args.logout else ""
-            command = (
-                f"SRUN_USER={shlex.quote(identity)} SRUN_PASS={shlex.quote(password)} "
-                f"python3 /root/srun_board.py --expect-ip {args.board_ip} "
-                f"--ac-id {args.ac_id}{extra}\n"
-            )
-            for char in command:
-                os.write(fd, char.encode())
-                time.sleep(0.01)
-            deadline = time.time() + args.wait
-            chunks = []
-            while time.time() < deadline:
-                ready, _, _ = select.select([fd], [], [], 1.0)
-                if not ready:
-                    continue
-                chunks.append(os.read(fd, 4096))
-                text = b"".join(chunks).decode("utf-8", "replace")
-                if "login:" in text and text.rstrip().endswith("#"):
-                    break
+
+            def type_text(text: str) -> None:
+                for char in text:
+                    os.write(fd, char.encode())
+                    time.sleep(0.01)
+
+            chunks: list[bytes] = []
+
+            def pump(until, wait: float) -> bool:
+                """Reads the port until `until(transcript)` holds or `wait` runs out."""
+                deadline = time.time() + wait
+                while time.time() < deadline:
+                    ready, _, _ = select.select([fd], [], [], 1.0)
+                    if not ready:
+                        continue
+                    chunks.append(os.read(fd, 4096))
+                    if until(b"".join(chunks).decode("utf-8", "replace")):
+                        return True
+                return False
+
+            if args.browser:
+                # The board script turns the console's echo off before it prints
+                # READY, so the two lines typed below never come back through the
+                # port -- and never reach a log.
+                type_text("python3 /root/portal_browser_login.py\n")
+                if not pump(lambda text: "READY" in text, 20.0):
+                    sys.exit("the board never printed READY; credentials were not typed")
+                type_text(identity + "\n")
+                type_text(password + "\n")
+                pump(lambda text: "BROWSER_LOGIN_DONE" in text, args.wait)
+            else:
+                extra = " --logout" if args.logout else ""
+                command = (
+                    f"SRUN_USER={shlex.quote(identity)} SRUN_PASS={shlex.quote(password)} "
+                    f"python3 /root/srun_board.py --expect-ip {args.board_ip} "
+                    f"--ac-id {args.ac_id}{extra}\n"
+                )
+                type_text(command)
+                pump(
+                    lambda text: "login:" in text and text.rstrip().endswith("#"),
+                    args.wait,
+                )
             transcript = b"".join(chunks).decode("utf-8", "replace")
         finally:
             os.close(fd)
@@ -178,6 +247,11 @@ def main() -> int:
         handle.write(redacted)
 
     print(redacted[-800:])
+    if args.browser:
+        # The browser path has no `login:` line to match: the portal's page
+        # reports the result in the text printed by the board script, which the
+        # caller confirms by reaching the address afterwards.
+        return 0 if "BROWSER_LOGIN_DONE" in redacted else 1
     return 0 if re.search(r"login: (ok|login_ok)", redacted) else 1
 
 
