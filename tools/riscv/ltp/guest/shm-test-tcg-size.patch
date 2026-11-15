@@ -1,0 +1,19 @@
+diff --git a/testcases/kernel/mem/mtest07/shm_test.c b/testcases/kernel/mem/mtest07/shm_test.c
+index 6d4d016..ae8633d 100644
+--- a/testcases/kernel/mem/mtest07/shm_test.c
++++ b/testcases/kernel/mem/mtest07/shm_test.c
+@@ -317,7 +317,13 @@ int main(int argc,		/* number of input parameters                 */
+ 
+ 	for (i = 0; i < num_thrd; i += 2) {
+ 		srand(time(NULL) % 100);
+-		map_size = (1 + (int)(1000.0 * rand() / (RAND_MAX + 1.0))) * 4096;
++		/*
++		 * The reviewed run is QEMU TCG (~100x slower). Each byte of the
++		 * segment costs one sched_yield(), so the original 1..1000-page
++		 * range makes the test take hours; 1..16 pages keeps the same
++		 * concurrent attach/detach/read/write coverage in minutes.
++		 */
++		map_size = (1 + (int)(16.0 * rand() / (RAND_MAX + 1.0))) * 4096;
+ 
+ 		dprt("main(): thrd_ndx = %d map_address = %#x map_size = %d\n",
+ 		     i, map_address, map_size);

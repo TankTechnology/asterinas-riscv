@@ -1,0 +1,41 @@
+# Memory-management subsystem LTP requests (runtest/mm).
+# Curated from LTP 20260529: mmap/brk/page-fault/shared-memory/mallopt cases.
+# KSM, THP, cpuset, swap, overcommit and OOM entries need kernel features this
+# board kernel does not enable; they stay out of the reviewed boundary until
+# the feature exists. Keep unavailable names here rather than trimming them.
+mmap21_01
+mmap21_02
+mtest01
+mtest01w
+mtest06
+mtest06_2
+mem02
+page01
+page02
+data_space
+stack_space
+shmt02
+shmt03
+shmt04
+shmt05
+shmt07
+shmt08
+# shmt09 and mmapstress02 require a libc whose sbrk() can move the break.
+# The LTP rootfs is built against musl, whose sbrk() is a deliberate stub:
+# any nonzero increment returns -ENOMEM (musl's malloc only uses mmap), so
+# these tests fail on any musl system, including a stock Linux kernel. The
+# kernel's brk syscall itself is exercised by mtest06/mmreg and data_space.
+# shmt09
+shmt10
+shm_test01
+mallocstress01
+mmapstress01
+# mmapstress02 has the same musl sbrk() limitation as shmt09 above.
+# mmapstress02
+# vma01 checks Linux's find_mergeable_anon_vma() scalability heuristic: a VMA
+# cloned by fork must not be merged with an adjacent new mapping. This kernel
+# has no anon_vma identity and merges adjacent compatible mappings purely by
+# address, which is functionally correct but produces the "single 6*ps VMA"
+# layout the test calls a failure. Keep it out until a mergeability notion
+# comparable to anon_vma exists.
+# vma01

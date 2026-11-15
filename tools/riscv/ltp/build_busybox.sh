@@ -39,6 +39,8 @@ readonly -a APPLETS=(
     UMOUNT MOUNTPOINT               # mount lifecycle
     MKDIR RM RMDIR LN MKNOD CHMOD CHOWN
     ECHO PRINTF TEST GREP FIND HEAD TAIL DD
+    TEST1                           # `[` applet (busybox 1.36 spells it TEST1)
+    DATE TOUCH                      # fs_inod's timestamps and file creation
     DF FREE UNAME SYNC STAT SLEEP KILL PIDOF
     TRUE FALSE YES
     IP IPLINK IPADDR            # iproute2-lite for netlink guest verification (NIXOS-N1)
@@ -65,6 +67,11 @@ make CC="${CC}" CROSS_COMPILE="${CROSS_PREFIX}" allnoconfig >/dev/null
 # Static linking and the standalone-shell helper.
 sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
 sed -i 's/^# CONFIG_FEATURE_SH_STANDALONE is not set$/CONFIG_FEATURE_SH_STANDALONE=y/' .config
+
+# Arithmetic expansion ($((...))) is used by LTP's shell helpers (fs_inod,
+# and any TMPDIR sizing); allnoconfig leaves it off.
+sed -i 's/^# CONFIG_FEATURE_SH_MATH is not set$/CONFIG_FEATURE_SH_MATH=y/' .config
+sed -i 's/^# CONFIG_FEATURE_SH_MATH_64 is not set$/CONFIG_FEATURE_SH_MATH_64=y/' .config
 
 # Internal /etc/passwd + /etc/group parsing. Static glibc cannot dlopen the NSS
 # "files" module, so libc getpwnam()/getgrnam() always fail in a static binary.

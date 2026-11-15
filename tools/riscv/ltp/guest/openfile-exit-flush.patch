@@ -1,0 +1,17 @@
+diff --git a/testcases/kernel/fs/openfile/openfile.c b/testcases/kernel/fs/openfile/openfile.c
+--- a/testcases/kernel/fs/openfile/openfile.c
++++ b/testcases/kernel/fs/openfile/openfile.c
+@@ -193,6 +193,12 @@
+ 	fclose(fd);
+ 	unlink(filename);
+ 	cleanup();
+-	_exit(0);
++	/*
++	 * The LTP runner captures this test's stdout and stderr into a file, and
++	 * a redirected stdout is fully buffered. _exit() skips the flush, so the
++	 * TPASS line printed just above never reaches the gate's log and a
++	 * passing test reads as a test that produced no verdict at all.
++	 */
++	exit(0);
+ }
+ 

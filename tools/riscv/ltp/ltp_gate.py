@@ -26,12 +26,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
-from tools.riscv.ltp.ltp_manifest import select_manifest
-from tools.riscv.ltp.ltp_package import publish_package_identity, validate_package_identity
-from tools.riscv.ltp.ltp_suite import LtpSuite, suite_by_name, suite_names
-
-
+# Allow running this file directly (`python3 tools/riscv/ltp/ltp_gate.py ...`)
+# as well as through `python3 -m tools.riscv.ltp.ltp_gate`: the package imports
+# below resolve only with the repository root on sys.path.
 REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+# Child tools (qemu_uboot_*, prepare_qemu_uboot_booti.sh, ...) import
+# `tools.riscv...` too; exporting the repository root keeps them working no
+# matter which directory this gate is invoked from.
+_pythonpath = os.environ.get("PYTHONPATH", "")
+if str(REPO_ROOT) not in _pythonpath.split(os.pathsep):
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(REPO_ROOT), _pythonpath))
+    )
+
+from tools.riscv.ltp.ltp_manifest import select_manifest  # noqa: E402
+from tools.riscv.ltp.ltp_package import (  # noqa: E402
+    publish_package_identity,
+    validate_package_identity,
+)
+from tools.riscv.ltp.ltp_suite import LtpSuite, suite_by_name, suite_names  # noqa: E402
 _PROFILES_BY_SMP = {
     1: "generic-sv39-ltp-smp1",
     4: "generic-sv39-ltp-smp4",
@@ -183,7 +198,7 @@ def _validate_packaged_suite(repo: Path, suite: LtpSuite) -> tuple[Path, Path]:
     """Verifies that packaged runtime inputs exactly match a closed suite."""
 
     rootfs = repo / "target/ltp/rootfs"
-    runtest = repo / "target/ltp/src/runtest/syscalls"
+    runtest = repo / "target/ltp/src" / suite.runtest
     manifest = rootfs / "opt/ltp/runtest/syscalls"
     binaries = rootfs / "opt/ltp/testcases/bin"
     unavailable = repo / "target/ltp/unavailable-tests.json"
@@ -238,7 +253,7 @@ def _validate_packaged_suite(repo: Path, suite: LtpSuite) -> tuple[Path, Path]:
 
 def _subset_selection(repo: Path, tags: Sequence[str], suite: LtpSuite):
     rootfs = repo / "target/ltp/rootfs"
-    runtest = repo / "target/ltp/src/runtest/syscalls"
+    runtest = repo / "target/ltp/src" / suite.runtest
     binaries = rootfs / "opt/ltp/testcases/bin"
     available = {entry.name for entry in binaries.iterdir() if entry.is_file()}
     return select_manifest(
@@ -287,7 +302,7 @@ def package_subset(
             "--enabled",
             str(selected_suite.enabled),
             "--runtest",
-            str(resolved_repo / "target/ltp/src/runtest/syscalls"),
+            str(resolved_repo / "target/ltp/src" / selected_suite.runtest),
             "--bin-dir",
             str(staged_rootfs / "opt/ltp/testcases/bin"),
             "--output",

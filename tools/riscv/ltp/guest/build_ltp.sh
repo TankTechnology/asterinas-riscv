@@ -28,6 +28,9 @@ source "${_shell_self_dir}/../../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The helper tools import `tools.riscv.ltp...`; they are run from the LTP
+# source directory, so the repository root must stay on their sys.path.
+export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 LTP_SRC="${REPO_ROOT}/target/ltp/src"
 ROOTFS="${REPO_ROOT}/target/ltp/rootfs"
 OUTPUT="${REPO_ROOT}/target/ltp/ltp-initramfs.cpio.gz"
@@ -36,6 +39,9 @@ BUSYBOX="${REPO_ROOT}/target/nixos/busybox"
 PACKAGE_IDENTITY="${REPO_ROOT}/target/ltp/package.json"
 SCHED_VARIANT_PATCH="${SRC_DIR}/sched_setscheduler04-variant-getters.patch"
 CLONE_RAW_PATCH="${SRC_DIR}/cloner-riscv-raw-clone.patch"
+OPENFILE_STACK_PATCH="${SRC_DIR}/openfile-musl-stack.patch"
+SHM_TEST_TCG_PATCH="${SRC_DIR}/shm-test-tcg-size.patch"
+OPENFILE_EXIT_FLUSH_PATCH="${SRC_DIR}/openfile-exit-flush.patch"
 
 CC="riscv64-linux-musl-gcc"
 STRIP="riscv64-linux-gnu-strip"
@@ -75,13 +81,20 @@ mapfile -t SUITE_FIELDS < <(
     python3 "${REPO_ROOT}/tools/riscv/ltp/ltp_suite.py" describe \
         --repo "${REPO_ROOT}" --suite "${SUITE}"
 )
-if [[ "${#SUITE_FIELDS[@]}" -ne 3 ]]; then
+if [[ "${#SUITE_FIELDS[@]}" -ne 5 ]]; then
     echo "failed to resolve LTP suite: ${SUITE}" >&2
     exit 2
 fi
 ENABLED_TESTS="${SUITE_FIELDS[0]}"
 EXPECTED_SELECTED="${SUITE_FIELDS[1]}"
 EXPECTED_UNAVAILABLE="${SUITE_FIELDS[2]}"
+RUNTEST_SPEC="${SUITE_FIELDS[3]}"
+# Space-separated testcase trees (e.g. "testcases/kernel/fs").
+read -r -a TESTCASE_DIRS <<< "${SUITE_FIELDS[4]}"
+if [[ "${#TESTCASE_DIRS[@]}" -eq 0 ]]; then
+    echo "suite ${SUITE} resolved no testcase dirs" >&2
+    exit 2
+fi
 
 rm -f "${PACKAGE_IDENTITY}"
 
@@ -117,7 +130,8 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     # Musl's legacy scheduler wrappers are ENOSYS stubs, and its public
     # clone() rejects thread-management flags before entering the kernel.
     # Keep these LTP cases on raw syscalls so they test Asterinas itself.
-    for patch in "${SCHED_VARIANT_PATCH}" "${CLONE_RAW_PATCH}"; do
+    for patch in "${SCHED_VARIANT_PATCH}" "${CLONE_RAW_PATCH}" "${OPENFILE_STACK_PATCH}" \
+        "${SHM_TEST_TCG_PATCH}" "${OPENFILE_EXIT_FLUSH_PATCH}"; do
         patch_name="$(basename "${patch}")"
         if git -C "${LTP_SRC}" apply --unidiff-zero --check "${patch}"; then
             git -C "${LTP_SRC}" apply --unidiff-zero "${patch}"
@@ -151,13 +165,15 @@ if [[ "${SKIP_COMPILE}" -eq 0 ]]; then
     echo "=== link shared libltp.so from PIC objects ==="
     ( cd lib && "${CC}" -shared -L"${GNU_UAPI_ROOT%/include}/lib" -o libltp.so ./*.o )
 
-    echo "=== build syscall tests (dynamic, tolerant, ${JOBS} jobs) ==="
+    echo "=== build ${SUITE} tests (dynamic, tolerant, ${JOBS} jobs) ==="
     FAIL_LOG="${REPO_ROOT}/target/ltp/build-failures.txt"
     : > "${FAIL_LOG}"
-    find testcases/kernel/syscalls -mindepth 1 -maxdepth 1 -type d -print0 | \
-        xargs -0 -P "${JOBS}" -I{} sh -c \
-        'make -C "$1" all -j1 >/dev/null 2>&1 || echo "$1"' _ {} \
-        >> "${FAIL_LOG}"
+    for testcase_dir in "${TESTCASE_DIRS[@]}"; do
+        find "${testcase_dir}" -mindepth 1 -maxdepth 1 -type d -print0 | \
+            xargs -0 -P "${JOBS}" -I{} sh -c \
+            'make -C "$1" all -j1 >/dev/null 2>&1 || echo "$1"' _ {} \
+            >> "${FAIL_LOG}"
+    done
     echo "$(wc -l < "${FAIL_LOG}") dirs failed to build (see ${FAIL_LOG})"
 fi
 
@@ -165,9 +181,11 @@ echo "=== stage install into ${STAGE} ==="
 cd "${LTP_SRC}"
 rm -rf "${STAGE}"
 mkdir -p "${STAGE}/opt/ltp/testcases/bin"
-find testcases/kernel/syscalls -mindepth 1 -maxdepth 1 -type d -print0 | \
-    xargs -0 -P "${JOBS}" -I{} sh -c \
-    'make -C "$1" install DESTDIR="${2}" >/dev/null 2>&1 || true' _ {} "${STAGE}"
+for testcase_dir in "${TESTCASE_DIRS[@]}"; do
+    find "${testcase_dir}" -mindepth 1 -maxdepth 1 -type d -print0 | \
+        xargs -0 -P "${JOBS}" -I{} sh -c \
+        'make -C "$1" install DESTDIR="${2}" >/dev/null 2>&1 || true' _ {} "${STAGE}"
+done
 
 echo "=== assemble initramfs rootfs (enabled tests only) ==="
 rm -rf "${ROOTFS}"
@@ -190,7 +208,7 @@ UNAVAILABLE="${REPO_ROOT}/target/ltp/unavailable-tests.json"
 rm -f "${FILTERED}" "${UNAVAILABLE}"
 python3 "${REPO_ROOT}/tools/riscv/ltp/ltp_manifest.py" select \
     --enabled "${ENABLED_TESTS}" \
-    --runtest "${LTP_SRC}/runtest/syscalls" \
+    --runtest "${LTP_SRC}/${RUNTEST_SPEC}" \
     --bin-dir "${STAGE}/opt/ltp/testcases/bin" \
     --output "${FILTERED}" \
     --unavailable-output "${UNAVAILABLE}" \
@@ -223,7 +241,11 @@ cp -f "${LTP_SRC}/lib/libltp.so" "${ROOTFS}/opt/ltp/lib/libltp.so"
 # tools/riscv/ltp/build_busybox.sh) and the applet symlinks those tests use.
 mkdir -p "${ROOTFS}/bin"
 cp -f "${BUSYBOX}" "${ROOTFS}/bin/busybox"
-for applet in sh cat true echo test; do
+# `[` is exercised by fs_inod's shell script; ftest06 execs /bin/rm (a missing
+# helper turns its cleanup into a TWARN and leaves the tmpdir behind).
+for applet in sh cat true false echo printf test '[' cp rm rmdir mkdir ln mknod \
+    chmod chown ls mount umount mountpoint ps df free uname sync stat sleep \
+    kill pidof yes grep find head tail dd date touch; do
     ln -sf busybox "${ROOTFS}/bin/${applet}"
 done
 echo "busybox applets: $(ls "${ROOTFS}/bin")"
@@ -233,19 +255,8 @@ echo "busybox applets: $(ls "${ROOTFS}/bin")"
 for pair in \
     "execve/execve_child" \
     "execveat/execveat_child" \
-    "execveat/execveat_errno"; do
-    src="${LTP_SRC}/testcases/kernel/syscalls/${pair}"
-    if [ -f "${src}" ]; then
-        cp -f "${src}" "${ROOTFS}/opt/ltp/testcases/bin/"
-    fi
-done
-
-# Copy LTP resource files (helper binaries) that the Makefile install
-# target doesn't include but tests need at runtime.
-for pair in \
-    "execve/execve_child" \
-    "execveat/execveat_child" \
-    "execveat/execveat_errno"; do
+    "execveat/execveat_errno" \
+    "openat/openat02_child"; do
     src="${LTP_SRC}/testcases/kernel/syscalls/${pair}"
     if [ -f "${src}" ]; then
         cp -f "${src}" "${ROOTFS}/opt/ltp/testcases/bin/"

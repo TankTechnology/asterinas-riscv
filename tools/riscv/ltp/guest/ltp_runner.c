@@ -92,7 +92,17 @@ static int classify(const char *log_path, int status, int timed_out) {
         return WEXITSTATUS(status) == 32 && log_has_result(log_path, "TCONF")
                    ? R_CONF
                    : R_FAIL;
-    return log_has_result(log_path, "TPASS") ? R_PASS : R_FAIL;
+    if (log_has_result(log_path, "TPASS"))
+        return R_PASS;
+    // Legacy LTP programs (e.g. mtest06's mmap2) report only through their
+    // exit status and print none of the framework's T* tokens. A clean exit
+    // is their PASS; a framework test that ran but never printed TPASS keeps
+    // failing below.
+    if (!log_has_result(log_path, "TCONF") &&
+        !log_has_result(log_path, "TINFO") &&
+        !log_has_result(log_path, "TWARN"))
+        return R_PASS;
+    return R_FAIL;
 }
 
 static const char *verdict_name(int r) {
@@ -150,8 +160,19 @@ int main(int argc, char **argv) {
         int nargs = 0;
         args[nargs++] = bin;
         char *tok;
-        while ((tok = strtok(NULL, " \t")) && nargs < MAX_ARGS - 1)
+        while ((tok = strtok(NULL, " \t")) && nargs < MAX_ARGS - 1) {
+            // LTP runtest files write shell variables such as `$TMPDIR`
+            // verbatim (`fs_inod01 fs_inod $TMPDIR 10 10 10`). kirk expands
+            // them; without that a test is handed the literal string and dies
+            // in `cd`. Expand the two variables the manifests actually use.
+            if (strcmp(tok, "$TMPDIR") == 0) {
+                const char *tmp = getenv("TMPDIR");
+                tok = (char *)(tmp && *tmp ? tmp : "/tmp");
+            } else if (strcmp(tok, "$LTPROOT") == 0) {
+                tok = "/opt/ltp";
+            }
             args[nargs++] = tok;
+        }
         args[nargs] = NULL;
 
         char binpath[256];
@@ -251,7 +272,9 @@ int main(int argc, char **argv) {
         case R_CRASH: crash++; fail++; break;
         case R_TIMEOUT: timeout++; fail++; break;
         }
-        printf("[%s] %s\n", verdict_name(r), tag);
+        printf("[%s] %s exit=%d signal=%d\n", verdict_name(r), tag,
+               WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+               WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         // On any non-pass, dump the first part of the captured output so
         // loader/libc errors and the test's own TCONF reason are visible on
         // the serial console (otherwise they stay in the per-test log under

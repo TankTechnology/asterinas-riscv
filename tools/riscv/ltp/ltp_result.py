@@ -18,7 +18,11 @@ from pathlib import Path
 from tools.riscv.ltp.ltp_suite import suite_names
 
 
-VERDICT_RE = re.compile(r"^\[(PASS|FAIL|CONF|CRASH|TIMEOUT)\] ([^\s]+)$")
+# The runner appends the observed exit status and signal (`exit=N signal=N`)
+# so a failing test can be explained without re-reading its per-test log.
+VERDICT_RE = re.compile(
+    r"^\[(PASS|FAIL|CONF|CRASH|TIMEOUT)\] ([^\s]+)(?: exit=-?\d+ signal=\d+)?$"
+)
 SUMMARY_RE = re.compile(
     r"^\[summary\] total=(\d+) pass=(\d+) fail=(\d+) "
     r"conf=(\d+) crash=(\d+) timeout=(\d+)$"

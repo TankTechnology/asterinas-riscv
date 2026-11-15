@@ -1,0 +1,28 @@
+# Filesystem subsystem LTP requests (runtest/fs).
+# Curated from LTP 20260529: single-shot, no loop/quota/mount, no external
+# helpers; the growfiles/rwtest/doio stress entries are left for a later,
+# explicitly-timed tier. Keep names here even when unavailable so packaging
+# records the omission instead of silently shrinking the reviewed boundary.
+# fs_di is deliberately absent: it creates a file half the size of the
+# filesystem "partition", which on the tmpfs rootfs means a ~1 GiB file and
+# exhausts the 2 GiB guest RAM. It belongs to a block-device tier.
+fs_inod01
+openfile01
+inode01
+inode02
+ftest01
+ftest02
+ftest03
+ftest04
+ftest05
+ftest06
+ftest07
+ftest08
+lftest01
+stream01
+stream02
+stream03
+stream04
+stream05
+fs_fill
+read_all_proc

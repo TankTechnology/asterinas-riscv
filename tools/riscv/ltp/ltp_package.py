@@ -13,6 +13,14 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+# Allow direct invocation from outside the repository root.
+import sys as _sys
+from pathlib import Path as _Path
+
+_repo_root = _Path(__file__).resolve().parents[3]
+if str(_repo_root) not in _sys.path:
+    _sys.path.insert(0, str(_repo_root))
+
 from tools.riscv.ltp.ltp_suite import suite_names
 
 

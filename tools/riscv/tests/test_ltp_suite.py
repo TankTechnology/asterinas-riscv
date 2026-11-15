@@ -17,7 +17,9 @@ REPO = Path(__file__).resolve().parents[3]
 
 class LtpSuiteTests(unittest.TestCase):
     def test_named_suites_have_closed_count_contracts(self) -> None:
-        self.assertEqual(suite_names(), ("syscalls", "arch-riscv64"))
+        self.assertEqual(
+            suite_names(), ("syscalls", "arch-riscv64", "fs", "mm", "sched")
+        )
 
         syscalls = suite_by_name(REPO, "syscalls")
         self.assertEqual(syscalls.expected_selected, 767)
@@ -30,6 +32,21 @@ class LtpSuiteTests(unittest.TestCase):
             arch.enabled,
             REPO / "tools/riscv/ltp/manifests/arch-riscv64.txt",
         )
+
+        fs = suite_by_name(REPO, "fs")
+        self.assertEqual(fs.expected_selected, 20)
+        self.assertEqual(fs.expected_unavailable, 0)
+        self.assertEqual(fs.runtest, "runtest/fs")
+
+        mm = suite_by_name(REPO, "mm")
+        self.assertEqual(mm.expected_selected, 19)
+        self.assertEqual(mm.expected_unavailable, 2)
+        self.assertEqual(mm.runtest, "runtest/mm")
+
+        sched = suite_by_name(REPO, "sched")
+        self.assertEqual(sched.expected_selected, 8)
+        self.assertEqual(sched.expected_unavailable, 0)
+        self.assertEqual(sched.runtest, "runtest/sched")
 
         with self.assertRaisesRegex(ValueError, "unknown LTP suite"):
             suite_by_name(REPO, "arbitrary")
@@ -57,6 +74,8 @@ class LtpSuiteTests(unittest.TestCase):
                 str(repo / "tools/riscv/ltp/manifests/arch-riscv64.txt"),
                 "158",
                 "0",
+                "runtest/syscalls",
+                "testcases/kernel/syscalls",
             ],
         )
 

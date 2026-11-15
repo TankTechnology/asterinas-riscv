@@ -1,0 +1,19 @@
+diff --git a/testcases/kernel/fs/openfile/openfile.c b/testcases/kernel/fs/openfile/openfile.c
+index ce87d15..06b6899 100644
+--- a/testcases/kernel/fs/openfile/openfile.c
++++ b/testcases/kernel/fs/openfile/openfile.c
+@@ -40,7 +40,13 @@
+ char *TCID = "openfile01";	/* Test program identifier.    */
+ int TST_TOTAL = 1;
+ 
+-#define MAXFILES        32768
++/*
++ * Each thread keeps a `FILE *fd_list[MAXFILES]` array on its stack. musl's
++ * default thread stack is 128 KiB, so 32768 entries (256 KiB) overflow it and
++ * the test dies with SIGSEGV before it measures anything. The bound only caps
++ * the -f option; the reviewed run uses -f10 and is unaffected.
++ */
++#define MAXFILES        8192
+ #define MAXTHREADS      10
+ 
+ /* Control Structure */

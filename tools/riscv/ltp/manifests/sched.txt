@@ -1,0 +1,12 @@
+# Scheduler subsystem LTP requests (runtest/sched).
+# Curated from LTP 20260529: pthread stress, hackbench and the sched sysctl
+# probes. cfs_bandwidth/sched_stress/clisrv need cgroup or long wall times and
+# stay out of the first tier.
+pth_str01
+pth_str02
+pth_str03
+hackbench01
+hackbench02
+starvation
+time-schedule01
+autogroup01

@@ -46,7 +46,13 @@ class LtpGuestRunnerTests(unittest.TestCase):
                 binaries / "mixed",
                 "#!/bin/sh\necho 'TCONF: skipped'\necho 'TWARN: cleanup'\nexit 36\n",
             )
-            write_executable(binaries / "empty", "#!/bin/sh\nexit 0\n")
+            # A framework test that ran but never printed a result token is a
+            # failure; a *legacy* test that prints nothing at all is a pass
+            # (see `classify`). This one is the former: it speaks the TINFO
+            # vocabulary and still reports nothing.
+            write_executable(
+                binaries / "empty", "#!/bin/sh\necho 'TINFO: started'\nexit 0\n"
+            )
             write_executable(
                 binaries / "broken-exec",
                 "#!/missing/interpreter\n",
@@ -80,9 +86,9 @@ class LtpGuestRunnerTests(unittest.TestCase):
                 timeout=5,
             )
 
-        self.assertIn("[FAIL] mixed01", result.stdout)
-        self.assertIn("[FAIL] empty01", result.stdout)
-        self.assertIn("[FAIL] broken_exec01", result.stdout)
+        self.assertIn("[FAIL] mixed01 exit=36 signal=0", result.stdout)
+        self.assertIn("[FAIL] empty01 exit=0 signal=0", result.stdout)
+        self.assertIn("[FAIL] broken_exec01 exit=126 signal=0", result.stdout)
         self.assertIn(
             "[summary] total=3 pass=0 fail=3 conf=0 crash=0 timeout=0",
             result.stdout,
@@ -129,8 +135,8 @@ class LtpGuestRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("[CRASH] killer01", result.stdout)
-        self.assertIn("[PASS] after01", result.stdout)
+        self.assertIn("[CRASH] killer01 exit=-1 signal=9", result.stdout)
+        self.assertIn("[PASS] after01 exit=0 signal=0", result.stdout)
         self.assertIn("__LTP_GATE_DONE__", result.stdout)
 
     def test_runner_cleans_descendants_after_a_normal_test_exit(self) -> None:
@@ -207,7 +213,7 @@ class LtpGuestRunnerTests(unittest.TestCase):
             )
             time.sleep(1.2)
 
-            self.assertIn("[PASS] leaker01", result.stdout)
+            self.assertIn("[PASS] leaker01 exit=0 signal=0", result.stdout)
             self.assertFalse(marker.exists(), "background descendant survived")
 
     def test_runner_classifies_all_mutually_exclusive_verdicts(self) -> None:
