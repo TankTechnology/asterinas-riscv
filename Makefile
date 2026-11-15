@@ -19,6 +19,10 @@ SMP ?= 1
 RISCV_ICACHE_REQUIRE_SMP4 ?= 0
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
+DEBIAN_BROWSER_WEB_NETWORK_MODE ?= direct
+DEBIAN_BROWSER_WEB_BASE_ROOTFS ?= $(CURDIR)/target/debian-riscv/browser-web/rootfs
+DEBIAN_BROWSER_WEB_DEV_ROOTFS ?= $(CURDIR)/target/dev-overlays/browser-web/rootfs
+DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC ?= $(CURDIR)/tools/riscv/debian/rootfs/browser_web_dev_overlay.json
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -62,7 +66,25 @@ XFSTESTS_TEST_DEV ?= /dev/vdd
 XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
 ENABLE_REGRESSION_TEST ?= false
+REGRESSION_TEST_DIRS ?= null
 # End of auto test features.
+
+FOCUSED_NETWORK_AUTO_TESTS := \
+	ifconf \
+	ifreq \
+	ip_socket_netns \
+	netlink_route_netns \
+	proc_net_dev \
+	ipv6_dual_stack \
+	ipv6_dual_stack_udp \
+	ipv6_udp \
+	tcp_user_buffer_prefault \
+	udp_user_buffer_prefault \
+	udp_msg_dontwait \
+	tcp_msg_dontwait_send
+ifneq ($(filter $(AUTO_TEST),$(FOCUSED_NETWORK_AUTO_TESTS)),)
+REGRESSION_TEST_DIRS := [ "network" ]
+endif
 
 # Network settings
 # NETDEV possible values are user,tap
@@ -121,6 +143,15 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
+else ifeq ($(AUTO_TEST), ifconf_gvisor)
+ifneq ($(TARGET_ARCH), x86_64)
+$(error AUTO_TEST=ifconf_gvisor requires TARGET_ARCH=x86_64)
+endif
+ENABLE_CONFORMANCE_TEST := true
+CONFORMANCE_TEST_SUITE := gvisor
+CONFORMANCE_GVISOR_TEST := "ioctl_test"
+export ENABLE_CONFORMANCE_TEST CONFORMANCE_TEST_SUITE CONFORMANCE_GVISOR_TEST
+CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_ifconf_gvisor_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
@@ -128,6 +159,170 @@ ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+ifneq ($(findstring network,$(REGRESSION_TEST_DIRS)),)
+# The network suite expects eth0, which the default RISC-V QEMU scheme lacks.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=regression" \
+	--qemu-args="-device virtio-net-device,netdev=regression"
+endif
+endif
+else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_firefox_recovery_test.sh"
+else ifeq ($(AUTO_TEST), ext2_after_sync_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_after_sync_cut_test.sh"
+else ifeq ($(AUTO_TEST), ext2_file_fsync_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_cut_point_test.sh file"
+else ifeq ($(AUTO_TEST), ext2_directory_fsync_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_cut_point_test.sh directory"
+else ifeq ($(AUTO_TEST), ext2_flush_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_flush_eio_test.sh"
+else ifeq ($(AUTO_TEST), ext2_msync_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_msync_eio_test.sh"
+else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh syncfs"
+else ifeq ($(AUTO_TEST), exfat_fsync_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh fsync"
+else ifeq ($(AUTO_TEST), exfat_sync_clean)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh clean"
+else ifeq ($(AUTO_TEST), exfat_sync_verify)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh verify"
+else ifeq ($(AUTO_TEST), ext2_rename_same_inode)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_rename_same_inode_test.sh"
+else ifeq ($(AUTO_TEST), fs_syscall_compat)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_fs_syscall_compat_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_dual_stack_udp_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_udp)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
+else ifeq ($(AUTO_TEST), ifconf)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ifconf_test.sh"
+else ifeq ($(AUTO_TEST), ifreq)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ifreq_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The default RISC-V QEMU scheme has no NIC; this test also checks eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=ifreq" \
+	--qemu-args="-device virtio-net-device,netdev=ifreq"
+endif
+else ifeq ($(AUTO_TEST), ip_socket_netns)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ip_socket_netns_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The namespace regression binds an address on the original eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=ipsocketns" \
+	--qemu-args="-device virtio-net-device,netdev=ipsocketns"
+endif
+else ifeq ($(AUTO_TEST), netlink_route_netns)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_netlink_route_netns_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=routens" \
+	--qemu-args="-device virtio-net-device,netdev=routens"
+endif
+else ifeq ($(AUTO_TEST), proc_net_dev)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_proc_net_dev_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The default RISC-V QEMU scheme has no NIC; this test also checks eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=procnetdev" \
+	--qemu-args="-device virtio-net-device,netdev=procnetdev"
+endif
+else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_user_buffer_prefault_test.sh"
+else ifeq ($(AUTO_TEST), udp_msg_dontwait)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_msg_dontwait_test.sh"
+else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_msg_dontwait_send_test.sh"
+else ifeq ($(AUTO_TEST), dynamic_clock)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
+else ifeq ($(AUTO_TEST), pty)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pty_test.sh"
+else ifeq ($(AUTO_TEST), memfd_exec)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
+else ifeq ($(AUTO_TEST), shebang_argv)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_shebang_argv_test.sh"
+else ifeq ($(AUTO_TEST), sched_policy)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
+else ifeq ($(AUTO_TEST), schedstat)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_schedstat_test.sh"
+else ifeq ($(AUTO_TEST), kcmp)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_kcmp_test.sh"
+else ifeq ($(AUTO_TEST), riscv_ptrace_regset)
+ifneq ($(TARGET_ARCH), riscv64)
+$(error AUTO_TEST=riscv_ptrace_regset requires TARGET_ARCH=riscv64)
+endif
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_ptrace_regset_test.sh"
+else ifeq ($(AUTO_TEST), riscv_icache_smp4)
+ifneq ($(TARGET_ARCH), riscv64)
+$(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
+endif
+ifneq ($(SMP), 4)
+$(error AUTO_TEST=riscv_icache_smp4 requires SMP=4)
+endif
+ENABLE_REGRESSION_TEST := true
+# Keep this gate independent of QEMU's incomplete Zkr seed-CSR emulation.
+RISCV_QEMU_CPU := rv64,svpbmt=true,zkr=false
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_icache_smp4_test.sh"
+else ifeq ($(AUTO_TEST), tcp_user_buffer_prefault)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_user_buffer_prefault_test.sh"
+else ifeq ($(AUTO_TEST), tcp_ppoll_wakeup)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_ppoll_wakeup_test.sh"
+else ifeq ($(AUTO_TEST), tcp_event_handoff)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_event_handoff_test.sh"
+else ifeq ($(AUTO_TEST), pthread_cond_handoff)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pthread_cond_handoff_test.sh"
+else ifeq ($(AUTO_TEST), sysv_shm)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sysv_shm_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -292,6 +487,8 @@ MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/prepare
 MEGREZ_DESKTOP_BOOT_START_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/start-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
+DEBIAN_WEB_NETWORK_MODE ?=
+DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
 RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702
 RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
 RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
@@ -326,12 +523,26 @@ test_riscv_ltp_unit:
 .PHONY: test_riscv_debian_rootfs_unit
 test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu \
 		tools.riscv.tests.test_debian_m8_browser_quality \
 		tools.riscv.tests.test_debian_m9_software -v
+
+.PHONY: test_riscv_debian_debug_console
+test_riscv_debian_debug_console:
+	@python3 -m unittest \
+		tools.riscv.tests.test_debian_debug_console \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
+.PHONY: build_riscv_debian_browser_web_dev_overlay
+build_riscv_debian_browser_web_dev_overlay:
+	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
+		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
+		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
+		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
@@ -354,6 +565,7 @@ test_riscv_megrez_gmac_unit:
 		tools.riscv.tests.test_megrez_gmac_contract \
 		tools.riscv.tests.test_megrez_gmac_gate \
 		tools.riscv.tests.test_megrez_network_fixture \
+		tools.riscv.tests.test_megrez_proxy_bridge \
 		tools.riscv.tests.test_megrez_xmodem -v
 
 .PHONY: test_riscv_dwmac_rx_model
@@ -709,6 +921,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
 		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
+		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -719,6 +932,85 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
+# The DRM desktop gate uses the artifacts built for the virtio-gpu work, which
+# are not the ones the other Debian variables point at, so it carries its own
+# defaults rather than inheriting the browser tree's.
+DEBIAN_DRM_UBOOT ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build/u-boot
+DEBIAN_DRM_KERNEL ?= $(CURDIR)/target/osdk/aster-kernel-osdk-bin.Image
+DEBIAN_DRM_DTB ?= $(CURDIR)/target/qemu-uboot/drm-virgl/prepared/qemu-virt.dtb
+# The stage1 must be the one built for this rootfs. The xfce variant next to
+# it is the same size and also contains an `init`, so it looks interchangeable
+# and is not: it mounts the root and hands off to a layout this image does not
+# have, failing with a bare `exec /init failed`.
+DEBIAN_DRM_STAGE1_INITRAMFS ?= $(CURDIR)/target/debian-riscv/desktop-drm/stage1/initramfs.cpio
+DEBIAN_DRM_ROOT_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+DEBIAN_DRM_ROOT_MANIFEST ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/rootfs-manifest.json
+DEBIAN_DRM_PACKAGES_LOCK ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/packages.lock
+DEBIAN_DRM_PACKAGE_CHECKSUMS ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/source-metadata/package-checksums
+DEBIAN_DRM_GATE_OUTPUT ?= $(CURDIR)/target/debian-riscv/desktop-drm/drm-gate
+# Asking for the GL device is what selects the 3D path; the gate then also
+# requires the guest to prove it reached virgl rather than llvmpipe.
+DEBIAN_DRM_GRAPHICS_DEVICE ?= virtio-gpu-gl-device
+
+.PHONY: test_riscv_debian_desktop_drm_gate
+test_riscv_debian_desktop_drm_gate:
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_gate \
+		--kernel "$(DEBIAN_DRM_KERNEL)" \
+		--uboot "$(DEBIAN_DRM_UBOOT)" \
+		--dtb "$(DEBIAN_DRM_DTB)" \
+		--stage1-initramfs "$(DEBIAN_DRM_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_DRM_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_DRM_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_DRM_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_DRM_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DRM_GATE_OUTPUT)" --smp 4 \
+		--graphics-device "$(DEBIAN_DRM_GRAPHICS_DEVICE)" \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
+.PHONY: test_riscv_debian_debug_console_qemu_gate
+test_riscv_debian_debug_console_qemu_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.debug_console_qemu_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
+.PHONY: test_riscv_debian_web_network_proxy_qemu
+test_riscv_debian_web_network_proxy_qemu:
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
+		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+		DEBIAN_WEB_NETWORK_MODE=proxy
+
+.PHONY: test_riscv_debian_web_network_direct_qemu
+test_riscv_debian_web_network_direct_qemu:
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
+		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+		DEBIAN_WEB_NETWORK_MODE=direct
 
 .PHONY: test_riscv_debian_browser_m5_qemu_gate
 test_riscv_debian_browser_m5_qemu_gate:
@@ -764,6 +1056,7 @@ test_riscv_debian_browser_web_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
@@ -788,7 +1081,7 @@ test_riscv_physical_graphics_qemu_gate:
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" \
-		--smp 4 --boot-timeout 7200 --command-timeout 240
+		--smp 4 --boot-timeout 7200 --command-timeout 300
 
 .PHONY: test_riscv_debian_desktop_m6_browser_gate
 test_riscv_debian_desktop_m6_browser_gate:
@@ -1135,8 +1428,139 @@ run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Validate the complete QEMU transcript, including fatal output after success.
 ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
-	@python3 tools/riscv/validate_run_kernel_log.py --log qemu.log \
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
+else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext2-firefox-recovery" \
+		--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"
+else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-syncfs-eio"
+else ifeq ($(AUTO_TEST), exfat_fsync_eio)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-fsync-eio"
+else ifeq ($(AUTO_TEST), exfat_sync_clean)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-sync-clean"
+else ifeq ($(AUTO_TEST), exfat_sync_verify)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-sync-verify"
+else ifeq ($(AUTO_TEST), ext2_rename_same_inode)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext2-rename-same-inode" \
+		--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"
+else ifeq ($(AUTO_TEST), fs_syscall_compat)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "fs-syscall-compat"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-dual-stack"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-dual-stack-udp"
+else ifeq ($(AUTO_TEST), ipv6_udp)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-udp"
+else ifeq ($(AUTO_TEST), ifconf)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifconf"
+else ifeq ($(AUTO_TEST), proc_net_dev)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "proc-net-dev"
+else ifeq ($(AUTO_TEST), ifreq)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifreq"
+else ifeq ($(AUTO_TEST), ip_socket_netns)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ip-socket-netns"
+else ifeq ($(AUTO_TEST), netlink_route_netns)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "netlink-route-netns"
+else ifeq ($(AUTO_TEST), ifconf_gvisor)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifconf-gvisor"
+else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "udp-user-buffer-prefault"
+else ifeq ($(AUTO_TEST), udp_msg_dontwait)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "udp-msg-dontwait"
+else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "tcp-msg-dontwait-send"
+else ifeq ($(AUTO_TEST), dynamic_clock)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "Dynamic clock regression passed." \
+		|| (echo "Dynamic clock regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), pty)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "PTY regression passed." \
+		|| (echo "PTY regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), memfd_exec)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "memfd exec regression passed." \
+		|| (echo "memfd exec regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), shebang_argv)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "shebang argv regression passed." \
+		|| (echo "shebang argv regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), sched_policy)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "Scheduler policy regression passed." \
+		|| (echo "Scheduler policy regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), kcmp)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "kcmp regression passed." \
+		|| (echo "kcmp regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), riscv_ptrace_regset)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "RISC-V ptrace regset regression passed." \
+		|| (echo "RISC-V ptrace regset regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), riscv_icache_smp4)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "RISC-V SMP4 icache regression passed." \
+		|| (echo "RISC-V SMP4 icache regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_user_buffer_prefault)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "TCP user buffer prefault regression passed." \
+		|| (echo "TCP user buffer prefault regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_ppoll_wakeup)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "TCP ppoll wakeup regression passed." \
+		|| (echo "TCP ppoll wakeup regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_event_handoff)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "tcp_event_handoff: passed 4096 socket-to-queue-to-pipe handoffs" \
+		|| (echo "TCP event handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), pthread_cond_handoff)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "pthread condition handoff regression passed." \
+		|| (echo "pthread condition handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), sysv_shm)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "System V shared memory regression passed." \
+		|| (echo "System V shared memory regression failed" && exit 1)
 endif
 
 # Build the Asterinas NixOS ISO installer image
@@ -1208,12 +1632,20 @@ profile_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk profile $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT) \
 		--samples $(GDB_PROFILE_COUNT) --interval $(GDB_PROFILE_INTERVAL) --format $(GDB_PROFILE_FORMAT)
 
+.PHONY: test_klog_store
+test_klog_store:
+	@mkdir -p target
+	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/klog/store_tests.rs -o target/klog-store-tests
+	@target/klog-store-tests
+	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/diagnostics_tests.rs -o target/log-diagnostics-tests
+	@target/log-diagnostics-tests
+
 .PHONY: test
 test: NON_DEFAULT_PACKAGE_NAMES = \
     $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
 test: TEST_PACKAGE_NAMES = \
     $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
-test:
+test: test_klog_store
 	@if [ -n "$(TEST_PACKAGE_NAMES)" ]; then \
 		cargo test $(addprefix -p ,$(TEST_PACKAGE_NAMES)); \
 	fi

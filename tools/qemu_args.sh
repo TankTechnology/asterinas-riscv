@@ -29,6 +29,7 @@ REPO_ROOT=$( cd -- "${SCRIPT_DIR}/.." && pwd -P )
 TEST_BUILD_DIR=${ASTERINAS_TEST_BUILD_DIR:-${REPO_ROOT}/test/initramfs/build}
 QEMU_LOG_DIR=${ASTERINAS_QEMU_LOG_DIR:-${REPO_ROOT}}
 EXT2_DRIVE_FILE=${ASTERINAS_EXT2_DRIVE_FILE:-${TEST_BUILD_DIR}/ext2.img}
+EXFAT_DRIVE_FILE=${ASTERINAS_EXFAT_DRIVE_FILE:-${TEST_BUILD_DIR}/exfat.img}
 
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
@@ -96,7 +97,7 @@ if [ "$1" = "riscv" ]; then
         -monitor chardev:mux \
         -chardev stdio,id=mux,mux=on,signal=off,logfile=${QEMU_LOG_DIR}/qemu.log \
         -drive if=none,format=raw,id=x0,file=${EXT2_DRIVE_FILE} \
-        -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
+        -drive if=none,format=raw,id=x1,file=${EXFAT_DRIVE_FILE} \
         -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-device,drive=x0 \
         -device virtio-blk-device,drive=x1 \
@@ -124,7 +125,7 @@ if [ "$1" = "tdx" ]; then
         -machine q35,kernel-irqchip=split,confidential-guest-support=tdx0 \
         -object '$TDX_OBJECT' \
         -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
-        -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
+        -drive if=none,format=raw,id=x1,file=${EXFAT_DRIVE_FILE} \
         -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
         -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
@@ -157,7 +158,7 @@ COMMON_QEMU_ARGS="\
     $QEMU_OPT_ARG_DUMP_PACKETS \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
     -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
-    -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
+    -drive if=none,format=raw,id=x1,file=${EXFAT_DRIVE_FILE} \
     -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
 "
 
