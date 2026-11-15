@@ -120,6 +120,7 @@ impl Write for Payload {
 static EVENTS: &[&TraceEvent] = &[
     &super::events::block::BLOCK_RQ_ISSUE,
     &super::events::block::BLOCK_RQ_COMPLETE,
+    &super::events::ftrace::FUNCTION,
     &super::events::irq::IRQ_HANDLER_ENTRY,
     &super::events::irq::IRQ_HANDLER_EXIT,
     &super::events::mm::PAGE_FAULT_USER,

@@ -517,7 +517,7 @@ mod vmspace {
     /// Creates a new `VmSpace` and verifies its initial state.
     #[ktest]
     fn vmspace_creation() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x0..0x1000;
         let preempt_guard = disable_preempt();
         let mut cursor = vmspace
@@ -548,7 +548,7 @@ mod vmspace {
                 (r, None) if r == range
             ));
             // Maps a frame.
-            cursor_mut.map(frame.clone(), prop);
+            cursor_mut.map(frame.clone(), prop).unwrap();
         }
 
         // Queries the mapping.
@@ -592,7 +592,7 @@ mod vmspace {
             let mut cursor_mut = vmspace
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
-            cursor_mut.map(frame.clone(), prop);
+            cursor_mut.map(frame.clone(), prop).unwrap();
         }
 
         {
@@ -606,7 +606,7 @@ mod vmspace {
             let mut cursor_mut = vmspace
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
-            cursor_mut.map(frame.clone(), prop);
+            cursor_mut.map(frame.clone(), prop).unwrap();
         }
     }
 
@@ -623,7 +623,7 @@ mod vmspace {
             let mut cursor_mut = vmspace
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
-            cursor_mut.map(frame.clone(), prop);
+            cursor_mut.map(frame.clone(), prop).unwrap();
         }
 
         {
@@ -652,14 +652,14 @@ mod vmspace {
     /// Activates and deactivates the `VmSpace` in single-CPU scenarios.
     #[ktest]
     fn vmspace_activate() {
-        let vmspace = Arc::new(VmSpace::new());
+        let vmspace = Arc::new(VmSpace::new().unwrap());
 
         // Activates the VmSpace.
         vmspace.activate();
         assert_eq!(get_activated_vm_space(), Arc::as_ptr(&vmspace));
 
         // Deactivates the VmSpace.
-        let vmspace2 = Arc::new(VmSpace::new());
+        let vmspace2 = Arc::new(VmSpace::new().unwrap());
         vmspace2.activate();
         assert_eq!(get_activated_vm_space(), Arc::as_ptr(&vmspace2));
     }
@@ -667,7 +667,7 @@ mod vmspace {
     /// Tests the `flusher` method of `CursorMut`.
     #[ktest]
     fn cursor_mut_flusher() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x4000..0x5000;
         let frame = create_dummy_frame();
         let prop = PageProperty::new_user(PageFlags::R, CachePolicy::Writeback);
@@ -677,7 +677,7 @@ mod vmspace {
             let mut cursor_mut = vmspace
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
-            cursor_mut.map(frame.clone(), prop);
+            cursor_mut.map(frame.clone(), prop).unwrap();
         }
 
         {
@@ -709,7 +709,7 @@ mod vmspace {
     /// Verifies the `VmReader` and `VmWriter` interfaces.
     #[ktest]
     fn vmspace_reader_writer() {
-        let vmspace = Arc::new(VmSpace::new());
+        let vmspace = Arc::new(VmSpace::new().unwrap());
         let range = 0x4000..0x5000;
         let preempt_guard = disable_preempt();
         {
@@ -718,7 +718,7 @@ mod vmspace {
                 .expect("failed to create the mutable cursor");
             let frame = create_dummy_frame();
             let prop = PageProperty::new_user(PageFlags::R, CachePolicy::Writeback);
-            cursor_mut.map(frame, prop);
+            cursor_mut.map(frame, prop).unwrap();
         }
 
         // Mocks the current page table paddr to match the VmSpace's root paddr.
@@ -754,7 +754,7 @@ mod vmspace {
     /// Creates overlapping cursors and verifies handling.
     #[ktest]
     fn overlapping_cursors() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range1 = 0x5000..0x6000;
         let range2 = 0x5800..0x6800; // Overlaps with range1.
         let preempt_guard = disable_preempt();
@@ -772,7 +772,7 @@ mod vmspace {
     /// Protects a range of pages.
     #[ktest]
     fn protect_next() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x7000..0x8000;
         let frame = create_dummy_frame();
         let preempt_guard = disable_preempt();
@@ -781,7 +781,7 @@ mod vmspace {
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
             let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
-            cursor_mut.map(frame.clone(), prop);
+            cursor_mut.map(frame.clone(), prop).unwrap();
             cursor_mut.jump(range.start).expect("failed to jump cursor");
             let protected_range = cursor_mut.protect_next(0x1000, |flags, _cache| {
                 *flags = PageFlags::R;
@@ -805,7 +805,7 @@ mod vmspace {
     #[ktest]
     #[should_panic]
     fn unaligned_unmap_panics() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0xA000..0xB000;
         let preempt_guard = disable_preempt();
         let mut cursor_mut = vmspace
@@ -818,7 +818,7 @@ mod vmspace {
     #[ktest]
     #[should_panic]
     fn protect_out_range_page() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0xB000..0xC000;
         let preempt_guard = disable_preempt();
         let mut cursor_mut = vmspace
@@ -864,7 +864,7 @@ mod vmspace {
     /// Maps and queries an `IoMem` using `CursorMut`.
     #[ktest]
     fn vmspace_map_query_iomem() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x1000..0x2000;
         let iomem = IoMem::acquire(IOMEM_PADDR..IOMEM_PADDR + 0x1000).unwrap();
         let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Uncacheable);
@@ -880,7 +880,7 @@ mod vmspace {
                 (r, None) if r == range
             ));
             // Maps the `IoMem`.
-            cursor_mut.map_iomem(iomem.clone(), prop, 0x1000, 0);
+            cursor_mut.map_iomem(iomem.clone(), prop, 0x1000, 0).unwrap();
         }
 
         // Queries the mapping.
@@ -930,7 +930,7 @@ mod vmspace {
     // Regression test for Asterinas issue #3589.
     #[ktest]
     fn vmspace_map_query_read_only_iomem() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x4000..0x5000;
         let iomem = IoMem::acquire(IOMEM_PADDR + 0x4000..IOMEM_PADDR + 0x5000).unwrap();
         let prop = PageProperty::new_user(PageFlags::R, CachePolicy::Uncacheable);
@@ -939,7 +939,7 @@ mod vmspace {
         vmspace
             .cursor_mut(&preempt_guard, &range)
             .unwrap()
-            .map_iomem(iomem, prop, PAGE_SIZE, 0);
+            .map_iomem(iomem, prop, PAGE_SIZE, 0).unwrap();
 
         let mut cursor = vmspace.cursor(&preempt_guard, &range).unwrap();
         let (_, Some(VmQueriedItem::MappedIoMem { prop, .. })) = cursor.query().unwrap() else {
@@ -952,7 +952,7 @@ mod vmspace {
     // Regression test for Asterinas issue #3589.
     #[ktest]
     fn vmspace_protect_iomem_preserves_riscv_status() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x5000..0x6000;
         let iomem = IoMem::acquire(IOMEM_PADDR + 0x5000..IOMEM_PADDR + 0x6000).unwrap();
         let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Uncacheable);
@@ -961,7 +961,7 @@ mod vmspace {
         vmspace
             .cursor_mut(&preempt_guard, &range)
             .unwrap()
-            .map_iomem(iomem, prop, PAGE_SIZE, 0);
+            .map_iomem(iomem, prop, PAGE_SIZE, 0).unwrap();
         let mut cursor = vmspace.cursor_mut(&preempt_guard, &range).unwrap();
         assert_eq!(
             cursor.protect_next(PAGE_SIZE, |flags, _| *flags = PageFlags::R),
@@ -980,7 +980,7 @@ mod vmspace {
     /// Maps and queries an `IoMem` with an offset using `CursorMut`.
     #[ktest]
     fn vmspace_map_iomem_with_offset() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x2000..0x3000;
         let iomem = IoMem::acquire(IOMEM_PADDR + 0x1000..IOMEM_PADDR + 0x3000).unwrap();
         let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Uncacheable);
@@ -991,7 +991,7 @@ mod vmspace {
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
             // Maps the `IoMem` with the offset.
-            cursor_mut.map_iomem(iomem.clone(), prop, 0x1000, 0x1000);
+            cursor_mut.map_iomem(iomem.clone(), prop, 0x1000, 0x1000).unwrap();
         }
 
         // Queries the mapping.
@@ -1029,7 +1029,7 @@ mod vmspace {
     /// Tests that the `IoMem` is not removed from the `VmSpace` when unmapped.
     #[ktest]
     fn vmspace_iomem_persistence() {
-        let vmspace = VmSpace::new();
+        let vmspace = VmSpace::new().unwrap();
         let range = 0x3000..0x4000;
         let iomem = IoMem::acquire(IOMEM_PADDR + 0x3000..IOMEM_PADDR + 0x4000).unwrap();
         let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Uncacheable);
@@ -1039,7 +1039,7 @@ mod vmspace {
             let mut cursor_mut = vmspace
                 .cursor_mut(&preempt_guard, &range)
                 .expect("failed to create the mutable cursor");
-            cursor_mut.map_iomem(iomem.clone(), prop, 0x1000, 0);
+            cursor_mut.map_iomem(iomem.clone(), prop, 0x1000, 0).unwrap();
         }
 
         // Verifies the `IoMem` is in the `VmSpace`.

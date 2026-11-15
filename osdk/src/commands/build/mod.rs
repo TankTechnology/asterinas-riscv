@@ -270,6 +270,11 @@ fn build_kernel_elf(
         rustflags.push("-C target-feature=+zicbom");
     }
 
+    // Merge whatever RUSTFLAGS the caller set (for example
+    // `-Z instrument-mcount`, which the function tracer needs) instead of
+    // discarding it: the list below is this command's minimum, not the whole.
+    let extra_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+
     let mut command = cargo();
     command.env_remove("RUSTUP_TOOLCHAIN");
     command.env(
@@ -290,7 +295,12 @@ fn build_kernel_elf(
         ),
     );
 
-    command.env("RUSTFLAGS", rustflags.join(" "));
+    let mut rustflags_joined = rustflags.join(" ");
+    if !extra_rustflags.trim().is_empty() {
+        rustflags_joined.push(' ');
+        rustflags_joined.push_str(extra_rustflags.trim());
+    }
+    command.env("RUSTFLAGS", rustflags_joined);
     command.arg("build");
     command.arg("--features").arg(features.join(" "));
     if no_default_features {

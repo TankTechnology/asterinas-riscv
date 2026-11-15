@@ -47,6 +47,8 @@ pub enum PageTableError {
     InvalidVaddr(Vaddr),
     /// Using virtual address not aligned.
     UnalignedVaddr,
+    /// Failed to allocate a page table node.
+    NoMemory,
 }
 
 /// The configurations of a page table.
@@ -351,7 +353,9 @@ impl PageTable<KernelPtConfig> {
 
             for i in KernelPtConfig::TOP_LEVEL_INDEX_RANGE {
                 let mut root_entry = root_node.entry(i);
-                let _ = root_entry.alloc_if_none(&preempt_guard).unwrap();
+                let _ = root_entry
+                    .alloc_if_none(&preempt_guard)
+                    .expect("Failed to allocate a kernel page table node");
             }
         }
 
@@ -362,8 +366,10 @@ impl PageTable<KernelPtConfig> {
     ///
     /// This should be the only way to create the user page table, that is to
     /// duplicate the kernel page table with all the kernel mappings shared.
-    pub(in crate::mm) fn create_user_page_table(&'static self) -> PageTable<UserPtConfig> {
-        let new_root = PageTableNode::alloc(PagingConsts::NR_LEVELS);
+    pub(in crate::mm) fn create_user_page_table(
+        &'static self,
+    ) -> Result<PageTable<UserPtConfig>, PageTableError> {
+        let new_root = PageTableNode::alloc(PagingConsts::NR_LEVELS)?;
 
         let preempt_guard = disable_preempt();
         let mut root_node = self.root.borrow().lock(&preempt_guard);
@@ -402,7 +408,7 @@ impl PageTable<KernelPtConfig> {
         }
         drop(new_node);
 
-        PageTable::<UserPtConfig> { root: new_root }
+        Ok(PageTable::<UserPtConfig> { root: new_root })
     }
 }
 
@@ -412,7 +418,8 @@ impl<C: PageTableConfig> PageTable<C> {
     /// Useful for the IOMMU page tables only.
     pub(crate) fn empty() -> Self {
         PageTable {
-            root: PageTableNode::<C>::alloc(C::NR_LEVELS),
+            root: PageTableNode::<C>::alloc(C::NR_LEVELS)
+                .expect("Failed to allocate a page table node"),
         }
     }
 

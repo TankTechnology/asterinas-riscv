@@ -7,6 +7,7 @@
 //! nothing when the event is off.
 
 pub mod block;
+pub mod ftrace;
 pub mod irq;
 pub mod mm;
 pub mod net;
@@ -17,6 +18,7 @@ pub mod tracing;
 /// Subsystems in the order they appear under `events/`.
 pub const SUBSYSTEMS: &[&str] = &[
     block::NAME,
+    ftrace::NAME,
     irq::NAME,
     mm::NAME,
     net::NAME,

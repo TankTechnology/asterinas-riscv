@@ -220,13 +220,15 @@ impl<D: DmaDirection> DmaStream<D> {
         // SAFETY: The physical address range is untyped DMA memory before `drop`.
         let map_daddr = unsafe { prepare_dma(&paddr_range) };
 
-        Ok(Self {
+        let dma = Self {
             inner,
             map_daddr,
             is_cache_coherent,
             uncached_alias,
             _phantom: PhantomData,
-        })
+        };
+
+        Ok(dma)
     }
 
     /// Synchronizes the streaming DMA mapping data from the device.

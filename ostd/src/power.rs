@@ -127,6 +127,19 @@ pub fn poweroff(code: ExitCode) -> ! {
     machine_halt();
 }
 
+/// Powers off the system without logging, cleanup, or cross-CPU coordination.
+///
+/// This function is suitable for interrupt and fatal-panic contexts, matching
+/// [`emergency_restart`]. If the handler is missing or returns, the current
+/// CPU disables local interrupts and halts forever.
+pub fn emergency_poweroff(code: ExitCode) -> ! {
+    if let Some(handler_fn) = POWEROFF_HANDLER.get() {
+        handler_fn(code);
+    }
+
+    disable_local_and_halt();
+}
+
 fn machine_halt() -> ! {
     log_shutdown("halting the machine...");
 

@@ -183,6 +183,28 @@ pub fn lookup(addr: u64) -> Option<&'static str> {
     Some(name_at(name_off))
 }
 
+/// Like [`lookup`], but also reports how far past the symbol the address is.
+pub fn lookup_with_offset(addr: u64) -> Option<(&'static str, u64)> {
+    let layout = layout()?;
+    let target = normalize(addr);
+
+    let mut start = 0;
+    let mut end = layout.num_syms;
+    while start < end {
+        let mid = start + (end - start) / 2;
+        if entry(&layout, mid).0 <= target {
+            start = mid + 1;
+        } else {
+            end = mid;
+        }
+    }
+    if start == 0 {
+        return None;
+    }
+    let (sym_addr, name_off) = entry(&layout, start - 1);
+    Some((name_at(name_off), target - sym_addr))
+}
+
 /// Calls `visit` for every symbol, in address order, as `(addr, name)`.
 pub fn for_each_symbol<F: FnMut(u64, &'static str)>(mut visit: F) {
     let Some(layout) = layout() else {

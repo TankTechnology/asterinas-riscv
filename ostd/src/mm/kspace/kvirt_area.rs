@@ -141,7 +141,10 @@ impl KVirtArea {
         for frame in frames.into_iter() {
             // SAFETY: The constructor of the `KVirtArea` has already ensured
             // that this mapping does not affect kernel's memory safety.
-            unsafe { cursor.map(MappedItem::tracked(Frame::from_unsized(frame), prop)) };
+            unsafe {
+                cursor.map(MappedItem::tracked(Frame::from_unsized(frame), prop))
+            }
+            .expect("Failed to allocate a kernel page table node");
         }
 
         Self { range }
@@ -194,7 +197,10 @@ impl KVirtArea {
             for (pa, level) in largest_pages::<KernelPtConfig>(va_range.start, pa_range.start, len)
             {
                 // SAFETY: The caller of `map_untracked_frames` has ensured the safety of this mapping.
-                unsafe { cursor.map(MappedItem::untracked(pa, level, prop)) };
+                unsafe {
+                    cursor.map(MappedItem::untracked(pa, level, prop))
+                }
+                .expect("Failed to allocate a kernel page table node");
             }
         }
 

@@ -8,8 +8,9 @@
 //! and takes it under a spinlock with local interrupts disabled, which is also
 //! what makes an event emitted from an interrupt handler safe.
 
-use core::time::Duration;
+use core::{sync::atomic::AtomicBool, time::Duration};
 
+use core::sync::atomic::Ordering;
 use ostd::{
     cpu::PinCurrentCpu,
     sync::{LocalIrqDisabled, SpinLock},
@@ -74,6 +75,24 @@ impl CpuRing {
 static RINGS: [SpinLock<CpuRing, LocalIrqDisabled>; MAX_CPUS] =
     [const { SpinLock::new(CpuRing::new()) }; MAX_CPUS];
 
+/// Non-zero while this CPU is inside the ring (writing or reading it).
+///
+/// The ring's lock disables interrupts, and the code that runs under it is
+/// instrumented like everything else: with the function tracer armed, a plain
+/// `memcpy` inside the locked region calls `mcount`, which would try to take
+/// the very lock it is running under -- a deadlock on one CPU, with interrupts
+/// off. While the flag is set, `push` drops the record instead.
+static IN_RING: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
+
+const RING_ALREADY_ACTIVE: bool = true;
+
+/// The current CPU, if this machine has a ring for it.
+fn current_cpu() -> Option<usize> {
+    let guard = ostd::task::disable_preempt();
+    let cpu = guard.current_cpu().as_usize();
+    (cpu < MAX_CPUS).then_some(cpu)
+}
+
 /// One record, as handed to a reader.
 pub struct Record<'a> {
     pub timestamp: Duration,
@@ -90,11 +109,19 @@ pub struct Record<'a> {
 /// guardian) so that a record emitted from an interrupt handler cannot
 /// interleave with one emitted by the task it interrupted.
 pub fn push(event: u16, pid: u32, tid: u32, data: &[u8]) {
-    let cpu = {
-        let guard = ostd::task::disable_preempt();
-        guard.current_cpu().as_usize()
-    };
-    if cpu >= MAX_CPUS {
+    push_at(event, pid, tid, data, aster_time::read_monotonic_time());
+}
+
+/// Like [`push`], but with the caller supplying the timestamp.
+///
+/// `read_monotonic_time` takes the clocksource's read lock, and an emitter
+/// that can run *inside* the clocksource's update -- the function tracer runs
+/// in every function, including the clock's own update path -- would then wait
+/// on a lock its own CPU holds, with interrupts off. Such emitters pass a
+/// lock-free timestamp instead (`Jiffies`).
+pub fn push_at(event: u16, pid: u32, tid: u32, data: &[u8], timestamp: Duration) {
+    let Some(cpu) = current_cpu() else { return };
+    if IN_RING[cpu].swap(RING_ALREADY_ACTIVE, Ordering::Relaxed) {
         return;
     }
 
@@ -102,7 +129,7 @@ pub fn push(event: u16, pid: u32, tid: u32, data: &[u8]) {
     let len = data.len().min(RECORD_DATA_LEN);
     let index = (ring.head % RING_SLOTS as u64) as usize;
     let slot = &mut ring.slots[index];
-    slot.timestamp = aster_time::read_monotonic_time();
+    slot.timestamp = timestamp;
     slot.pid = pid;
     slot.tid = tid;
     slot.event = event;
@@ -110,6 +137,8 @@ pub fn push(event: u16, pid: u32, tid: u32, data: &[u8]) {
     slot.cpu = cpu as u8;
     slot.data[..len].copy_from_slice(&data[..len]);
     ring.head += 1;
+    drop(ring);
+    IN_RING[cpu].store(false, Ordering::Relaxed);
 }
 
 /// The current `head` of every CPU's ring.
@@ -147,6 +176,13 @@ const BATCH: usize = 32;
 pub fn for_each_record_bounded(mut visit: impl FnMut(Record<'_>) -> bool, bounds: [u64; MAX_CPUS]) {
     let mut batch = [Slot::EMPTY; BATCH];
 
+    // Reading locks this CPU's ring too, and the reader's own function calls
+    // are instrumented; see `IN_RING`.
+    let Some(self_cpu) = current_cpu() else { return };
+    if IN_RING[self_cpu].swap(RING_ALREADY_ACTIVE, Ordering::Relaxed) {
+        return;
+    }
+
     for (cpu, ring) in RINGS.iter().enumerate() {
         let (bound, mut cursor) = {
             let ring = ring.lock();
@@ -179,11 +215,13 @@ pub fn for_each_record_bounded(mut visit: impl FnMut(Record<'_>) -> bool, bounds
                     data: &slot.data[..slot.len as usize],
                 });
                 if !keep_going {
+                    IN_RING[self_cpu].store(false, Ordering::Relaxed);
                     return;
                 }
             }
         }
     }
+    IN_RING[self_cpu].store(false, Ordering::Relaxed);
 }
 
 /// Empties every ring.

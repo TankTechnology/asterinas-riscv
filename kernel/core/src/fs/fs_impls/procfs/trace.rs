@@ -128,6 +128,9 @@ impl ProcFileOps for TracingOnFileOps {
             "1" => TRACING_ON.store(true, core::sync::atomic::Ordering::Relaxed),
             _ => return_errno_with_message!(Errno::EINVAL, "write 0 or 1"),
         }
+        // The function tracer's assembly stub cannot read this flag through
+        // the event object, so it gets a mirror updated right here.
+        crate::trace::function::sync_armed();
         Ok(text.len())
     }
 }
@@ -285,6 +288,7 @@ impl ProcFileOps for EnableFileOps {
             "1" => self.event.set_enabled(true),
             _ => return_errno_with_message!(Errno::EINVAL, "write 0 or 1"),
         }
+        crate::trace::function::sync_armed();
         Ok(text.len())
     }
 }
@@ -446,10 +450,9 @@ fn format_record(line: &mut LineBuf, record: &Record<'_>) -> core::fmt::Result {
     let (subsystem, name) = event::event_by_id(record.event)
         .map(|event| (event.subsystem(), event.name()))
         .unwrap_or(("unknown", "unknown"));
-    let payload = core::str::from_utf8(record.data).unwrap_or("<bytes>");
     write!(
         line,
-        "{:>5}.{:06} [{:>3}] {}/{} {}:{}: {}\n",
+        "{:>5}.{:06} [{:>3}] {}/{} {}:{}: ",
         record.timestamp.as_secs(),
         record.timestamp.subsec_micros(),
         record.cpu,
@@ -457,6 +460,21 @@ fn format_record(line: &mut LineBuf, record: &Record<'_>) -> core::fmt::Result {
         record.tid,
         subsystem,
         name,
-        payload.trim_end_matches('\n'),
-    )
+    )?;
+
+    // The function tracer stores a raw return address; everything else stores
+    // text it formatted on the way in.
+    if record.event == crate::trace::events::ftrace::FUNCTION.id() && record.data.len() >= 8 {
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&record.data[..8]);
+        let address = u64::from_le_bytes(bytes);
+        match crate::trace::kallsyms::lookup_with_offset(address) {
+            Some((symbol, 0)) => write!(line, "func={}\n", symbol),
+            Some((symbol, offset)) => write!(line, "func={}+{:#x}\n", symbol, offset),
+            None => write!(line, "func=<{:#x}>\n", address),
+        }
+    } else {
+        let payload = core::str::from_utf8(record.data).unwrap_or("<bytes>");
+        write!(line, "{}\n", payload.trim_end_matches('\n'))
+    }
 }

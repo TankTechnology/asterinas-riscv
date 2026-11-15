@@ -35,6 +35,7 @@ mod test_utils {
                 .cursor_mut(&preempt_guard, &virt_range)
                 .expect("failed to create the cursor")
                 .map(VmItem::new_tracked(frame.into(), page_property))
+                .unwrap()
         };
 
         page_table
@@ -54,7 +55,7 @@ mod test_utils {
             .cursor_mut_with_min_level(&preempt_guard, &va, min_level)
             .unwrap();
         for (paddr, level) in largest_pages::<TestPtConfig>(va.start, pa, va.len()) {
-            unsafe { cursor.map((paddr, level, prop)) };
+            unsafe { cursor.map((paddr, level, prop)).unwrap() };
         }
     }
 
@@ -211,7 +212,7 @@ mod create_page_table {
         MOCK_KERNEL_PT.call_once(PageTable::<KernelPtConfig>::new_kernel_page_table);
         let kernel_pt = MOCK_KERNEL_PT.get().unwrap();
 
-        let user_pt = kernel_pt.create_user_page_table();
+        let user_pt = kernel_pt.create_user_page_table().unwrap();
         let guard = disable_preempt();
 
         let mut kernel_root = kernel_pt.root.borrow().lock(&guard);
@@ -406,6 +407,7 @@ mod page_properties {
                 .cursor_mut(&preempt_guard, &virtual_range)
                 .unwrap()
                 .map(VmItem::new_tracked(frame.into(), prop))
+                .unwrap()
         };
         let queried = page_table.page_walk(virtual_range.start + 100).unwrap().1;
 
@@ -507,7 +509,8 @@ mod overlapping_mappings {
             page_table
                 .cursor_mut(&preempt_guard, &vrange1)
                 .unwrap()
-                .map((prange1.start, 1, page_property));
+                .map((prange1.start, 1, page_property))
+                .unwrap();
         }
         // Maps the second range, overlapping with the first.
         unsafe {
@@ -515,6 +518,7 @@ mod overlapping_mappings {
                 .cursor_mut(&preempt_guard, &vrange2)
                 .unwrap()
                 .map((prange2.start, 1, page_property))
+                .unwrap()
         };
     }
 
@@ -533,7 +537,7 @@ mod overlapping_mappings {
 
         // Attempts to map an virtual address range not aligned to 2M (expected to panic).
         unsafe {
-            cursor.map((phys_range.start, 2, page_property));
+            cursor.map((phys_range.start, 2, page_property)).unwrap();
         }
     }
 }
@@ -611,7 +615,7 @@ mod navigation {
         let mut cursor = page_table.cursor_mut(&preempt_guard, &virt_range).unwrap();
 
         cursor.jump(map_va).unwrap();
-        unsafe { cursor.map(map_item) };
+        unsafe { cursor.map(map_item).unwrap() };
 
         // Now the cursor is at the end of the range with level 2.
         assert!(cursor.query().is_err());
@@ -644,6 +648,7 @@ mod navigation {
                 1,
                 PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback),
             ))
+            .unwrap()
         };
 
         assert_eq!(cursor.virt_addr(), virt_range.end);
@@ -674,6 +679,7 @@ mod navigation {
                 1,
                 PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback),
             ))
+            .unwrap()
         };
         assert_eq!(
             cursor.virt_addr(),

@@ -77,6 +77,11 @@ def load_symbols(elf: str) -> list[tuple[int, str]]:
         # they would also push the table's 32-bit offsets out of range.
         if address < 0xFFFF_FFFF_8000_0000:
             continue
+        # Compiler-local labels (`LLVM` names them `.L...`) sit inside
+        # functions; they are not entries, and a lookup that answers with one
+        # hides the function it belongs to.
+        if name.startswith(".L"):
+            continue
         symbols.append((address, name))
 
     if not symbols:

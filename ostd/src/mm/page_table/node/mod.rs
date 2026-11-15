@@ -45,7 +45,7 @@ use crate::{
         FrameAllocOptions, HasPaddr, Infallible, PagingConstsTrait, PagingLevel, VmReader,
         frame::{Frame, FrameRef, meta::AnyFrameMeta},
         paddr_to_vaddr,
-        page_table::{self, PteScalar},
+        page_table::{self, PageTableError, PteScalar},
     },
     task::atomic_mode::InAtomicMode,
 };
@@ -67,12 +67,16 @@ impl<C: PageTableConfig> PageTableNode<C> {
     }
 
     /// Allocates a new empty page table node.
-    pub(super) fn alloc(level: PagingLevel) -> Self {
+    ///
+    /// Returns [`PageTableError::NoMemory`] instead of panicking if no frame
+    /// is available, so that a memory-exhausted process can fail with
+    /// `ENOMEM` rather than taking down the kernel.
+    pub(super) fn alloc(level: PagingLevel) -> Result<Self, PageTableError> {
         let meta = PageTablePageMeta::new(level);
         FrameAllocOptions::new()
             .zeroed(true)
             .alloc_frame_with(meta)
-            .expect("Failed to allocate a page table node")
+            .map_err(|_| PageTableError::NoMemory)
     }
 
     /// Activates the page table assuming it is a root page table.

@@ -8,7 +8,7 @@ use crate::{
         HasPaddr, nr_subpage_per_huge,
         page_prop::{PageFlags, PageProperty},
         page_size,
-        page_table::{PageTableConfig, PageTableNodeRef, PteScalar},
+        page_table::{PageTableConfig, PageTableError, PageTableNodeRef, PteScalar},
     },
     panic::PanicGuard,
     sync::RcuDrop,
@@ -139,18 +139,20 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
     /// Allocates a new child page table node and replaces the entry with it.
     ///
-    /// If the old entry is not none, the operation will fail and return `None`.
-    /// Otherwise, the lock guard of the new child page table node is returned.
+    /// If the old entry is not none (or this is the last level), the operation
+    /// fails and returns `Ok(None)`. Otherwise, the lock guard of the new child
+    /// page table node is returned. Returns [`PageTableError::NoMemory`] if the
+    /// child node cannot be allocated.
     pub(in crate::mm::page_table) fn alloc_if_none(
         &mut self,
         guard: &'rcu dyn InAtomicMode,
-    ) -> Option<PageTableGuard<'rcu, C>> {
+    ) -> Result<Option<PageTableGuard<'rcu, C>>, PageTableError> {
         if !matches!(self.to_ref(), PteStateRef::Absent) || self.node.level() == 1 {
-            return None;
+            return Ok(None);
         }
 
         let level = self.node.level();
-        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1));
+        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1)?);
 
         let paddr = new_page.paddr();
         // SAFETY: The page table won't be dropped before the RCU grace period
@@ -170,7 +172,7 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
         *self.node.nr_children_mut() += 1;
 
-        Some(pt_lock_guard)
+        Ok(Some(pt_lock_guard))
     }
 
     /// Splits the entry to smaller pages if it maps to a huge page.
@@ -180,17 +182,18 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
     /// is returned.
     ///
     /// If the entry does not map to a untracked huge page, the method returns
-    /// `None`.
+    /// `Ok(None)`. Returns [`PageTableError::NoMemory`] if the child node
+    /// cannot be allocated.
     pub(in crate::mm::page_table) fn split_if_mapped_huge(
         &mut self,
         guard: &'rcu dyn InAtomicMode,
-    ) -> Option<PageTableGuard<'rcu, C>> {
+    ) -> Result<Option<PageTableGuard<'rcu, C>>, PageTableError> {
         let level = self.node.level();
         let PteScalar::Mapped(pa, prop) = self.pte.to_repr(level) else {
-            return None;
+            return Ok(None);
         };
 
-        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1));
+        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1)?);
 
         let paddr = new_page.paddr();
         // SAFETY: The page table won't be dropped before the RCU grace period
@@ -223,7 +226,7 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
         panic_guard.forget();
 
-        Some(pt_lock_guard)
+        Ok(Some(pt_lock_guard))
     }
 
     /// Create a new entry at the node with guard.

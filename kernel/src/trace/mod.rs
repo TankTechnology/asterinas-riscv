@@ -21,6 +21,7 @@
 
 pub mod event;
 pub mod events;
+pub mod function;
 pub mod kallsyms;
 pub mod ring;
 
@@ -43,6 +44,7 @@ macro_rules! trace_event {
 /// The interrupt hook is the only one of those; the scheduler, page-fault and
 /// network hooks are emitted at their call sites in the kernel.
 pub fn init() {
+    function::init();
     ostd::irq::inject_irq_hook(trace_irq_hook);
     aster_block::bio::inject_bio_hook(events::block::trace_hook);
 }

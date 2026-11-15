@@ -3,7 +3,12 @@
 #
 # Release kernel build, plus the kernel's symbol table.
 #
-#   tools/riscv/ksym/build_kernel.sh [extra cargo-osdk arguments]
+#   tools/riscv/ksym/build_kernel.sh [--function-trace] [extra cargo-osdk arguments]
+#
+# `--function-trace` adds `-Z instrument-mcount`, which puts a `call mcount` in
+# every function prologue so `/proc/trace/events/ftrace/function/enable` works
+# (see kernel/src/trace/function.rs). It instruments every crate, so the kernel
+# grows and a hot tracing window is expensive -- build it only when needed.
 #
 # The same `cargo osdk build` the rest of the tooling uses, followed by
 # `kallsyms.py patch`: the compiler cannot build the table (it does not exist
@@ -24,9 +29,24 @@ fi
 export OSDK_LOCAL_DEV=${OSDK_LOCAL_DEV:-1}
 export VDSO_LIBRARY_DIR=${VDSO_LIBRARY_DIR:-$HOME/.local/share/linux_vdso}
 
+FUNCTION_TRACE=0
+ARGS=
+for arg in "$@"; do
+    case "$arg" in
+        --function-trace) FUNCTION_TRACE=1 ;;
+        *) ARGS="$ARGS $arg" ;;
+    esac
+done
+
 cd "$REPO"
+if [ "$FUNCTION_TRACE" = 1 ]; then
+    RUSTFLAGS="${RUSTFLAGS:-} -Z instrument-mcount"
+    export RUSTFLAGS
+fi
+
+# shellcheck disable=SC2086
 cargo osdk build --release --target-arch riscv64 --scheme riscv \
-    --features=riscv_sv39_mode "$@"
+    --features=riscv_sv39_mode $ARGS
 
 ELF=target/osdk/aster-kernel/aster-kernel-osdk-bin
 IMAGE=target/osdk/aster-kernel/aster-kernel-osdk-bin.Image
