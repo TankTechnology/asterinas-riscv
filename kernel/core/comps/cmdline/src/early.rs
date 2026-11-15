@@ -88,6 +88,12 @@ const fn early_cmdline_parser(cmdline: &str) -> EarlyCmdline {
         }
     }
 
+    let log_level = if (log_level as u8) < (LevelFilter::Info as u8) {
+        LevelFilter::Info
+    } else {
+        log_level
+    };
+
     EarlyCmdline {
         log_level,
         has_early_console,
