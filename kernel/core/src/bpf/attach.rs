@@ -16,6 +16,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use ostd::{cpu::PinCurrentCpu, sync::LocalIrqDisabled, util::id_set::Id};
 
 use super::{TraceCtx, prog::Program};
+use crate::fs::file::AccessMode;
 use crate::{
     events::IoEvents,
     fs::{
@@ -174,6 +175,7 @@ impl LinkFile {
             event_id,
             common: FileCommon::new(
                 AnonInodeFs::new_path(|_| "anon_inode:[bpf-link]".to_string()),
+                AccessMode::O_RDWR,
                 StatusFlags::empty(),
             ),
             pollee: Pollee::new(),
@@ -208,7 +210,7 @@ impl FileLike for LinkFile {
         self: Arc<Self>,
         fd_flags: crate::fs::file::file_table::FdFlags,
     ) -> Box<dyn core::fmt::Display> {
-        super::fdinfo(&self.common, self.access_mode(), fd_flags, "link")
+        super::fdinfo(&self.common, self.common.access_mode(), fd_flags, "link")
     }
 
     fn is_scm_rights_proven_leaf(&self) -> bool {

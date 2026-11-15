@@ -23,6 +23,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ostd::sync::LocalIrqDisabled;
 
+use crate::fs::file::AccessMode;
 use crate::fs::file::MappableObject;
 use crate::{
     events::IoEvents,
@@ -704,6 +705,7 @@ impl MapFile {
             map,
             common: FileCommon::new(
                 AnonInodeFs::new_path(|_| "anon_inode:[bpf-map]".to_string()),
+                AccessMode::O_RDWR,
                 StatusFlags::empty(),
             ),
             pollee: Pollee::new(),

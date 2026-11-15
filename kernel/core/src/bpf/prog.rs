@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ostd::sync::LocalIrqDisabled;
 
 use super::{TraceCtx, insn::Insn, interp, map::Map};
+use crate::fs::file::AccessMode;
 use crate::{
     events::IoEvents,
     fs::{
@@ -163,6 +164,7 @@ impl ProgFile {
             program,
             common: FileCommon::new(
                 AnonInodeFs::new_path(|_| "anon_inode:[bpf-prog]".to_string()),
+                AccessMode::O_RDWR,
                 StatusFlags::empty(),
             ),
             pollee: Pollee::new(),
@@ -190,7 +192,7 @@ impl FileLike for ProgFile {
         self: Arc<Self>,
         fd_flags: crate::fs::file::file_table::FdFlags,
     ) -> Box<dyn core::fmt::Display> {
-        super::fdinfo(&self.common, self.access_mode(), fd_flags, "prog")
+        super::fdinfo(&self.common, self.common.access_mode(), fd_flags, "prog")
     }
 
     fn is_scm_rights_proven_leaf(&self) -> bool {
