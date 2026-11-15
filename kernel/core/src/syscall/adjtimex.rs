@@ -30,7 +30,7 @@ const STA_PLL: i32 = 0x0001;
 /// `struct timex` from the asm-generic ABI (64-bit `long`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
-pub struct timex_t {
+pub(crate) struct timex_t {
     pub modes: u32,
     pub _pad0: i32,
     pub offset: i64,

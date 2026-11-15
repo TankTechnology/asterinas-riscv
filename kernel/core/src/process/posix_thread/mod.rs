@@ -24,6 +24,7 @@ use crate::{
         posix_thread::ptrace::TraceeStatus,
         signal::{PauseReason, PollHandle, sig_mask::SigMask},
     },
+    syscall::diagnostics::ThreadDiagnostics,
     thread::{Thread, Tid},
     time::{Timer, TimerManager, clocks::ProfClock, timer::TimerGuard},
 };
@@ -85,6 +86,8 @@ pub struct PosixThread {
     virtual_timer_manager: Arc<TimerManager>,
     /// A manager that manages timers based on the profiling clock of the current thread.
     prof_timer_manager: Arc<TimerManager>,
+    /// Opt-in bounded syscall records; storage is allocated on first entry.
+    syscall_diagnostics: ThreadDiagnostics,
 
     /// I/O Scheduling priority value
     io_priority: AtomicU32,
@@ -111,6 +114,10 @@ pub struct PosixThread {
 }
 
 impl PosixThread {
+    pub(crate) fn syscall_diagnostics(&self) -> &ThreadDiagnostics {
+        &self.syscall_diagnostics
+    }
+
     pub(crate) fn process(&self) -> Arc<Process> {
         self.process.upgrade().unwrap()
     }

@@ -16,6 +16,7 @@ use super::{PosixThread, ThreadLocal};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
+    syscall::diagnostics::ThreadDiagnostics,
     process::{
         Credentials, NsProxy, Process, UserNamespace,
         posix_thread::{ThreadName, thread_local::SuppUserContext},
@@ -198,6 +199,7 @@ impl PosixThreadBuilder {
                     prof_clock,
                     virtual_timer_manager,
                     prof_timer_manager,
+                    syscall_diagnostics: ThreadDiagnostics::default(),
                     io_priority: AtomicU32::new(0),
                     ns_proxy: Mutex::new(Some(ns_proxy.clone())),
                     timer_slack_ns: AtomicU64::new(default_timer_slack_ns),

@@ -12,6 +12,7 @@ pub(super) fn sys_shmctl(
     _shmid: i32,
     _command: i32,
     _buf_addr: Vaddr,
+    _ctx: &Context,
 ) -> Result<SyscallReturn> {
     return_errno_with_message!(Errno::ENOSYS, "SysV shared memory control is not implemented yet");
 }

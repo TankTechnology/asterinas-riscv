@@ -12,6 +12,7 @@ pub(super) fn sys_shmget(
     _key: i32,
     _size: usize,
     _shmflg: u32,
+    _ctx: &Context,
 ) -> Result<SyscallReturn> {
     return_errno_with_message!(Errno::ENOSYS, "SysV shared memory is not implemented yet");
 }

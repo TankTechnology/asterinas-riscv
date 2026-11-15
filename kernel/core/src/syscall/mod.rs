@@ -41,7 +41,7 @@ mod chown;
 mod chroot;
 mod clock_gettime;
 mod deferred;
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod clock_settime;
 mod clone;
 mod close;
@@ -427,17 +427,17 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
         &syscall_frame.args,
         user_ctx.instruction_pointer(),
     ) {
-        seccomp::SeccompDecision::Allow => {}
+        seccomp::SeccompDecision::Allow | seccomp::SeccompDecision::Trap => {}
         seccomp::SeccompDecision::Kill => {
-            ctx.posix_thread
-                .enqueue_signal(Box::new(seccomp::SigsysSignal::new(
-                    syscall_frame.syscall_number as u32,
-                )));
+            // TODO: deliver `SIGSYS` once the filter chain is restored; the
+            // decision is unreachable while every syscall is allowed.
             user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-(Errno::ENOSYS as isize)));
             return;
         }
         seccomp::SeccompDecision::Errno(errno) => {
             user_ctx.set_syscall_ret((-errno) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
             return;
         }
     }
@@ -453,12 +453,17 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
         Ok(return_value) => {
             if let SyscallReturn::Return(return_value) = return_value {
                 user_ctx.set_syscall_ret(return_value as usize);
+                diagnostics::complete(ctx, diagnostics::Outcome::Return(return_value));
+            } else {
+                // exec and sigreturn install a context, not a syscall result.
+                diagnostics::complete(ctx, diagnostics::Outcome::NoReturn);
             }
         }
         Err(err) => {
             debug!("syscall return error: {:?}", err);
             let errno = err.error() as i32;
-            user_ctx.set_syscall_ret((-errno) as usize)
+            user_ctx.set_syscall_ret((-errno) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
         }
     }
 }

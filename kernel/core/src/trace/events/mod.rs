@@ -17,7 +17,6 @@ pub mod tracing;
 
 /// Subsystems in the order they appear under `events/`.
 pub const SUBSYSTEMS: &[&str] = &[
-    block::NAME,
     ftrace::NAME,
     irq::NAME,
     mm::NAME,

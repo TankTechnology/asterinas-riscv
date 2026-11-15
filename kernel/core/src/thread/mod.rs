@@ -12,6 +12,7 @@ use ostd::{
 };
 
 use self::{kernel_thread::AsKernelThread, stats::CONTEXT_SWITCH_COUNTER};
+use crate::process::posix_thread::AsPosixThread;
 use crate::{
     prelude::*,
     sched::{SchedAttr, SchedPolicy},
