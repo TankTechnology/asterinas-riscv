@@ -91,6 +91,14 @@ impl TimeNamespace {
         Duration::new(secs, nanos)
     }
 
+    /// Converts a namespace timestamp to the host clock used by timer managers.
+    ///
+    /// Deadlines before the host clock's origin expire immediately. Values beyond
+    /// its representable range saturate instead of wrapping to an early deadline.
+    pub fn remove_offset(&self, duration: Duration, boot_time: bool) -> Duration {
+        remove_clock_offset(duration, self.offset_nanos(boot_time))
+    }
+
     /// Returns the signed nanosecond offset for a namespaced clock.
     pub fn offset_nanos(&self, boot_time: bool) -> i128 {
         let offsets = self.offsets.lock();
@@ -102,13 +110,23 @@ impl TimeNamespace {
     }
 }
 
+fn remove_clock_offset(duration: Duration, offset_nanos: i128) -> Duration {
+    // Duration and our i64-second offsets both fit comfortably in i128 nanos.
+    let adjusted =
+        (duration.as_nanos() as i128 - offset_nanos).clamp(0, Duration::MAX.as_nanos() as i128);
+    Duration::new(
+        (adjusted / 1_000_000_000) as u64,
+        (adjusted % 1_000_000_000) as u32,
+    )
+}
+
 #[cfg(ktest)]
 mod tests {
     use core::time::Duration;
 
     use ostd::prelude::ktest;
 
-    use super::TimeNamespace;
+    use super::{TimeNamespace, remove_clock_offset};
     use crate::process::UserNamespace;
 
     #[ktest]
@@ -126,6 +144,28 @@ mod tests {
             Duration::from_millis(1500)
         );
         assert_eq!(ns.offsets(), (10, 25, -2, 500_000_000));
+    }
+
+    #[ktest]
+    fn converts_namespace_deadlines_to_host_clock() {
+        // Exercise boundary arithmetic without namespace/pseudofs initialization.
+        // The user-space regression separately verifies namespace inheritance.
+        assert_eq!(
+            remove_clock_offset(Duration::new(13, 25), 10_000_000_025),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            remove_clock_offset(Duration::from_millis(1500), -1_500_000_000),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            remove_clock_offset(Duration::from_secs(3), 10_000_000_025),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remove_clock_offset(Duration::MAX, -1_500_000_000),
+            Duration::MAX
+        );
     }
 }
 

@@ -26,10 +26,16 @@ pub(super) fn sys_rt_sigsuspend(
     let sigmask = sigmask_ptr.read_val()?;
     ctx.save_and_set_sig_mask(sigmask);
 
-    // Wait until receiving any signal
+    // STOP/CONT without a caught handler must resume waiting. The temporary
+    // mask remains active through stop checkpoints until the delivery decision.
     let waiter = Waiter::new_pair().0;
-    waiter.pause_until(|| None::<()>)?;
+    waiter.pause_until(|| None::<()>).map_err(|err| {
+        if err.error() == Errno::EINTR {
+            Error::new(Errno::ERESTARTNOHAND)
+        } else {
+            err
+        }
+    })?;
 
-    // This syscall should always return `Err(EINTR)`. This path should never be reached.
-    unreachable!("rt_sigsuspend always return EINTR");
+    unreachable!("rt_sigsuspend can only finish by signal interruption");
 }
