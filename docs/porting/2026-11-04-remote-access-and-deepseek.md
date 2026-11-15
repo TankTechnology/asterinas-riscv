@@ -109,6 +109,15 @@ The fake pty existed only to avoid the poll bug above; with it fixed, a
 dropbear built with real pty support can `openpty` again. The image keeps the
 patched binary because its pipe transport is the path verified on the board.
 
+**2026-11-15: the board itself has moved to OpenSSH.** The Megrez rootfs was
+older than this build and carried the `asterinas-debug-console.target.wants`
+link for `asterinas-openssh.service` without the unit file, so the link was
+ignored and the fake-pty dropbear kept port 22. Installing the unit and
+enabling it gives `ssh -tt` a real `/dev/pts/0` again; dropbear stays
+installed and disabled as the fallback. Symptoms, the debugging sequence
+(including the OpenSSH-on-a-spare-port comparison) and the verification
+matrix are in `2026-11-15-ssh-openssh-cutover.md`.
+
 The patched binary is checked in as
 `tools/riscv/debian/rootfs/dropbear-patched-riscv64` (the patch beside it
 documents the two edits). It must also resolve the sftp subsystem, whose
