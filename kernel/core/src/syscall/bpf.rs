@@ -141,7 +141,9 @@ fn read_user_string(ctx: &Context, addr: u64, max: usize) -> Result<String> {
 fn insert_file(ctx: &Context, file: Arc<dyn FileLike>, flags: FdFlags) -> Result<i32> {
     let file_table = ctx.thread_local.borrow_file_table();
     let mut file_table_locked = file_table.unwrap().write();
-    let fd = file_table_locked.insert(file, flags)?;
+    let fd = file_table_locked
+        .insert(file, flags)
+        .map_err(|(err, _)| err)?;
     Ok(u32::from(fd) as i32)
 }
 
