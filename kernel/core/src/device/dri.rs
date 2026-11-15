@@ -20,6 +20,9 @@
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
 use crate::dispatch_ioctl;
+
+mod cursor;
+
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
