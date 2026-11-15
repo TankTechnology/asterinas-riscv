@@ -9,6 +9,7 @@ use ostd::timer::Jiffies;
 
 use self::timer_manager::PosixTimerManager;
 use super::{
+    signal::job_control::SignalJobControl,
     namespace::pid_ns::{PidNamespace, PidNsReservation},
     pid_table::{self, PidTable},
     posix_thread::{AsPosixThread, FIRST_POSIX_TID},
@@ -152,6 +153,8 @@ pub struct Process {
     sig_dispositions: Mutex<Arc<Mutex<SigDispositions>>>,
     /// The process-level sigqueue.
     sig_queues: SigQueues,
+    /// Serializes job-control state transitions (stop/continue reporting).
+    signal_job_control: Mutex<SignalJobControl>,
     /// The signal that the process should receive when parent process exits.
     parent_death_signal: AtomicSigNum,
     /// The signal that should be sent to the parent when this process exits.
@@ -284,6 +287,7 @@ impl Process {
                 has_child_subreaper: AtomicBool::new(false),
                 sig_dispositions: Mutex::new(sig_dispositions),
                 sig_queues: SigQueues::new(),
+                signal_job_control: Mutex::new(SignalJobControl::default()),
                 parent_death_signal: AtomicSigNum::new_empty(),
                 exit_signal: AtomicSigNum::new_empty(),
                 prof_clock,
@@ -308,6 +312,11 @@ impl Process {
     }
 
     // *********** Basic structures ***********
+
+    /// Returns the process-wide job-control state.
+    pub fn signal_job_control(&self) -> &Mutex<SignalJobControl> {
+        &self.signal_job_control
+    }
 
     /// Returns the per-process I/O and page-fault accounting.
     pub fn io_accounting(&self) -> &IoAccounting {

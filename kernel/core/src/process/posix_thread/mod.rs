@@ -14,6 +14,7 @@ use ostd::{
 use spin::Once;
 
 use super::{
+    signal::job_control::{GroupStopParticipant, SelectedStop},
     Credentials, Process,
     signal::{sig_mask::AtomicSigMask, sig_num::SigNum, sig_queues::SigQueues, signals::Signal},
 };
@@ -163,6 +164,10 @@ pub struct PosixThread {
     sig_mask: AtomicSigMask,
     /// Thread-directed sigqueue
     sig_queues: SigQueues,
+    /// The stop the process has selected for this thread, if any.
+    selected_stop: Mutex<SelectedStop>,
+    /// Membership and checkpoint state for group-stop reporting.
+    group_stop_participant: Mutex<GroupStopParticipant>,
     /// The per-thread signal [`Waker`], which will be used to wake up the thread
     /// when enqueuing a signal, along with the reason why the thread is paused.
     signalled_waker: SpinLock<Option<(Arc<Waker>, PauseReason)>>,
