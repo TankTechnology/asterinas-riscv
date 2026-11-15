@@ -67,6 +67,11 @@ BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = (
     "cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.reboot_after=120"
 )
+MEGREZ_USB_HOST_COMMAND = (
+    "fdt set /chosen asterinas,usb-host "
+    "/soc/usb0@50480000/dwc3@50480000 "
+    "/soc/usb1@50490000/dwc3@50490000"
+)
 
 
 @dataclass(frozen=True)
@@ -484,7 +489,7 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     session.command("setenv initrd_size ${filesize}")
     session.command(f'setenv bootargs "{args.bootargs}"')
     session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
-    session.command("fdt set /chosen asterinas,usb-host /soc/usb@50480000")
+    session.command(MEGREZ_USB_HOST_COMMAND)
     session.start_boot_attempt()
     return session.command(
         "booti 0x80200000 0x83000000:${initrd_size} 0xf0000000",
