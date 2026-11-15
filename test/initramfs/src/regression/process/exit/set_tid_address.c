@@ -40,8 +40,8 @@ static int futex_wait(_Atomic int *address, int expected)
 	int ret;
 
 	do {
-		ret = syscall(SYS_futex, address, FUTEX_WAIT, expected, NULL, NULL,
-			      0);
+		ret = syscall(SYS_futex, address, FUTEX_WAIT, expected, NULL,
+			      NULL, 0);
 	} while (ret < 0 && errno == EINTR);
 
 	return ret;
@@ -53,8 +53,8 @@ static int futex_wait_bounded(_Atomic int *address, int expected)
 	int ret;
 
 	do {
-		ret = syscall(SYS_futex, address, FUTEX_WAIT, expected, &timeout,
-			      NULL, 0);
+		ret = syscall(SYS_futex, address, FUTEX_WAIT, expected,
+			      &timeout, NULL, 0);
 	} while (ret < 0 && errno == EINTR);
 
 	return ret;
@@ -115,9 +115,10 @@ static int child_main(void *argument)
 		while (nanosleep(&waiter_settle, NULL) < 0 && errno == EINTR) {
 		}
 	}
-	return atomic_load_explicit(&scenario->child_error, memory_order_relaxed)
-		       ? EXIT_FAILURE
-		       : EXIT_SUCCESS;
+	return atomic_load_explicit(&scenario->child_error,
+				    memory_order_relaxed) ?
+		       EXIT_FAILURE :
+		       EXIT_SUCCESS;
 }
 
 static int run_scenario(enum scenario_kind kind)
@@ -154,12 +155,13 @@ static int run_scenario(enum scenario_kind kind)
 	wait_until_set(&scenario->ready);
 	if (atomic_load_explicit(&scenario->old_tid, memory_order_relaxed) !=
 	    OLD_TID_SENTINEL) {
-		fprintf(stderr, "old clear_child_tid was modified before exit\n");
+		fprintf(stderr,
+			"old clear_child_tid was modified before exit\n");
 		goto kill_child;
 	}
 	if (kind == REPLACE_CLEAR_CHILD_TID)
 		expected_new_tid = atomic_load_explicit(&scenario->new_tid,
-						memory_order_relaxed);
+							memory_order_relaxed);
 
 	atomic_store_explicit(&scenario->allow_exit, 1, memory_order_release);
 	if (futex_wake(&scenario->allow_exit) < 0) {
@@ -168,8 +170,8 @@ static int run_scenario(enum scenario_kind kind)
 	}
 
 	if (kind == REPLACE_CLEAR_CHILD_TID) {
-		int wait_result =
-			futex_wait_bounded(&scenario->new_tid, expected_new_tid);
+		int wait_result = futex_wait_bounded(&scenario->new_tid,
+						     expected_new_tid);
 
 		if (wait_result < 0 && errno == EAGAIN) {
 			/*
@@ -194,13 +196,16 @@ static int run_scenario(enum scenario_kind kind)
 	}
 	if (atomic_load_explicit(&scenario->old_tid, memory_order_relaxed) !=
 	    OLD_TID_SENTINEL) {
-		fprintf(stderr, "old clear_child_tid was cleared in scenario %d\n",
+		fprintf(stderr,
+			"old clear_child_tid was cleared in scenario %d\n",
 			kind);
 		goto out;
 	}
 	if (kind == REPLACE_CLEAR_CHILD_TID &&
-	    atomic_load_explicit(&scenario->new_tid, memory_order_relaxed) != 0) {
-		fprintf(stderr, "replacement clear_child_tid was not cleared\n");
+	    atomic_load_explicit(&scenario->new_tid, memory_order_relaxed) !=
+		    0) {
+		fprintf(stderr,
+			"replacement clear_child_tid was not cleared\n");
 		goto out;
 	}
 
@@ -248,8 +253,8 @@ int main(void)
 		return EXIT_FAILURE;
 	}
 
-	for (attempt = 0;
-	     attempt < MAX_WAKE_ATTEMPTS && replacement_result == SCENARIO_RETRY;
+	for (attempt = 0; attempt < MAX_WAKE_ATTEMPTS &&
+			  replacement_result == SCENARIO_RETRY;
 	     attempt++)
 		replacement_result = run_scenario(REPLACE_CLEAR_CHILD_TID);
 	if (replacement_result != EXIT_SUCCESS) {

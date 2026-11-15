@@ -72,7 +72,8 @@ static int flush_all_harts(void)
 {
 	if (use_membarrier_sync_core)
 		return syscall(MEMBARRIER_SYSCALL,
-			       MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0);
+			       MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0,
+			       0);
 
 	return syscall(RISCV_FLUSH_ICACHE_SYSCALL, jit_code,
 		       (char *)jit_code + 2 * sizeof(*jit_code), 0);
@@ -109,7 +110,8 @@ static int register_membarrier_sync_core(void)
 	}
 
 	if (syscall(MEMBARRIER_SYSCALL,
-		    MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0) < 0) {
+		    MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE, 0,
+		    0) < 0) {
 		perror("register membarrier sync-core");
 		return -1;
 	}
@@ -355,7 +357,7 @@ int main(int argc, char **argv)
 	printf("RISC-V cross-hart icache (%s): CPU%d updated JIT code; "
 	       "remote mask %#x observed the new instruction\n",
 	       use_membarrier_sync_core ? "membarrier sync-core" :
-					   "riscv_flush_icache",
+					  "riscv_flush_icache",
 	       coordinator, target_mask);
 	return EXIT_SUCCESS;
 }

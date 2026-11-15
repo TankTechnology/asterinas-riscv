@@ -34,10 +34,10 @@ FN_TEST(setid_arguments_are_resolved_in_the_current_user_namespace)
 	TEST_SUCC(unshare(CLONE_NEWUSER));
 
 	TEST_RES(write_file("/proc/self/setgroups", "deny\n"), _ret == 5);
-	int uid_map_len = snprintf(uid_map, sizeof(uid_map), "1234 %u 1\n",
-				   outer_uid);
-	int gid_map_len = snprintf(gid_map, sizeof(gid_map), "1234 %u 1\n",
-				   outer_gid);
+	int uid_map_len =
+		snprintf(uid_map, sizeof(uid_map), "1234 %u 1\n", outer_uid);
+	int gid_map_len =
+		snprintf(gid_map, sizeof(gid_map), "1234 %u 1\n", outer_gid);
 	TEST_RES(write_file("/proc/self/uid_map", uid_map),
 		 _ret == uid_map_len);
 	TEST_RES(write_file("/proc/self/gid_map", gid_map),

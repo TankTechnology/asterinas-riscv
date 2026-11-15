@@ -188,7 +188,8 @@ FN_TEST(periodic_timer_reports_overrun)
 	do {
 		CHECK(clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &now));
 	} while ((now.tv_sec - start.tv_sec) * 1000000000LL + now.tv_nsec -
-		 start.tv_nsec < 30 * 1000 * 1000);
+			 start.tv_nsec <
+		 30 * 1000 * 1000);
 	TEST_SUCC(raw_timer_settime(timerid, 0, &disarm));
 	TEST_SUCC(sigprocmask(SIG_UNBLOCK, &blocked, NULL));
 	for (int i = 0; i < 10000 && !timer_fired; i++)

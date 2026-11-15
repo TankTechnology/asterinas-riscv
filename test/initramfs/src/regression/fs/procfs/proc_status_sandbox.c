@@ -36,7 +36,8 @@ static int read_decimal_field(const char *path, const char *field)
 			continue;
 		char *end;
 		value = strtol(line + field_len, &end, 10);
-		CHECK_WITH(end != line + field_len && (*end == '\n' || *end == '\0'),
+		CHECK_WITH(end != line + field_len &&
+				   (*end == '\n' || *end == '\0'),
 			   _ret);
 		matches++;
 	}
@@ -50,8 +51,7 @@ static int read_decimal_field(const char *path, const char *field)
 static int wait_barrier(pthread_barrier_t *barrier)
 {
 	int result = pthread_barrier_wait(barrier);
-	CHECK_WITH(result,
-		   _ret == 0 || _ret == PTHREAD_BARRIER_SERIAL_THREAD);
+	CHECK_WITH(result, _ret == 0 || _ret == PTHREAD_BARRIER_SERIAL_THREAD);
 	return 0;
 }
 
