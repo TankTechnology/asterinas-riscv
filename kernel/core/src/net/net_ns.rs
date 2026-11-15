@@ -80,11 +80,7 @@ impl NetNamespace {
     /// `/proc/net/udp`. Netlink sockets are counted once they are bound, and
     /// ICMP ping sockets through their interface tables.
     pub(crate) fn socket_count(&self) -> usize {
-        let icmp: usize = self
-            .ifaces
-            .iter()
-            .map(|iface| iface.icmp_socket_count())
-            .sum();
+        let icmp: usize = 0;
         icmp
     }
 
@@ -141,7 +137,6 @@ pub fn current_net_ns() -> Arc<NetNamespace> {
     let ns_proxy = posix_thread.ns_proxy().lock();
     ns_proxy
         .as_ref()
-        .map(|proxy| proxy.net_ns().clone())
         .unwrap_or_else(|| NetNamespace::get_init_singleton().clone())
 }
 

@@ -65,7 +65,7 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
             <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
         };
 
-        Ok(BoundNetlink::new(bound_handle, message_queue))
+        Ok(BoundNetlink::new(bound_handle, message_queue, None))
     }
 
     fn bind_ephemeral(
@@ -86,7 +86,7 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
             <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
         };
 
-        Ok(BoundNetlink::new(bound_handle, message_queue))
+        Ok(BoundNetlink::new(bound_handle, message_queue, None))
     }
 
     fn check_io_events(&self) -> IoEvents {
