@@ -83,7 +83,11 @@ def _debug_console_qemu_bootargs() -> str:
 
 
 def classify_debug_console_qemu(
-    transcript: bytes, *, expected_debian_release: str, expected_profile: str
+    transcript: bytes,
+    *,
+    expected_debian_release: str,
+    expected_profile: str,
+    require_web_network: bool = True,
 ) -> GateResult:
     """Require one ordered Stage1-to-root-console lifecycle."""
 
@@ -115,9 +119,10 @@ def classify_debug_console_qemu(
     if expected_profile == "browser-web":
         if _M5_DESKTOP_READY in transcript:
             return GateResult(False, "mixed desktop-network acceptance contract", None)
-        network = classify_web_network(transcript, mode=NetworkMode.DIRECT)
-        if not network.passed:
-            return network
+        if require_web_network:
+            network = classify_web_network(transcript, mode=NetworkMode.DIRECT)
+            if not network.passed:
+                return network
         if _WEB_DESKTOP_READY not in transcript:
             return GateResult(False, "missing browser desktop readiness", None)
         return GateResult(True, "pass", None)
@@ -184,12 +189,10 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
             if completion in _POST_CONSOLE_FAILURE_MARKERS:
                 raise GateFailure("guest failed before desktop-network acceptance")
 
-    def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
-        super().run_protocol(session, config)
+    def _run_debug_console_probe(
+        self, session: Mapping[str, Any], config: GateConfig
+    ) -> None:
         serial = session["serial"]
-        self._wait_for_profile_acceptance(
-            serial, time.monotonic() + config.boot_timeout
-        )
         nonce = secrets.token_hex(16)
         try:
             self.debug_evidence = run_debug_console_phase(
@@ -214,6 +217,14 @@ class DebugConsoleQemuOperations(DesktopM5QemuOperations):
             screenshot,
             time.monotonic() + config.boot_timeout,
         )
+
+    def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
+        super().run_protocol(session, config)
+        serial = session["serial"]
+        self._wait_for_profile_acceptance(
+            serial, time.monotonic() + config.boot_timeout
+        )
+        self._run_debug_console_probe(session, config)
 
     def publish(
         self,

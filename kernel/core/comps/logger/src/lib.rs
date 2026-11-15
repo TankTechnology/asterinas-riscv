@@ -2,9 +2,9 @@
 
 //! The logger implementation for Asterinas.
 //!
-//! This logger now has the most basic logging functionality, controls the output
-//! based on the globally set log level. Different log levels will be represented
-//! with different colors if enabling `log_color` feature.
+//! Logs are retained in a bounded record store. Capture and console verbosity
+//! are independent; Linux-compatible device and syscall adapters read the store.
+//! Different console colors are available with the `log_color` feature.
 //!
 //! This logger guarantees _atomicity_ under concurrency: messages are always
 //! printed in their entirety without being mixed with messages generated
@@ -27,6 +27,7 @@ macro_rules! __log_prefix {
 
 mod aster_logger;
 mod console;
+pub mod klog;
 
 pub use console::_print;
 

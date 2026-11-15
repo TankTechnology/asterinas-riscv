@@ -7,8 +7,8 @@ use crate::{
     prelude::*,
     process::{
         credentials::c_types::{
-            CUserCapData, CUserCapHeader, LINUX_CAPABILITY_VERSION_1,
-            LINUX_CAPABILITY_VERSION_2, LINUX_CAPABILITY_VERSION_3,
+            CUserCapData, CUserCapHeader, LINUX_CAPABILITY_VERSION_1, LINUX_CAPABILITY_VERSION_2,
+            LINUX_CAPABILITY_VERSION_3,
         },
         pid_table,
         posix_thread::AsPosixThread,

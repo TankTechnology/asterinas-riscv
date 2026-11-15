@@ -17,8 +17,11 @@ from tools.riscv.debian.rootfs.debug_console_qemu_gate import (
     DebugConsoleQemuOperations,
     classify_debug_console_qemu,
 )
-from tools.riscv.debian.rootfs.desktop_m3_gate import capture_rendered_ppm
-from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import desktop_m5_qemu_argv
+from tools.riscv.debian.rootfs.desktop_m3_gate import inspect_ppm
+from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
+    DesktopM5QemuOperations,
+    desktop_m5_qemu_argv,
+)
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import (
     GateTermination,
@@ -34,22 +37,42 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 from tools.riscv.megrez_physical_graphics import (
     HostGateError,
     InteractionCycleEvidence,
+    PHYSICAL_EXTERNAL_MARKER,
     PointerEvidenceMode,
     classify_interaction_transcript,
     extract_screenshot_frame,
     physical_cycle_command,
+    physical_external_services_quiesce_command,
     physical_final_command,
+    validate_physical_external_services_quiesced,
+)
+from tools.riscv.qemu_qmp import (
+    ABSOLUTE_AXIS_MAX,
+    capture_screendump,
+    click_left_button,
+    move_tablet,
 )
 
 
 QEMU_SCREEN_WIDTH = 1280
 QEMU_SCREEN_HEIGHT = 1024
 HMP_KEY_RELEASE_SECONDS = 0.12
+QEMU_MARIONETTE_SETUP_TIMEOUT = 600.0
 _NONCE = re.compile(r"[0-9a-f]{16}")
 _SHA256 = r"[0-9a-f]{64}"
 _BROWSER_IDENTITY = re.compile(
     r"__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=([1-9][0-9]*) "
     r"service=active restarts=0"
+)
+_LOCAL_GRAPHICS_READY = b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready"
+_MARIONETTE_LISTENING = b"Listening on port 2828"
+_LOCAL_GRAPHICS_FAILURE_MARKERS = (
+    b"DEBIAN_ROOTFS_FAIL reason=",
+    b"DEBIAN_DESKTOP_M4_FAIL reason=",
+    b"ASTERINAS_FIREFOX_WEB_FAIL reason=",
+    b"Kernel panic",
+    b"Uncaught panic:",
+    b"Printing stack trace:",
 )
 _FINAL = re.compile(rf"__ASTERINAS_PHYSICAL_FINAL__ cycle=3 nonce_sha256=({_SHA256})")
 
@@ -79,13 +102,21 @@ def _physical_graphics_qemu_bootargs() -> str:
     prefix, separator, initargs = DebugConsoleQemuOperations.BOOTARGS.partition(" -- ")
     if not separator or initargs != "--root-init=systemd --debug-console=root":
         raise ValueError("unexpected debug-console QEMU bootargs contract")
-    return f"{prefix} systemd.mask=asterinas-browser-web-evidence.service -- {initargs}"
+    return (
+        f"{prefix} "
+        "systemd.mask=asterinas-browser-web-evidence.service "
+        "systemd.mask=asterinas-desktop-m5-network.service "
+        "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 "
+        f"-- {initargs}"
+    )
 
 
 def physical_graphics_qemu_argv(**arguments: Any) -> tuple[str, ...]:
-    """Return the existing graphical, four-hart, slirp-backed QEMU contract."""
+    """Keep the graphical devices and add a private absolute-input QMP socket."""
 
-    return desktop_m5_qemu_argv(**arguments)
+    argv = desktop_m5_qemu_argv(**arguments)
+    socket_path = arguments["monitor_socket"].with_name("physical-input.qmp")
+    return (*argv, "-qmp", f"unix:{socket_path},server=on,wait=off")
 
 
 def qemu_input_commands(nonce: str) -> tuple[str, ...]:
@@ -93,13 +124,7 @@ def qemu_input_commands(nonce: str) -> tuple[str, ...]:
 
     if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
         raise ValueError("QEMU interaction nonce must be 16 lowercase hex digits")
-    return (
-        *(f"sendkey {character}" for character in nonce),
-        "mouse_move -32767 -32767",
-        "mouse_move 640 600",
-        "mouse_button 1",
-        "mouse_button 0",
-    )
+    return tuple(f"sendkey {character}" for character in nonce)
 
 
 def _classify_interaction(
@@ -129,6 +154,7 @@ def classify_physical_graphics_qemu(
         transcript,
         expected_debian_release=expected_debian_release,
         expected_profile="browser-web",
+        require_web_network=False,
     )
     if not debug.passed:
         return QemuInteractionResult(False, debug.reason, False, ())
@@ -149,11 +175,12 @@ def _next_line(serial: Any, cursor: int, deadline: float) -> tuple[str, int]:
 
 
 class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
-    """Drive three nonce-bound browser cycles through QEMU's HMP input path."""
+    """Drive three nonce-bound browser cycles through QEMU's input devices."""
 
     ARTIFACT_PREFIX = "physical-graphics-qemu"
     BOOTARGS = _physical_graphics_qemu_bootargs()
     CAPTURE_DEBUG_SCREENSHOT = False
+    REQUIRE_FIXTURE_EVIDENCE = False
     _CYCLE_ARTIFACTS = tuple(
         name
         for cycle in range(1, 4)
@@ -212,6 +239,43 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
                 raise GateFailure("QEMU Firefox service identity is incomplete")
 
     @staticmethod
+    def _external_services_quiesce_command() -> str:
+        return physical_external_services_quiesce_command()
+
+    def _quiesce_external_services(self, serial: Any, deadline: float) -> None:
+        """Stop external-network and competing Marionette work."""
+
+        cursor = serial.checkpoint()
+        serial.send(
+            (self._external_services_quiesce_command() + "\n").encode(), deadline
+        )
+        while True:
+            line, cursor = _next_line(serial, cursor, deadline)
+            if not line.startswith(PHYSICAL_EXTERNAL_MARKER):
+                continue
+            try:
+                validate_physical_external_services_quiesced(line)
+            except HostGateError as error:
+                raise GateFailure(f"QEMU {error}") from error
+            return
+
+    @staticmethod
+    def _wait_for_local_graphics(serial: Any, deadline: float) -> None:
+        completion = serial.wait_for_any(
+            (_LOCAL_GRAPHICS_READY, *_LOCAL_GRAPHICS_FAILURE_MARKERS), deadline
+        )
+        if completion != _LOCAL_GRAPHICS_READY:
+            raise GateFailure("guest failed before local graphics readiness")
+
+    @staticmethod
+    def _wait_for_marionette(serial: Any, deadline: float) -> None:
+        completion = serial.wait_for_any(
+            (_MARIONETTE_LISTENING, *_LOCAL_GRAPHICS_FAILURE_MARKERS), deadline
+        )
+        if completion != _MARIONETTE_LISTENING:
+            raise GateFailure("guest failed before Marionette readiness")
+
+    @staticmethod
     def _inject_hmp_input(monitor: Any, nonce: str, deadline: float) -> None:
         for command in qemu_input_commands(nonce):
             monitor.command(command, deadline)
@@ -235,7 +299,7 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
         if browser_pid is None:
             raise GateFailure("QEMU Firefox identity was not established")
         timeout = min(config.command_timeout, 300.0)
-        deadline = time.monotonic() + timeout + 10.0
+        deadline = time.monotonic() + QEMU_MARIONETTE_SETUP_TIMEOUT + timeout + 10.0
         start = serial.checkpoint()
         command = physical_cycle_command(
             cycle,
@@ -244,6 +308,7 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
             expected_browser_pid=browser_pid,
             expected_width=QEMU_SCREEN_WIDTH,
             expected_height=QEMU_SCREEN_HEIGHT,
+            setup_timeout=QEMU_MARIONETTE_SETUP_TIMEOUT,
         )
         serial.send((command + "\n").encode(), deadline)
         nonce_sha256 = hashlib.sha256(nonce.encode()).hexdigest()
@@ -258,6 +323,8 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
                 break
             if line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_FAIL"):
                 raise GateFailure(f"QEMU interaction cycle {cycle} failed before READY")
+            if line.startswith("__ASTERINAS_PHYSICAL_COMMAND_STATUS__"):
+                raise GateFailure(f"QEMU interaction cycle {cycle} exited before READY")
 
         buffered_after_ready = serial.transcript[cursor:]
         if (
@@ -268,6 +335,57 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
                 f"QEMU interaction cycle {cycle} advanced before HMP input"
             )
         self._inject_hmp_input(monitor, nonce, deadline)
+        key_ready = (
+            f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} "
+            f"nonce_sha256={nonce_sha256}"
+        )
+        while True:
+            line, cursor = _next_line(serial, cursor, deadline)
+            if line == key_ready:
+                break
+            if line.startswith(
+                "ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY"
+            ) or line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_PASS"):
+                raise GateFailure(
+                    f"QEMU interaction cycle {cycle} advanced before pointer input"
+                )
+            if line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_FAIL"):
+                raise GateFailure(f"QEMU interaction cycle {cycle} guest failure")
+            if line.startswith("__ASTERINAS_PHYSICAL_COMMAND_STATUS__"):
+                raise GateFailure(
+                    f"QEMU interaction cycle {cycle} exited before key READY"
+                )
+
+        input_socket = session["directory"] / "physical-input.qmp"
+        move_tablet(
+            input_socket,
+            # Interior of the frozen 1280x1024 page's button (y=428..575).
+            # Distinct endpoints retain motion even if a browser coalesces the
+            # origin reset and final move across two consecutive cycles.
+            x=(640 + (cycle - 1) * 32) * ABSOLUTE_AXIS_MAX // (QEMU_SCREEN_WIDTH - 1),
+            y=500 * ABSOLUTE_AXIS_MAX // (QEMU_SCREEN_HEIGHT - 1),
+            timeout=min(10.0, deadline - time.monotonic()),
+        )
+        pointer_ready = f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}"
+        while True:
+            line, cursor = _next_line(serial, cursor, deadline)
+            if line == pointer_ready:
+                break
+            if line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_PASS"):
+                raise GateFailure(
+                    f"QEMU interaction cycle {cycle} advanced before button input"
+                )
+            if line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_FAIL"):
+                raise GateFailure(f"QEMU interaction cycle {cycle} guest failure")
+            if line.startswith("__ASTERINAS_PHYSICAL_COMMAND_STATUS__"):
+                raise GateFailure(
+                    f"QEMU interaction cycle {cycle} exited before pointer READY"
+                )
+
+        click_left_button(
+            input_socket,
+            timeout=min(10.0, deadline - time.monotonic()),
+        )
         passed = f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}"
         while True:
             line, cursor = _next_line(serial, cursor, deadline)
@@ -275,6 +393,8 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
                 break
             if line.startswith("ASTERINAS_PHYSICAL_GRAPHICS_FAIL"):
                 raise GateFailure(f"QEMU interaction cycle {cycle} guest failure")
+            if line.startswith("__ASTERINAS_PHYSICAL_COMMAND_STATUS__"):
+                raise GateFailure(f"QEMU interaction cycle {cycle} exited before PASS")
         status = f"__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle={cycle} status=0"
         while True:
             line, cursor = _next_line(serial, cursor, deadline)
@@ -290,13 +410,23 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
             expected_dimensions=(QEMU_SCREEN_WIDTH, QEMU_SCREEN_HEIGHT),
         )
         ppm_path = session["directory"] / f"physical-graphics-qemu-cycle-{cycle}.ppm"
-        rendered_ppm, rendered = capture_rendered_ppm(
-            monitor,
-            ppm_path,
-            deadline,
-            expected_width=QEMU_SCREEN_WIDTH,
-            expected_height=QEMU_SCREEN_HEIGHT,
-        )
+        try:
+            rendered_ppm = capture_screendump(
+                input_socket,
+                ppm_path,
+                capture_root=session["directory"],
+                timeout=min(30.0, deadline - time.monotonic()),
+            )
+            rendered = inspect_ppm(
+                rendered_ppm,
+                expected_width=QEMU_SCREEN_WIDTH,
+                expected_height=QEMU_SCREEN_HEIGHT,
+            )
+        except (OSError, TimeoutError, ValueError) as error:
+            raise GateFailure(
+                f"QEMU interaction cycle {cycle} framebuffer capture failed: "
+                f"{type(error).__name__}"
+            ) from error
         evidence = QemuCycleArtifact(
             cycle=cycle,
             nonce_sha256=nonce_sha256,
@@ -311,11 +441,16 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
         if self._browser_pid is None or len(self._nonces) != 3:
             raise GateFailure("QEMU terminal state lacks browser identity or nonces")
         timeout = min(config.command_timeout, 300.0)
-        deadline = time.monotonic() + timeout + 10.0
+        deadline = time.monotonic() + QEMU_MARIONETTE_SETUP_TIMEOUT + timeout + 10.0
         cursor = serial.checkpoint()
         serial.send(
             (
-                physical_final_command(self._nonces[-1], self._browser_pid, timeout)
+                physical_final_command(
+                    self._nonces[-1],
+                    self._browser_pid,
+                    timeout,
+                    setup_timeout=QEMU_MARIONETTE_SETUP_TIMEOUT,
+                )
                 + "\n"
             ).encode(),
             deadline,
@@ -349,10 +484,18 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
                 return
 
     def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
-        super().run_protocol(session, config)
+        DesktopM5QemuOperations.run_protocol(self, session, config)
         self._screenshot = b""
         self._screenshot_metadata = {}
         serial = session["serial"]
+        self._quiesce_external_services(
+            serial, time.monotonic() + config.command_timeout
+        )
+        self._wait_for_local_graphics(serial, time.monotonic() + config.boot_timeout)
+        self._run_debug_console_probe(session, config)
+        self._wait_for_marionette(
+            serial, time.monotonic() + min(config.boot_timeout, 900.0)
+        )
         self._browser_pid = self._query_browser_pid(
             serial, time.monotonic() + config.command_timeout
         )
@@ -381,9 +524,14 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
     def classify_transcript(
         self, transcript: bytes, *, expected_debian_release: str
     ) -> QemuInteractionResult:
-        debug: GateResult = super().classify_transcript(
+        # This gate deliberately quiesces external network services before it
+        # drives Firefox.  Reuse the debug-console lifecycle classifier, but do
+        # not inherit the base browser-web gate's ten-layer Internet contract.
+        debug: GateResult = classify_debug_console_qemu(
             transcript,
             expected_debian_release=expected_debian_release,
+            expected_profile=self._validated_profile or "",
+            require_web_network=False,
         )
         if not debug.passed:
             return QemuInteractionResult(False, debug.reason, False, ())

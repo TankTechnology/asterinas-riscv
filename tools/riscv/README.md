@@ -325,10 +325,18 @@ make test_riscv_physical_graphics_qemu_gate "${QEMU_INPUTS[@]}" \
   RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-interaction"
 ```
 
-The QEMU adapter injects events through HMP into a VirtIO keyboard and tablet.
+The QEMU adapter injects keys through HMP and absolute pointer events through
+a private QMP socket into the VirtIO keyboard and tablet.
+HMP relative mouse moves cannot drive the tablet.
 It validates three nonce-bound browser cycles and captures pixels, but its
 result always records `"physical":false`: QEMU cannot satisfy the physical
 result or prove the Megrez display scanout and real USB xHCI/HID paths.
+
+The physical guest keeps its fixed 900-second safety reboot.
+Graphical setup, all three cycles, HDMI capture, and final verification share
+that lifetime, with 30 seconds reserved before reboot.
+Per-phase timeout settings are upper bounds, not extensions of the board's
+remaining lifetime; an exhausted budget fails closed and proceeds to recovery.
 
 The real run consumes a schema-2 `debian-browser` debug plan. Its canonical
 order is `kernel`, `initramfs`, `qemu_dtb`, `megrez_dtb`, `u_boot`,

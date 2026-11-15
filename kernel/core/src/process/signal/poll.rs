@@ -393,9 +393,60 @@ pub trait Pollable {
 
 #[cfg(ktest)]
 mod test {
-    use ostd::prelude::*;
+    use core::sync::atomic::AtomicBool;
+
+    use ostd::{prelude::*, task::TaskOptions};
 
     use super::*;
+
+    #[ktest]
+    fn one_poller_wakes_from_one_of_three_pollees() {
+        let pollees = [Pollee::new(), Pollee::new(), Pollee::new()];
+        let middle_is_ready = Arc::new(AtomicBool::new(false));
+        let mut poller = Poller::new(None);
+
+        for (index, pollee) in pollees.iter().enumerate() {
+            let events = pollee.poll_with(IoEvents::IN, Some(poller.as_handle_mut()), || {
+                if index == 1 && middle_is_ready.load(Ordering::Acquire) {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                }
+            });
+            assert!(events.is_empty());
+        }
+
+        let middle_pollee = pollees[1].clone();
+        let middle_is_ready_cloned = middle_is_ready.clone();
+        TaskOptions::new(move || {
+            Task::yield_now();
+            middle_is_ready_cloned.store(true, Ordering::Release);
+            middle_pollee.notify(IoEvents::IN);
+        })
+        .data(())
+        .spawn()
+        .unwrap();
+
+        poller.wait().unwrap();
+
+        for (index, pollee) in pollees.iter().enumerate() {
+            let events = pollee.poll_with(IoEvents::IN, None, || {
+                if index == 1 && middle_is_ready.load(Ordering::Acquire) {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                }
+            });
+            assert_eq!(
+                events,
+                if index == 1 {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                }
+            );
+        }
+    }
 
     #[ktest]
     fn notify_before() {

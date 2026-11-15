@@ -6,6 +6,8 @@ use super::SyscallReturn;
 use crate::{
     ipc::{IpcControlCmd, IpcId, shared_memory::PermissionMode},
     prelude::*,
+    process::credentials::capabilities::CapSet,
+    security::lsm::hooks as lsm_hooks,
 };
 
 pub fn sys_shmctl(shmid: i32, op: i32, arg: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
@@ -25,10 +27,16 @@ pub fn sys_shmctl(shmid: i32, op: i32, arg: Vaddr, ctx: &Context) -> Result<Sysc
     match cmd {
         IpcControlCmd::IPC_RMID => {
             let euid = ctx.posix_thread.credentials().euid();
-            ipc_ns.remove_shm_set(shmid, |shm_set| {
-                // TODO: Consider capabilities in addition to UIDs.
+            let has_sys_admin = lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+                ipc_ns.owner().as_ref(),
+                ctx.posix_thread,
+                CapSet::SYS_ADMIN,
+            ))
+            .is_ok();
+            ipc_ns.mark_shm_set_for_removal(shmid, |shm_set| {
                 let permission = shm_set.permission();
-                let can_remove = (euid == permission.uid()) || (euid == permission.cuid());
+                let can_remove =
+                    (euid == permission.uid()) || (euid == permission.cuid()) || has_sys_admin;
                 if !can_remove {
                     return_errno_with_message!(
                         Errno::EPERM,

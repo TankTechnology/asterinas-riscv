@@ -51,6 +51,7 @@ fi
 ./prctl/thread_name
 
 ./pthread/pthread_signal_test
+./pthread/pthread_cond_handoff
 ./pthread/pthread_test
 
 ./ptrace/ptrace
@@ -83,6 +84,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
 fi
 
 ./cgroup.sh
+./syslog/syslog
 ./group_session
 ./job_control
 ./pidfd

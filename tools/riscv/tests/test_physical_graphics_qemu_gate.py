@@ -15,6 +15,7 @@ from tools.riscv.debian.rootfs.debug_console_qemu_gate import (
     DEBUG_CONSOLE_QEMU_MILESTONES,
     DebugConsoleQemuOperations,
 )
+from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import DesktopM5QemuOperations
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import NETWORK_LAYERS
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
@@ -46,6 +47,9 @@ def interaction_markers(*, absolute_events: int = 2) -> bytes:
             (
                 f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} "
                 f"nonce_sha256={nonce_hash}",
+                f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} "
+                f"nonce_sha256={nonce_hash}",
+                f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}",
                 f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} "
                 f"key_downs=16 relative_events=0 "
                 f"absolute_events={absolute_events} left_down=1 left_up=1 "
@@ -105,6 +109,11 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
             argv[argv.index("-monitor") + 1],
             f"unix:{monitor},server=on,wait=off",
         )
+        self.assertEqual(argv.count("-qmp"), 1)
+        self.assertEqual(
+            argv[argv.index("-qmp") + 1],
+            f"unix:{root / 'physical-input.qmp'},server=on,wait=off",
+        )
         flattened = " ".join(argv).lower()
         self.assertNotIn("-vnc", flattened)
         self.assertNotIn("gtk", flattened)
@@ -115,16 +124,19 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
             bootargs.endswith("-- --root-init=systemd --debug-console=root")
         )
         self.assertIn("systemd.mask=asterinas-browser-web-evidence.service", bootargs)
+        self.assertIn("systemd.mask=asterinas-desktop-m5-network.service", bootargs)
+        self.assertIn("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1", bootargs)
         self.assertIn("asterinas.debian_network=qemu-slirp", bootargs)
         self.assertFalse(PhysicalGraphicsQemuOperations.CAPTURE_DEBUG_SCREENSHOT)
+        self.assertFalse(PhysicalGraphicsQemuOperations.REQUIRE_FIXTURE_EVIDENCE)
 
 
 class PhysicalGraphicsQemuInputTests(unittest.TestCase):
-    def test_commands_are_exactly_sixteen_hex_keys_then_relative_move_and_click(
+    def test_hmp_commands_are_only_sixteen_hex_keys_without_relative_pointer_input(
         self,
     ) -> None:
         commands = qemu_input_commands(NONCES[0])
-        self.assertEqual(len(commands), 20)
+        self.assertEqual(len(commands), 16)
         self.assertEqual(
             tuple(command.split()[1] for command in commands[:16]),
             tuple(NONCES[0]),
@@ -132,9 +144,7 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         self.assertTrue(
             all(command.startswith("sendkey ") for command in commands[:16])
         )
-        self.assertEqual(commands[16], "mouse_move -32767 -32767")
-        self.assertEqual(commands[17], "mouse_move 640 600")
-        self.assertEqual(commands[18:], ("mouse_button 1", "mouse_button 0"))
+        self.assertFalse(any(command.startswith("mouse_") for command in commands))
         joined = " ".join(commands)
         for forbidden in ("xdotool", "Marionette", "PerformActions", "-vnc", "gtk"):
             self.assertNotIn(forbidden, joined)
@@ -143,6 +153,51 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         for nonce in ("", "0" * 15, "0" * 17, "A" * 16, "0" * 15 + "g"):
             with self.subTest(nonce=nonce), self.assertRaises(ValueError):
                 qemu_input_commands(nonce)
+
+    def test_quiesces_external_services_before_interaction(self) -> None:
+        class Serial:
+            def checkpoint(self) -> int:
+                return 7
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del deadline
+                self.command = payload.decode()
+
+        serial = Serial()
+        operations = object.__new__(PhysicalGraphicsQemuOperations)
+        with mock.patch(
+            "tools.riscv.physical_graphics_qemu_gate._next_line",
+            return_value=(
+                "__ASTERINAS_PHYSICAL_EXTERNAL__ status=0 "
+                "evidence_state=inactive evidence_pid=0 "
+                "network_state=inactive network_pid=0",
+                8,
+            ),
+        ):
+            operations._quiesce_external_services(serial, 100.0)
+
+        self.assertIn("systemctl stop", serial.command)
+        self.assertIn("systemctl reset-failed", serial.command)
+        self.assertIn("asterinas-browser-web-evidence.service", serial.command)
+        self.assertIn("asterinas-desktop-m5-network.service", serial.command)
+
+    def test_rejects_browser_evidence_that_remains_active(self) -> None:
+        serial = mock.Mock()
+        serial.checkpoint.return_value = 7
+        operations = object.__new__(PhysicalGraphicsQemuOperations)
+        with (
+            mock.patch(
+                "tools.riscv.physical_graphics_qemu_gate._next_line",
+                return_value=(
+                    "__ASTERINAS_PHYSICAL_EXTERNAL__ status=124 "
+                    "evidence_state=active evidence_pid=42 "
+                    "network_state=inactive network_pid=0",
+                    8,
+                ),
+            ),
+            self.assertRaisesRegex(GateFailure, "still active"),
+        ):
+            operations._quiesce_external_services(serial, 100.0)
 
     def test_one_cycle_waits_for_ready_before_any_hmp_input_and_captures_after_pass(
         self,
@@ -181,6 +236,8 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         lines = iter(
             (
                 f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256={nonce_hash}",
+                f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=1 nonce_sha256={nonce_hash}",
+                "ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=1",
                 "ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=1",
                 "__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle=1 status=0",
             )
@@ -191,7 +248,12 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         ) -> tuple[str, int]:
             line = next(lines)
             if "_READY " in line:
-                events.append("ready")
+                if "KEY_READY" in line:
+                    events.append("key-ready")
+                elif "POINTER_READY" in line:
+                    events.append("pointer-ready")
+                else:
+                    events.append("ready")
             elif "_PASS " in line:
                 events.append("pass")
             elif "COMMAND_STATUS" in line:
@@ -208,16 +270,30 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
                 return_value=b"guest-png",
             ),
             mock.patch(
-                "tools.riscv.physical_graphics_qemu_gate.capture_rendered_ppm",
+                "tools.riscv.physical_graphics_qemu_gate.capture_screendump",
                 side_effect=lambda *_args, **_kwargs: (
-                    events.append("capture") or (b"ppm", {"width": 1280})
+                    events.append("capture") or b"ppm"
                 ),
+            ) as capture,
+            mock.patch(
+                "tools.riscv.physical_graphics_qemu_gate.inspect_ppm",
+                return_value={"width": 1280},
             ),
             mock.patch(
                 "tools.riscv.physical_graphics_qemu_gate.time.monotonic",
                 return_value=100.0,
             ),
             mock.patch("tools.riscv.physical_graphics_qemu_gate.time.sleep"),
+            mock.patch(
+                "tools.riscv.physical_graphics_qemu_gate.move_tablet",
+                side_effect=lambda *_args, **_kwargs: events.append("tablet-move"),
+                create=True,
+            ) as tablet_move,
+            mock.patch(
+                "tools.riscv.physical_graphics_qemu_gate.click_left_button",
+                side_effect=lambda *_args, **_kwargs: events.append("tablet-click"),
+                create=True,
+            ) as tablet_click,
         ):
             evidence = operations._run_interaction_cycle(
                 session, config, cycle=1, nonce=NONCES[0]
@@ -229,12 +305,40 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         hmp_indices = [
             index for index, event in enumerate(events) if event.startswith("hmp:")
         ]
-        self.assertEqual(len(hmp_indices), 20)
+        self.assertEqual(len(hmp_indices), 16)
         self.assertTrue(all(index > ready_index for index in hmp_indices))
         self.assertTrue(all(index < pass_index for index in hmp_indices))
         self.assertGreater(capture_index, pass_index)
+        self.assertGreater(events.index("key-ready"), max(hmp_indices))
+        self.assertGreater(events.index("tablet-move"), events.index("key-ready"))
+        self.assertGreater(events.index("pointer-ready"), events.index("tablet-move"))
+        self.assertGreater(events.index("tablet-click"), events.index("pointer-ready"))
+        self.assertLess(events.index("tablet-click"), pass_index)
+        self.assertEqual(
+            tablet_move.call_args.args[0],
+            session["directory"] / "physical-input.qmp",
+        )
+        self.assertAlmostEqual(
+            tablet_move.call_args.kwargs["x"] * 1279 / 32767, 640, delta=1
+        )
+        self.assertAlmostEqual(
+            tablet_move.call_args.kwargs["y"] * 1023 / 32767, 500, delta=1
+        )
+        self.assertEqual(
+            tablet_click.call_args.args[0],
+            session["directory"] / "physical-input.qmp",
+        )
+        self.assertEqual(
+            capture.call_args.args,
+            (
+                session["directory"] / "physical-input.qmp",
+                session["directory"] / "physical-graphics-qemu-cycle-1.ppm",
+            ),
+        )
+        self.assertEqual(capture.call_args.kwargs["capture_root"], session["directory"])
         self.assertIn("--expected-width 1280", serial.command)
         self.assertIn("--expected-height 1024", serial.command)
+        self.assertIn("--setup-timeout 600", serial.command)
         self.assertNotIn("xdotool", serial.command)
         self.assertEqual(evidence.cycle, 1)
 
@@ -284,6 +388,62 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
             )
         monitor.command.assert_not_called()
 
+    def test_rejects_command_exit_before_ready_or_pass_without_waiting(self) -> None:
+        ready = (
+            "ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256="
+            + hashlib.sha256(NONCES[0].encode()).hexdigest()
+        )
+        for prefix in ([], [ready]):
+            for status in ("cycle=1 status=1", "cycle=1 status=0", "malformed"):
+                with self.subTest(ready=bool(prefix), status=status):
+                    serial = mock.Mock(transcript=b"")
+                    serial.checkpoint.return_value = 0
+                    monitor = mock.Mock()
+                    operations = object.__new__(PhysicalGraphicsQemuOperations)
+                    operations._browser_pid = 42
+                    lines = iter(
+                        [*prefix, "__ASTERINAS_PHYSICAL_COMMAND_STATUS__" + status]
+                    )
+
+                    def next_line(_serial, cursor, _deadline):
+                        try:
+                            return next(lines), cursor + 1
+                        except StopIteration:
+                            self.fail(
+                                "waited for more serial output after command exit"
+                            )
+
+                    with (
+                        mock.patch(
+                            "tools.riscv.physical_graphics_qemu_gate._next_line",
+                            side_effect=next_line,
+                        ),
+                        mock.patch(
+                            "tools.riscv.physical_graphics_qemu_gate.time.sleep"
+                        ),
+                        mock.patch(
+                            "tools.riscv.physical_graphics_qemu_gate.move_tablet",
+                            create=True,
+                        ),
+                        mock.patch(
+                            "tools.riscv.physical_graphics_qemu_gate.click_left_button",
+                            create=True,
+                        ),
+                        self.assertRaisesRegex(GateFailure, "exited before"),
+                    ):
+                        operations._run_interaction_cycle(
+                            {
+                                "serial": serial,
+                                "monitor": monitor,
+                                "directory": Path("/tmp/physical-test"),
+                            },
+                            mock.Mock(command_timeout=30.0),
+                            cycle=1,
+                            nonce=NONCES[0],
+                        )
+                    if not prefix:
+                        monitor.command.assert_not_called()
+
     def test_protocol_runs_debug_then_three_distinct_cycles_and_final_check(
         self,
     ) -> None:
@@ -317,12 +477,32 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
             return evidence
 
         session = {"serial": mock.sentinel.serial}
-        config = mock.Mock(command_timeout=30.0)
+        config = mock.Mock(command_timeout=30.0, boot_timeout=83.0)
         with (
             mock.patch.object(
-                DebugConsoleQemuOperations,
+                DesktopM5QemuOperations,
                 "run_protocol",
+                side_effect=lambda *_args: events.append("base"),
+            ),
+            mock.patch.object(
+                operations,
+                "_quiesce_external_services",
+                side_effect=lambda *_args: events.append("quiesce"),
+            ),
+            mock.patch.object(
+                operations,
+                "_wait_for_local_graphics",
+                side_effect=lambda *_args: events.append("graphics"),
+            ),
+            mock.patch.object(
+                operations,
+                "_run_debug_console_probe",
                 side_effect=lambda *_args: events.append("debug"),
+            ),
+            mock.patch.object(
+                operations,
+                "_wait_for_marionette",
+                side_effect=lambda *_args: events.append("marionette"),
             ),
             mock.patch.object(
                 operations,
@@ -356,7 +536,11 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
+                "base",
+                "quiesce",
+                "graphics",
                 "debug",
+                "marionette",
                 "browser",
                 *(f"cycle-{cycle}:{nonce}" for cycle, nonce in enumerate(NONCES, 1)),
                 "final",
@@ -417,6 +601,22 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
 
 
 class PhysicalGraphicsQemuClassifierTests(unittest.TestCase):
+    def test_accepts_local_interaction_without_external_network_milestones(
+        self,
+    ) -> None:
+        transcript = (
+            ("\n".join(DEBUG_CONSOLE_QEMU_MILESTONES) + "\n").encode()
+            + b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready guest_monotonic_ns=1 pid=2\n"
+            + interaction_markers()
+        )
+        result = classify_physical_graphics_qemu(
+            transcript,
+            expected_debian_release="13.6",
+            nonces=NONCES,
+        )
+
+        self.assertTrue(result.passed, result.reason)
+
     def test_accepts_qemu_tablet_absolute_events_but_is_never_physical(self) -> None:
         result = classify_physical_graphics_qemu(
             passing_transcript(),
@@ -464,9 +664,8 @@ class PhysicalGraphicsQemuClassifierTests(unittest.TestCase):
         self.assertTrue(result.passed, result.reason)
         self.assertFalse(result.physical)
 
-        with mock.patch.object(
-            DebugConsoleQemuOperations,
-            "classify_transcript",
+        with mock.patch(
+            "tools.riscv.physical_graphics_qemu_gate.classify_debug_console_qemu",
             return_value=mock.Mock(passed=False, reason="debug failed"),
         ):
             result = operations.classify_transcript(
@@ -474,6 +673,24 @@ class PhysicalGraphicsQemuClassifierTests(unittest.TestCase):
             )
         self.assertFalse(result.passed)
         self.assertEqual(result.reason, "debug failed")
+
+    def test_adapter_accepts_local_interaction_without_network_milestones(
+        self,
+    ) -> None:
+        operations = object.__new__(PhysicalGraphicsQemuOperations)
+        operations._nonces = NONCES
+        operations._validated_profile = "browser-web"
+        transcript = (
+            ("\n".join(DEBUG_CONSOLE_QEMU_MILESTONES) + "\n").encode()
+            + b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready guest_monotonic_ns=1 pid=2\n"
+            + interaction_markers()
+        )
+
+        result = operations.classify_transcript(
+            transcript, expected_debian_release="13.6"
+        )
+
+        self.assertTrue(result.passed, result.reason)
 
     def test_missing_nonces_fails_closed(self) -> None:
         operations = object.__new__(PhysicalGraphicsQemuOperations)

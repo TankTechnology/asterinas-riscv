@@ -49,6 +49,22 @@ impl<T> IpcIds<T> {
     where
         F: FnOnce(&T) -> Result<()>,
     {
+        self.remove_if(id, |object| {
+            may_remove(object)?;
+            Ok(true)
+        })?;
+        Ok(())
+    }
+
+    /// Removes the object if `should_remove` returns true.
+    ///
+    /// The callback and the optional removal are performed while holding the
+    /// object-table write lock, so an object cannot be acquired between the
+    /// decision and its removal.
+    pub(super) fn remove_if<F>(&self, id: IpcId, should_remove: F) -> Result<bool>
+    where
+        F: FnOnce(&T) -> Result<bool>,
+    {
         use alloc::collections::btree_map::Entry;
 
         let mut objects = self.objects.write();
@@ -57,12 +73,15 @@ impl<T> IpcIds<T> {
             return_errno_with_message!(Errno::EINVAL, "the ID does not exist");
         };
 
-        may_remove(entry.get())?;
+        if !should_remove(entry.get())? {
+            return Ok(false);
+        }
+
         entry.remove();
 
         self.id_allocator.lock().free(id.get() as usize);
 
-        Ok(())
+        Ok(true)
     }
 
     /// Inserts a new object with an automatically allocated ID.

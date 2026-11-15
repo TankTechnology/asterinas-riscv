@@ -321,7 +321,7 @@ class MegrezDebugArtifactTests(unittest.TestCase):
         ):
             ArtifactIdentity.from_path("kernel", artifact, 0x80200000)
 
-    def test_root_image_identity_requires_one_exact_gibibyte_and_zero_address(
+    def test_root_image_identity_accepts_exact_one_or_two_gibibytes_at_zero_address(
         self,
     ) -> None:
         root_image = self.directory / "debian-root.ext2"
@@ -332,6 +332,7 @@ class MegrezDebugArtifactTests(unittest.TestCase):
 
         self.assertEqual(identity.size, ROOT_IMAGE_BYTES)
         self.assertEqual(identity.load_address, 0)
+        replace(identity, size=2 * ROOT_IMAGE_BYTES).validate()
         for invalid in (
             replace(identity, size=ROOT_IMAGE_BYTES - 4096),
             replace(identity, size=ROOT_IMAGE_BYTES + 4096),
@@ -645,9 +646,7 @@ class MegrezDebugDebianPlanTests(unittest.TestCase):
         plan = self._plan()
         bootargs = plan.bootargs.replace(" -- --root-init=systemd", "")
 
-        with self.assertRaisesRegex(
-            DebugContractError, "stage1 systemd selector"
-        ):
+        with self.assertRaisesRegex(DebugContractError, "stage1 systemd selector"):
             replace(plan, bootargs=bootargs).validate()
 
     def test_schema_two_rejects_stale_bare_megrez_argument(self) -> None:
@@ -702,6 +701,7 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.manifest = SimpleNamespace(
+            schema_version=5,
             profile="desktop-m5-network",
             root_image_sha256=self.root_identity.sha256,
             packages_lock_sha256=hashlib.sha256(
@@ -762,7 +762,58 @@ class MegrezDebugDebianPlanCliTests(unittest.TestCase):
         validate_root.assert_called_once_with(
             self.paths["root_image"], self.manifest, self.paths["packages_lock"]
         )
-        load_checksums.assert_called_once_with(self.paths["package_checksums"])
+        load_checksums.assert_called_once_with(
+            self.paths["package_checksums"], schema_version=5
+        )
+
+    def test_create_plan_accepts_browser_web_multi_source_manifest(self) -> None:
+        base_sha256 = hashlib.sha256(self.paths["in_release"].read_bytes()).hexdigest()
+        manifest = SimpleNamespace(
+            **{
+                **vars(self.manifest),
+                "schema_version": 7,
+                "profile": "browser-web",
+                "signed_metadata_sha256": "",
+                "signed_sources": (
+                    ("base", "mirror", "suite", "base-url", base_sha256),
+                    (
+                        "security",
+                        "security-mirror",
+                        "security-suite",
+                        "security-url",
+                        "1" * 64,
+                    ),
+                ),
+            }
+        )
+        with (
+            mock.patch.object(
+                debug_module, "load_manifest", return_value=manifest, create=True
+            ),
+            mock.patch.object(
+                debug_module,
+                "validate_frozen_root",
+                return_value=manifest,
+                create=True,
+            ),
+            mock.patch.object(
+                debug_module,
+                "load_package_checksums",
+                return_value=manifest.downloaded_packages,
+                create=True,
+            ),
+        ):
+            plan = debug_module._create_plan(self._arguments())
+
+        self.assertEqual(plan.profile, "debian-browser")
+        self.assertEqual(
+            next(
+                artifact.sha256
+                for artifact in plan.artifacts
+                if artifact.name == "in_release"
+            ),
+            base_sha256,
+        )
 
     def test_create_plan_defaults_browser_recovery_window_to_six_hundred_seconds(
         self,

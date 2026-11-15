@@ -30,9 +30,10 @@ impl FsDirOps {
         ProcDir::new(Self, parent, mkmod!(a+rx))
     }
 
-    const STATIC_ENTRIES: &'static [StaticEntry] =
-        &[("nr_open", InodeType::File, NrOpenFileOps::new_inode),
-          ("file-max", InodeType::File, FileMaxFileOps::new_inode)];
+    const STATIC_ENTRIES: &'static [StaticEntry] = &[
+        ("nr_open", InodeType::File, NrOpenFileOps::new_inode),
+        ("file-max", InodeType::File, FileMaxFileOps::new_inode),
+    ];
 }
 
 impl ProcDirOps for FsDirOps {

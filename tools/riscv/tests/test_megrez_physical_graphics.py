@@ -16,6 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 import zlib
 
 
@@ -64,6 +65,8 @@ class PhysicalMarkerTests(unittest.TestCase):
         screenshot_hash = hashlib.sha256(f"screen-{cycle}".encode()).hexdigest()
         return [
             f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
+            f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} nonce_sha256={nonce_hash}",
+            f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
             f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} sha256={screenshot_hash}",
@@ -85,6 +88,26 @@ class PhysicalMarkerTests(unittest.TestCase):
         cycles = gate.classify_interaction_transcript(self._passing(), self.NONCES)
         self.assertEqual([cycle.cycle for cycle in cycles], [1, 2, 3])
         self.assertEqual([cycle.key_downs for cycle in cycles], [16, 16, 16])
+
+    def test_accepts_three_exact_nonce_hash_bound_cycles(self) -> None:
+        gate = load_gate(self)
+        self.assertTrue(
+            hasattr(gate, "classify_interaction_hash_transcript"),
+            "interaction hash classifier is missing",
+        )
+        nonce_hashes = tuple(
+            hashlib.sha256(nonce.encode()).hexdigest() for nonce in self.NONCES
+        )
+
+        cycles = gate.classify_interaction_hash_transcript(
+            self._passing(), nonce_hashes
+        )
+
+        self.assertEqual(tuple(cycle.nonce_sha256 for cycle in cycles), nonce_hashes)
+        with self.assertRaises(gate.HostGateError):
+            gate.classify_interaction_hash_transcript(
+                self._passing(), (nonce_hashes[0],) * 3
+            )
 
     def test_rejects_missing_duplicate_reordered_and_wrong_nonce_markers(self) -> None:
         gate = load_gate(self)
@@ -143,10 +166,10 @@ class PhysicalMarkerTests(unittest.TestCase):
 
     def test_rejects_reused_screenshot_digest_across_distinct_cycles(self) -> None:
         gate = load_gate(self)
-        first = self._cycle_lines(1)[3].rsplit("=", 1)[1]
+        first = self._cycle_lines(1)[5].rsplit("=", 1)[1]
         stale = self._passing()
         for cycle in (2, 3):
-            current = self._cycle_lines(cycle)[3].rsplit("=", 1)[1]
+            current = self._cycle_lines(cycle)[5].rsplit("=", 1)[1]
             stale = stale.replace(current, first)
         with self.assertRaisesRegex(gate.HostGateError, "screenshot digest"):
             gate.classify_interaction_transcript(stale, self.NONCES)
@@ -242,6 +265,7 @@ class HdmiEvidenceTests(unittest.TestCase):
             )
             try:
                 operations.invalidate()
+                operations._guest_deadline = time.monotonic() + 900
                 with self.assertRaises(TimeoutError):
                     operations.retain_hdmi(0.001)
                 update = threading.Timer(
@@ -297,6 +321,7 @@ class HdmiEvidenceTests(unittest.TestCase):
                     os.fsync(stream.fileno())
 
             operations.invalidate()
+            operations._guest_deadline = time.monotonic() + 900
             producer = threading.Thread(target=produce)
             producer.start()
             try:
@@ -396,6 +421,8 @@ class PhysicalLifecycleTests(unittest.TestCase):
             self._transcript.extend(
                 (
                     f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
+                    f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} nonce_sha256={nonce_hash}",
+                    f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} sha256={screenshot_hash}",
@@ -460,6 +487,12 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertNotIn("asterinas.reboot_after=600", tokens)
         self.assertEqual(
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
+        )
+        self.assertEqual(
+            tokens.count("systemd.mask=asterinas-desktop-m5-network.service"), 1
+        )
+        self.assertEqual(
+            tokens.count("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1"), 1
         )
         self.assertEqual(
             tokens[-3:], ["--", "--root-init=systemd", "--debug-console=root"]
@@ -600,6 +633,93 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
 
 class PhysicalCommandTests(unittest.TestCase):
+    def test_three_slow_cycles_share_the_original_board_reboot_budget(self) -> None:
+        gate = load_gate(self)
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._browser_pid = 42
+        operations._guest_deadline = 970.0
+        serial = mock.Mock(transcript=b"")
+        serial.checkpoint.return_value = 0
+        operations._serial = serial
+        now = [100.0]
+        nonce = "0123456789abcdef"
+        nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
+        lines = iter(
+            (elapsed, line)
+            for cycle in (1, 2, 3)
+            for elapsed, line in (
+                (
+                    250.0,
+                    f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
+                ),
+                (100.0, f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}"),
+                (0.0, f"__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle={cycle} status=0"),
+            )
+        )
+
+        def next_line(_serial, cursor, deadline):
+            elapsed, line = next(lines)
+            if now[0] + elapsed >= deadline:
+                now[0] = deadline
+                raise TimeoutError("bounded serial phase expired")
+            now[0] += elapsed
+            return line, cursor + 1
+
+        with (
+            mock.patch.object(gate.time, "monotonic", side_effect=lambda: now[0]),
+            mock.patch.object(operations, "_next_line", side_effect=next_line),
+            mock.patch.object(operations, "_sync_serial_log"),
+            mock.patch.object(gate, "extract_screenshot_frame", return_value=b"png"),
+            mock.patch("builtins.print"),
+        ):
+            operations.run_cycle(1, nonce, 100.0)
+            operations.run_cycle(2, nonce, 100.0)
+            with self.assertRaises(TimeoutError):
+                operations.run_cycle(3, nonce, 100.0)
+        self.assertEqual(now[0], 970.0)
+        self.assertTrue(
+            all(call.args[1] <= 970.0 for call in serial.send.call_args_list)
+        )
+
+    def test_rejects_command_exit_before_pass_without_waiting(self) -> None:
+        from tools.riscv import megrez_physical_graphics as gate
+
+        ready = (
+            "ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256="
+            + hashlib.sha256("0123456789abcdef".encode()).hexdigest()
+        )
+        for prefix in ([], [ready]):
+            for status in ("cycle=1 status=1", "cycle=1 status=0", "malformed"):
+                with self.subTest(ready=bool(prefix), status=status):
+                    serial = mock.Mock()
+                    serial.checkpoint.return_value = 0
+                    operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+                    operations._serial = serial
+                    operations._browser_pid = 42
+                    operations._guest_deadline = time.monotonic() + 900
+                    lines = iter(
+                        [*prefix, "__ASTERINAS_PHYSICAL_COMMAND_STATUS__" + status]
+                    )
+
+                    def next_line(_serial, cursor, _deadline):
+                        try:
+                            return next(lines), cursor + 1
+                        except StopIteration:
+                            self.fail(
+                                "waited for more serial output after command exit"
+                            )
+
+                    with (
+                        mock.patch.object(
+                            operations, "_next_line", side_effect=next_line
+                        ),
+                        mock.patch("builtins.print"),
+                        self.assertRaisesRegex(
+                            gate.HostGateError, "exited before PASS"
+                        ),
+                    ):
+                        operations.run_cycle(1, "0123456789abcdef", 30)
+
     def test_cli_exposes_every_physical_phase_deadline(self) -> None:
         gate = load_gate(self)
         values = gate.parse_args(
@@ -657,6 +777,49 @@ class PhysicalCommandTests(unittest.TestCase):
         ):
             self.assertIn(fragment, command)
 
+    def test_external_service_quiesce_is_fail_closed(self) -> None:
+        gate = load_gate(self)
+        command = gate.physical_external_services_quiesce_command()
+        for fragment in (
+            "timeout 60",
+            "systemctl stop",
+            "systemctl reset-failed",
+            "asterinas-browser-web-evidence.service",
+            "asterinas-desktop-m5-network.service",
+            "evidence_state=%s",
+            "network_state=%s",
+            "__ASTERINAS_PHYSICAL_EXTERNAL__",
+        ):
+            self.assertIn(fragment, command)
+
+    def test_real_gate_requires_quiesced_services_before_preflight(self) -> None:
+        gate = load_gate(self)
+
+        class Serial:
+            def checkpoint(self) -> int:
+                return 7
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del deadline
+                self.command = payload.decode()
+
+        serial = Serial()
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = serial
+        with mock.patch.object(
+            operations,
+            "_next_line",
+            return_value=(
+                "__ASTERINAS_PHYSICAL_EXTERNAL__ status=0 "
+                "evidence_state=inactive evidence_pid=0 "
+                "network_state=inactive network_pid=0",
+                8,
+            ),
+        ):
+            operations._quiesce_external_services(100.0)
+
+        self.assertIn("systemctl stop", serial.command)
+
     def test_readiness_requires_two_xhci_hosts_and_both_usb_hid_devices(self) -> None:
         gate = load_gate(self)
         values = {
@@ -693,6 +856,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "/usr/lib/asterinas/physical-graphics-gate",
             "--nonce 0123456789abcdef",
             "--cycle 2",
+            "--setup-timeout 300",
             "__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle=2 status=%s",
         ):
             self.assertIn(fragment, command)
@@ -714,6 +878,10 @@ class PhysicalCommandTests(unittest.TestCase):
                 self.assertRaises(ValueError),
             ):
                 gate.physical_cycle_command(cycle, nonce, timeout)
+        with self.assertRaises(ValueError):
+            gate.physical_cycle_command(
+                1, "0123456789abcdef", 180.0, setup_timeout=901.0
+            )
 
     def test_final_command_rechecks_cycle_three_without_navigation_or_input(
         self,
@@ -725,6 +893,7 @@ class PhysicalCommandTests(unittest.TestCase):
             "--cycle 3",
             "--firefox-pid",
             "--verify-final",
+            "--setup-timeout 300",
             "__ASTERINAS_PHYSICAL_FINAL_STATUS__",
         ):
             self.assertIn(fragment, command)
@@ -742,6 +911,20 @@ class ScreenshotTransferTests(unittest.TestCase):
             f"__ASTERINAS_PHYSICAL_SCREENSHOT_BEGIN__ cycle=2 size={len(payload)} sha256={digest}\n"
             f"{base64.b64encode(payload).decode()}\n"
             "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=2\n"
+        )
+        self.assertEqual(gate.extract_screenshot_frame(transcript, 2), payload)
+
+    def test_extracts_frame_from_serial_transcript_with_double_carriage_returns(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        payload = png_payload(value=0x43)
+        digest = hashlib.sha256(payload).hexdigest()
+        transcript = (
+            "shell echo noise\r\r\n"
+            f"__ASTERINAS_PHYSICAL_SCREENSHOT_BEGIN__ cycle=2 size={len(payload)} sha256={digest}\r\r\n"
+            f"{base64.b64encode(payload).decode()}\r\r\n"
+            "__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle=2\r\r\n"
         )
         self.assertEqual(gate.extract_screenshot_frame(transcript, 2), payload)
 
@@ -924,6 +1107,7 @@ class DocumentationTests(unittest.TestCase):
         ):
             self.assertIn(f"$({variable})", qemu_recipe)
         self.assertIn("tools.riscv.physical_graphics_qemu_gate", qemu_recipe)
+        self.assertIn("--command-timeout 300", qemu_recipe)
 
         prepare_recipe = makefile.split("prepare_riscv_megrez_physical_graphics:", 1)[
             1

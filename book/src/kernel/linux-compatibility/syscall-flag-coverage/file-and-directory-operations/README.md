@@ -59,9 +59,13 @@ Supported functionality in SCML:
 {{#include lseek.scml}}
 ```
 
-Unsupported flags:
-* `SEEK_DATA`
-* `SEEK_HOLE`
+`SEEK_DATA` is supported only for `/dev/kmsg` with a zero offset,
+where it selects the non-destructive clear marker rather than a byte extent.
+For that device, zero-offset `SEEK_SET` selects the oldest retained record
+and zero-offset `SEEK_END` selects the next record to be published.
+`SEEK_CUR` and `SEEK_HOLE` are invalid there.
+
+General file data/hole seeking remains unsupported.
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/lseek.2.html).

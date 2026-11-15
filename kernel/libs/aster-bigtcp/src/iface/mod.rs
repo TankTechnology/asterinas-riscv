@@ -23,3 +23,4 @@ pub use phy::{EtherIface, IpIface};
 pub(crate) use poll_iface::{PollKey, PollableIfaceMut};
 pub use port::BindPortConfig;
 pub use sched::ScheduleNextPoll;
+pub use tcp_diagnostics::configure_tcp_diagnostics;

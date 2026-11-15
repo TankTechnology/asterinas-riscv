@@ -211,7 +211,9 @@ def qemu_web_network_bootargs(
         raise ValueError("mode must be a NetworkMode")
     if not isinstance(expected_failure, QemuExpectedFailure):
         raise ValueError("expected failure must be a QemuExpectedFailure")
-    resolver = "192.0.2.1" if expected_failure is QemuExpectedFailure.DNS else "10.0.2.3"
+    resolver = (
+        "192.0.2.1" if expected_failure is QemuExpectedFailure.DNS else "10.0.2.3"
+    )
     mode_arguments = (
         f"systemd.setenv=ASTERINAS_WEB_NETWORK_MODE={mode.value} "
         "systemd.setenv=ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 "
@@ -224,13 +226,10 @@ def qemu_web_network_bootargs(
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893 "
         )
     else:
-        mode_arguments += (
-            f"systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER={resolver} "
-        )
+        mode_arguments += f"systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER={resolver} "
     if expected_failure is QemuExpectedFailure.TLS:
         mode_arguments += (
-            "systemd.setenv=ASTERINAS_WEB_NETWORK_HTTPS_URL="
-            "https://10.0.2.2:8446/ "
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_HTTPS_URL=https://10.0.2.2:8446/ "
         )
     return (
         "console=ttyS0 loglevel=4 init=/init "
@@ -302,7 +301,10 @@ def _parse_target(
     if target is QemuGateTarget.NETWORK:
         if values.network_mode is None:
             parser.error("network target requires --network-mode")
-    elif values.network_mode is not None or values.expect_failure is not QemuExpectedFailure.NONE:
+    elif (
+        values.network_mode is not None
+        or values.expect_failure is not QemuExpectedFailure.NONE
+    ):
         parser.error("web network options require --target network")
     if values.expect_failure is QemuExpectedFailure.PROXY_UNAVAILABLE:
         if values.network_mode is not NetworkMode.PROXY:
@@ -343,6 +345,7 @@ class DesktopM5QemuOperations(DesktopM4Operations):
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M4_FAIL reason="
     BOOTARGS = DESKTOP_M5_QEMU_BOOTARGS
     TARGET = QemuGateTarget.BROWSER
+    REQUIRE_FIXTURE_EVIDENCE = True
 
     def __init__(
         self,
@@ -374,9 +377,7 @@ class DesktopM5QemuOperations(DesktopM4Operations):
         self._require_output().invalidate("network-fixture.json")
 
     def _fixture_evidence_passes(self, summary: dict[str, object]) -> bool:
-        return is_successful_summary(
-            summary, expected_requests=QEMU_FIXTURE_REQUESTS
-        )
+        return is_successful_summary(summary, expected_requests=QEMU_FIXTURE_REQUESTS)
 
     def publish(
         self,
@@ -388,7 +389,9 @@ class DesktopM5QemuOperations(DesktopM4Operations):
         summary = self.fixture.summary()
         result["target"] = self.TARGET.value
         result["network_fixture"] = summary
-        if result.get("passed") is True and not self._fixture_evidence_passes(summary):
+        if result.get("passed") is True and (
+            self.REQUIRE_FIXTURE_EVIDENCE and not self._fixture_evidence_passes(summary)
+        ):
             result["passed"] = False
             result["reason"] = "network fixture evidence mismatch"
         fixture_payload = (
@@ -492,9 +495,7 @@ class NetworkM5QemuOperations(DesktopM5QemuOperations):
             QemuExpectedFailure.TLS: 1,
         }[self.expected_failure]
         if expected_requests:
-            return is_successful_summary(
-                summary, expected_requests=expected_requests
-            )
+            return is_successful_summary(summary, expected_requests=expected_requests)
         return (
             summary.get("schema_version") == 1
             and summary.get("payload_path") == FIXTURE_PATH
@@ -617,9 +618,10 @@ def main(arguments: list[str] | None = None) -> int:
                 "network_mode": selection.network_mode,
                 "expected_failure": selection.expected_failure,
             }
-        with TerminationSignalState(), operations_type(
-            config, **operation_arguments
-        ) as operations:
+        with (
+            TerminationSignalState(),
+            operations_type(config, **operation_arguments) as operations,
+        ):
             if selection.target is QemuGateTarget.NETWORK:
                 result = orchestrate_network_m5_qemu_gate(config, operations)
             else:

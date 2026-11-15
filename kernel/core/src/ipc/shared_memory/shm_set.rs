@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use aster_rights::ReadOp;
 
@@ -23,6 +23,9 @@ pub const SHMMIN: usize = 1;
 /// Mirrors Linux's 64-bit `SHMMAX` default of `ULONG_MAX - (1UL << 24)`.
 pub const SHMMAX: usize = usize::MAX - (1 << 24);
 
+/// The segment has been marked for removal with `IPC_RMID`.
+const SHM_DEST: u16 = 0o1000;
+
 /// A System V shared memory segment.
 pub struct ShmSet {
     /// Size of the segment (in bytes).
@@ -43,6 +46,8 @@ pub struct ShmSet {
     shm_lpid: AtomicU32,
     /// Number of current attaches.
     nattch: AtomicU32,
+    /// Whether `IPC_RMID` has marked the segment for deferred destruction.
+    marked_for_removal: AtomicBool,
 }
 
 // In Linux, the `shmid_ds` layout differs between x86_64 and the other
@@ -106,11 +111,24 @@ impl ShmSet {
         self.update_atime();
     }
 
-    /// Records a detach.
-    pub fn detach(&self, pid: Pid) {
-        self.nattch.fetch_sub(1, Ordering::AcqRel);
+    /// Records a detach and returns whether it was the last attachment.
+    pub fn detach(&self, pid: Pid) -> bool {
+        let previous_nattch = self.nattch.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous_nattch > 0);
         self.shm_lpid.store(pid, Ordering::Relaxed);
         self.update_dtime();
+        previous_nattch == 1
+    }
+
+    /// Marks the segment for removal and returns whether it can be destroyed.
+    pub fn mark_for_removal(&self) -> bool {
+        self.marked_for_removal.store(true, Ordering::Release);
+        self.nattch.load(Ordering::Acquire) == 0
+    }
+
+    /// Returns whether the segment has been marked for removal.
+    pub fn is_marked_for_removal(&self) -> bool {
+        self.marked_for_removal.load(Ordering::Acquire)
     }
 
     fn update_atime(&self) {
@@ -134,7 +152,12 @@ impl ShmSet {
             gid: self.permission.gid().into(),
             cuid: self.permission.cuid().into(),
             cgid: self.permission.cguid().into(),
-            mode: self.permission.mode(),
+            mode: self.permission.mode()
+                | if self.is_marked_for_removal() {
+                    SHM_DEST
+                } else {
+                    0
+                },
             ..IpcPerm::default()
         };
 
@@ -176,6 +199,7 @@ impl ShmSet {
             shm_cpid: pid,
             shm_lpid: AtomicU32::new(0),
             nattch: AtomicU32::new(0),
+            marked_for_removal: AtomicBool::new(false),
         })
     }
 }

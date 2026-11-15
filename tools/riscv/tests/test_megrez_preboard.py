@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from tools.riscv import megrez_preboard as preboard_module
 from tools.riscv.debian.rootfs.gate_protocol import GENERIC_SV39_CPU
 from tools.riscv.megrez_debug_contract import (
     DEBIAN_BROWSER_ARTIFACT_ORDER,
@@ -97,6 +98,25 @@ class MegrezPreboardTests(unittest.TestCase):
     def _artifact_validator(self, plan: DebugPlan) -> dict[str, ArtifactIdentity]:
         self.assertIs(plan, self.plan)
         return self.identities
+
+    def test_rootfs_validation_uses_manifest_package_schema(self) -> None:
+        manifest = SimpleNamespace(schema_version=7, downloaded_packages=(("p",),))
+        with (
+            mock.patch.object(preboard_module, "load_manifest", return_value=manifest),
+            mock.patch.object(
+                preboard_module, "validate_frozen_root", return_value=manifest
+            ),
+            mock.patch.object(
+                preboard_module,
+                "load_package_checksums",
+                return_value=manifest.downloaded_packages,
+            ) as load_checksums,
+        ):
+            preboard_module._validate_rootfs(self.identities)
+
+        load_checksums.assert_called_once_with(
+            Path(self.identities["package_checksums"].path), schema_version=7
+        )
 
     def _native_recovery(self) -> dict[str, object]:
         kernel = self.identities["kernel"]

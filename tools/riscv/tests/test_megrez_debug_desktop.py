@@ -26,6 +26,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
     DESKTOP_M7_SEARCH_MARKER,
 )
 from tools.riscv.megrez_debug_contract import (
+    BROWSER_ROOT_IMAGE_BYTES,
     DEBIAN_BROWSER_ARTIFACT_ORDER,
     DEBIAN_BROWSER_MARKERS,
     ROOT_IMAGE_BYTES,
@@ -209,6 +210,147 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
 
         return run
 
+    def _browser_plan(self) -> DebugPlan:
+        artifacts = tuple(
+            replace(identity, size=BROWSER_ROOT_IMAGE_BYTES)
+            if identity.name == "root_image"
+            else identity
+            for identity in self.artifacts
+        )
+        return replace(self.plan, artifacts=artifacts)
+
+    @staticmethod
+    def _browser_protocol() -> tuple[dict[str, object], ...]:
+        cycles: list[dict[str, object]] = []
+        for cycle in range(1, 4):
+            cycles.append(
+                {
+                    "cycle": cycle,
+                    "nonce_sha256": hashlib.sha256(
+                        f"nonce-{cycle}".encode()
+                    ).hexdigest(),
+                    "key_downs": 16,
+                    "relative_events": 0,
+                    "absolute_events": 4,
+                    "left_down": 1,
+                    "left_up": 1,
+                    "evdev_sha256": hashlib.sha256(
+                        f"events-{cycle}".encode()
+                    ).hexdigest(),
+                    "screenshot_sha256": hashlib.sha256(
+                        f"png-{cycle}".encode()
+                    ).hexdigest(),
+                }
+            )
+        return tuple(cycles)
+
+    def _browser_native_result(self, plan: DebugPlan) -> dict[str, object]:
+        identities = {identity.name: identity for identity in plan.artifacts}
+        cycles = self._browser_protocol()
+        rendered = {
+            "distinct_sampled_colors": 200,
+            "height": 1024,
+            "non_background_pixels": 900000,
+            "pixel_count": 1310720,
+            "width": 1280,
+        }
+        return {
+            "cycle_artifacts": [
+                {
+                    "cycle": cycle["cycle"],
+                    "nonce_sha256": cycle["nonce_sha256"],
+                    "guest_png_sha256": cycle["screenshot_sha256"],
+                    "rendered_ppm_sha256": hashlib.sha256(
+                        f"ppm-{cycle['cycle']}".encode()
+                    ).hexdigest(),
+                    "rendered": rendered,
+                }
+                for cycle in cycles
+            ],
+            "debian_release": "13.6",
+            "debug_console": {
+                "desktop_state": "active",
+                "graphical_state": "active",
+                "pid1": "systemd",
+                "root_device": "/dev/vdb",
+                "root_filesystem": "ext2",
+                "uid": 0,
+            },
+            "final_root_sha256": "f" * 64,
+            "input_sha256": {
+                "dtb": identities["qemu_dtb"].sha256,
+                "kernel": identities["kernel"].sha256,
+                "manifest": identities["root_manifest"].sha256,
+                "package_checksums": identities["package_checksums"].sha256,
+                "packages_lock": identities["packages_lock"].sha256,
+                "root_image": identities["root_image"].sha256,
+                "stage1_initramfs": identities["initramfs"].sha256,
+                "u_boot": identities["u_boot"].sha256,
+            },
+            "interaction_cycles": list(cycles),
+            "passed": True,
+            "physical": False,
+            "profile": "browser-web",
+            "qemu_argv": self._native_result()["qemu_argv"],
+            "reason": "pass",
+            "screenshot": {},
+            "target": "browser",
+        }
+
+    def _browser_runner(
+        self,
+        calls: list[tuple[tuple[str, ...], dict[str, object]]],
+        plan: DebugPlan,
+        *,
+        native_result: dict[str, object] | None = None,
+    ):
+        def run(
+            arguments: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append((tuple(arguments), kwargs))
+            output = Path(arguments[arguments.index("--output-directory") + 1])
+            output.mkdir(parents=True, exist_ok=True)
+            native = (
+                self._browser_native_result(plan)
+                if native_result is None
+                else native_result
+            )
+            (output / "result.json").write_text(json.dumps(native))
+            lines: list[str] = []
+            for cycle in self._browser_protocol():
+                number = cycle["cycle"]
+                nonce_hash = cycle["nonce_sha256"]
+                lines.extend(
+                    (
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={number} nonce_sha256={nonce_hash}",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={number} nonce_sha256={nonce_hash}",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={number}",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={number} key_downs=16 relative_events=0 absolute_events=4 left_down=1 left_up=1 digest={cycle['evdev_sha256']}",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={number} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={number} sha256={cycle['screenshot_sha256']}",
+                        f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={number}",
+                    )
+                )
+                (output / f"physical-graphics-qemu-cycle-{number}.png").write_bytes(
+                    f"png-{number}".encode()
+                )
+                (output / f"physical-graphics-qemu-cycle-{number}.ppm").write_bytes(
+                    f"ppm-{number}".encode()
+                )
+            lines.extend(
+                (
+                    "__ASTERINAS_PHYSICAL_FINAL__ cycle=3 "
+                    f"nonce_sha256={self._browser_protocol()[-1]['nonce_sha256']}",
+                    "ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles=3",
+                )
+            )
+            (output / "physical-graphics-qemu.serial.log").write_text(
+                "\n".join(lines) + "\n"
+            )
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        return run
+
     def test_adapter_invokes_m7_with_only_plan_paths_and_binds_result(self) -> None:
         calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
         self.output.mkdir(parents=True, mode=0o700)
@@ -267,6 +409,95 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--boot-timeout") + 1], "720")
         self.assertEqual(options["cwd"], self.repository)
         self.assertLessEqual(float(options["timeout"]), 840)
+
+    def test_adapter_binds_browser_web_physical_graphics_qemu_result(self) -> None:
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+        plan = self._browser_plan()
+        identities = {identity.name: identity for identity in plan.artifacts}
+
+        result = simulate_desktop(
+            plan,
+            self.output,
+            run_command=self._browser_runner(calls, plan),
+            artifact_validator=lambda candidate: identities,
+            repository_root=self.repository,
+        )
+
+        self.assertEqual(result.reason, "desktop-pass")
+        self.assertEqual(result.plan_sha256, plan.plan_sha256)
+        self.assertEqual(
+            result.evidence,
+            (
+                "native/result.json",
+                "native/physical-graphics-qemu.serial.log",
+                "native/physical-graphics-qemu-cycle-1.png",
+                "native/physical-graphics-qemu-cycle-1.ppm",
+                "native/physical-graphics-qemu-cycle-2.png",
+                "native/physical-graphics-qemu-cycle-2.ppm",
+                "native/physical-graphics-qemu-cycle-3.png",
+                "native/physical-graphics-qemu-cycle-3.ppm",
+            ),
+        )
+        command, options = calls[0]
+        self.assertEqual(
+            command[:3],
+            (sys.executable, "-m", "tools.riscv.physical_graphics_qemu_gate"),
+        )
+        self.assertEqual(command[command.index("--command-timeout") + 1], "300")
+        self.assertEqual(command[command.index("--boot-timeout") + 1], "1800")
+        self.assertGreater(float(options["timeout"]), 1800)
+
+    def test_browser_adapter_rejects_identity_and_evidence_drift(self) -> None:
+        plan = self._browser_plan()
+        identities = {identity.name: identity for identity in plan.artifacts}
+        invalid_results: list[dict[str, object]] = []
+
+        physical = self._browser_native_result(plan)
+        physical["physical"] = True
+        invalid_results.append(physical)
+
+        reused_nonce = self._browser_native_result(plan)
+        reused_nonce["interaction_cycles"][1]["nonce_sha256"] = reused_nonce[
+            "interaction_cycles"
+        ][0]["nonce_sha256"]
+        invalid_results.append(reused_nonce)
+
+        wrong_png = self._browser_native_result(plan)
+        wrong_png["cycle_artifacts"][0]["guest_png_sha256"] = "0" * 64
+        invalid_results.append(wrong_png)
+
+        for native in invalid_results:
+            with (
+                self.subTest(native=native),
+                self.assertRaises(DesktopSimulationError),
+            ):
+                simulate_desktop(
+                    plan,
+                    self.output,
+                    run_command=self._browser_runner([], plan, native_result=native),
+                    artifact_validator=lambda candidate: identities,
+                    repository_root=self.repository,
+                )
+
+        runner = self._browser_runner([], plan)
+
+        def fatal_transcript(
+            arguments: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            result = runner(arguments, **kwargs)
+            native = Path(arguments[arguments.index("--output-directory") + 1])
+            with (native / "physical-graphics-qemu.serial.log").open("a") as stream:
+                stream.write("Kernel panic - not syncing\n")
+            return result
+
+        with self.assertRaisesRegex(DesktopSimulationError, "fatal serial marker"):
+            simulate_desktop(
+                plan,
+                self.output,
+                run_command=fatal_transcript,
+                artifact_validator=lambda candidate: identities,
+                repository_root=self.repository,
+            )
 
     def test_adapter_timeout_reserves_image_preparation_budget(self) -> None:
         with self.assertRaisesRegex(DesktopSimulationError, "setup grace"):

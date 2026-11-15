@@ -6,14 +6,14 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::{
-            file_table::{get_file_fast, FdFlags, FileDesc, FileTable, RawFileDesc, WithFileTable},
             FileLike, StatusFlags, StatusFlagsUpdate,
+            file_table::{FdFlags, FileDesc, FileTable, RawFileDesc, WithFileTable, get_file_fast},
         },
         ramfs::memfd::{FileSeals, MemfdInodeHandle},
-        vfs::range_lock::{FileRange, RangeLockItem, RangeLockType, OFFSET_MAX},
+        vfs::range_lock::{FileRange, OFFSET_MAX, RangeLockItem, RangeLockType},
     },
     prelude::*,
-    process::{pid_table, Pid},
+    process::{Pid, pid_table},
 };
 
 pub(super) fn sys_fcntl(

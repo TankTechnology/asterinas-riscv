@@ -228,9 +228,7 @@ def web_evidence() -> dict[str, bytes]:
     baidu_home["dom"]["baiduLogo"] = True
     baidu_search = snapshot("https://www.baidu.com/s?wd=Asterinas", tls=0)
     baidu_search["dom"]["baiduResults"] = 2
-    fixture_url = (
-        "http://10.0.2.2:17894/browser-quality/index.html?q=asterinas"
-    )
+    fixture_url = "http://10.0.2.2:17894/browser-quality/index.html?q=asterinas"
     fixture_search = snapshot(fixture_url, tls=0)
     fixture_search["title"] = "asterinas - Asterinas Browser Quality"
     fixture_search["bodyText"] = (
@@ -388,11 +386,13 @@ class BrowserWebContractTests(unittest.TestCase):
         mode: str,
         proxy_host: str = "",
         proxy_port: str = "",
+        basic_only: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
             "HOME": str(home),
             "ASTERINAS_WEB_NETWORK_MODE": mode,
+            "ASTERINAS_BROWSER_WEB_BASIC_ONLY": "1" if basic_only else "0",
             "ASTERINAS_DESKTOP_PROXY_HOST": proxy_host,
             "ASTERINAS_DESKTOP_PROXY_PORT": proxy_port,
         }
@@ -403,6 +403,23 @@ class BrowserWebContractTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_firefox_basic_profile_disables_public_background_fetchers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            result = self._prepare_firefox_profile(home, mode="direct", basic_only=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                encoding="utf-8"
+            )
+            for preference in (
+                'user_pref("app.update.enabled", false);',
+                'user_pref("browser.safebrowsing.downloads.remote.enabled", false);',
+                'user_pref("extensions.update.enabled", false);',
+                'user_pref("network.trr.mode", 5);',
+                'user_pref("services.settings.server", "");',
+            ):
+                self.assertIn(preference, profile)
 
     def test_firefox_proxy_profile_is_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -415,9 +432,9 @@ class BrowserWebContractTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            profile = (
-                home / ".mozilla/asterinas-browser-web/user.js"
-            ).read_text(encoding="utf-8")
+            profile = (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                encoding="utf-8"
+            )
             proxy_preferences = {
                 'user_pref("network.proxy.type", 1);',
                 'user_pref("network.proxy.http", "10.100.19.216");',
@@ -433,7 +450,10 @@ class BrowserWebContractTests(unittest.TestCase):
                 | proxy_preferences,
             )
             self.assertEqual(
-                oct((home / ".mozilla/asterinas-browser-web/user.js").stat().st_mode & 0o777),
+                oct(
+                    (home / ".mozilla/asterinas-browser-web/user.js").stat().st_mode
+                    & 0o777
+                ),
                 "0o600",
             )
             self.assertEqual(
@@ -442,7 +462,7 @@ class BrowserWebContractTests(unittest.TestCase):
             )
             launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
             self.assertIn(
-                "export ASTERINAS_FIREFOX_WEB_NETWORK_MODE=\"$NETWORK_MODE\"",
+                'export ASTERINAS_FIREFOX_WEB_NETWORK_MODE="$NETWORK_MODE"',
                 launcher,
             )
             self.assertIn(
@@ -464,9 +484,9 @@ class BrowserWebContractTests(unittest.TestCase):
             direct = self._prepare_firefox_profile(home, mode="direct")
 
             self.assertEqual(direct.returncode, 0, direct.stderr)
-            profile = (
-                home / ".mozilla/asterinas-browser-web/user.js"
-            ).read_text(encoding="utf-8")
+            profile = (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                encoding="utf-8"
+            )
             self.assertEqual(
                 set(profile.splitlines()),
                 self._BACKGROUND_STARTUP_PREFERENCES
@@ -493,9 +513,9 @@ class BrowserWebContractTests(unittest.TestCase):
                     )
                     self.assertNotEqual(invalid.returncode, 0)
                     self.assertEqual(
-                        (
-                            home / ".mozilla/asterinas-browser-web/user.js"
-                        ).read_text(encoding="utf-8"),
+                        (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                            encoding="utf-8"
+                        ),
                         profile,
                     )
 
@@ -549,9 +569,7 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertFalse(
             classify_browser_web_qemu(
-                proxy.replace(
-                    b"DEBIAN_WEB_NETWORK_READY mode=proxy layers=10\n", b""
-                ),
+                proxy.replace(b"DEBIAN_WEB_NETWORK_READY mode=proxy layers=10\n", b""),
                 expected_debian_release="13.6",
                 network_mode=NetworkMode.PROXY,
             ).passed
@@ -576,10 +594,18 @@ class BrowserWebContractTests(unittest.TestCase):
         source = snapshot(url)
         source["title"] = "Asterinas Browser Quality"
         source["browserCapabilities"] = fixture_capabilities("home")
-        probe = {name: source[name] for name in (
-            "url", "title", "readyState", "bodyText", "jsComplete",
-            "browserCapabilities", "dom",
-        )}
+        probe = {
+            name: source[name]
+            for name in (
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
+            )
+        }
         probe_fixture_capabilities(probe, url)
 
     def test_readiness_probe_accepts_optional_capability_types(self) -> None:
@@ -587,10 +613,18 @@ class BrowserWebContractTests(unittest.TestCase):
         source["dom"]["baiduKeyword"] = True
         source["dom"]["baiduSubmit"] = True
         source["dom"]["baiduLogo"] = True
-        probe = {name: source[name] for name in (
-            "url", "title", "readyState", "bodyText", "jsComplete",
-            "browserCapabilities", "dom",
-        )}
+        probe = {
+            name: source[name]
+            for name in (
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
+            )
+        }
         probe["apiTypes"] = {
             "wasm": "undefined",
             "worker": "function",
@@ -696,6 +730,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "browser_web_evidence.service",
             "physical_graphics_interaction.html",
             "physical_graphics_gate.py",
+            "firefox_diagnostic_snapshot.py",
         )
 
         def digest(source_directory: Path) -> str:
@@ -737,16 +772,12 @@ class BrowserWebContractTests(unittest.TestCase):
 
     def test_physical_graphics_witness_is_installed_fail_closed(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
-        self.assertIn(
-            '"$script_directory/physical_graphics_interaction.html"', builder
-        )
+        self.assertIn('"$script_directory/physical_graphics_interaction.html"', builder)
         self.assertIn(
             '"$stage/usr/share/asterinas/physical-graphics/index.html"', builder
         )
         self.assertIn('"$script_directory/physical_graphics_gate.py"', builder)
-        self.assertIn(
-            '"$stage/usr/lib/asterinas/physical-graphics-gate"', builder
-        )
+        self.assertIn('"$stage/usr/lib/asterinas/physical-graphics-gate"', builder)
         self.assertNotIn("physical-graphics-evidence", builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
@@ -756,7 +787,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("physical_graphics_interaction.html", runtime_inputs)
         self.assertIn("physical_graphics_gate.py", runtime_inputs)
 
-    def test_browser_evidence_orders_after_network_and_desktop_without_hard_link(self) -> None:
+    def test_browser_evidence_orders_after_network_and_desktop_without_hard_link(
+        self,
+    ) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
         self.assertIn(
             "Wants=network-online.target asterinas-desktop-m5.service", service
@@ -769,7 +802,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("Environment=ASTERINAS_WEB_NETWORK_MODE=", service)
         self.assertNotIn("Environment=ASTERINAS_DESKTOP_PROXY", service)
         browser_service = (ROOTFS / "browser_web.service").read_text()
-        self.assertNotIn("Requires=asterinas-desktop-m5-network.service", browser_service)
+        self.assertNotIn(
+            "Requires=asterinas-desktop-m5-network.service", browser_service
+        )
 
     def test_gate_versions_accept_architecture_all_identity_packages(self) -> None:
         profile = get_profile("browser-web")
@@ -884,9 +919,11 @@ class BrowserWebContractTests(unittest.TestCase):
         # would race it for :0 and produce a misleading cannot-open-display
         # failure when the provider is still coming up.
         self.assertNotIn("/usr/bin/Xorg :0", launcher)
-        self.assertIn('about:blank', launcher)
-        self.assertIn('ASTERINAS_FIREFOX_WEB_TARGET_URL', launcher)
-        self.assertIn('Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/', unit)
+        self.assertIn("about:blank", launcher)
+        self.assertIn("ASTERINAS_FIREFOX_WEB_TARGET_URL", launcher)
+        self.assertIn(
+            "Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/", unit
+        )
         for required in (
             'readonly NETWORK_RESOLVER="${ASTERINAS_WEB_NETWORK_RESOLVER:-}"',
             'grep -Fqx "nameserver $NETWORK_RESOLVER"',
@@ -907,14 +944,18 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("ASTERINAS_BROWSER_WEB_PROC_DIAGNOSTIC", evidence)
         self.assertIn('emit "$line"', evidence)
         self.assertIn('/usr/bin/tee -a "$GATE_STDERR" >>"$CONSOLE"', evidence)
-        self.assertIn("DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha", evidence)
+        self.assertIn(
+            "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha", evidence
+        )
         self.assertIn("unavailable-firefox-riscv64-build", evidence)
         self.assertIn('emit "DEBIAN_BROWSER_WEB_FAIL reason=browser-content"', evidence)
         self.assertLess(
             evidence.index('emit "DEBIAN_BROWSER_WEB_FAIL reason=browser-content"'),
-            evidence.index('/usr/bin/timeout 20 /usr/bin/sync || true'),
+            evidence.index("/usr/bin/timeout 20 /usr/bin/sync || true"),
         )
-        self.assertIn("/usr/bin/timeout 20 /usr/bin/sync || fail evidence-sync", evidence)
+        self.assertIn(
+            "/usr/bin/timeout 20 /usr/bin/sync || fail evidence-sync", evidence
+        )
         self.assertNotIn("sync /home/asterinas/browser-web-evidence", evidence)
         self.assertLess(
             evidence.rindex("/usr/bin/timeout 20 /usr/bin/sync"),
@@ -978,11 +1019,14 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertEqual(evidence["timeline.log"].count(b"A_WEB_TIMELINE marker="), 15)
         unit = (ROOTFS / "browser_web.service").read_text()
         builder = (ROOTFS / "build_rootfs.sh").read_text()
-        self.assertNotIn("ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x", unit)
-        self.assertIn(
-            "ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access", unit
+        self.assertNotIn(
+            "ExecStartPre=/usr/lib/asterinas/browser-web-timeline wait-x", unit
         )
-        self.assertIn("/usr/lib/asterinas/browser-web-timeline wait-x", (ROOTFS / "browser_web_firefox.sh").read_text())
+        self.assertIn("ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access", unit)
+        self.assertIn(
+            "/usr/lib/asterinas/browser-web-timeline wait-x",
+            (ROOTFS / "browser_web_firefox.sh").read_text(),
+        )
         timeline_script = (ROOTFS / "browser_web_timeline.sh").read_text()
         self.assertIn("/usr/bin/xdpyinfo -display", timeline_script)
         self.assertIn("/usr/bin/timeout 5 /usr/bin/xdpyinfo", timeline_script)
@@ -993,7 +1037,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("stale X11 socket", timeline_script)
         self.assertIn("browser_web_timeline_begin.service", builder)
         self.assertIn("browser_web_timeline_basic.service", builder)
-        self.assertIn("basic.target.wants/asterinas-browser-web-timeline-basic.service", builder)
+        self.assertIn(
+            "basic.target.wants/asterinas-browser-web-timeline-basic.service", builder
+        )
         self.assertIn('desktop_after="local-fs.target dbus.service"', builder)
         self.assertIn("desktop_session_options=$'TTYPath=/dev/tty1", builder)
         self.assertIn("StandardInput=tty", builder)
@@ -1001,6 +1047,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("SupplementaryGroups=video input tty", builder)
         self.assertIn("desktop_user=root", builder)
         desktop_session = (ROOTFS / "desktop_m5_session.sh").read_text()
+        self.assertNotIn("-extension MIT-SHM", desktop_session)
         self.assertIn('-logfile "$HOME/Xorg.0.log" vt1', desktop_session)
         self.assertIn("-novtswitch -keeptty", desktop_session)
         self.assertIn(
@@ -1009,25 +1056,32 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertNotIn("/usr/bin/runuser", desktop_session)
         self.assertIn('/usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2', desktop_session)
-        self.assertIn('/usr/bin/rm -f -- /tmp/.X11-unix/X0', desktop_session)
-        self.assertIn('/usr/bin/timeout 5 /usr/bin/xdpyinfo -display "$DISPLAY"', desktop_session)
-        self.assertIn('firefox-web-stderr.log', (ROOTFS / "browser_web_firefox.sh").read_text())
+        self.assertIn("/usr/bin/rm -f -- /tmp/.X11-unix/X0", desktop_session)
+        self.assertIn(
+            '/usr/bin/timeout 5 /usr/bin/xdpyinfo -display "$DISPLAY"', desktop_session
+        )
+        self.assertIn(
+            "firefox-web-stderr.log", (ROOTFS / "browser_web_firefox.sh").read_text()
+        )
         launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
         self.assertIn("ASTERINAS_FIREFOX_PS_DIAGNOSTIC", launcher)
         self.assertIn("/usr/bin/timeout 5 /usr/bin/ps", launcher)
         self.assertIn("/usr/bin/timeout 12 /usr/bin/sleep 10", launcher)
         self.assertIn("ASTERINAS_FIREFOX_PREWARM", launcher)
-        self.assertIn('FIREFOX_LIBRARY_DIR=/usr/lib/firefox-esr', launcher)
-        self.assertIn('FIREFOX_LIBRARY_DIR=/usr/lib/firefox', launcher)
+        self.assertIn("FIREFOX_LIBRARY_DIR=/usr/lib/firefox-esr", launcher)
+        self.assertIn("FIREFOX_LIBRARY_DIR=/usr/lib/firefox", launcher)
         self.assertIn('exec "$FIREFOX_BIN"', launcher)
         self.assertIn('"$FIREFOX_HOME/Downloads"', launcher)
-        self.assertIn('browser.download.useDownloadDir', launcher)
-        self.assertIn('browser.helperApps.neverAsk.saveToDisk', launcher)
-        self.assertIn('</proc/uptime', launcher)
-        self.assertNotIn('EPOCHREALTIME', launcher)
-        self.assertIn('browser-web-firefox.pid', builder)
+        self.assertIn("browser.download.useDownloadDir", launcher)
+        self.assertIn("browser.helperApps.neverAsk.saveToDisk", launcher)
+        self.assertIn("</proc/uptime", launcher)
+        self.assertNotIn("EPOCHREALTIME", launcher)
+        self.assertIn("browser-web-firefox.pid", builder)
         self.assertIn('asterinas-browser-web"', builder)
-        self.assertIn("BROWSER_WEB_DESKTOP_STAGE=device-access-start", (ROOTFS / "desktop_m3_device_access.sh").read_text())
+        self.assertIn(
+            "BROWSER_WEB_DESKTOP_STAGE=device-access-start",
+            (ROOTFS / "desktop_m3_device_access.sh").read_text(),
+        )
         device_access = (ROOTFS / "desktop_m3_device_access.sh").read_text()
         self.assertIn("device_deadline=$((SECONDS + 120))", device_access)
         self.assertIn("/usr/bin/sleep 1", device_access)
@@ -1046,9 +1100,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("xkb_cache_created=1", device_access)
         self.assertIn('/usr/bin/chown root:root "$XKB_CACHE_DIR"', device_access)
         self.assertIn('/usr/bin/chmod 01777 "$XKB_CACHE_DIR"', device_access)
-        self.assertIn(
-            '/usr/bin/stat -c "%u %g %a" "$XKB_CACHE_DIR"', device_access
-        )
+        self.assertIn('/usr/bin/stat -c "%u %g %a" "$XKB_CACHE_DIR"', device_access)
         self.assertIn('[[ "$xkb_owner_mode" != "0 0 1777" ]]', device_access)
         self.assertLess(
             device_access.index("/proc/self/mounts"),
@@ -1062,7 +1114,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("BROWSER_WEB_DESKTOP_STAGE=fb0-ready", device_access)
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
-        self.assertIn('configure_desktop_m5_network "$stage" m5 false lightweight', builder)
+        self.assertIn(
+            'configure_desktop_m5_network "$stage" m5 false lightweight', builder
+        )
         self.assertNotIn("2> >(tee", (ROOTFS / "browser_web_evidence.sh").read_text())
         begin_unit = (ROOTFS / "browser_web_timeline_begin.service").read_text()
         basic_unit = (ROOTFS / "browser_web_timeline_basic.service").read_text()
@@ -1134,8 +1188,8 @@ class BrowserWebContractTests(unittest.TestCase):
         cache_function = builder.split("finalize_browser_startup_caches()", 1)[1].split(
             "configure_desktop_m5_network()", 1
         )[0]
-        self.assertNotIn('systemd-sysusers --root', cache_function)
-        self.assertNotIn('journalctl --root', cache_function)
+        self.assertNotIn("systemd-sysusers --root", cache_function)
+        self.assertNotIn("journalctl --root", cache_function)
         self.assertNotIn("|| true", cache_function)
         self.assertNotIn("systemctl mask", cache_function)
         self.assertNotIn("/dev/null", cache_function)
@@ -1664,9 +1718,13 @@ generate_fontconfig_cache "$stage" "$3"
             "http://10.0.2.2:17895/asterinas-network-probe.bin",
             "http://10.0.2.2:17894/browser-quality/index.html",
         ):
-            with self.subTest(forged=forged), mock.patch.dict(
-                os.environ, {"ASTERINAS_DESKTOP_FIXTURE_URL": forged}, clear=True
-            ), self.assertRaisesRegex(GateError, "fixture URL"):
+            with (
+                self.subTest(forged=forged),
+                mock.patch.dict(
+                    os.environ, {"ASTERINAS_DESKTOP_FIXTURE_URL": forged}, clear=True
+                ),
+                self.assertRaisesRegex(GateError, "fixture URL"),
+            ):
                 fixture_index_url_from_environment()
 
         search_url = f"{fixture_url}?q=asterinas"
@@ -1688,9 +1746,15 @@ generate_fontconfig_cache "$stage" "$3"
         probe = {
             key: value
             for key, value in fixture.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         probe_fixture_search(probe, search_url)
@@ -1727,9 +1791,15 @@ generate_fontconfig_cache "$stage" "$3"
         probe = {
             key: value
             for key, value in blank.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         probe_about_blank(probe)
@@ -1763,9 +1833,15 @@ generate_fontconfig_cache "$stage" "$3"
         ready = {
             key: value
             for key, value in ready.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         client = mock.Mock()
@@ -1800,8 +1876,13 @@ generate_fontconfig_cache "$stage" "$3"
         complete = copy.deepcopy(running)
         complete["browserCapabilities"] = fixture_capabilities("home")
         fields = {
-            "url", "title", "readyState", "bodyText", "jsComplete",
-            "browserCapabilities", "dom",
+            "url",
+            "title",
+            "readyState",
+            "bodyText",
+            "jsComplete",
+            "browserCapabilities",
+            "dom",
         }
         client = mock.Mock()
         client.command.side_effect = [
@@ -1815,7 +1896,8 @@ generate_fontconfig_cache "$stage" "$3"
             mock.patch("builtins.print") as printed,
         ):
             observed, result = _wait_for_probe(
-                client, lambda probe: probe_fixture_home(probe, url),
+                client,
+                lambda probe: probe_fixture_home(probe, url),
                 time.monotonic() + 5,
             )
         self.assertEqual(observed["browserCapabilities"]["state"], "complete")
@@ -1836,17 +1918,29 @@ generate_fontconfig_cache "$stage" "$3"
         old_probe = {
             key: value
             for key, value in old.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         search_probe = {
             key: value
             for key, value in search.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         client = mock.Mock()
@@ -1885,9 +1979,15 @@ generate_fontconfig_cache "$stage" "$3"
         probe = {
             key: value
             for key, value in challenge.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         client = mock.Mock()
@@ -1897,9 +1997,7 @@ generate_fontconfig_cache "$stage" "$3"
             {"value": json.dumps(probe)},
             {"value": json.dumps(challenge)},
         ]
-        observed, outcome = _wait_baidu_search_outcome(
-            client, time.monotonic() + 5
-        )
+        observed, outcome = _wait_baidu_search_outcome(client, time.monotonic() + 5)
         self.assertEqual(observed, challenge)
         self.assertEqual(outcome, "external-captcha")
 
@@ -1912,9 +2010,15 @@ generate_fontconfig_cache "$stage" "$3"
         probe = {
             key: value
             for key, value in probe.items()
-            if key in {
-                "url", "title", "readyState", "bodyText", "jsComplete",
-                "browserCapabilities", "dom",
+            if key
+            in {
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
             }
         }
         client.command.return_value = {"value": json.dumps(probe)}
@@ -1971,7 +2075,9 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertIn("HOT_MAP_MAX_LINES=128", evidence)
         self.assertIn('head -n "$HOT_MAP_MAX_LINES"', evidence)
         self.assertNotIn("head -n 4096", evidence)
-        self.assertIn('/usr/bin/timeout 10 /usr/bin/head -n "$HOT_MAP_MAX_LINES"', evidence)
+        self.assertIn(
+            '/usr/bin/timeout 10 /usr/bin/head -n "$HOT_MAP_MAX_LINES"', evidence
+        )
         self.assertIn('"$PROC_ROOT/$hot_pid/maps"', evidence)
         sampler = evidence.split("start_gate_sampler()", 1)[1].split(
             "capture_gecko_profile()", 1
@@ -1981,9 +2087,7 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertNotIn("ASTERINAS_FIREFOX_GECKO_PROFILE", service)
         self.assertIn("Environment=ASTERINAS_FIREFOX_GECKO_PROFILE=1", diagnostic)
         self.assertIn("Environment=MOZ_PROFILER_STARTUP=1", diagnostic)
-        self.assertIn(
-            "Environment=MOZ_PROFILER_STARTUP_INTERVAL=10", diagnostic
-        )
+        self.assertIn("Environment=MOZ_PROFILER_STARTUP_INTERVAL=10", diagnostic)
 
     @mock.patch("pathlib.Path.read_bytes")
     def test_gecko_profiler_environment_is_exact(self, read_bytes: mock.Mock) -> None:
@@ -2063,7 +2167,10 @@ generate_fontconfig_cache "$stage" "$3"
             index["security.log"]["sandbox_outcome"],
             "unavailable-firefox-riscv64-build",
         )
-        for invalid in (b"seccomp=1", b"seccomp=0\nBROWSER_WEB_SECURITY child_pid=103 role=content caps=zero nnp=1 seccomp=2"):
+        for invalid in (
+            b"seccomp=1",
+            b"seccomp=0\nBROWSER_WEB_SECURITY child_pid=103 role=content caps=zero nnp=1 seccomp=2",
+        ):
             with self.subTest(invalid=invalid), self.assertRaises(GateFailure):
                 validate_web_evidence(
                     {
@@ -2108,9 +2215,7 @@ generate_fontconfig_cache "$stage" "$3"
             summary,
         )
         with self.assertRaisesRegex(GateFailure, "upload evidence"):
-            validate_uploaded_baidu_screenshot(
-                {**summary, "sha256": "0" * 64}, payload
-            )
+            validate_uploaded_baidu_screenshot({**summary, "sha256": "0" * 64}, payload)
         with self.assertRaisesRegex(GateFailure, "upload evidence"):
             validate_uploaded_baidu_screenshot(
                 summary, payload, expected_payload=png(width=3)
@@ -2318,9 +2423,7 @@ generate_fontconfig_cache "$stage" "$3"
                 "tools.riscv.debian.rootfs.browser_web_trust_check.output",
                 side_effect=inspect,
             ):
-                self.assertIn(
-                    "mode=system-nss-jit-overlay", check_trust_root(root)
-                )
+                self.assertIn("mode=system-nss-jit-overlay", check_trust_root(root))
 
     @mock.patch("tools.riscv.debian.rootfs.browser_web_qemu_gate.subprocess.run")
     def test_post_stop_extraction_is_bounded_and_uses_safe_basenames(
@@ -2399,9 +2502,7 @@ generate_fontconfig_cache "$stage" "$3"
             validate_baidu_search_outcome(valid_challenge), "external-captcha"
         )
         forged_challenge = copy.deepcopy(valid_challenge)
-        forged_challenge["url"] = forged_challenge["url"].replace(
-            "Asterinas", "forged"
-        )
+        forged_challenge["url"] = forged_challenge["url"].replace("Asterinas", "forged")
         with self.assertRaisesRegex(GateError, "back URL"):
             validate_baidu_search_outcome(forged_challenge)
 
@@ -2411,8 +2512,8 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertIn('capabilities.get("acceptInsecureCerts") is not False', gate)
         self.assertIn("WebDriver:TakeScreenshot", gate)
         self.assertIn("DEBIAN_BROWSER_WEB_PLATFORM_READY", gate)
-        self.assertIn('arguments[0] && arguments[0].lightweight', gate)
-        self.assertIn('_snapshot(client, lightweight=True)', gate)
+        self.assertIn("arguments[0] && arguments[0].lightweight", gate)
+        self.assertIn("_snapshot(client, lightweight=True)", gate)
         self.assertLess(
             gate.index('run_phase("navigate-bilibili-home"'),
             gate.index('run_phase("submit-baidu-search"'),
