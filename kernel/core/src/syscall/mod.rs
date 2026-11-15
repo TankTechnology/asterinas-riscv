@@ -127,6 +127,7 @@ mod pivot_root;
 mod poll;
 mod ppoll;
 mod prctl;
+mod profile;
 mod pread64;
 mod preadv;
 mod prlimit64;

@@ -228,3 +228,55 @@ impl PosixTimerManager {
         timer
     }
 }
+
+pub(crate) enum CpuTimeMode {
+    User,
+    Kernel,
+}
+
+pub(crate) struct CpuTimeAccounting {
+    last_tsc: Option<u64>,
+    mode: CpuTimeMode,
+}
+
+impl CpuTimeAccounting {
+    pub(crate) const fn new() -> Self {
+        Self {
+            last_tsc: None,
+            mode: CpuTimeMode::Kernel,
+        }
+    }
+
+    pub(crate) fn elapsed_to(&mut self, now: u64) -> Option<(CpuTimeMode, Duration)> {
+        let last = self.last_tsc.replace(now)?;
+        let ticks = now.wrapping_sub(last);
+        let nanoseconds = u128::from(ticks)
+            .saturating_mul(1_000_000_000)
+            .checked_div(u128::from(arch::tsc_freq()))
+            .unwrap_or(0);
+        let nanoseconds = u64::try_from(nanoseconds).unwrap_or(u64::MAX);
+        Some((self.mode, Duration::from_nanos(nanoseconds)))
+    }
+
+    pub(crate) fn switch_mode(
+        &mut self,
+        now: u64,
+        mode: CpuTimeMode,
+    ) -> Option<(CpuTimeMode, Duration)> {
+        let elapsed = self.elapsed_to(now);
+        self.mode = mode;
+        elapsed
+    }
+
+    pub(crate) fn pause(&mut self, now: u64) -> Option<(CpuTimeMode, Duration)> {
+        let elapsed = self.elapsed_to(now);
+        self.last_tsc = None;
+        elapsed
+    }
+
+    pub(crate) fn resume_kernel(&mut self, now: u64) {
+        debug_assert!(self.last_tsc.is_none());
+        self.last_tsc = Some(now);
+        self.mode = CpuTimeMode::Kernel;
+    }
+}

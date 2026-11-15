@@ -15,7 +15,7 @@ mod socket_timeout;
 pub(crate) use linger_option::LingerOption;
 pub(crate) use message_flags::{RecvFlags, SendFlags};
 pub(super) use message_header::CControlHeader;
-pub(crate) use message_header::{ControlMessage, MessageHeader};
+pub(crate) use message_header::{ControlMessage, MessageHeader, SocketControlMessage};
 pub(super) use port_privilege::check_port_privilege;
 pub(crate) use recv_output::RecvOutput;
 pub(crate) use shutdown_cmd::SockShutdownCmd;

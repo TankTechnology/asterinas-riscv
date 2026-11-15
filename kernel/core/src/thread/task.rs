@@ -67,6 +67,10 @@ pub(crate) fn create_new_user_task(
         };
 
         let has_kernel_event_fn = || ctx.has_pending();
+
+        #[cfg(target_arch = "riscv64")]
+        let mut first_process_diagnostics = None;
+
         // The startup method is only executed when the first user thread starts up.
         if ctx.posix_thread.tid() == FIRST_POSIX_TID {
             crate::init::on_first_process_startup(&ctx);

@@ -187,7 +187,7 @@ impl ExfatValidateDentryMode {
     }
 }
 
-pub trait Checksum {
+pub(crate) trait Checksum {
     fn verify_checksum(&self) -> bool;
     fn update_checksum(&mut self);
 }
@@ -262,7 +262,7 @@ impl ExfatDentrySet {
             flags: FatChainFlags::FAT_CHAIN_NOT_IN_USE.bits(),
             reserved1: 0,
             name_len: name.0.len() as u8,
-            name_hash: name.checksum(&fs.upcase_table().lock())?,
+            name_hash: name.checksum(),
             reserved2: 0,
             valid_size: 0,
             reserved3: 0,
@@ -397,8 +397,8 @@ impl ExfatDentrySet {
             })
             .collect();
 
-        let name = ExfatName::from_name_dentries(&name_dentries, upcase_table.clone())?;
-        if name.checksum(&upcase_table.lock())? != self.get_stream_dentry().name_hash {
+        let name = ExfatName::from_name_dentries(&name_dentries, upcase_table)?;
+        if name.checksum() != self.get_stream_dentry().name_hash {
             return_errno_with_message!(Errno::EINVAL, "name hash mismatched")
         }
         Ok(name)
@@ -448,7 +448,11 @@ pub(super) struct ExfatDentryIterator<'a> {
 }
 
 impl<'a> ExfatDentryIterator<'a> {
-    pub fn new(page_cache: &'a PageCache, offset: usize, size: Option<usize>) -> Result<Self> {
+    pub(crate) fn new(
+        page_cache: &'a PageCache,
+        offset: usize,
+        size: Option<usize>,
+    ) -> Result<Self> {
         if size.is_some() && !size.unwrap().is_multiple_of(DENTRY_SIZE) {
             return_errno_with_message!(Errno::EINVAL, "remaining size unaligned to dentry size")
         }
@@ -556,7 +560,7 @@ pub(super) struct ExfatStreamDentry {
     pub(super) size: u64,          // file maximum size (not used in init a inode?)
 }
 
-pub type UTF16Char = u16;
+pub(crate) type UTF16Char = u16;
 
 #[repr(C, packed)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -641,7 +645,7 @@ pub(super) struct ExfatDeletedDentry {
 pub(super) struct ExfatName(Vec<UTF16Char>);
 
 impl ExfatName {
-    pub fn from_name_dentries(
+    pub(crate) fn from_name_dentries(
         names: &[ExfatNameDentry],
         upcase_table: Arc<SpinLock<ExfatUpcaseTable>>,
     ) -> Result<Self> {
@@ -686,26 +690,31 @@ impl ExfatName {
         }
     }
 
-    pub fn checksum(&self, upcase_table: &ExfatUpcaseTable) -> Result<u16> {
-        let mut checksum = 0u16;
-        for &character in &self.0 {
-            let upcase = upcase_table.char_to_upcase(character)?;
-            checksum = calc_checksum_16(&upcase.to_le_bytes(), 0..0, checksum);
-        }
-        Ok(checksum)
+    pub(crate) fn checksum(&self) -> u16 {
+        let bytes = self
+            .0
+            .iter()
+            .flat_map(|character| character.to_le_bytes())
+            .collect::<Vec<u8>>();
+        const EMPTY_RANGE: Range<usize> = 0..0;
+        calc_checksum_16(&bytes, EMPTY_RANGE, 0)
     }
 
-    pub fn from_str(name: &str, _upcase_table: Arc<SpinLock<ExfatUpcaseTable>>) -> Result<Self> {
+    pub(crate) fn from_str(
+        name: &str,
+        _upcase_table: Arc<SpinLock<ExfatUpcaseTable>>,
+    ) -> Result<Self> {
         let name = ExfatName(name.encode_utf16().collect());
+        // upcase_table.lock().transform_to_upcase(&mut name.0)?;
         name.verify()?;
         Ok(name)
     }
 
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         ExfatName(Vec::new())
     }
 
-    pub fn to_dentries(&self) -> Vec<ExfatDentry> {
+    pub(crate) fn to_dentries(&self) -> Vec<ExfatDentry> {
         let mut name_dentries = Vec::new();
         for start in (0..self.0.len()).step_by(EXFAT_FILE_NAME_LEN) {
             let end = (start + EXFAT_FILE_NAME_LEN).min(self.0.len());
