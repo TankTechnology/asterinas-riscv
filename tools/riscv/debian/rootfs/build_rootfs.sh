@@ -1862,13 +1862,12 @@ configure_desktop() {
     # The clock sync used to run as the desktop's ExecStartPre and made the
     # session wait for a network round trip that is not up yet (5 s measured).
     # As its own unit it runs in parallel and nothing downstream needs to wait.
-    install -D -m 0755 -- "$script_directory/megrez-clock-sync" \
-        "$stage/usr/lib/asterinas/megrez-clock-sync"
-    install -D -m 0644 -- "$script_directory/megrez-clock-sync.service" \
-        "$stage/etc/systemd/system/megrez-clock-sync.service"
+    # The clock is owned by systemd-timesyncd: it survives network-less boots
+    # and keeps the drift correction that a one-shot scrape cannot.
     install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
-    ln -sf -- ../megrez-clock-sync.service \
-        "$stage/etc/systemd/system/sysinit.target.wants/megrez-clock-sync.service"
+    ln -sf -- /usr/lib/systemd/system/systemd-timesyncd.service \
+        "$stage/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service"
+    install -d -m 0755 -- "$stage/var/lib/systemd/timesync"
     # The desktop session does not need sysinit.target, and on this image that
     # target is ordered behind the /data mount, whose ext2 mount reads 1834
     # bitmaps and costs 2.1 s.

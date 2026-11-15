@@ -2,8 +2,6 @@
 
 // The boot routine executed by the bootstrap processor (BSP) on RISC-V.
 
-SATP_MODE_SV39         = 8 << 60
-SATP_MODE_SV48         = 9 << 60
 SATP_PPN_SHIFT         = 0
 
 PTE_V                  = 0x01

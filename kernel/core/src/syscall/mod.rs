@@ -40,6 +40,7 @@ mod chmod;
 mod chown;
 mod chroot;
 mod clock_gettime;
+mod diagnostics;
 mod clock_settime;
 mod clone;
 mod close;
@@ -411,6 +412,8 @@ impl SyscallArgument {
 
 pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+
+    diagnostics::enter(ctx, syscall_frame.syscall_number, syscall_frame.args);
 
     // seccomp: consult the thread's policy (strict allowlist or BPF filter)
     // before the syscall executes. On a block, deliver SIGSYS and return ENOSYS;
