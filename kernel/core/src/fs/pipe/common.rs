@@ -5,7 +5,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use ostd::sync::WaitQueue;
+use ostd::{mm::PAGE_SIZE, sync::WaitQueue};
 
 use crate::{
     dispatch_ioctl,
@@ -34,12 +34,22 @@ use crate::{
 ///
 /// Once a handle for a `Pipe` exists, the corresponding pipe object will
 /// not be dropped.
-pub(in crate::fs) struct PipeHandle {
+pub(crate) struct PipeHandle {
     inner: Arc<PipeObj>,
     access_mode: AccessMode,
 }
 
 impl PipeHandle {
+    /// Returns the pipe buffer capacity in bytes.
+    pub(crate) fn buffer_capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    /// Resizes the pipe buffer and returns the new capacity.
+    pub(crate) fn resize_buffer(&self, requested: usize) -> Result<usize> {
+        self.inner.resize(requested)
+    }
+
     fn new(inner: Arc<PipeObj>, access_mode: AccessMode) -> Box<Self> {
         Box::new(Self { inner, access_mode })
     }
@@ -332,6 +342,63 @@ impl PipeObj {
             num_reader: AtomicUsize::new(0),
             num_writer: AtomicUsize::new(0),
         })
+    }
+
+    /// Returns the capacity of the ring buffer in bytes (`F_GETPIPE_SZ`).
+    fn capacity(&self) -> usize {
+        self.reader.consumer.lock().capacity()
+    }
+
+    /// Replaces the ring buffer with one of `requested` bytes, preserving the
+    /// buffered data (`F_SETPIPE_SZ`).
+    ///
+    /// The size is rounded up to a power of two, which the ring buffer
+    /// requires and which matches Linux's page-based rounding.
+    fn resize(&self, requested: usize) -> Result<usize> {
+        let new_capacity = requested.max(PAGE_SIZE).checked_next_power_of_two().ok_or_else(
+            || Error::with_message(Errno::EINVAL, "the requested pipe size is too large"),
+        )?;
+
+        // Reading and writing take only one of these locks at a time, so
+        // holding both here is the same discipline as a concurrent reader and
+        // writer and cannot deadlock with them.
+        let mut consumer = self.reader.consumer.lock();
+        let mut producer = self.writer.producer.lock();
+
+        if new_capacity == consumer.capacity() {
+            return Ok(new_capacity);
+        }
+
+        let buffered = consumer.len();
+        if new_capacity < buffered {
+            return_errno_with_message!(
+                Errno::EBUSY,
+                "the new capacity is smaller than the buffered data"
+            );
+        }
+
+        let mut data = alloc::vec![0u8; buffered];
+        if buffered > 0 {
+            let mut writer = VmWriter::from(data.as_mut_slice()).to_fallible();
+            let read = consumer.read_fallible(&mut writer)?;
+            debug_assert_eq!(read, buffered);
+        }
+
+        let Some((new_producer, new_consumer)) = RingBuffer::try_new(new_capacity)
+            .map(|buffer| buffer.split())
+        else {
+            return_errno_with_message!(Errno::ENOMEM, "cannot allocate the new pipe buffer");
+        };
+        *consumer = new_consumer;
+        *producer = new_producer;
+
+        if buffered > 0 {
+            let mut reader = VmReader::from(data.as_slice()).to_fallible();
+            let written = producer.write_fallible(&mut reader)?;
+            debug_assert_eq!(written, buffered);
+        }
+
+        Ok(new_capacity)
     }
 }
 

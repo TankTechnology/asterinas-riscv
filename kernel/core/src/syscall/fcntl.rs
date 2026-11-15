@@ -6,9 +6,10 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::{
-            AccessMode, FileLike, StatusFlags, StatusFlagsUpdate,
+            AccessMode, FileLike, InodeHandle, StatusFlags, StatusFlagsUpdate,
             file_table::{FdFlags, FileDesc, FileTable, RawFileDesc, WithFileTable, get_file_fast},
         },
+        pipe::{PIPE_MAX_SIZE, PipeHandle},
         ramfs::memfd::{FileSeals, MemfdInodeHandle},
         vfs::range_lock::{FileRange, OFFSET_MAX, RangeLockItem, RangeLockOwner, RangeLockType},
     },
@@ -58,6 +59,8 @@ pub(super) fn sys_fcntl(
         FcntlCmd::F_SETOWN => handle_setown(fd, arg, ctx),
         FcntlCmd::F_SETLEASE => handle_setlease(fd, arg, ctx),
         FcntlCmd::F_GETLEASE => handle_getlease(fd, ctx),
+        FcntlCmd::F_SETPIPE_SZ => handle_setpipe_sz(fd, arg, ctx),
+        FcntlCmd::F_GETPIPE_SZ => handle_getpipe_sz(fd, ctx),
         FcntlCmd::F_ADD_SEALS => handle_addseal(fd, arg, ctx),
         FcntlCmd::F_GET_SEALS => handle_getseal(fd, ctx),
     }
@@ -310,6 +313,46 @@ fn handle_getlease(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
     Ok(SyscallReturn::Return(file.common().lease_type() as _))
 }
 
+/// Returns the pipe handle behind `file`, or `EINVAL` for anything else.
+fn pipe_handle(file: &dyn FileLike) -> Result<&PipeHandle> {
+    file.downcast_ref::<InodeHandle>()
+        .and_then(|handle| handle.downcast_open_file::<PipeHandle>().ok().flatten())
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "the file is not a pipe"))
+}
+
+fn handle_getpipe_sz(fd: FileDesc, ctx: &Context) -> Result<SyscallReturn> {
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, fd);
+
+    let pipe = pipe_handle(&**file)?;
+    Ok(SyscallReturn::Return(pipe.buffer_capacity() as _))
+}
+
+fn handle_setpipe_sz(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
+    let requested: usize = arg
+        .try_into()
+        .map_err(|_| Error::with_message(Errno::EINVAL, "invalid pipe size"))?;
+    if requested == 0 {
+        return_errno_with_message!(Errno::EINVAL, "the pipe size cannot be zero");
+    }
+
+    // Linux reports EPERM for an unprivileged request above `pipe-max-size`.
+    let max_size = PIPE_MAX_SIZE.load(core::sync::atomic::Ordering::Relaxed);
+    if requested > max_size {
+        return_errno_with_message!(
+            Errno::EPERM,
+            "the requested size exceeds the pipe-max-size limit"
+        );
+    }
+
+    let mut file_table = ctx.thread_local.borrow_file_table_mut();
+    let file = get_file_fast!(&mut file_table, fd);
+
+    let pipe = pipe_handle(&**file)?;
+    let new_size = pipe.resize_buffer(requested)?;
+    Ok(SyscallReturn::Return(new_size as _))
+}
+
 fn handle_addseal(fd: FileDesc, arg: u64, ctx: &Context) -> Result<SyscallReturn> {
     let new_seals = FileSeals::from_bits(arg as u32)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid seals"))?;
@@ -346,6 +389,8 @@ enum FcntlCmd {
     F_GETOWN = 9,
     F_SETLEASE = 1024,
     F_GETLEASE = 1025,
+    F_SETPIPE_SZ = 1031,
+    F_GETPIPE_SZ = 1032,
     F_OFD_GETLK = 36,
     F_OFD_SETLK = 37,
     F_OFD_SETLKW = 38,

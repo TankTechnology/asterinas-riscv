@@ -12,7 +12,9 @@ use super::{
 };
 use crate::{
     prelude::*,
-    process::{credentials::capabilities::CapSet, posix_thread::PosixThread},
+    process::{
+        ResourceType, credentials::capabilities::CapSet, posix_thread::PosixThread,
+    },
     security::lsm::hooks as lsm_hooks,
     thread::Tid,
 };
@@ -163,6 +165,7 @@ pub(crate) fn tgkill(
     }
 
     if let Some(signal) = signal {
+        check_sigpending_limit(target_posix_thread, signal.as_ref())?;
         // We've checked the permission issues above.
         // FIXME: We should take some lock while checking the permission to avoid race conditions.
         trace_user_thread_enqueue(
@@ -232,6 +235,29 @@ fn kill_process(
         process.enqueue_signal(signal);
     }
 
+    Ok(())
+}
+
+/// Enforces `RLIMIT_SIGPENDING` for queued (real-time) signals.
+///
+/// Linux counts the signals a user has queued and reports `EAGAIN` when the
+/// limit is reached; the test that exercises this (`tgkill02`) sets the limit
+/// to zero for its own process and sends `SIGRTMIN`.
+fn check_sigpending_limit(target: &PosixThread, signal: &dyn Signal) -> Result<()> {
+    if !signal.num().is_real_time() {
+        return Ok(());
+    }
+
+    let process = target.process();
+    let limit = process
+        .resource_limits()
+        .get_rlimit(ResourceType::RLIMIT_SIGPENDING)
+        .get_raw_rlimit()
+        .cur;
+    let queued = (target.sig_queues().count() + process.sig_queues().count()) as u64;
+    if queued >= limit {
+        return_errno_with_message!(Errno::EAGAIN, "the pending-signal limit has been reached");
+    }
     Ok(())
 }
 

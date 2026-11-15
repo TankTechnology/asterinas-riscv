@@ -149,7 +149,9 @@ pub(crate) fn on_exit(ctx: &Context, term_status: TermStatus) {
         termination_status: term_status.as_u32(),
         signal: match term_status {
             TermStatus::Exited(_) => None,
-            TermStatus::Killed(signal) => Some(signal.as_u8()),
+            TermStatus::Killed(signal) | TermStatus::KilledWithCore(signal) => {
+                Some(signal.as_u8())
+            }
         },
         finished_jiffies: Jiffies::elapsed().as_u64(),
     };

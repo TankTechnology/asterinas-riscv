@@ -87,29 +87,35 @@ impl<T> RingBuffer<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `capacity` is not a power of two.
+    /// Panics if `capacity` is not a power of two, or if the backing memory
+    /// cannot be allocated. Use [`Self::try_new`] where an allocation failure
+    /// must be reported instead of panicking.
     pub fn new(capacity: usize) -> Self {
-        assert!(
-            capacity.is_power_of_two(),
-            "capacity must be a power of two"
-        );
+        Self::try_new(capacity).expect("failed to allocate the ring buffer")
+    }
 
-        let nframes = capacity
-            .checked_mul(Self::T_SIZE)
-            .unwrap()
-            .div_ceil(PAGE_SIZE);
+    /// Creates a new ring buffer, returning `None` if the backing memory is
+    /// not available.
+    ///
+    /// The capacity must be a power of two.
+    pub fn try_new(capacity: usize) -> Option<Self> {
+        if !capacity.is_power_of_two() {
+            return None;
+        }
+
+        let nframes = capacity.checked_mul(Self::T_SIZE)?.div_ceil(PAGE_SIZE);
         let segment = FrameAllocOptions::new()
             .zeroed(false)
             .alloc_segment(nframes)
-            .unwrap();
+            .ok()?;
 
-        Self {
+        Some(Self {
             segment,
             capacity,
             tail: AtomicUsize::new(0),
             head: AtomicUsize::new(0),
             phantom: PhantomData,
-        }
+        })
     }
 
     /// Splits the ring buffer into a producer and consumer pair.
