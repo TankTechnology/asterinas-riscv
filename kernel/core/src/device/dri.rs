@@ -453,12 +453,10 @@ impl DriHandle {
             .as_ref()
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))?;
 
-        // The pool is contiguous, so committing its first page tells us where
-        // the whole span lives.
-        let (page, _) = pool
-            .try_commit_page(0, crate::vm::page_cache::VmoMapMode::Private)
-            .map_err(|_| Error::with_message(Errno::ENOMEM, "the pool page cannot be committed"))?;
-        Ok(ostd::mm::HasPaddr::paddr(&page))
+        // The pool is contiguous, so its first page is where the whole span
+        // lives.
+        pool.paddr()
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "the pool has no physical address"))
     }
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {

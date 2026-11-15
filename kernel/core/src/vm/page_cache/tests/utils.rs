@@ -191,6 +191,7 @@ impl MockPageCacheBackend {
     }
 
     /// Returns how many multi-page read entry-point calls were observed.
+    #[cfg_attr(not(ktest), expect(dead_code))]
     pub(super) fn read_batch_calls(&self) -> usize {
         self.state.lock().read_batch_calls
     }
@@ -336,14 +337,16 @@ impl BlockDevice for MockPageCacheBackend {
 }
 
 impl BlockAsPageCacheBackend for MockPageCacheBackend {
-    fn submit_read_bios(
+    fn submit_read_page_run(
         &self,
-        requests: Vec<crate::vm::page_cache::PageCacheReadRequest>,
+        pages: crate::vm::page_cache::PageRun<'_>,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
+        // Count one call per collected run, then submit each page separately so
+        // the deferred-completion tests keep observing per-page submissions.
         self.state.lock().read_batch_calls += 1;
-        for request in requests {
-            let (page_idx, bio_segment, complete_fn) = request.into_parts();
+        for (page_idx, locked_page) in pages.into_indexed() {
+            let (bio_segment, complete_fn) = crate::vm::page_cache::prepare_read_page(locked_page);
             self.submit_read_bio(page_idx, bio_segment, complete_fn, io_batch)?;
         }
         Ok(())

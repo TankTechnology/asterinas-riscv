@@ -666,7 +666,7 @@ mod navigation {
         // Map a page near the address space end.
         assert_eq!(cursor.virt_addr(), 0usize.wrapping_sub(HUGE_PAGE_SIZE));
         unsafe {
-            cursor.map(MappedItem::Untracked(
+            cursor.map(MappedItem::untracked(
                 0,
                 1,
                 PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback),

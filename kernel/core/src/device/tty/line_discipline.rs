@@ -426,18 +426,13 @@ mod tests {
     #[ktest]
     fn canonical_mode_keeps_utf8_bytes() {
         let mut line_discipline = LineDiscipline::new();
-        let mut echoed = [0u8; 8];
-        let mut echoed_len = 0;
+        let mut echoed = Vec::new();
 
         for &ch in "你好\n".as_bytes() {
-            let mut echo = |bytes: &[u8]| {
-                echoed[echoed_len..echoed_len + bytes.len()].copy_from_slice(bytes);
-                echoed_len += bytes.len();
-            };
-            line_discipline.push_char(ch, |_| {}, &mut echo).unwrap();
+            line_discipline.push_char(ch, |_| {}, &mut echoed).unwrap();
         }
 
-        assert_eq!(&echoed[..echoed_len], "你好\n".as_bytes());
+        assert_eq!(echoed.as_slice(), "你好\n".as_bytes());
 
         let mut dst = [0u8; 16];
         let read = line_discipline.try_read(&mut dst).unwrap();

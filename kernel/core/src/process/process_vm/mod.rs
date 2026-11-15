@@ -85,6 +85,16 @@ pub(crate) struct ProcessVm {
 }
 
 impl ProcessVm {
+    /// Creates an empty `ProcessVm` for kernel tests.
+    #[cfg(ktest)]
+    pub(crate) fn new_for_test() -> Self {
+        // `InitStack::new()` uses the kernel RNG, which is normally seeded by
+        // the kernel's init sequence. The ktest runner bypasses that sequence.
+        crate::util::random::init();
+        Self::new(crate::fs::pseudofs::AnonInodeFs::new_path(|inode| {
+            inode.ino().to_string()
+        }))
+    }
 
     /// Records a successful `membarrier(2)` registration command.
     pub fn register_membarrier(&self, command: u32) {

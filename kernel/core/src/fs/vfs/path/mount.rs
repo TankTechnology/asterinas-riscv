@@ -17,7 +17,7 @@ use crate::{
     fs::{
         file::InodeType,
         vfs::{
-            file_system::{FileSystem, FsFlags},
+            file_system::{FileSystem, FsFlags, register_live_file_system},
             path::{
                 Path,
                 dentry::{Dentry, DentryKey},
@@ -175,6 +175,7 @@ impl Mount {
         if let Some(ns) = mount.mnt_ns.upgrade() {
             ns.register_mount(&mount);
         }
+        register_live_file_system(mount.fs());
         Ok(mount)
     }
 

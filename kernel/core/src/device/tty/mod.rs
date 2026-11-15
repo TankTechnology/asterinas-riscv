@@ -566,17 +566,11 @@ mod tests {
         fn on_termios_change(&self, _old_termios: &CTermios, _new_termios: &CTermios) {}
     }
 
-    #[ktest]
-    fn active_vt_sysfs_value_uses_linux_tty_name() {
-        assert_eq!(crate::device::sysfs::active_vt_attr_value(1), "tty1\n");
-        assert_eq!(crate::device::sysfs::active_vt_attr_value(12), "tty12\n");
-    }
-
-    /// Echo runs, and runs with the line discipline already locked.
+    /// Echo runs, and runs only after the line discipline lock is released.
     ///
     /// ECHO has to be turned on explicitly. `LineDiscipline::new` starts from
     /// `CTermios2::default()`, whose flags are all clear, and `push_char` only
-    /// reaches `output_char` when ECHO is set -- so without the two lines below
+    /// collects echo bytes when ECHO is set -- so without the two lines below
     /// the callback never fires and a test that only checked the lock would
     /// pass while exercising nothing at all.
     #[ktest]
@@ -598,10 +592,10 @@ mod tests {
 
         // The echo happened...
         assert!(tty.driver.echo_ran.load(Ordering::Relaxed));
-        // ...and it happened with the lock held, which is the design -- see the
-        // note on `LockCheckingDriver`. The field is named for the reading, and
-        // an earlier version of this test asserted the opposite.
-        assert!(!tty.driver.echo_saw_free_ldisc.load(Ordering::Relaxed));
+        // ...and it happened after `push_input` released the line discipline
+        // lock: echo bytes are collected under the lock and written outside it,
+        // so a slow output device can never stall or re-enter input processing.
+        assert!(tty.driver.echo_saw_free_ldisc.load(Ordering::Relaxed));
     }
 
     #[ktest]

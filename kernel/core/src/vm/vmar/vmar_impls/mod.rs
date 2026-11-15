@@ -600,7 +600,8 @@ mod tests {
     use super::*;
     use crate::vm::{
         perms::VmPerms,
-        vmar::{RemapOldMappingAction, VmarMapOffset},
+        vmar::{MmapMode, RemapOldMappingAction, VmarMapOffset},
+        vmar::vm_mapping::{MappedMemory, VmMapping},
     };
 
     fn anon_mapping(va: Vaddr, perms: VmPerms) -> VmMapping {
@@ -609,9 +610,7 @@ mod tests {
             va,
             MappedMemory::Anonymous,
             None,
-            false,
-            false,
-            false,
+            MmapMode::Private,
             false,
             perms,
         )
@@ -619,9 +618,10 @@ mod tests {
 
     #[ktest]
     fn adjacent_compatible_vma_mappings_merge() {
-        let mut inner = VmarInner::new();
-        inner.insert_try_merge(anon_mapping(0x1000, VmPerms::READ));
-        inner.insert_try_merge(anon_mapping(0x2000, VmPerms::READ));
+        let vmar = Vmar::new_for_test();
+        let mut inner = vmar.inner.write();
+        inner.insert_try_merge(&vmar, anon_mapping(0x1000, VmPerms::READ), None);
+        inner.insert_try_merge(&vmar, anon_mapping(0x2000, VmPerms::READ), None);
 
         assert_eq!(inner.vm_mappings.iter().count(), 1);
         let merged = inner.vm_mappings.iter().next().unwrap();
@@ -632,23 +632,29 @@ mod tests {
 
     #[ktest]
     fn non_adjacent_or_incompatible_vma_mappings_do_not_merge() {
-        let mut inner = VmarInner::new();
-        inner.insert_try_merge(anon_mapping(0x1000, VmPerms::READ));
+        let vmar = Vmar::new_for_test();
+        let mut inner = vmar.inner.write();
+        inner.insert_try_merge(&vmar, anon_mapping(0x1000, VmPerms::READ), None);
         // Incompatible permissions.
-        inner.insert_try_merge(anon_mapping(0x2000, VmPerms::READ | VmPerms::WRITE));
+        inner.insert_try_merge(
+            &vmar,
+            anon_mapping(0x2000, VmPerms::READ | VmPerms::WRITE),
+            None,
+        );
         // Compatible permissions but not adjacent.
-        inner.insert_try_merge(anon_mapping(0x4000, VmPerms::READ));
+        inner.insert_try_merge(&vmar, anon_mapping(0x4000, VmPerms::READ), None);
 
         assert_eq!(inner.vm_mappings.iter().count(), 3);
         assert_eq!(inner.total_vm, 3 * PAGE_SIZE);
     }
+
     fn map_fixed(
         vmar: &Vmar,
         addr: Vaddr,
         size: usize,
         perms: VmPerms,
     ) -> crate::prelude::Result<Vaddr> {
-        vmar.new_map(size, perms)?
+        vmar.new_map(size, perms)
             .offset(VmarMapOffset::FixedNoReplace(addr))
             .build()
     }
@@ -678,7 +684,7 @@ mod tests {
 
         // The range cuts the first mapping's tail, removes the middle mapping
         // whole, and cuts the third mapping's head.
-        vmar.remove_mapping(0x11000..0x14000).unwrap();
+        vmar.remove_mapping(0x11000..0x14000);
 
         let mut remaining: Vec<_> = vmar
             .inner
@@ -701,7 +707,6 @@ mod tests {
     fn failed_mprotect_keeps_original_perms() {
         let vmar = Vmar::new_for_test();
         vmar.new_map(PAGE_SIZE, VmPerms::READ)
-            .unwrap()
             .may_perms(VmPerms::MAY_READ)
             .offset(VmarMapOffset::FixedNoReplace(0x10000))
             .build()

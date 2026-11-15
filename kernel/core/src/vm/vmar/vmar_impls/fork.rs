@@ -144,7 +144,7 @@ mod test {
     use crate::vm::{
         perms::VmPerms,
         vmar::{
-            PageFaultInfo,
+            MmapMode, PageFaultInfo,
             vm_mapping::{MappedMemory, VmMapping},
         },
     };
@@ -331,9 +331,7 @@ mod test {
             map_range.start,
             MappedMemory::Anonymous,
             None,
-            false,
-            false,
-            false,
+            MmapMode::Private,
             false,
             VmPerms::READ | VmPerms::WRITE | VmPerms::MAY_WRITE,
         );

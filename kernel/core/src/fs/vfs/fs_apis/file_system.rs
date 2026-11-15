@@ -252,7 +252,10 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::*;
-    use crate::fs::{fs_impls::ramfs::RamFs, vfs::path::Mount};
+    use crate::fs::{
+        fs_impls::ramfs::RamFs,
+        vfs::path::{Mount, PerMountFlags},
+    };
 
     struct SyncCountingFs {
         backing: Arc<RamFs>,
@@ -292,8 +295,10 @@ mod tests {
             sync_calls: AtomicUsize::new(0),
             event_stats: FsEventSubscriberStats::new(),
         });
-        let first_mount = Mount::new_root(fs.clone(), Weak::new()).unwrap();
-        let second_mount = Mount::new_root(fs.clone(), Weak::new()).unwrap();
+        let first_mount =
+            Mount::new_root(fs.clone(), PerMountFlags::default(), Weak::new()).unwrap();
+        let second_mount =
+            Mount::new_root(fs.clone(), PerMountFlags::default(), Weak::new()).unwrap();
         let weak_fs = Arc::downgrade(&fs);
 
         sync_all_live_file_systems().unwrap();

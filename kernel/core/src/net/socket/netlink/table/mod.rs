@@ -98,7 +98,7 @@ pub(crate) struct ProtocolSocketTable<Message> {
 
 impl<Message: 'static> ProtocolSocketTable<Message> {
     /// Creates a new table.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let multicast_groups = (0u32..MAX_GROUPS).map(|_| MulticastGroup::new()).collect();
         Self {
             unicast_sockets: BTreeMap::new(),
@@ -117,7 +117,7 @@ impl<Message: 'static> ProtocolSocketTable<Message> {
     ///
     /// Additionally, this socket can join one or more multicast groups,
     /// as specified in `addr.groups()`.
-    fn bind(
+    pub(super) fn bind(
         &mut self,
         socket_table: &'static RwMutex<ProtocolSocketTable<Message>>,
         addr: &NetlinkSocketAddr,
@@ -161,7 +161,7 @@ impl<Message: 'static> ProtocolSocketTable<Message> {
         Ok(())
     }
 
-    fn multicast(&self, dst_groups: GroupIdSet, message: Message) -> Result<()>
+    pub(super) fn multicast(&self, dst_groups: GroupIdSet, message: Message) -> Result<()>
     where
         Message: MulticastMessage,
     {

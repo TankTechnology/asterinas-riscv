@@ -554,6 +554,7 @@ dependencies = [
  "aster-core",
  "aster-drm",
  "aster-i8042",
+ "aster-mmc",
  "aster-simpledrm",
  "aster-uart",
  "aster-usb",

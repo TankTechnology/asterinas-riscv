@@ -16,11 +16,19 @@ use crate::{
             },
         },
         receiver::MessageQueue,
-        table::{NetlinkSocketTable, NetlinkUeventProtocol, SupportedNetlinkProtocol},
+        table::ProtocolSocketTable,
     },
     prelude::*,
     process::signal::Pollee,
 };
+
+type UeventTable = RwMutex<ProtocolSocketTable<UeventMessage>>;
+
+/// Leaks one per-test socket table so the bind handles can hold a `'static`
+/// reference to it, as the production singleton does.
+fn new_uevent_table() -> &'static UeventTable {
+    Box::leak(Box::new(RwMutex::new(ProtocolSocketTable::new())))
+}
 
 #[ktest]
 fn uuid() {
@@ -48,14 +56,19 @@ fn synthetic_uevent() {
 
 #[ktest]
 fn multicast_synthetic_uevent() {
-    let tables = Arc::new(NetlinkSocketTable::new());
-    let other_tables = Arc::new(NetlinkSocketTable::new());
+    let tables = new_uevent_table();
+    let other_tables = new_uevent_table();
     let (queue, receiver) = MessageQueue::<UeventMessage>::new_pair(Pollee::new());
     let (other_queue, other_receiver) = MessageQueue::<UeventMessage>::new_pair(Pollee::new());
     let socket_addr = NetlinkSocketAddr::new(100, GroupIdSet::new(0x1));
-    let _bound_handle = NetlinkUeventProtocol::bind(&tables, &socket_addr, receiver).unwrap();
-    let _other_handle =
-        NetlinkUeventProtocol::bind(&other_tables, &socket_addr, other_receiver).unwrap();
+    let _bound_handle = tables
+        .write()
+        .bind(tables, &socket_addr, receiver)
+        .unwrap();
+    let _other_handle = other_tables
+        .write()
+        .bind(other_tables, &socket_addr, other_receiver)
+        .unwrap();
 
     // Tries to receive and returns EAGAIN if no message is available.
     let mut buffer = vec![0u8; 1024];
@@ -79,7 +92,10 @@ fn multicast_synthetic_uevent() {
     };
     let uevent_message =
         UeventMessage::new(uevent, NetlinkSocketAddr::new(0, GroupIdSet::new(0x1)));
-    NetlinkUeventProtocol::multicast(&tables, GroupIdSet::new(0x1), uevent_message).unwrap();
+    tables
+        .read()
+        .multicast(GroupIdSet::new(0x1), uevent_message)
+        .unwrap();
     assert!(
         other_queue
             .lock()
