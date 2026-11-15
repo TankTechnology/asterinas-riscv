@@ -22,7 +22,7 @@ class LtpSuiteTests(unittest.TestCase):
         )
 
         syscalls = suite_by_name(REPO, "syscalls")
-        self.assertEqual(syscalls.expected_selected, 767)
+        self.assertEqual(syscalls.expected_selected, 768)
         self.assertEqual(syscalls.expected_unavailable, 12)
 
         arch = suite_by_name(REPO, "arch-riscv64")

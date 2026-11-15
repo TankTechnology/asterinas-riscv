@@ -490,7 +490,7 @@ class MegrezPreboardTests(unittest.TestCase):
                 "run",
                 side_effect=(
                     responses[0],
-                    SimpleNamespace(stdout=" M kernel/src/lib.rs\n"),
+                    SimpleNamespace(stdout=" M kernel/core/src/lib.rs\n"),
                 ),
             ),
             self.assertRaisesRegex(PreboardError, "clean committed"),

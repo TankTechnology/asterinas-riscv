@@ -7,10 +7,10 @@ from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-DIAGNOSTIC_SOURCE = REPOSITORY_ROOT / "kernel/src/first_process_diag.rs"
-INIT_SOURCE = REPOSITORY_ROOT / "kernel/src/init.rs"
-LIB_SOURCE = REPOSITORY_ROOT / "kernel/src/lib.rs"
-TASK_SOURCE = REPOSITORY_ROOT / "kernel/src/thread/task.rs"
+DIAGNOSTIC_SOURCE = REPOSITORY_ROOT / "kernel/core/src/first_process_diag.rs"
+INIT_SOURCE = REPOSITORY_ROOT / "kernel/core/src/init.rs"
+LIB_SOURCE = REPOSITORY_ROOT / "kernel/core/src/lib.rs"
+TASK_SOURCE = REPOSITORY_ROOT / "kernel/core/src/thread/task.rs"
 
 
 def _ordered(source: str, needles: tuple[str, ...]) -> bool:
@@ -58,7 +58,7 @@ class FirstProcessDiagnosticSourceTests(unittest.TestCase):
                 (
                     "component::init_all(InitStage::Process",
                     "first_process_diag::on_process_components_ready()",
-                    "device::init_in_first_process(ctx)",
+                    "device::init_in_first_process()",
                     "first_process_diag::on_device_init_ready()",
                     "fs::init_in_first_process(ctx)",
                     "first_process_diag::on_stdio_init_ready()",
@@ -75,7 +75,7 @@ class FirstProcessDiagnosticSourceTests(unittest.TestCase):
                     "crate::init::on_first_process_startup(&ctx)",
                     "FirstProcessDiagnostics::new_if_active()",
                     "diagnostics.on_user_enter(user_mode.context())",
-                    "user_mode.execute(has_kernel_event_fn)",
+                    "user_mode.execute(&ctx)",
                 ),
             )
         )

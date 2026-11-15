@@ -10,7 +10,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-STATE = ROOT / "kernel/src/syscall/diagnostics/state.rs"
+STATE = ROOT / "kernel/core/src/syscall/diagnostics/state.rs"
 
 RUST_TESTS = r"""
 use state::{COMPLETION_HISTORY_LEN, ExitObservation, LifecycleBudget, LifecycleEvent, Outcome, State, Snapshot, snapshot_slice};
@@ -139,18 +139,18 @@ fn lifecycle_budget_has_finite_output_and_explicit_suppression() {
 
 class SyscallDiagnosticsTests(unittest.TestCase):
     def test_proc_and_entry_integration_exist(self) -> None:
-        diagnostics = ROOT / "kernel/src/syscall/diagnostics.rs"
+        diagnostics = ROOT / "kernel/core/src/syscall/diagnostics.rs"
         self.assertTrue(
             diagnostics.is_file(), "missing default-off diagnostic integration"
         )
         source = diagnostics.read_text()
         self.assertIn('define_flag_param!("asterinas.syscall_diag", ENABLED)', source)
-        dispatch = (ROOT / "kernel/src/syscall/mod.rs").read_text()
+        dispatch = (ROOT / "kernel/core/src/syscall/mod.rs").read_text()
         self.assertLess(
             dispatch.index("diagnostics::enter("),
             dispatch.index("match seccomp::check("),
         )
-        proc = ROOT / "kernel/src/fs/fs_impls/procfs/pid/task/asterinas_syscall.rs"
+        proc = ROOT / "kernel/core/src/fs/fs_impls/procfs/pid/task/asterinas_syscall.rs"
         self.assertTrue(proc.is_file(), "missing per-open proc snapshot interface")
 
     def test_actual_kernel_state(self) -> None:

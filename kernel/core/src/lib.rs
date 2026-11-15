@@ -45,6 +45,8 @@ pub(crate) mod hardware_watchdog;
 
 #[cfg(target_arch = "riscv64")]
 mod boot_reboot;
+#[cfg(target_arch = "riscv64")]
+mod first_process_diag;
 pub mod context;
 mod cpu;
 pub mod device;

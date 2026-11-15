@@ -21,7 +21,7 @@ SIZES = {"code": 52_064, "data": 18_432, "coremem_code": 73_312, "coremem_data":
 class CheckedFramesTests(unittest.TestCase):
     def test_requires_prepared_config_and_matching_addresses_before_staging(self):
         template = (Path(__file__).resolve().parents[3] /
-                    "kernel/src/device/dri/powervr_probe/meta_boot_config.bin").read_bytes()
+                    "kernel/core/src/device/dri/powervr_probe/meta_boot_config.bin").read_bytes()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             digests = {}

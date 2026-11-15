@@ -128,7 +128,7 @@ class DebianDesktopDRMTests(unittest.TestCase):
         # only symptom is a renderer line tens of minutes into a QEMU run, the
         # spelling is pinned here where a rename is caught in milliseconds.
         source = (
-            Path(__file__).resolve().parents[3] / "kernel/src/device/dri.rs"
+            Path(__file__).resolve().parents[3] / "kernel/core/src/device/dri.rs"
         ).read_text(encoding="utf-8")
         # The visibility prefix is optional in the pattern because the
         # declaration carries one. Anchoring on a bare `^const` is what made
@@ -141,7 +141,7 @@ class DebianDesktopDRMTests(unittest.TestCase):
             source,
             re.MULTILINE,
         )
-        self.assertIsNotNone(match, "DRIVER_NAME not found in kernel/src/device/dri.rs")
+        self.assertIsNotNone(match, "DRIVER_NAME not found in kernel/core/src/device/dri.rs")
         self.assertEqual(match.group(1), "virtio_gpu")
 
     def test_a_kernel_that_would_hang_is_refused_before_launch(self) -> None:

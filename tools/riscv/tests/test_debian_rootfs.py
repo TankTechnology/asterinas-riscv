@@ -3833,7 +3833,7 @@ esac
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            "downloaded package hash is absent from the verified package index",
+            "installed package is absent from the verified package index",
             result.stderr,
         )
 

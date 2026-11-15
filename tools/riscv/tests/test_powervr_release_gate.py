@@ -19,7 +19,7 @@ from tools.riscv.drm import powervr_release_board as board
 
 
 SIZES = {"code": 52_064, "data": 18_432, "coremem_code": 73_312, "coremem_data": 9_984}
-BOOT_CONFIG = (REPO_ROOT / "kernel/src/device/dri/powervr_probe/meta_boot_config.bin").read_bytes()
+BOOT_CONFIG = (REPO_ROOT / "kernel/core/src/device/dri/powervr_probe/meta_boot_config.bin").read_bytes()
 
 
 class PowerVrReleaseGateTests(unittest.TestCase):

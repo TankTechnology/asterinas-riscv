@@ -54,7 +54,7 @@ use crate::{
 /// Linux DRM character-device major number.
 const DRM_MAJOR: u16 = 226;
 
-const DRIVER_NAME: &str = "virtio-gpu";
+const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260815";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D driver";
 

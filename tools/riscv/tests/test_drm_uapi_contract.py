@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """Hold the kernel's pinned DRM ioctl table against the real uapi headers.
 
-`kernel/src/device/dri.rs` pins, for every DRM ioctl the driver serves, the
+`kernel/core/src/device/dri.rs` pins, for every DRM ioctl the driver serves, the
 command number and argument size the Linux uapi gives it. Those constants are
 what `dri.rs`'s own ktest asserts its declarations against -- so if a pinned
 constant were wrong, the ktest would happily agree with the wrong number, and
@@ -30,7 +30,7 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DRIVER = REPO_ROOT / "kernel/src/device/dri.rs"
+DRIVER = REPO_ROOT / "kernel/core/src/device/dri.rs"
 PROBE = REPO_ROOT / "tools/riscv/perf/drm-uapi-contract.c"
 
 # The pinned table, as `uapi_contract!` writes it:

@@ -47,10 +47,16 @@ pub(super) fn main() {
 
 pub(super) fn on_first_process_startup(ctx: &Context) {
     component::init_all(InitStage::Process, component::parse_metadata!()).unwrap();
+    #[cfg(target_arch = "riscv64")]
+    crate::first_process_diag::on_process_components_ready();
     crate::device::init_in_first_process().unwrap();
+    #[cfg(target_arch = "riscv64")]
+    crate::first_process_diag::on_device_init_ready();
     #[cfg(target_arch = "riscv64")]
     ThreadOptions::new(aster_usb::run_polling).spawn();
     crate::fs::init_in_first_process(ctx);
+    #[cfg(target_arch = "riscv64")]
+    crate::first_process_diag::on_stdio_init_ready();
 }
 
 fn init() {

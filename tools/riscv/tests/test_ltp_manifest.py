@@ -18,15 +18,15 @@ ARCH_RISCV64_MANIFEST = REPO / "tools/riscv/ltp/manifests/arch-riscv64.txt"
 
 
 class RepositoryManifestContractTests(unittest.TestCase):
-    def test_reviewed_m27_manifest_has_779_unique_enabled_names(self) -> None:
+    def test_reviewed_m27_manifest_has_780_unique_enabled_names(self) -> None:
         enabled = tuple(
             stripped.split()[0]
             for line in REPOSITORY_MANIFEST.read_text().splitlines()
             if (stripped := line.strip()) and not stripped.startswith("#")
         )
 
-        self.assertEqual(len(enabled), 779)
-        self.assertEqual(len(set(enabled)), 779)
+        self.assertEqual(len(enabled), 780)
+        self.assertEqual(len(set(enabled)), 780)
         self.assertTrue(
             {
                 "accept01",  # Network bind bucket.

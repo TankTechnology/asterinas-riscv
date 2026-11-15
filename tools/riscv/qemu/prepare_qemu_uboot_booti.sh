@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
 
-# SPDX-License-Identifier: MPL-2.0
-
 set -euo pipefail
 
 readonly UBOOT_COMMIT=ece349ade2973e220f524ce59e59711cc919263f

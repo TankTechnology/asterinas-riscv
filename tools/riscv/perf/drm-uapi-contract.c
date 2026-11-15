@@ -56,6 +56,7 @@ int main(void)
 	ROW("PrimeFdToHandle",         DRM_IOCTL_PRIME_FD_TO_HANDLE,    struct drm_prime_handle);
 	ROW_NODATA("SetMaster",        DRM_IOCTL_SET_MASTER);
 	ROW_NODATA("DropMaster",       DRM_IOCTL_DROP_MASTER);
+	ROW("WaitVblank",              DRM_IOCTL_WAIT_VBLANK,           union drm_wait_vblank);
 
 	/* --- virtgpu_drm.h --------------------------------------------- */
 	ROW("VirtgpuMap",              DRM_IOCTL_VIRTGPU_MAP,           struct drm_virtgpu_map);
