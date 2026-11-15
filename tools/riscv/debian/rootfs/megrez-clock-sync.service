@@ -1,0 +1,29 @@
+[Unit]
+Description=Set the board clock from an HTTP Date header
+Documentation=file:/usr/lib/asterinas/megrez-clock-sync
+# The board has no RTC: every boot starts in 1970, and every certificate is
+# "not yet valid" until this runs. It used to run as an ExecStartPre of the
+# desktop session, which made the desktop wait for the network: 5.0 s measured
+# on the board, because the first source only answers once the link is up.
+#
+# As its own unit it starts early and finishes whenever it finishes. Nothing
+# downstream needs it to be synchronous: Firefox opens its first page seconds
+# after the session starts, by which time the clock is already set, and
+# systemd-timesyncd (see 2026-11-09-timesync.md) keeps it right afterwards.
+#
+# `WantedBy=sysinit.target` without `Before=` puts it in the boot transaction
+# without holding anything up.
+DefaultDependencies=no
+After=network.target local-fs.target
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+# Leading '-' : a failed sync is not a failed boot. The script logs a marker
+# when it succeeds, which is what a diagnosis looks for.
+ExecStart=-/usr/lib/asterinas/megrez-clock-sync
+
+[Install]
+WantedBy=sysinit.target

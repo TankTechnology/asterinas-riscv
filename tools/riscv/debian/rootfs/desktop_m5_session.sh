@@ -6,7 +6,16 @@ set -euo pipefail
 export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
-readonly SESSION_LOG="$HOME/desktop-m5-session.log"
+SESSION_LOG="$HOME/desktop-m5-session.log"
+# A root filesystem that filled up can leave this path with an unreadable
+# directory entry ("Stale file handle"). Every later redirect fails, and under
+# `set -e` that aborts the session before the window manager starts -- the
+# desktop then never becomes ready and the boot watchdog reboots the board.
+# Probe the path once and fall back to a fresh name instead of dying.
+if ! : >>"$SESSION_LOG" 2>/dev/null; then
+    SESSION_LOG="$HOME/desktop-m5-session-${EPOCHSECONDS:-0}.log"
+fi
+readonly SESSION_LOG
 readonly DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
 
 guest_monotonic_ns() {

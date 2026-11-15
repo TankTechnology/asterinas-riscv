@@ -59,6 +59,13 @@ static const char DESKTOP_READY_SERVICE[] =
     "RemainAfterExit=yes\n";
 
 static const char DEBUG_CONSOLE_BASHRC[] =
+    // Job control off: with job control the shell hands the terminal to each
+    // foreground job group. When arbitrary bytes damage that bookkeeping the
+    // shell can be left waiting for a group that never reads, and the console
+    // then echoes input to nobody -- exactly the 2026-11-11 state. Without job
+    // control the shell never gives the terminal away, so the debug console
+    // cannot lose its own reader.
+    "set +m\n"
     // Interactive Bash otherwise ignores TERM. Let shutdown close the idle
     // console without SIGKILL; install this before advertising readiness.
     "trap 'exit 0' TERM\n"

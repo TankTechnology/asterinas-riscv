@@ -75,3 +75,84 @@ disable 掉做对照实验（证明 USB 与桌面无关）；在发现循环里�
 - `run-lock.mount` 仍占 6.9 s：单独测 tmpfs 挂载只要 12 ms，说明时间花在等待上而
   不是挂载本身，未查清。
 - `asterinas-desktop-ready.service` 19.8 s：它在等桌面就绪，是结果不是原因。
+
+## 6. 第二轮：25.6 s → 14.4 s（2026-11-14 深夜）
+
+上一轮把 42.7 s 压到 25.6 s 之后，`run-lock.mount` 那 6.9 s 一直没查清。这一轮查清了
+——**它不是挂载慢，是串口控制台慢**。
+
+### 6.1 根因：每一条 systemd 日志都要走 115200 的串口
+
+`systemd-journald.service` 起来之前，`LogTarget=journal-or-kmsg` 会把管理器的每一条
+消息写进 `/dev/kmsg`，而内核控制台同步写到 `ttyS0`。实测一条消息被拆成 4–5 次写，
+**平均一个事件 290 ms**：
+
+```
+[3.376] Listening on systemd-journald.socket
+[3.980] Mounting run-lock.mount ...          ← 4.0 s 时"开始挂"
+[11.15] (中间只有 systemd 自己的状态行)
+[12.06] Mounted run-lock.mount               ← 真正完成
+```
+
+`run-lock.mount` 的 mount(2) 只用了 24 ms——那 7.7 s 是排队等串口。
+
+修法：`/etc/systemd/system.conf.d/10-console-budget.conf`
+
+```ini
+[Manager]
+LogTarget=journal
+ShowStatus=no
+```
+
+内核自己的 `loglevel=warn` 消息、以及显式写了 `StandardOutput=journal+console` 的单元
+（桌面会话为了 QEMU 串口契约保留）照旧上串口；其余全进 journal。
+**单这一项：26.45 s → 18.18 s（-8.3 s）。**
+
+### 6.2 时钟同步不再挡在桌面前面（-1~5 s）
+
+`megrez-clock-sync` 原本是桌面单元的 `ExecStartPre`：板子没有 RTC，开机是 1970，
+证书全都"尚未生效"，所以必须在起会话前对时。但开机时网络还没起，它按每个源的超时
+逐个跳过——实测 16.2 s 开始、21.2 s 才 `CLOCK_SYNC_READY`，桌面等了 5 s。
+
+改成独立单元 `megrez-clock-sync.service`（`Type=oneshot`，`WantedBy=sysinit.target`
+但**不带 `Before=`**），与桌面并行。实测开机后 8.6 s 对时完成，桌面不再等它。
+
+### 6.3 桌面不再挂在 sysinit.target 后面（-3 s）
+
+`/data`（115 GB ext2）的挂载要 **2.1 s**，因为 ext2 在 mount 时把每个块组的
+块位图和 inode 位图都读一遍：30,040,567 块 / 32768 块每组 = **917 组 × 2 = 1834 次
+4 KiB 读**，每次约 1.1 ms。`p3-data.service` 是 `Before=sysinit.target`，于是整个
+sysinit（以及排在它后面的桌面）都要等这 2.1 s。
+
+两处改动：
+- `p3-data.service` 去掉 `Before=sysinit.target`（只有 dsh-web 需要 /data，它自己
+  已经 `Requires=p3-data.service`）；
+- 桌面单元的 drop-in 把 `After=` 重置成 `local-fs.target systemd-journald.socket`。
+  会话真正需要的是根文件系统、`/run`、设备节点和 journal socket，framebuffer 由
+  `desktop-m5-device-access` 自己等。
+
+> 坑：drop-in 里的 `After=` 是**追加**不是替换，要清空必须单独写一行空的 `After=`。
+> 板上还残留了一个上一轮的 `zz-bootopt-start.conf`，两个 drop-in 的 `After=` 叠在一起，
+> 第一次改完 `systemctl show -p After` 里 `sysinit.target` 还在，数字只降了 0.4 s。
+
+### 6.4 结果
+
+| 指标 | 第一轮 | 现在 |
+| --- | ---: | ---: |
+| kernel | 1.95 s | 2.0–2.2 s |
+| userspace | 24.5 s | 12.3–13.4 s |
+| **合计** | **26.45 s** | **14.4–15.6 s** |
+| 桌面就绪 | 20.4 s | **10.5 s** |
+| 时钟同步完成 | 21.2 s（挡路） | 8.6 s（并行） |
+
+连续两次冷启动分别为 14.40 s 与 15.56 s；无 failed unit，桌面、Firefox、VNC 全部正常
+（抓屏验证：百度首页 + lxpanel + 壁纸）。
+
+### 6.5 还剩下的
+
+1. ~~**ext2 挂载仍是 2.1 s**~~：已修，见 `2026-11-15-ext2-lazy-bitmaps.md`。
+   位图改成按组惰性加载后，`mount /data` 从 **2120 ms 降到 21 ms**，校验推迟到该组
+   首次被使用时进行，ktest 432/0。
+2. `asterinas-desktop-m5.service` 自身仍花 4.1 s 起 ExecStartPre（`device-access`
+   冷启动约 1 s，其余 2 s 还没定位，怀疑与 VT/TTY 初始化有关）。
+3. Xorg 起来到 `x-socket-ready` 约 2.6 s。

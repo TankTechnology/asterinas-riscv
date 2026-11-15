@@ -1850,6 +1850,39 @@ configure_desktop() {
     ln -sf -- ../asterinas-net-watchdog.service \
         "$stage/etc/systemd/system/multi-user.target.wants/asterinas-net-watchdog.service"
 
+    # Boot-time budget (see 2026-11-14-boot-time-optimization.md section 6).
+    # The board's serial console is synchronous at 115200 baud, so manager
+    # messages that fall back to /dev/kmsg before journald starts cost about
+    # 290 ms each: the manager's own status lines alone accounted for a 6 s
+    # gap. Logging to the journal only removes the duplicate; the kernel's
+    # loglevel=warn messages and any unit that asks for journal+console still
+    # reach the serial line.
+    install -D -m 0644 -- "$script_directory/systemd-console-budget.conf" \
+        "$stage/etc/systemd/system.conf.d/10-console-budget.conf"
+    # The clock sync used to run as the desktop's ExecStartPre and made the
+    # session wait for a network round trip that is not up yet (5 s measured).
+    # As its own unit it runs in parallel and nothing downstream needs to wait.
+    install -D -m 0755 -- "$script_directory/megrez-clock-sync" \
+        "$stage/usr/lib/asterinas/megrez-clock-sync"
+    install -D -m 0644 -- "$script_directory/megrez-clock-sync.service" \
+        "$stage/etc/systemd/system/megrez-clock-sync.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
+    ln -sf -- ../megrez-clock-sync.service \
+        "$stage/etc/systemd/system/sysinit.target.wants/megrez-clock-sync.service"
+    # The desktop session does not need sysinit.target, and on this image that
+    # target is ordered behind the /data mount, whose ext2 mount reads 1834
+    # bitmaps and costs 2.1 s.
+    install -D -m 0644 -- \
+        "$script_directory/asterinas-desktop-m5.service.d-zz-desktop-start.conf" \
+        "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/zz-desktop-start.conf"
+    install -D -m 0644 -- \
+        "$script_directory/asterinas-desktop-m5.service.d-zz-clock-sync-bound.conf" \
+        "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/zz-clock-sync-bound.conf"
+    install -D -m 0644 -- "$script_directory/p3-data.service.d-bypass-basic.conf" \
+        "$stage/etc/systemd/system/p3-data.service.d/bypass-basic.conf"
+    install -D -m 0644 -- "$script_directory/p3-data.service" \
+        "$stage/etc/systemd/system/p3-data.service"
+
     # Publish the boot-bound handoff file that megrez-safe-reboot waits for.
     # The stage1 readiness tool on the board's boot partition only disarms the
     # kernel watchdog; without this file the userspace timer reboots a healthy
@@ -1867,6 +1900,14 @@ configure_desktop() {
         "$stage/etc/systemd/system/asterinas-watchdog-disarm.service"
     ln -sf -- ../asterinas-watchdog-disarm.service \
         "$stage/etc/systemd/system/basic.target.wants/asterinas-watchdog-disarm.service"
+    # `basic.target` does not become active on this kernel, so a unit that is
+    # only wanted by it never runs and the boot watchdog stays armed: every
+    # boot then restarts the board at the deadline even though the desktop is
+    # healthy. `sysinit.target` is reached, and `Wants=` (not ordering) is what
+    # pulls the unit in, so wiring it here lets the disarm actually happen.
+    install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
+    ln -sf -- ../asterinas-watchdog-disarm.service \
+        "$stage/etc/systemd/system/sysinit.target.wants/asterinas-watchdog-disarm.service"
 
     configure_logind_namespace_compatibility "$stage"
     # The login shell stays wrapped: a session without a pty (or a client that

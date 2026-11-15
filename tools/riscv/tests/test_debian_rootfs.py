@@ -875,6 +875,9 @@ class DebianStage1Tests(unittest.TestCase):
         )
         self.assertEqual(
             bashrc.read_text(),
+            # Job control must stay off so no foreground process group can
+            # steal the terminal and leave the console echoing to nobody.
+            "set +m\n"
             "trap 'exit 0' TERM\n"
             "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
             "bind 'set enable-bracketed-paste off' 2>/dev/null\n"
