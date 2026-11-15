@@ -224,18 +224,19 @@ pub const fn dma_status_needs_rx_resume(status: u32) -> bool {
     status & DMA_INTERRUPT_RX_BUFFER_UNAVAILABLE != 0
 }
 
-/// Builds the fixed EIC7700 AXI policy and enables 64-bit DMA when required.
-pub const fn dma_system_bus_mode(tx_high: u32, rx_high: u32) -> u32 {
-    let extended = if tx_high != 0 || rx_high != 0 {
-        DMA_EXTENDED_ADDRESS_MODE
-    } else {
-        0
-    };
+/// Builds the fixed EIC7700 AXI policy with extended (64-bit) DMA addressing.
+///
+/// The descriptors carry the full address of every buffer, and this board's
+/// 16 GiB of DRAM extends well past 4 GiB, so a frame buffer can land anywhere
+/// in that range. Truncating a buffer address to 32 bits makes the MAC read or
+/// write the wrong place while the descriptor still completes, which looks like
+/// a silent network outage rather than a DMA error.
+pub const fn dma_system_bus_mode() -> u32 {
     DMA_ADDRESS_ALIGNED_BEATS
         | DMA_AXI_WRITE_LIMIT_2
         | DMA_AXI_READ_LIMIT_2
         | DMA_AXI_BURSTS_16_8_4
-        | extended
+        | DMA_EXTENDED_ADDRESS_MODE
 }
 
 /// Decodes the documented clear-on-read MTL queue-zero receive-loss counters.
@@ -487,10 +488,8 @@ mod tests {
     }
 
     #[ktest]
-    fn extended_dma_addresses_enable_the_high_address_registers() {
-        assert_eq!(dma_system_bus_mode(0, 0), 0x0202_100e);
-        assert_eq!(dma_system_bus_mode(1, 0), 0x0202_180e);
-        assert_eq!(dma_system_bus_mode(0, 1), 0x0202_180e);
+    fn dma_always_uses_extended_buffer_addresses() {
+        assert_eq!(dma_system_bus_mode(), 0x0202_180e);
     }
 
     #[ktest]

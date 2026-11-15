@@ -204,7 +204,7 @@ fn configure_selected(
         read(MAC_RX_QUEUE_CONTROL0.offset())?,
     )
     .map_err(|_| DeviceError::RegisterEncoding)?;
-    let system_bus_mode = dma_system_bus_mode(tx_high, rx_high);
+    let system_bus_mode = dma_system_bus_mode();
     write(DMA_SYSTEM_BUS_MODE.offset(), system_bus_mode)?;
     write(DMA_CHANNEL0_CONTROL.offset(), 0)?;
     write(DMA_CHANNEL0_TX_DESCRIPTOR_LIST_HIGH.offset(), tx_high)?;
