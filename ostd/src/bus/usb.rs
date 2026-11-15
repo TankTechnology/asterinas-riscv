@@ -13,7 +13,7 @@ use core::{
     time::Duration,
 };
 
-use crab_usb::{Device, Endpoint, EventHandler, KernelOp, USBHost};
+use crab_usb::{Device, DeviceInfo, Endpoint, EventHandler, KernelOp, USBHost};
 use usb_if::{
     descriptor::{ConfigurationDescriptor, EndpointType},
     endpoint::{RequestId, TransferCompletion, TransferRequest},
@@ -21,7 +21,7 @@ use usb_if::{
     transfer::{Direction, Recipient, Request, RequestType},
 };
 
-use self::report_queue::{BootKeyboardReportQueue, ReportEndpoint};
+use self::report_queue::{BootKeyboardReportQueue, BootReportQueue, ReportEndpoint};
 use crate::{
     arch,
     io::IoMem,
@@ -35,6 +35,7 @@ use crate::{
 const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const KEYBOARD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
+const BOOT_MOUSE_REPORT_LEN: usize = 4;
 const XHCI_MIN_CAPLENGTH: usize = 0x20;
 const XHCI_CAPABILITY_ACCESSORS_LEN: usize = 0x24;
 const XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET: usize = 0x400;
@@ -94,20 +95,114 @@ pub enum UsbKeyboardStage {
     SetBootProtocol,
 }
 
-/// Identity of the selected USB boot keyboard.
+/// Identity of a selected USB HID boot device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UsbKeyboardInfo {
+pub struct UsbDeviceInfo {
     /// USB vendor identifier.
     pub vendor_id: u16,
     /// USB product identifier.
     pub product_id: u16,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BootKeyboardInterface {
+/// Identity of the boot keyboard and optional boot mouse owned by one xHCI host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UsbHidInfo {
+    /// The boot keyboard, present whenever `PollingUsbHidHost::open` succeeds.
+    pub keyboard: Option<UsbDeviceInfo>,
+    /// The optional boot mouse discovered beside the keyboard.
+    pub mouse: Option<UsbDeviceInfo>,
+}
+
+/// One completed HID boot report from the shared xHCI host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsbHidReport {
+    /// An exact eight-byte boot-keyboard report.
+    Keyboard([u8; BOOT_KEYBOARD_REPORT_LEN]),
+    /// A three- or four-byte boot-mouse report held in a fixed-size buffer.
+    Mouse {
+        /// Report bytes; bytes after `actual_length` are zero.
+        bytes: [u8; BOOT_MOUSE_REPORT_LEN],
+        /// Number of bytes completed by the interrupt transfer.
+        actual_length: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BootHidInterface {
+    kind: BootHidKind,
     number: u8,
     alternate: u8,
     endpoint: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootHidKind {
+    Keyboard,
+    Mouse,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BootHidInterfaceError {
+    Ambiguous,
+    InvalidEndpoint,
+}
+
+fn classify_boot_interface(class: u8, subclass: u8, protocol: u8) -> Option<BootHidKind> {
+    if (class, subclass) != (0x03, 0x01) {
+        return None;
+    }
+    match protocol {
+        0x01 => Some(BootHidKind::Keyboard),
+        0x02 => Some(BootHidKind::Mouse),
+        _ => None,
+    }
+}
+
+fn find_boot_hid_interface(
+    configurations: &[ConfigurationDescriptor],
+) -> Result<Option<BootHidInterface>, BootHidInterfaceError> {
+    let Some(configuration) = configurations.first() else {
+        return Ok(None);
+    };
+    let mut selected = None;
+    for alternate in configuration
+        .interfaces
+        .iter()
+        .flat_map(|interface| &interface.alt_settings)
+    {
+        let Some(kind) =
+            classify_boot_interface(alternate.class, alternate.subclass, alternate.protocol)
+        else {
+            continue;
+        };
+        if selected.is_some() {
+            return Err(BootHidInterfaceError::Ambiguous);
+        }
+        let mut interrupt_in = alternate.endpoints.iter().filter(|endpoint| {
+            endpoint.transfer_type == EndpointType::Interrupt && endpoint.direction == Direction::In
+        });
+        let endpoint = interrupt_in
+            .next()
+            .filter(|endpoint| {
+                endpoint.address & 0x0f != 0
+                    && endpoint.max_packet_size
+                        >= match kind {
+                            BootHidKind::Keyboard => BOOT_KEYBOARD_REPORT_LEN as u16,
+                            BootHidKind::Mouse => 3,
+                        }
+            })
+            .ok_or(BootHidInterfaceError::InvalidEndpoint)?;
+        if interrupt_in.next().is_some() {
+            return Err(BootHidInterfaceError::InvalidEndpoint);
+        }
+        selected = Some(BootHidInterface {
+            kind,
+            number: alternate.interface_number,
+            alternate: alternate.alternate_setting,
+            endpoint: endpoint.address,
+        });
+    }
+    Ok(selected)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -466,58 +561,48 @@ fn timeout_at(stage: UsbKeyboardStage, kernel_op: &UsbKernelOp) -> UsbKeyboardEr
     UsbKeyboardError::Timeout(stage)
 }
 
-fn find_boot_keyboard(configurations: &[ConfigurationDescriptor]) -> Option<BootKeyboardInterface> {
-    let configuration = configurations.first()?;
-    configuration.interfaces.iter().find_map(|interface| {
-        interface.alt_settings.iter().find_map(|alternate| {
-            if (alternate.class, alternate.subclass, alternate.protocol) != (0x03, 0x01, 0x01) {
-                return None;
-            }
-            alternate.endpoints.iter().find_map(|endpoint| {
-                (endpoint.transfer_type == EndpointType::Interrupt
-                    && endpoint.direction == Direction::In)
-                    .then_some(BootKeyboardInterface {
-                        number: alternate.interface_number,
-                        alternate: alternate.alternate_setting,
-                        endpoint: endpoint.address,
-                    })
-            })
-        })
-    })
-}
-
 fn abandon_host(xhci: XhciHost, events: EventHandler) {
     // The controller may still own DMA rings. CrabUSB has no shutdown API, so leaking this
     // one failed host is safer than freeing memory that the controller can still access.
     mem::forget((xhci, events));
 }
 
-fn abandon_open_device(xhci: XhciHost, events: EventHandler, device: Device) {
-    // The opened device can also own endpoint rings that remain visible to the controller.
-    mem::forget((xhci, events, device));
-}
-
-/// A polling USB HID boot keyboard backed by CrabUSB's xHCI driver.
-pub struct PollingUsbKeyboard {
+/// A polling USB HID boot host backed by one CrabUSB xHCI controller.
+pub struct PollingUsbHidHost {
     // CrabUSB has no controller shutdown API. Keep DMA-visible state alive even if the polling
     // worker exits after a transfer error.
-    inner: ManuallyDrop<PollingUsbKeyboardInner>,
+    inner: ManuallyDrop<PollingUsbHidHostInner>,
 }
 
-struct PollingUsbKeyboardInner {
+struct PollingUsbHidHostInner {
     _xhci: XhciHost,
     events: EventHandler,
+    keyboard: BootKeyboardSession,
+    mouse: Option<BootMouseSession>,
+}
+
+struct BootKeyboardSession {
     _device: Device,
     endpoint: Endpoint,
     reports: BootKeyboardReportQueue,
-    info: UsbKeyboardInfo,
+    info: UsbDeviceInfo,
 }
 
-impl ReportEndpoint for Endpoint {
-    fn submit_report(
-        &mut self,
-        report: &mut [u8; BOOT_KEYBOARD_REPORT_LEN],
-    ) -> Result<RequestId, UsbKeyboardError> {
+struct BootMouseSession {
+    _device: Device,
+    endpoint: Endpoint,
+    reports: BootReportQueue<BOOT_MOUSE_REPORT_LEN>,
+    info: UsbDeviceInfo,
+}
+
+struct OpenedHidDevice {
+    device: Device,
+    endpoint: Endpoint,
+    info: UsbDeviceInfo,
+}
+
+impl<const N: usize> ReportEndpoint<N> for Endpoint {
+    fn submit_report(&mut self, report: &mut [u8; N]) -> Result<RequestId, UsbKeyboardError> {
         self.submit(TransferRequest::interrupt_in(report))
             .map_err(|_| UsbKeyboardError::Transfer)
     }
@@ -535,8 +620,82 @@ impl ReportEndpoint for Endpoint {
     }
 }
 
-impl PollingUsbKeyboard {
-    /// Starts the firmware-configured xHCI controller and discovers one boot keyboard.
+fn open_hid_device(
+    xhci: &mut XhciHost,
+    events: &EventHandler,
+    device_info: &DeviceInfo,
+    interface: BootHidInterface,
+) -> Result<OpenedHidDevice, UsbKeyboardError> {
+    let info = UsbDeviceInfo {
+        vendor_id: device_info.vendor_id(),
+        product_id: device_info.product_id(),
+    };
+    let mut device = match drive(xhci.host.open_device(device_info), events) {
+        Ok(Ok(device)) => device,
+        Ok(Err(_)) => return Err(UsbKeyboardError::DeviceOpen),
+        Err(DriveError::Timeout) => {
+            return Err(timeout_at(
+                UsbKeyboardStage::DeviceOpen,
+                xhci.kernel_op.as_ref(),
+            ));
+        }
+    };
+
+    match drive(
+        device.claim_interface(interface.number, interface.alternate),
+        events,
+    ) {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            mem::forget(device);
+            return Err(UsbKeyboardError::ClaimInterface);
+        }
+        Err(DriveError::Timeout) => {
+            let error = timeout_at(UsbKeyboardStage::ClaimInterface, xhci.kernel_op.as_ref());
+            mem::forget(device);
+            return Err(error);
+        }
+    }
+
+    let set_protocol = ControlSetup {
+        request_type: RequestType::Class,
+        recipient: Recipient::Interface,
+        request: Request::Other(0x0b),
+        value: 0,
+        index: u16::from(interface.number),
+    };
+    match drive(device.control_out(set_protocol, &[]), events) {
+        Ok(Ok(_)) => {}
+        Ok(Err(_)) => {
+            mem::forget(device);
+            return Err(UsbKeyboardError::SetBootProtocol);
+        }
+        Err(DriveError::Timeout) => {
+            let error = timeout_at(UsbKeyboardStage::SetBootProtocol, xhci.kernel_op.as_ref());
+            mem::forget(device);
+            return Err(error);
+        }
+    }
+
+    let endpoint = match device.endpoint(interface.endpoint) {
+        Ok(endpoint) => endpoint,
+        Err(_) => {
+            mem::forget(device);
+            return Err(UsbKeyboardError::EndpointOpen);
+        }
+    };
+    Ok(OpenedHidDevice {
+        device,
+        endpoint,
+        info,
+    })
+}
+
+impl PollingUsbHidHost {
+    /// Starts the firmware-configured xHCI controller and discovers a boot keyboard and mouse.
+    ///
+    /// The keyboard is mandatory. A mouse is attached when it appears during the same bounded
+    /// discovery window and can be opened without affecting the keyboard session.
     pub fn open(mmio: IoMem, dma_window: DmaWindow) -> Result<Self, UsbKeyboardError> {
         let mut xhci = XhciHost::new(mmio, dma_window)?;
         let events = xhci.host.create_event_handler();
@@ -562,7 +721,9 @@ impl PollingUsbKeyboard {
         }
 
         let discovery_deadline = Deadline::after(KEYBOARD_DISCOVERY_TIMEOUT);
-        let (device_info, interface) = loop {
+        let mut keyboard = None;
+        let mut mouse = None;
+        loop {
             let devices = match drive(xhci.host.probe_devices(), &events) {
                 Ok(Ok(devices)) => devices,
                 Ok(Err(_)) => {
@@ -576,100 +737,108 @@ impl PollingUsbKeyboard {
                 }
             };
 
-            let keyboard = devices.into_iter().find_map(|device| {
-                let interface = find_boot_keyboard(device.configurations())?;
-                Some((device.into_device_info()?, interface))
-            });
-            if let Some(keyboard) = keyboard {
-                break keyboard;
+            for device in devices {
+                let device_id = device.id();
+                let interface = match find_boot_hid_interface(device.configurations()) {
+                    Ok(Some(interface)) => interface,
+                    Ok(None) => continue,
+                    Err(_) => {
+                        abandon_host(xhci, events);
+                        return Err(UsbKeyboardError::Enumeration);
+                    }
+                };
+                let slot = match interface.kind {
+                    BootHidKind::Keyboard => &mut keyboard,
+                    BootHidKind::Mouse => &mut mouse,
+                };
+                if slot
+                    .as_ref()
+                    .is_some_and(|(selected_id, _, _)| *selected_id != device_id)
+                {
+                    abandon_host(xhci, events);
+                    return Err(UsbKeyboardError::Enumeration);
+                }
+                if slot.is_none()
+                    && let Some(device_info) = device.into_device_info()
+                {
+                    *slot = Some((device_id, device_info, interface));
+                }
+            }
+            if keyboard.is_some() && mouse.is_some() {
+                break;
             }
             if discovery_deadline.expired() {
+                if keyboard.is_some() {
+                    break;
+                }
                 abandon_host(xhci, events);
                 return Err(UsbKeyboardError::KeyboardNotFound);
             }
             Task::yield_now();
-        };
-
-        let info = UsbKeyboardInfo {
-            vendor_id: device_info.vendor_id(),
-            product_id: device_info.product_id(),
-        };
-        let mut device = match drive(xhci.host.open_device(&device_info), &events) {
-            Ok(Ok(device)) => device,
-            Ok(Err(_)) => {
-                abandon_host(xhci, events);
-                return Err(UsbKeyboardError::DeviceOpen);
-            }
-            Err(DriveError::Timeout) => {
-                let error = timeout_at(UsbKeyboardStage::DeviceOpen, xhci.kernel_op.as_ref());
-                abandon_host(xhci, events);
-                return Err(error);
-            }
-        };
-
-        match drive(
-            device.claim_interface(interface.number, interface.alternate),
-            &events,
-        ) {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {
-                abandon_open_device(xhci, events, device);
-                return Err(UsbKeyboardError::ClaimInterface);
-            }
-            Err(DriveError::Timeout) => {
-                let error = timeout_at(UsbKeyboardStage::ClaimInterface, xhci.kernel_op.as_ref());
-                abandon_open_device(xhci, events, device);
-                return Err(error);
-            }
         }
 
-        let set_protocol = ControlSetup {
-            request_type: RequestType::Class,
-            recipient: Recipient::Interface,
-            request: Request::Other(0x0b),
-            value: 0,
-            index: u16::from(interface.number),
+        let (_, keyboard_info, keyboard_interface) = keyboard.unwrap();
+        let opened_keyboard =
+            match open_hid_device(&mut xhci, &events, &keyboard_info, keyboard_interface) {
+                Ok(opened) => opened,
+                Err(error) => {
+                    abandon_host(xhci, events);
+                    return Err(error);
+                }
+            };
+        let mut keyboard_session = BootKeyboardSession {
+            _device: opened_keyboard.device,
+            endpoint: opened_keyboard.endpoint,
+            reports: BootKeyboardReportQueue::empty(),
+            info: opened_keyboard.info,
         };
-        match drive(device.control_out(set_protocol, &[]), &events) {
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) => {
-                abandon_open_device(xhci, events, device);
-                return Err(UsbKeyboardError::SetBootProtocol);
-            }
-            Err(DriveError::Timeout) => {
-                let error = timeout_at(UsbKeyboardStage::SetBootProtocol, xhci.kernel_op.as_ref());
-                abandon_open_device(xhci, events, device);
-                return Err(error);
-            }
+        if let Err(error) = keyboard_session
+            .reports
+            .fill(&mut keyboard_session.endpoint)
+        {
+            mem::forget(keyboard_session);
+            abandon_host(xhci, events);
+            return Err(error);
         }
 
-        let endpoint = match device.endpoint(interface.endpoint) {
-            Ok(endpoint) => endpoint,
-            Err(_) => {
-                abandon_open_device(xhci, events, device);
-                return Err(UsbKeyboardError::EndpointOpen);
+        let mouse_session = mouse.and_then(|(_, mouse_info, mouse_interface)| {
+            let opened = match open_hid_device(&mut xhci, &events, &mouse_info, mouse_interface) {
+                Ok(opened) => opened,
+                Err(error) => {
+                    crate::warn!("USB boot mouse unavailable: {:?}", error);
+                    return None;
+                }
+            };
+            let mut session = BootMouseSession {
+                _device: opened.device,
+                endpoint: opened.endpoint,
+                reports: BootReportQueue::empty(),
+                info: opened.info,
+            };
+            if let Err(error) = session.reports.fill(&mut session.endpoint) {
+                crate::warn!("USB boot mouse report queue unavailable: {:?}", error);
+                mem::forget(session);
+                return None;
             }
-        };
+            Some(session)
+        });
 
-        let mut keyboard = Self {
-            inner: ManuallyDrop::new(PollingUsbKeyboardInner {
+        Ok(Self {
+            inner: ManuallyDrop::new(PollingUsbHidHostInner {
                 _xhci: xhci,
                 events,
-                _device: device,
-                endpoint,
-                reports: BootKeyboardReportQueue::empty(),
-                info,
+                keyboard: keyboard_session,
+                mouse: mouse_session,
             }),
-        };
-        // Submit only after ManuallyDrop protects the complete DMA-visible ownership graph.
-        let inner = &mut *keyboard.inner;
-        inner.reports.fill(&mut inner.endpoint)?;
-        Ok(keyboard)
+        })
     }
 
-    /// Returns the selected keyboard's USB identity.
-    pub fn info(&self) -> UsbKeyboardInfo {
-        self.inner.info
+    /// Returns the selected keyboard and optional mouse identities.
+    pub fn info(&self) -> UsbHidInfo {
+        UsbHidInfo {
+            keyboard: Some(self.inner.keyboard.info),
+            mouse: self.inner.mouse.as_ref().map(|mouse| mouse.info),
+        }
     }
 
     /// Enables the xHCI global interrupt after the platform IRQ handler is installed.
@@ -690,25 +859,54 @@ impl PollingUsbKeyboard {
             .map_err(|_| UsbKeyboardError::Interrupt)
     }
 
-    /// Pumps xHCI and returns one completed eight-byte HID boot report, if available.
-    pub fn poll_report(
-        &mut self,
-    ) -> Result<Option<[u8; BOOT_KEYBOARD_REPORT_LEN]>, UsbKeyboardError> {
+    /// Pumps xHCI and returns one completed keyboard or mouse report, if available.
+    pub fn poll_report(&mut self) -> Result<Option<UsbHidReport>, UsbKeyboardError> {
         let inner = &mut *self.inner;
         inner.events.handle_event();
         let mut context = Context::from_waker(Waker::noop());
-        inner.reports.poll(&mut inner.endpoint, &mut context)
+        if let Some(report) = inner
+            .keyboard
+            .reports
+            .poll(&mut inner.keyboard.endpoint, &mut context)?
+        {
+            return Ok(Some(UsbHidReport::Keyboard(report)));
+        }
+        let Some(mouse) = &mut inner.mouse else {
+            return Ok(None);
+        };
+        match mouse.reports.poll(&mut mouse.endpoint, &mut context) {
+            Ok(report) => Ok(report.map(|report| UsbHidReport::Mouse {
+                bytes: *report.bytes(),
+                actual_length: report.actual_length(),
+            })),
+            Err(error) => {
+                crate::warn!("USB boot mouse transfer stopped: {:?}", error);
+                let failed_mouse = inner.mouse.take().unwrap();
+                mem::forget(failed_mouse);
+                Ok(None)
+            }
+        }
     }
 }
 
 #[cfg(ktest)]
 mod tests {
+    use alloc::vec;
     use core::{cell::Cell, future::poll_fn, task::Poll};
 
+    use usb_if::{
+        descriptor::{
+            ConfigurationDescriptor, EndpointDescriptor, EndpointType, InterfaceDescriptor,
+            InterfaceDescriptors,
+        },
+        transfer::Direction,
+    };
+
     use super::{
-        DriveError, UsbKeyboardError, UsbKeyboardStage, XHCI_CAPABILITY_ACCESSORS_LEN,
-        XHCI_MIN_CAPLENGTH, XhciMmioError, drive_with, new_usb_kernel_op,
-        validate_xhci_mapping_properties, validate_xhci_mmio_with,
+        BootHidInterfaceError, BootHidKind, DriveError, UsbKeyboardError, UsbKeyboardStage,
+        XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH, XhciMmioError, classify_boot_interface,
+        drive_with, find_boot_hid_interface, new_usb_kernel_op, validate_xhci_mapping_properties,
+        validate_xhci_mmio_with,
     };
     use crate::{
         mm::{CachePolicy, dma::DmaWindow},
@@ -1041,6 +1239,88 @@ mod tests {
         assert_ne!(
             UsbKeyboardError::Timeout(UsbKeyboardStage::HostInit),
             UsbKeyboardError::Timeout(UsbKeyboardStage::Enumeration)
+        );
+    }
+
+    #[ktest]
+    fn classifies_only_hid_boot_keyboard_and_mouse_interfaces() {
+        assert_eq!(
+            classify_boot_interface(0x03, 0x01, 0x01),
+            Some(BootHidKind::Keyboard)
+        );
+        assert_eq!(
+            classify_boot_interface(0x03, 0x01, 0x02),
+            Some(BootHidKind::Mouse)
+        );
+        for fields in [(0x03, 0x00, 0x02), (0x03, 0x01, 0x00), (0xff, 0x01, 0x02)] {
+            assert_eq!(classify_boot_interface(fields.0, fields.1, fields.2), None);
+        }
+    }
+
+    fn boot_configuration(protocol: u8, max_packet_size: u16) -> ConfigurationDescriptor {
+        ConfigurationDescriptor {
+            num_interfaces: 1,
+            configuration_value: 1,
+            attributes: 0x80,
+            max_power: 0,
+            string_index: None,
+            string: None,
+            interfaces: vec![InterfaceDescriptors {
+                interface_number: 0,
+                alt_settings: vec![InterfaceDescriptor {
+                    interface_number: 0,
+                    alternate_setting: 0,
+                    class: 0x03,
+                    subclass: 0x01,
+                    protocol,
+                    string_index: None,
+                    string: None,
+                    num_endpoints: 1,
+                    endpoints: vec![EndpointDescriptor {
+                        address: 0x81,
+                        max_packet_size,
+                        transfer_type: EndpointType::Interrupt,
+                        direction: Direction::In,
+                        packets_per_microframe: 1,
+                        interval: 10,
+                    }],
+                }],
+            }],
+            raw: vec![],
+        }
+    }
+
+    #[ktest]
+    fn selects_one_exact_interrupt_in_endpoint_for_each_boot_kind() {
+        let keyboard = boot_configuration(0x01, 8);
+        let mouse = boot_configuration(0x02, 4);
+
+        assert_eq!(
+            find_boot_hid_interface(&[keyboard]).unwrap().unwrap().kind,
+            BootHidKind::Keyboard
+        );
+        assert_eq!(
+            find_boot_hid_interface(&[mouse]).unwrap().unwrap().kind,
+            BootHidKind::Mouse
+        );
+    }
+
+    #[ktest]
+    fn rejects_short_mouse_packets_and_ambiguous_interrupt_endpoints() {
+        let short_mouse = boot_configuration(0x02, 2);
+        assert_eq!(
+            find_boot_hid_interface(&[short_mouse]),
+            Err(BootHidInterfaceError::InvalidEndpoint)
+        );
+
+        let mut ambiguous = boot_configuration(0x02, 4);
+        let duplicate = ambiguous.interfaces[0].alt_settings[0].endpoints[0].clone();
+        ambiguous.interfaces[0].alt_settings[0]
+            .endpoints
+            .push(duplicate);
+        assert_eq!(
+            find_boot_hid_interface(&[ambiguous]),
+            Err(BootHidInterfaceError::InvalidEndpoint)
         );
     }
 }
