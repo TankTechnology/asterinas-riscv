@@ -30,6 +30,7 @@ pub(crate) fn create_new_user_task(
     user_ctx: Box<UserContext>,
     thread_ref: Arc<Thread>,
     thread_local: ThreadLocal,
+    kernel_stack: ostd::task::ReservedKernelStack,
 ) -> Task {
     let user_task_entry = move |user_ctx: UserContext| {
         let current_task = Task::current().unwrap();
@@ -163,8 +164,7 @@ pub(crate) fn create_new_user_task(
     })
     .data(thread_ref)
     .local_data(thread_local)
-    .build()
-    .expect("spawn task failed")
+    .build_with_kernel_stack(kernel_stack)
 }
 
 impl UserModeHooks for Context<'_> {
