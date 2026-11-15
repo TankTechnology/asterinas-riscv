@@ -261,7 +261,7 @@ impl PosixThread {
     /// Therefore, unless the caller can ensure that there are no permission issues,
     /// this method should be used to enqueue kernel signals or fault signals.
     pub(crate) fn enqueue_signal(&self, signal: Box<dyn Signal>) {
-        self.sig_queues.enqueue(signal);
+        self.sig_queues.enqueue_without_notify(signal);
         self.wake_signalled_waker();
     }
 

@@ -643,7 +643,7 @@ impl Process {
             return;
         }
 
-        self.sig_queues.enqueue(signal);
+        self.sig_queues.enqueue_without_notify(signal);
 
         for task in self.tasks.lock().as_slice() {
             let posix_thread = task.as_posix_thread().unwrap();

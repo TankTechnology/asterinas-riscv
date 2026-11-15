@@ -92,7 +92,7 @@ where
             || {
                 self.inner
                     .write()
-                    .bind_ephemeral(&NetlinkSocketAddr::new_unspecified(), &self.pollee)
+                    .bind_ephemeral(&NetlinkSocketAddr::new_unspecified(), &self.pollee, ())
             },
             |bound, remote_endpoint| bound.try_send(reader, remote_endpoint, flags, options),
         )?;
@@ -131,7 +131,7 @@ where
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
 
-        self.inner.write().connect(&endpoint, &self.pollee)
+        self.inner.write().connect(&endpoint, &self.pollee, ())
     }
 
     fn addr(&self) -> Result<SocketAddr> {
