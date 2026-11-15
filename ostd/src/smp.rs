@@ -155,6 +155,7 @@ impl IpiSender {
 cpu_local! {
     static CALL_QUEUES: SpinLock<VecDeque<fn()>> = SpinLock::new(VecDeque::new());
     static HAS_PENDING_IPIS: AtomicBool = AtomicBool::new(false);
+    static SYNCHRONOUS_CALL_ACK: AtomicBool = AtomicBool::new(true);
 }
 
 /// Handles inter-processor calls.
@@ -267,4 +268,55 @@ mod test {
         pending_ipis.wait();
 
         assert_eq!(IPI_CALL_COUNT.load(Ordering::Relaxed) - before, 2);
-    }}
+    }
+}
+
+static SYNCHRONOUS_CALL_LOCK: SpinLock<()> = SpinLock::new(());
+
+fn do_synchronous_memory_barrier() {
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    // No races when reading the CPU ID: the callback runs in interrupt context
+    // or synchronously while the caller is pinned by the global call lock.
+    let current_cpu = crate::cpu::CpuId::current_racy();
+    SYNCHRONOUS_CALL_ACK
+        .get_on_cpu(current_cpu)
+        .store(true, Ordering::Release);
+}
+
+pub fn synchronize_all_cpus() {
+    assert!(
+        crate::arch::irq::is_local_enabled(),
+        "synchronizing CPUs with local IRQs disabled can deadlock"
+    );
+
+    // Only one synchronous call may own the per-CPU acknowledgements at once.
+    let _call_guard = SYNCHRONOUS_CALL_LOCK.lock();
+    let targets = CpuSet::new_full();
+
+    for cpu in targets.iter() {
+        SYNCHRONOUS_CALL_ACK
+            .get_on_cpu(cpu)
+            .store(false, Ordering::Relaxed);
+    }
+
+    // Order the caller's accesses before any remote IPI-induced barrier.
+    core::sync::atomic::fence(Ordering::SeqCst);
+
+    if let Some(ipi_sender) = IPI_SENDER.get() {
+        ipi_sender.inter_processor_call(&targets, do_synchronous_memory_barrier);
+    } else {
+        // The sender is absent only during uniprocessor bootstrapping.
+        assert_eq!(crate::cpu::num_cpus(), 1);
+        do_synchronous_memory_barrier();
+    }
+
+    for cpu in targets.iter() {
+        while !SYNCHRONOUS_CALL_ACK.get_on_cpu(cpu).load(Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    }
+
+    // Order all subsequent caller accesses after the acknowledged barriers.
+    core::sync::atomic::fence(Ordering::SeqCst);
+}

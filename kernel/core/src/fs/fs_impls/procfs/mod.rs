@@ -17,17 +17,14 @@ use self::{
     mounts::MountsSymOps,
     net::NetSymOps,
     buddyinfo::BuddyInfoFileOps,
-    diskstats::DiskStatsFileOps,
     cgroups::CgroupsFileOps,
     interrupts::InterruptsFileOps,
     kallsyms::KallsymsFileOps,
     pressure::PressureDirOps,
-    sysvipc::SysvipcDirOps,
     trace::TraceDirOps,
     pagetypeinfo::PageTypeInfoFileOps,
     vmstat::VmStatFileOps,
     zoneinfo::ZoneInfoFileOps,
-    partitions::PartitionsFileOps,
     perm_order::PermOrderFileOps,
     pid::{PidDirOps, TidDirOps},
     self_::SelfSymOps,
@@ -65,18 +62,15 @@ mod cgroups;
 mod interrupts;
 mod kallsyms;
 mod pressure;
-mod sysvipc;
 mod trace;
 mod loadavg;
 mod meminfo;
 mod mounts;
 mod net;
 mod buddyinfo;
-mod diskstats;
 mod pagetypeinfo;
 mod vmstat;
 mod zoneinfo;
-mod partitions;
 mod perm_order;
 mod pid;
 mod self_;
@@ -207,16 +201,13 @@ impl RootDirOps {
         ("mounts", InodeType::SymLink, MountsSymOps::new_inode),
         ("net", InodeType::SymLink, NetSymOps::new_inode),
         ("buddyinfo", InodeType::File, BuddyInfoFileOps::new_inode),
-        ("diskstats", InodeType::File, DiskStatsFileOps::new_inode),
         ("pagetypeinfo", InodeType::File, PageTypeInfoFileOps::new_inode),
         ("vmstat", InodeType::File, VmStatFileOps::new_inode),
         ("zoneinfo", InodeType::File, ZoneInfoFileOps::new_inode),
-        ("partitions", InodeType::File, PartitionsFileOps::new_inode),
         ("interrupts", InodeType::File, InterruptsFileOps::new_inode),
         ("kallsyms", InodeType::File, KallsymsFileOps::new_inode),
         ("cgroups", InodeType::File, CgroupsFileOps::new_inode),
         ("pressure", InodeType::Dir, PressureDirOps::new_inode),
-        ("sysvipc", InodeType::Dir, SysvipcDirOps::new_inode),
         ("trace", InodeType::Dir, TraceDirOps::new_inode),
         ("perm_order", InodeType::File, PermOrderFileOps::new_inode),
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
