@@ -1,0 +1,19 @@
+RISC-V virt QEMU, release build, SMP=4, riscv_sv39_mode:
+  make run_kernel AUTO_TEST=udp_msg_dontwait TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+
+With the final test and parent commit ce2faed5a (blocking path despite MSG_DONTWAIT):
+  UDP MSG_DONTWAIT child status=14
+  run_kernel validation failed: expected exactly one terminal marker: UDP MSG_DONTWAIT regression passed.
+
+With the fix, kernel image SHA-256 d4644dce863553ab4737ad88b48811598666b268776ec4d3c16231f6c3cd888d:
+  UDP MSG_DONTWAIT regression passed.
+  run_kernel validation passed: mode=udp-msg-dontwait
+
+Adjacent existing UDP regression with the same kernel image:
+  make run_kernel AUTO_TEST=udp_user_buffer_prefault TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+  run_kernel validation passed: mode=udp-user-buffer-prefault
+
+Linux host oracle:
+  cc -std=gnu11 -Wall -Wextra -Werror test/initramfs/src/regression/network/udp_msg_dontwait.c -o /tmp/udp_msg_dontwait
+  /tmp/udp_msg_dontwait
+  UDP MSG_DONTWAIT regression passed.

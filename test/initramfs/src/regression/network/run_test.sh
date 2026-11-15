@@ -49,6 +49,7 @@ sleep 0.2
 ./ipv6_dual_stack
 ./ipv6_dual_stack_udp
 ./udp_user_buffer_prefault
+./udp_msg_dontwait
 
 ./netlink_padding
 ./netlink_route
