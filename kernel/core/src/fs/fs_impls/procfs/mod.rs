@@ -20,6 +20,7 @@ use self::{
     diskstats::DiskStatsFileOps,
     cgroups::CgroupsFileOps,
     interrupts::InterruptsFileOps,
+    kallsyms::KallsymsFileOps,
     pressure::PressureDirOps,
     sysvipc::SysvipcDirOps,
     pagetypeinfo::PageTypeInfoFileOps,
@@ -61,6 +62,7 @@ mod drm_scanout;
 mod filesystems;
 mod cgroups;
 mod interrupts;
+mod kallsyms;
 mod pressure;
 mod sysvipc;
 mod loadavg;
@@ -209,6 +211,7 @@ impl RootDirOps {
         ("zoneinfo", InodeType::File, ZoneInfoFileOps::new_inode),
         ("partitions", InodeType::File, PartitionsFileOps::new_inode),
         ("interrupts", InodeType::File, InterruptsFileOps::new_inode),
+        ("kallsyms", InodeType::File, KallsymsFileOps::new_inode),
         ("cgroups", InodeType::File, CgroupsFileOps::new_inode),
         ("pressure", InodeType::Dir, PressureDirOps::new_inode),
         ("sysvipc", InodeType::Dir, SysvipcDirOps::new_inode),
