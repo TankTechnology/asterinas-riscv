@@ -233,6 +233,8 @@ pub fn clear() {
 
 #[cfg(ktest)]
 mod test {
+    use ostd::prelude::ktest;
+
     use super::*;
 
     /// Reads the payloads currently in the ring, in visit order.
