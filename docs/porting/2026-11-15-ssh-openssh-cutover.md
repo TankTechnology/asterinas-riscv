@@ -94,6 +94,11 @@ systemctl enable --now asterinas-openssh.service
 | 重启后 | `asterinas-openssh=active`、`asterinas-dropbear=inactive`、`--failed` 为空、`-tt` 仍可用 |
 | 桌面 | desktop / browser-web / vnc 全部 active，不受影响 |
 
+之后又修掉一个 pty 内核 bug：拿到 `/dev/pts/0` 了，但会话没有控制终端
+（`bash -i` 报 no job control、`^C` 会打断整条连接）。根因是 `PtySlaveFile::new`
+不看 `O_NOCTTY` 就接管终端，sshd 的 monitor 用 `openpty()` 打开从设备时抢走了它。
+细节见 `2026-11-15-pty-controlling-terminal.md`。
+
 ## 5. 回滚
 
 ```
