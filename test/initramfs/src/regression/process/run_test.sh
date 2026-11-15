@@ -14,6 +14,7 @@ fi
 ./clone3/clone_no_exit_signal
 ./clone3/clone_parent
 ./clone3/clone_process
+./clone3/clone_set_tid
 
 ./cpu_affinity/cpu_affinity
 
