@@ -22,10 +22,7 @@ pub enum Error {
 }
 
 impl From<PageTableError> for Error {
-    fn from(err: PageTableError) -> Error {
-        match err {
-            PageTableError::NoMemory => Error::NoMemory,
-            _ => Error::AccessDenied,
-        }
+    fn from(_err: PageTableError) -> Error {
+        Error::AccessDenied
     }
 }

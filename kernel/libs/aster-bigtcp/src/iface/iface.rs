@@ -10,7 +10,7 @@ use smoltcp::{
 use super::{
     BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceName, InterfaceType,
 };
-use crate::{errors::BindError, ext::Ext, socket::IcmpSocket};
+use crate::{errors::BindError, ext::Ext};
 
 /// A network interface.
 ///
@@ -21,11 +21,6 @@ use crate::{errors::BindError, ext::Ext, socket::IcmpSocket};
 pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
     /// Returns the Ethernet address, if the interface uses Ethernet framing.
     fn ethernet_addr(&self) -> Option<EthernetAddress>;
-
-    /// Returns the configured IPv4 default gateway, if any.
-    fn ipv4_gateway(&self) -> Option<Ipv4Address> {
-        None
-    }
 
     /// Transmits or receives packets queued in the iface, and updates socket status accordingly.
     fn poll(&self);
@@ -63,21 +58,6 @@ impl<E: Ext> dyn Iface<E> {
         common.bind_udp(self.clone(), config)
     }
 
-    /// Binds an ICMP identifier to the iface.
-    ///
-    /// Unlike UDP, the identifier is chosen by the caller (the kernel allocates
-    /// one per socket); the interface only checks that it is free and registers
-    /// the socket for incoming replies.
-    pub fn bind_icmp(self: &Arc<Self>, ident: u16) -> Result<IcmpSocket<E>, BindError> {
-        let common = self.common();
-        common.bind_icmp(self.clone(), ident)
-    }
-
-    /// Returns how many ICMP ping sockets are bound to this interface.
-    pub fn icmp_socket_count(&self) -> usize {
-        self.common().icmp_socket_count()
-    }
-
     /// Returns the interface index.
     pub fn index(&self) -> u32 {
         self.common().index()
@@ -100,11 +80,6 @@ impl<E: Ext> dyn Iface<E> {
         self.common().flags()
     }
 
-    /// Sets the interface flags (e.g., bringing the interface up or down).
-    pub fn set_flags(&self, flags: InterfaceFlags) {
-        self.common().set_flags(flags)
-    }
-
     // FIXME: Linux and smoltcp allow multiple IP CIDRs per interface, while the
     // address-related APIs below only account for the first CIDR of each family.
 
@@ -122,9 +97,6 @@ impl<E: Ext> dyn Iface<E> {
     ///
     /// IPv6 does not define broadcast addresses and uses multicast instead.
     pub fn broadcast_addr(&self) -> Option<Ipv4Address> {
-        if !self.flags().contains(InterfaceFlags::BROADCAST) {
-            return None;
-        }
         self.common().ipv4_cidr()?.broadcast()
     }
 

@@ -30,90 +30,6 @@ impl<E: Ext> PollableIface<E> {
         }
     }
 
-    /// Adds an address to the interface.
-    ///
-    /// The interface keeps a small fixed-size address list; a full list is
-    /// reported back as an error rather than silently dropping the address.
-    pub(super) fn add_ip_addr(
-        &mut self,
-        cidr: smoltcp::wire::IpCidr,
-    ) -> Result<(), smoltcp::wire::IpCidr> {
-        let mut rejected = None;
-        self.interface.update_ip_addrs(|addrs| {
-            if addrs.push(cidr).is_err() {
-                rejected = Some(cidr);
-            }
-        });
-        match rejected {
-            Some(cidr) => Err(cidr),
-            None => Ok(()),
-        }
-    }
-
-    /// Removes an address from the interface. Returns whether it was there.
-    pub(super) fn remove_ip_addr(&mut self, cidr: smoltcp::wire::IpCidr) -> bool {
-        let mut found = false;
-        self.interface.update_ip_addrs(|addrs| {
-            if let Some(index) = addrs.iter().position(|addr| *addr == cidr) {
-                addrs.remove(index);
-                found = true;
-            }
-        });
-        found
-    }
-
-    /// Adds a route, replacing any existing route to the same destination.
-    ///
-    /// Returns an error when the table is full.
-    pub(super) fn add_route(
-        &mut self,
-        cidr: smoltcp::wire::IpCidr,
-        via: smoltcp::wire::IpAddress,
-    ) -> Result<(), ()> {
-        let mut accepted = false;
-        self.interface.routes_mut().update(|routes| {
-            if let Some(index) = routes.iter().position(|route| route.cidr == cidr) {
-                routes.remove(index);
-            }
-            let route = smoltcp::iface::Route {
-                cidr,
-                via_router: via,
-                preferred_until: None,
-                expires_at: None,
-            };
-            if routes.push(route).is_ok() {
-                accepted = true;
-            }
-        });
-        if accepted { Ok(()) } else { Err(()) }
-    }
-
-    /// Removes the route to `cidr`. Returns whether there was one.
-    pub(super) fn remove_route(&mut self, cidr: smoltcp::wire::IpCidr) -> bool {
-        let mut removed = false;
-        self.interface.routes_mut().update(|routes| {
-            if let Some(index) = routes.iter().position(|route| route.cidr == cidr) {
-                routes.remove(index);
-                removed = true;
-            }
-        });
-        removed
-    }
-
-    /// Lists the routes currently installed.
-    pub(super) fn routes(&self) -> Vec<(smoltcp::wire::IpCidr, smoltcp::wire::IpAddress)> {
-        self.interface
-            .routes()
-            .iter()
-            .map(|route| (route.cidr, route.via_router))
-            .collect()
-    }
-
-    /// Returns every address the interface currently has.
-    pub(super) fn ip_addrs(&self) -> &[smoltcp::wire::IpCidr] {
-        self.interface.ip_addrs()
-    }
-
     pub(super) fn as_mut(&mut self) -> PollableIfaceMut<'_, E> {
         PollableIfaceMut {
             context: self.interface.context(),
@@ -313,10 +229,6 @@ impl PollKey {
     /// socket will live in the pending queue.
     pub(crate) fn is_active(&self) -> bool {
         self.next_poll_at_ms.load(Ordering::Relaxed) != Self::INACTIVE_VAL
-    }
-
-    pub(crate) fn diagnostic_next_poll_at_ms(&self) -> u64 {
-        self.next_poll_at_ms.load(Ordering::Relaxed)
     }
 }
 

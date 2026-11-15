@@ -23,6 +23,7 @@ macro_rules! __log_prefix {
 mod arch;
 
 mod console;
+mod sysrq;
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {

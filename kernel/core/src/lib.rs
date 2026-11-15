@@ -40,6 +40,8 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch/mod.rs")]
 #[cfg_attr(target_arch = "aarch64", path = "arch/arm/mod.rs")]
 mod arch;
+pub(crate) mod bpf;
+pub(crate) mod hardware_watchdog;
 
 #[cfg(target_arch = "riscv64")]
 mod boot_reboot;
@@ -61,6 +63,7 @@ pub mod security;
 mod syscall;
 mod thread;
 mod time;
+mod trace;
 pub mod util;
 // TODO: Add vDSO support for LoongArch.
 #[cfg(not(target_arch = "loongarch64"))]

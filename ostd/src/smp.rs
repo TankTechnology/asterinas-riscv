@@ -103,6 +103,13 @@ pub(crate) struct IpiSender {
 
 /// The [`IpiSender`] singleton.
 pub(crate) static IPI_SENDER: Once<IpiSender> = Once::new();
+/// Returns the hardware CPU ID mapping used for inter-processor communication.
+///
+/// `None` before SMP initialization has installed the mapping.
+pub(crate) fn hw_cpu_id_mapping() -> Option<&'static [HwCpuId]> {
+    IPI_SENDER.get().map(|sender| &*sender.hw_cpu_ids)
+}
+
 
 impl IpiSender {
     /// Executes a function on other processors.
@@ -260,6 +267,4 @@ mod test {
         pending_ipis.wait();
 
         assert_eq!(IPI_CALL_COUNT.load(Ordering::Relaxed) - before, 2);
-    }
-||||||| parent of 6c0ec845c (Fix RISC-V `flush_icache` hart targeting)
-}
+    }}

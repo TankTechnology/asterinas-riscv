@@ -6,9 +6,9 @@ use super::{PageTableGuard, PageTableNode, PteState, PteStateRef, PteTrait};
 use crate::{
     mm::{
         HasPaddr, nr_subpage_per_huge,
-        page_prop::{PageFlags, PageProperty},
+        page_prop::PageProperty,
         page_size,
-        page_table::{PageTableConfig, PageTableError, PageTableNodeRef, PteScalar},
+        page_table::{PageTableConfig, PageTableNodeRef, PteScalar},
     },
     panic::PanicGuard,
     sync::RcuDrop,
@@ -63,37 +63,14 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
             return;
         }
 
-        loop {
-            let PteScalar::Mapped(_, expected_prop) = self.pte.to_repr(level) else {
-                unreachable!("the protected PTE must keep mapping the same page");
-            };
-            let new_pte = C::E::from_repr(&PteScalar::Mapped(pa, new_prop), level);
-            // SAFETY:
-            //  1. The index is within the bounds.
-            //  2. `self.pte` is a non-owning snapshot of the installed PTE.
-            //  3. The replacement keeps the same mapping and paging level and
-            //     differs only in `PageProperty`.
-            //  4. The node retains ownership of the mapped child regardless of
-            //     whether the comparison succeeds.
-            match unsafe { self.node.compare_exchange_pte(self.idx, self.pte, new_pte) } {
-                Ok(_) => {
-                    self.pte = new_pte;
-                    return;
-                }
-                Err(actual_pte) => {
-                    let PteScalar::Mapped(actual_pa, actual_prop) = actual_pte.to_repr(level)
-                    else {
-                        unreachable!("hardware status updates cannot change the PTE kind");
-                    };
-                    debug_assert_eq!(actual_pa, pa);
-                    let new_hardware_status = actual_prop.flags
-                        & !expected_prop.flags
-                        & (PageFlags::ACCESSED | PageFlags::DIRTY);
-                    new_prop.flags |= new_hardware_status;
-                    self.pte = actual_pte;
-                }
-            }
-        }
+        self.pte = C::E::from_repr(&PteScalar::Mapped(pa, new_prop), level);
+
+        // SAFETY:
+        //  1. The index is within the bounds.
+        //  2. We replace the PTE with a new one, which differs only in
+        //     `PageProperty`, so it's in `C` and at the correct paging level.
+        //  3. The child is still owned by the page table node.
+        unsafe { self.node.write_pte(self.idx, self.pte) };
     }
 
     /// Replaces the entry with a new child.
@@ -139,20 +116,18 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
     /// Allocates a new child page table node and replaces the entry with it.
     ///
-    /// If the old entry is not none (or this is the last level), the operation
-    /// fails and returns `Ok(None)`. Otherwise, the lock guard of the new child
-    /// page table node is returned. Returns [`PageTableError::NoMemory`] if the
-    /// child node cannot be allocated.
+    /// If the old entry is not none, the operation will fail and return `None`.
+    /// Otherwise, the lock guard of the new child page table node is returned.
     pub(in crate::mm::page_table) fn alloc_if_none(
         &mut self,
         guard: &'rcu dyn InAtomicMode,
-    ) -> Result<Option<PageTableGuard<'rcu, C>>, PageTableError> {
+    ) -> Option<PageTableGuard<'rcu, C>> {
         if !matches!(self.to_ref(), PteStateRef::Absent) || self.node.level() == 1 {
-            return Ok(None);
+            return None;
         }
 
         let level = self.node.level();
-        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1)?);
+        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1));
 
         let paddr = new_page.paddr();
         // SAFETY: The page table won't be dropped before the RCU grace period
@@ -172,7 +147,7 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
         *self.node.nr_children_mut() += 1;
 
-        Ok(Some(pt_lock_guard))
+        Some(pt_lock_guard)
     }
 
     /// Splits the entry to smaller pages if it maps to a huge page.
@@ -182,18 +157,17 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
     /// is returned.
     ///
     /// If the entry does not map to a untracked huge page, the method returns
-    /// `Ok(None)`. Returns [`PageTableError::NoMemory`] if the child node
-    /// cannot be allocated.
+    /// `None`.
     pub(in crate::mm::page_table) fn split_if_mapped_huge(
         &mut self,
         guard: &'rcu dyn InAtomicMode,
-    ) -> Result<Option<PageTableGuard<'rcu, C>>, PageTableError> {
+    ) -> Option<PageTableGuard<'rcu, C>> {
         let level = self.node.level();
         let PteScalar::Mapped(pa, prop) = self.pte.to_repr(level) else {
-            return Ok(None);
+            return None;
         };
 
-        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1)?);
+        let new_page = RcuDrop::new(PageTableNode::<C>::alloc(level - 1));
 
         let paddr = new_page.paddr();
         // SAFETY: The page table won't be dropped before the RCU grace period
@@ -226,7 +200,7 @@ impl<'a, 'rcu, C: PageTableConfig> Entry<'a, 'rcu, C> {
 
         panic_guard.forget();
 
-        Ok(Some(pt_lock_guard))
+        Some(pt_lock_guard)
     }
 
     /// Create a new entry at the node with guard.

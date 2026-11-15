@@ -47,8 +47,6 @@ pub enum PageTableError {
     InvalidVaddr(Vaddr),
     /// Using virtual address not aligned.
     UnalignedVaddr,
-    /// Failed to allocate a page table node.
-    NoMemory,
 }
 
 /// The configurations of a page table.
@@ -353,9 +351,7 @@ impl PageTable<KernelPtConfig> {
 
             for i in KernelPtConfig::TOP_LEVEL_INDEX_RANGE {
                 let mut root_entry = root_node.entry(i);
-                let _ = root_entry
-                    .alloc_if_none(&preempt_guard)
-                    .expect("Failed to allocate a kernel page table node");
+                let _ = root_entry.alloc_if_none(&preempt_guard).unwrap();
             }
         }
 
@@ -366,10 +362,8 @@ impl PageTable<KernelPtConfig> {
     ///
     /// This should be the only way to create the user page table, that is to
     /// duplicate the kernel page table with all the kernel mappings shared.
-    pub(in crate::mm) fn create_user_page_table(
-        &'static self,
-    ) -> Result<PageTable<UserPtConfig>, PageTableError> {
-        let new_root = PageTableNode::alloc(PagingConsts::NR_LEVELS)?;
+    pub(in crate::mm) fn create_user_page_table(&'static self) -> PageTable<UserPtConfig> {
+        let new_root = PageTableNode::alloc(PagingConsts::NR_LEVELS);
 
         let preempt_guard = disable_preempt();
         let mut root_node = self.root.borrow().lock(&preempt_guard);
@@ -408,7 +402,7 @@ impl PageTable<KernelPtConfig> {
         }
         drop(new_node);
 
-        Ok(PageTable::<UserPtConfig> { root: new_root })
+        PageTable::<UserPtConfig> { root: new_root }
     }
 }
 
@@ -418,8 +412,7 @@ impl<C: PageTableConfig> PageTable<C> {
     /// Useful for the IOMMU page tables only.
     pub(crate) fn empty() -> Self {
         PageTable {
-            root: PageTableNode::<C>::alloc(C::NR_LEVELS)
-                .expect("Failed to allocate a page table node"),
+            root: PageTableNode::<C>::alloc(C::NR_LEVELS),
         }
     }
 
@@ -644,25 +637,4 @@ unsafe fn store_pte<E: PteTrait>(ptr: *mut E, new_val: E, ordering: Ordering) {
     // SAFETY: The safety is upheld by the caller.
     let atomic = unsafe { AtomicUsize::from_ptr(ptr.cast()) };
     atomic.store(new_raw, ordering)
-}
-
-/// Atomically replaces a page table entry if it still matches `current`.
-///
-/// # Safety
-///
-/// The safety preconditions are the same as those of
-/// [`AtomicUsize::from_ptr`].
-pub(in crate::mm::page_table) unsafe fn compare_exchange_pte<E: PteTrait>(
-    ptr: *mut E,
-    current: E,
-    new: E,
-    success: Ordering,
-    failure: Ordering,
-) -> Result<E, E> {
-    // SAFETY: The caller upholds `AtomicUsize::from_ptr`'s requirements.
-    let atomic = unsafe { AtomicUsize::from_ptr(ptr.cast()) };
-    atomic
-        .compare_exchange(current.as_usize(), new.as_usize(), success, failure)
-        .map(E::from_usize)
-        .map_err(E::from_usize)
 }

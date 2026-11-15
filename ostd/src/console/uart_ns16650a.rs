@@ -49,6 +49,7 @@ pub trait Ns16550aAccess {
 #[derive(Debug)]
 pub struct Ns16550aUart<A: Ns16550aAccess> {
     access: A,
+    break_seen: bool,
 }
 
 bitflags! {
@@ -56,6 +57,9 @@ bitflags! {
     struct LineStat: u8 {
         /// Data ready (DR).
         const DR   = 1 << 0;
+        /// Break interrupt (BI): the receive line was held low for longer
+        /// than a character. This is the event a serial SysRq starts with.
+        const BI   = 1 << 4;
         /// Transmitter holding register empty (THRE).
         const THRE = 1 << 5;
     }
@@ -64,7 +68,23 @@ bitflags! {
 impl<A: Ns16550aAccess> Ns16550aUart<A> {
     /// Creates a new instance.
     pub const fn new(access: A) -> Self {
-        Self { access }
+        Self {
+            access,
+            break_seen: false,
+        }
+    }
+
+    /// Enables the receiver-line-status interrupt so that a break condition
+    /// raises an interrupt even when no data byte follows it.
+    pub fn enable_break_detection(&mut self) {
+        let interrupt_enable = self.access.read(Ns16550aRegister::IntEnOrDivisorHi);
+        self.access
+            .write(Ns16550aRegister::IntEnOrDivisorHi, interrupt_enable | 0x04);
+    }
+
+    /// Takes the pending break indication, if any.
+    pub fn take_break(&mut self) -> bool {
+        core::mem::replace(&mut self.break_seen, false)
     }
 
     /// Initializes the device.
@@ -105,7 +125,17 @@ impl<A: Ns16550aAccess> Ns16550aUart<A> {
     ///
     /// If no byte is available, it will return `None`.
     pub fn recv(&mut self) -> Option<u8> {
-        if !self.line_stat().contains(LineStat::DR) {
+        let line_status = self.line_stat();
+        if line_status.contains(LineStat::BI) {
+            self.break_seen = true;
+            // The data register holds a zero for the break; read it so the
+            // data-ready condition is cleared.
+            if line_status.contains(LineStat::DR) {
+                let _ = self.access.read(Ns16550aRegister::DataOrDivisorLo);
+            }
+            return None;
+        }
+        if !line_status.contains(LineStat::DR) {
             return None;
         }
 

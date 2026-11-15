@@ -39,6 +39,7 @@ use crate::{
 };
 
 mod init_proc;
+pub(crate) mod io_accounting;
 mod job_control;
 mod process_group;
 mod session;

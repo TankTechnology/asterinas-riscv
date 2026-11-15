@@ -306,6 +306,11 @@ pub(super) trait UartMut {
 
     /// Receives one byte from UART.
     fn recv_byte(&mut self) -> Option<u8>;
+
+    /// Takes the pending serial-break indication, if any.
+    fn take_break(&mut self) -> bool {
+        false
+    }
 }
 
 impl<T: UartMut> Uart for SpinLock<T, LocalIrqDisabled> {
@@ -343,7 +348,7 @@ impl<T: UartMut> Uart for SpinLock<T, LocalIrqDisabled> {
     }
 
     fn take_break(&self) -> bool {
-        self.lock().take_break()
+        UartMut::take_break(&mut *self.lock())
     }
 
     fn flush(&self) {
@@ -369,6 +374,10 @@ impl<A: Ns16550aAccess> UartMut for Ns16550aUart<A> {
 
     fn recv_byte(&mut self) -> Option<u8> {
         self.recv()
+    }
+
+    fn take_break(&mut self) -> bool {
+        Ns16550aUart::take_break(self)
     }
 }
 

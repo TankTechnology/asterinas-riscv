@@ -40,6 +40,7 @@ pub(crate) use process::{
     ExitCode, INIT_PROCESS_PID, JobControl, Pgid, Pid, ProcessGroup, ReapedChildrenStats, Session,
     Sid, Terminal, broadcast_signal_async, enqueue_signal_async, spawn_init_process,
 };
+pub(crate) use process::io_accounting::global_page_faults;
 pub(crate) use process_filter::ProcessFilter;
 pub(crate) use process_vm::{INIT_STACK_SIZE, LockedHeap, ProcessVm, VmarSnapshot};
 pub(crate) use program_loader::{ShebangScriptPath, UndetectedExecutable};

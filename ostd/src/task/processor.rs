@@ -108,8 +108,6 @@ pub(super) fn switch_to_task_with_local_irqs_disabled(
 }
 
 fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
-    super::call_switch_handler(next_task);
-
     if let Some(handler) = PRE_SCHEDULE_HANDLER.get() {
         handler(irq_guard);
     }

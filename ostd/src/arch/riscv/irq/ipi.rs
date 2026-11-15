@@ -53,6 +53,15 @@ pub(in crate::arch) unsafe fn init_on_ap() {
 }
 
 /// Sends a general inter-processor interrupt (IPI) to the specified CPU.
+pub(crate) fn send_ipi(hw_cpu_id: HwCpuId, _guard: &dyn PinCurrentCpu) -> Result<()> {
+    const XLEN: usize = usize::BITS as usize;
+    const XLEN_MASK: usize = XLEN - 1;
+
+    let hart_id = hw_cpu_id.0 as usize;
+    let hart_mask_base = hart_id & !XLEN_MASK;
+    let hart_mask = 1 << (hart_id & XLEN_MASK);
+
+    let ret = sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(hart_mask, hart_mask_base));
 
     if ret.error == 0 {
         crate::debug!("Successfully sent IPI to hart {}", hw_cpu_id.0);

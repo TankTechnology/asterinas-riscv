@@ -131,6 +131,7 @@ version = "0.1.0"
 dependencies = [
  "align_ext",
  "aster-util",
+ "bitvec",
  "component",
  "device-id",
  "dma-pool",
@@ -218,13 +219,11 @@ dependencies = [
  "riscv",
  "short-vis-path",
  "smallvec",
- "smoltcp",
  "sparse-id-alloc",
  "spin 0.9.9",
  "takeable",
  "tdx-guest",
  "time",
- "tlb-staleness",
  "typeflags",
  "typeflags-util",
  "x86_64",
@@ -650,6 +649,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot-recovery"
+version = "0.1.0"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,6 +768,10 @@ checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
 dependencies = [
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "cow-decision"
+version = "0.1.0"
 
 [[package]]
 name = "cpio-decoder"

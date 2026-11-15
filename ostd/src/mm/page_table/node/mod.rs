@@ -45,7 +45,7 @@ use crate::{
         FrameAllocOptions, HasPaddr, Infallible, PagingConstsTrait, PagingLevel, VmReader,
         frame::{Frame, FrameRef, meta::AnyFrameMeta},
         paddr_to_vaddr,
-        page_table::{self, PageTableError, PteScalar},
+        page_table::{PteScalar, load_pte, store_pte},
     },
     task::atomic_mode::InAtomicMode,
 };
@@ -67,16 +67,12 @@ impl<C: PageTableConfig> PageTableNode<C> {
     }
 
     /// Allocates a new empty page table node.
-    ///
-    /// Returns [`PageTableError::NoMemory`] instead of panicking if no frame
-    /// is available, so that a memory-exhausted process can fail with
-    /// `ENOMEM` rather than taking down the kernel.
-    pub(super) fn alloc(level: PagingLevel) -> Result<Self, PageTableError> {
+    pub(super) fn alloc(level: PagingLevel) -> Self {
         let meta = PageTablePageMeta::new(level);
         FrameAllocOptions::new()
             .zeroed(true)
             .alloc_frame_with(meta)
-            .map_err(|_| PageTableError::NoMemory)
+            .expect("Failed to allocate a page table node")
     }
 
     /// Activates the page table assuming it is a root page table.
@@ -215,7 +211,7 @@ impl<'rcu, C: PageTableConfig> PageTableGuard<'rcu, C> {
         // SAFETY:
         // - The page table node is alive. The index is inside the bound, so the page table entry is valid.
         // - All page table entries are aligned and accessed with atomic operations only.
-        unsafe { page_table::load_pte(ptr.add(idx), Ordering::Relaxed) }
+        unsafe { load_pte(ptr.add(idx), Ordering::Relaxed) }
     }
 
     /// Writes a page table entry at a given index.
@@ -236,43 +232,7 @@ impl<'rcu, C: PageTableConfig> PageTableGuard<'rcu, C> {
         // SAFETY:
         // - The page table node is alive. The index is inside the bound, so the page table entry is valid.
         // - All page table entries are aligned and accessed with atomic operations only.
-        unsafe { page_table::store_pte(ptr.add(idx), pte, Ordering::Release) }
-    }
-
-    /// Replaces a page table entry if it has not changed since it was read.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that:
-    ///  1. `idx` is within the node's bounds;
-    ///  2. `current` is a non-owning snapshot of the installed, node-owned PTE;
-    ///  3. `new_pte` identifies the same child or mapping at the same paging
-    ///     level and differs only in non-ownership fields such as mapping
-    ///     properties.
-    ///
-    /// This method does not transfer ownership through either return variant.
-    /// On success, the node retains ownership of the same child. On failure,
-    /// `new_pte` is not installed and the `Err` value is a non-owning snapshot
-    /// of the still-installed PTE.
-    unsafe fn compare_exchange_pte(
-        &mut self,
-        idx: usize,
-        current: C::E,
-        new_pte: C::E,
-    ) -> Result<C::E, C::E> {
-        debug_assert!(idx < nr_subpage_per_huge::<C>());
-        let ptr = paddr_to_vaddr(self.paddr()) as *mut C::E;
-        // SAFETY: The node is alive, the index is in bounds, and all accesses
-        // are atomic. The caller validates the replacement PTE.
-        unsafe {
-            page_table::compare_exchange_pte(
-                ptr.add(idx),
-                current,
-                new_pte,
-                Ordering::Release,
-                Ordering::Relaxed,
-            )
-        }
+        unsafe { store_pte(ptr.add(idx), pte, Ordering::Release) }
     }
 
     /// Gets the mutable reference to the number of valid PTEs in the node.
