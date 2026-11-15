@@ -456,9 +456,9 @@ impl DriHandle {
         // The pool is contiguous, so committing its first page tells us where
         // the whole span lives.
         let (page, _) = pool
-            .try_commit_page(0, crate::vm::page_cache::vmo::VmoMapMode::Private)
+            .try_commit_page(0, crate::vm::page_cache::VmoMapMode::Private)
             .map_err(|_| Error::with_message(Errno::ENOMEM, "the pool page cannot be committed"))?;
-        Ok(page.paddr())
+        Ok(ostd::mm::HasPaddr::paddr(&page))
     }
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {
