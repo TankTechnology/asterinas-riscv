@@ -7,6 +7,8 @@ edition.workspace = true
 
 [dependencies]
 align_ext.workspace = true
+tlb-staleness.workspace = true
+cow-decision.workspace = true
 aster-bigtcp.workspace = true
 aster-block.workspace = true
 aster-cmdline.workspace = true

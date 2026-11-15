@@ -153,7 +153,6 @@ pub(crate) trait FileLike: Pollable + Send + Sync + Any {
     /// Returns the common state shared by file-like objects.
     fn common(&self) -> &FileCommon;
 
-    /// Returns whether this file provably owns no other file description.
     ///
     /// Answering `true` is what allows the descriptor to be passed to another
     /// process over a socket. The default must stay conservative: a file may
