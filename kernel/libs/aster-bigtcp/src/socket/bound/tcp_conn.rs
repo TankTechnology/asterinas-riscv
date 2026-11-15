@@ -26,7 +26,12 @@ use crate::{
     define_boolean_value,
     errors::tcp::{ConnectError, IoError, RecvError, SendError},
     ext::Ext,
-    iface::{BoundTcpPort, PacketSlice, PollKey, PollableIfaceMut},
+    iface::{
+        BoundTcpPort, PacketSlice, PollKey, PollableIfaceMut,
+        tcp_diagnostics::{
+            TCP_EGRESS_TRACE, TcpDiagnosticStage, TcpEgressStage, record_tcp_diagnostic,
+        },
+    },
     socket::{
         event::SocketEvents,
         option::{RawTcpOption, RawTcpSetOption},
@@ -442,6 +447,20 @@ impl<E: Ext> TcpConnection<E> {
         };
 
         let result = NonZeroUsize::new(result).ok_or(IoError::NoProgress)?;
+        let key = self.0.connection_key();
+        record_tcp_diagnostic(
+            TcpDiagnosticStage::SendBuffered,
+            key.hash(),
+            key.local_port(),
+            key.remote_port(),
+            [result.get() as u64, 0, 0],
+        );
+        if TCP_EGRESS_TRACE.record(TcpEgressStage::Buffered) {
+            ostd::info!(
+                "ASTERINAS_TCP_EGRESS stage={}",
+                TcpEgressStage::Buffered.as_str()
+            );
+        }
         let poll_at = socket.poll_at(iface.context_mut());
         let need_poll = iface.update_next_poll_at_ms(&self.0, poll_at);
 

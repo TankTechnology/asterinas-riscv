@@ -15,6 +15,10 @@ use super::{
     common::{PhyProcessResult, PollPhy, TxPacketWithDst},
     packet_slice::PacketSlice,
     poll_iface::PollableIfaceMut,
+    tcp_diagnostics::{
+        SynAckStage, SynAckTrace, TCP_EGRESS_TRACE, TcpDiagnosticStage, TcpEgressStage,
+        record_tcp_diagnostic,
+    },
     wire::{
         icmp,
         ip::{self, IpReprWithLen},
@@ -29,6 +33,14 @@ use crate::{
     socket::{TcpConnectionBg, TcpProcessResult},
     socket_table::{ConnectionKey, ListenerKey, SocketTable},
 };
+
+static TCP_SYN_ACK_TRACE: SynAckTrace = SynAckTrace::new();
+
+fn record_syn_ack_stage(stage: SynAckStage) {
+    if TCP_SYN_ACK_TRACE.record(stage) {
+        ostd::info!("ASTERINAS_TCP_SYN_ACK stage={}", stage.as_str());
+    }
+}
 
 pub(super) struct PollContext<'a, E: Ext> {
     iface: PollableIfaceMut<'a, E>,
@@ -148,6 +160,10 @@ impl<E: Ext> PollContext<'_, E> {
 
         // Parse the TCP header. Ignore the packet if the header is ill-formed.
         let (packet, tcp_repr) = tcp::parse(packet, ip_repr, verify_checksum)?;
+        let is_syn_ack = tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_some();
+        if is_syn_ack {
+            record_syn_ack_stage(SynAckStage::Parsed);
+        }
 
         let (ip_repr, tcp_repr) =
             self.process_tcp_until_outgoing(ip_repr, &tcp_repr, packet.reader().into())?;
@@ -190,6 +206,7 @@ impl<E: Ext> PollContext<'_, E> {
             tcp_repr.src_port,
         );
         let mut connection_in_table = self.sockets.lookup_connection(&connection_key);
+        let is_syn_ack = tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_some();
 
         loop {
             // First try the connection in the socket table, as this is the most common. If it
@@ -213,11 +230,17 @@ impl<E: Ext> PollContext<'_, E> {
             };
 
             if let Some(connection) = connection {
+                if is_syn_ack {
+                    record_syn_ack_stage(SynAckStage::ConnectionFound);
+                }
                 let (process_result, became_dead) =
                     connection.process(&mut self.iface, ip_repr, tcp_repr, payload.clone());
                 if *became_dead {
                     self.actions
                         .push(SocketTableAction::DelTcpConn(*connection.connection_key()));
+                }
+                if is_syn_ack && process_result != TcpProcessResult::NotProcessed {
+                    record_syn_ack_stage(SynAckStage::SocketAccepted);
                 }
                 match process_result {
                     TcpProcessResult::NotProcessed => {}
@@ -485,6 +508,14 @@ impl<E: Ext> PollContext<'_, E> {
             let Some(socket) = self.iface.pop_pending_tcp() else {
                 break;
             };
+            let key = socket.connection_key();
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::PendingPop,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [0, 0, 0],
+            );
 
             // We set `did_something` even if no packets are actually generated. This is because a
             // timer can expire, but no packets are actually generated.
@@ -496,7 +527,25 @@ impl<E: Ext> PollContext<'_, E> {
                 TcpConnectionBg::dispatch(&socket, &mut self.iface, |iface, ip_repr, tcp_repr| {
                     let mut this = PollContext::new(iface, self.sockets, self.actions);
 
+                    if !tcp_repr.payload.is_empty() {
+                        record_tcp_diagnostic(
+                            TcpDiagnosticStage::SegmentGenerated,
+                            key.hash(),
+                            key.local_port(),
+                            key.remote_port(),
+                            [tcp_repr.payload.len() as u64, 0, 0],
+                        );
+                    }
+
                     if !this.iface.context().is_unicast_local(ip_repr.dst_addr()) {
+                        if !tcp_repr.payload.is_empty()
+                            && TCP_EGRESS_TRACE.record(TcpEgressStage::SegmentDispatched)
+                        {
+                            ostd::info!(
+                                "ASTERINAS_TCP_EGRESS stage={}",
+                                TcpEgressStage::SegmentDispatched.as_str()
+                            );
+                        }
                         tx_packet = this.emit_tcp(phy, ip_repr, tcp_repr);
                         return None;
                     }

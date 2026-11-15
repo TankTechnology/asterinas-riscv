@@ -1,12 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 pub(crate) mod iface;
 mod route;
 pub(crate) mod net_ns;
 pub(crate) mod socket;
 pub(crate) mod uts_ns;
 
+/// The local or remote port selected for bounded TCP bring-up tracing.
+static TCP_DIAGNOSTIC_PORT: AtomicU32 = AtomicU32::new(0);
+
+aster_cmdline::define_kv_param!("asterinas.tcp_diagnostic_port", TCP_DIAGNOSTIC_PORT);
+
 pub(crate) fn init() {
+    let diagnostic_port = TCP_DIAGNOSTIC_PORT.load(Ordering::Relaxed);
+    if let Ok(diagnostic_port) = u16::try_from(diagnostic_port)
+        && diagnostic_port != 0
+    {
+        aster_bigtcp::iface::configure_tcp_diagnostics(diagnostic_port);
+    }
     iface::init();
     route::init();
     socket::netlink::init();

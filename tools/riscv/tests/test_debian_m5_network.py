@@ -1447,17 +1447,26 @@ configure_and_normalize_rootfs
             timeout=2,
         )
 
-        self.assertNotEqual(result.returncode, 0)
+        # A unit that survives both the stop and the KILL escalation leaves no
+        # watchdog behind, so the script must force the restart instead of
+        # ending up with a board that stays up unguarded. The stubbed `reboot`
+        # succeeds, so the forced path exits successfully.
+        self.assertEqual(result.returncode, 0)
         action_lines = actions.read_text(encoding="utf-8").splitlines()
         self.assertIn("systemctl:kill --kill-who=all --signal=KILL asterinas-desktop-m5-evidence.service", action_lines)
         self.assertEqual(
             action_lines.count("systemctl:stop asterinas-desktop-m5-evidence.service"),
             2,
         )
+        self.assertIn("reboot:-f", action_lines)
         self.assertFalse(any(line.startswith("sync:") for line in action_lines))
+        console_lines = console.read_text(encoding="utf-8").splitlines()
         self.assertIn(
-            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=unit-quiesce",
-            console.read_text(encoding="utf-8").splitlines(),
+            "ASTERINAS_USERSPACE_REBOOT_FORCED reason=unit-quiesce",
+            console_lines,
+        )
+        self.assertFalse(
+            any("ASTERINAS_USERSPACE_REBOOT_SYNC_START" in line for line in console_lines)
         )
 
     def test_safe_reboot_refuses_sync_when_process_scan_fails(self) -> None:
@@ -1560,12 +1569,15 @@ configure_and_normalize_rootfs
             timeout=2,
         )
 
-        self.assertNotEqual(result.returncode, 0)
+        # Writers that outlive both signals still veto the sync, but the board
+        # has no watchdog left, so the script forces the restart instead of
+        # returning with the board up.
+        self.assertEqual(result.returncode, 0)
         action_lines = actions.read_text(encoding="utf-8").splitlines()
         self.assertIn("pkill:-TERM -u 1000", action_lines)
         self.assertIn("pkill:-KILL -u 1000", action_lines)
+        self.assertIn("reboot:-f", action_lines)
         self.assertFalse(any(line.startswith("sync:") for line in action_lines))
-        self.assertFalse(any(line.startswith("reboot:") for line in action_lines))
         console_lines = console.read_text(encoding="utf-8").splitlines()
         self.assertIn(
             "ASTERINAS_USERSPACE_REBOOT_PROCESS state=signal signal=TERM count=1",
@@ -1576,7 +1588,7 @@ configure_and_normalize_rootfs
             console_lines,
         )
         self.assertIn(
-            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=writers-remain-1",
+            "ASTERINAS_USERSPACE_REBOOT_FORCED reason=writers-remain-1",
             console_lines,
         )
         self.assertFalse(

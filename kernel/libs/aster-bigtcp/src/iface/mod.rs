@@ -10,6 +10,7 @@ mod poll_iface;
 mod port;
 mod sched;
 pub(crate) mod stats;
+pub(crate) mod tcp_diagnostics;
 mod time;
 mod wire;
 
@@ -24,3 +25,4 @@ pub(crate) use poll_iface::{PollKey, PollableIfaceMut};
 pub use port::BindPortConfig;
 pub use sched::ScheduleNextPoll;
 pub use stats::IfaceStatsSnapshot;
+pub use tcp_diagnostics::configure_tcp_diagnostics;

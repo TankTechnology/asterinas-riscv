@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TcpDiagnosticStage {
     SendBuffered,
-    EgressState,
     PollScheduled,
     PendingPop,
     SegmentGenerated,
@@ -18,7 +17,6 @@ impl TcpDiagnosticStage {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SendBuffered => "send-buffered",
-            Self::EgressState => "egress-state",
             Self::PollScheduled => "poll-scheduled",
             Self::PendingPop => "pending-pop",
             Self::SegmentGenerated => "segment-generated",
