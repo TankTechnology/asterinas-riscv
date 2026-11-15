@@ -8,7 +8,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ostd::sync::LocalIrqDisabled;
 
 use super::{TraceCtx, insn::Insn, interp, map::Map};
-use crate::fs::file::AccessMode;
 use crate::{
     events::IoEvents,
     fs::{

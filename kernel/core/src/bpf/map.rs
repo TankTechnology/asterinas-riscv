@@ -23,7 +23,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ostd::sync::LocalIrqDisabled;
 
-use crate::fs::file::AccessMode;
 use crate::fs::file::MappableObject;
 use crate::{
     events::IoEvents,

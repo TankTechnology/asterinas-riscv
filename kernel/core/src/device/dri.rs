@@ -448,11 +448,17 @@ impl DriHandle {
 
     /// Base guest physical address of the pool.
     fn pool_paddr(&self, inner: &DriInner) -> Result<Paddr> {
-        inner
+        let pool = inner
             .pool
             .as_ref()
-            .and_then(|pool| pool.paddr())
-            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))?;
+
+        // The pool is contiguous, so committing its first page tells us where
+        // the whole span lives.
+        let (page, _) = pool
+            .try_commit_page(0, crate::vm::page_cache::vmo::VmoMapMode::Private)
+            .map_err(|_| Error::with_message(Errno::ENOMEM, "the pool page cannot be committed"))?;
+        Ok(page.paddr())
     }
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {
