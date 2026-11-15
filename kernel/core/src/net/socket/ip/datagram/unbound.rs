@@ -61,6 +61,7 @@ impl datagram_common::Unbound for UnboundDatagram {
         &mut self,
         remote_endpoint: &Self::Endpoint,
         pollee: &Pollee,
+        _options: Self::BindOptions,
     ) -> Result<Self::Bound> {
         let endpoint = {
             let remote_endpoint = map_unspecified_to_localhost(*remote_endpoint);

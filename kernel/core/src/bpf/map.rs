@@ -23,6 +23,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ostd::sync::LocalIrqDisabled;
 
+use crate::fs::file::MappableObject;
 use crate::{
     events::IoEvents,
     fs::{
@@ -726,9 +727,9 @@ impl FileLike for MapFile {
         &self.common
     }
 
-    fn mappable(&self) -> Result<Mappable> {
+    fn mappable(&self, _request: crate::vm::vmar::FileMmapRequest) -> Result<MappableObject<'_>> {
         match self.map.mappable() {
-            Some(vmo) => Ok(Mappable::Vmo(vmo)),
+            Some(vmo) => Ok(MappableObject::Vmo(vmo)),
             None => return_errno_with_message!(Errno::ENODEV, "only a ring buffer is mappable"),
         }
     }
@@ -737,7 +738,7 @@ impl FileLike for MapFile {
         self: Arc<Self>,
         fd_flags: crate::fs::file::file_table::FdFlags,
     ) -> Box<dyn core::fmt::Display> {
-        super::fdinfo(&self.common, self.access_mode(), fd_flags, "map")
+        super::fdinfo(&self.common, self.common.access_mode(), fd_flags, "map")
     }
 
     fn is_scm_rights_proven_leaf(&self) -> bool {
