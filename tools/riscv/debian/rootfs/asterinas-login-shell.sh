@@ -3,16 +3,16 @@
 #
 # Login shell for the desktop user.
 #
-# Dropbear's pty relay stalls on this kernel: the client authenticates, the
-# input reaches the line discipline, but data written by the session program
-# to the pty slave never comes back, so an interactive session looks frozen.
-# The pipe transport behind a no-pty session is reliable (scp, rsync and
-# `ssh -T host cmd` all work), so authorized_keys carries the `no-pty`
-# option and this shell gives the session a real pty of its own on the board
-# with `script`. Interactive use then has a controlling terminal, job
-# control and a prompt, and the bytes travel over pipes instead of the
-# broken pty relay.
+# The image runs OpenSSH on port 22, so an interactive `ssh -t` session
+# already has a real pty and lands in the `bash -l` branch below. The
+# `script` fallback covers the fallback server: dropbear ships patched to
+# fake the pty (`dropbear-asterinas-fake-pty.patch`), because its pty relay
+# used to stall -- the client authenticated, input reached the line
+# discipline, but the session's output never came back. A no-pty session
+# gets a board-side pty from `script`, which keeps job control and a prompt
+# while the bytes travel over the pipe transport that does work.
 #
+#   ssh -t board                   -> login bash on the server's pty
 #   ssh board                      -> script-backed interactive bash
 #   ssh board 'cmd'                -> bash -c cmd (no pty)
 #   local console (tty present)    -> plain login bash
