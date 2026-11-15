@@ -122,7 +122,16 @@ if ! "${SSH[@]}" "root@$HOST" "
     cp -f $REMOTE.new $REMOTE
     rm -f $REMOTE.new
     sync
-    echo \"deployed=\$(sha256sum $REMOTE | cut -d' ' -f1)\"
+    # The transfer was verified above, but the write onto the running
+    # filesystem was not: this board's ext2 has left a truncated primary image
+    # behind before, and the boot then hung with the panel showing nothing.
+    # Compare what is actually on disk, and keep the backup as the way out.
+    deployed=\$(sha256sum $REMOTE | cut -d' ' -f1)
+    if [ \"\$deployed\" != \"$SUM\" ]; then
+        echo \"INSTALL CORRUPTED deployed=\$deployed\"
+        exit 1
+    fi
+    echo \"deployed=\$deployed\"
 "; then
     echo "deploy: FAILED (checksum or install). The board still runs its current kernel."
     exit 1
