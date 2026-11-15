@@ -11,7 +11,7 @@ use crate::{
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
-    process::{Terminal, signal::{PollHandle, Pollable}},
+    process::signal::{PollHandle, Pollable},
     util::ioctl::RawIoctl,
 };
 
@@ -43,11 +43,15 @@ impl PtySlaveFile {
         slave.driver().pollee().invalidate();
 
         // Linux assigns the controlling terminal automatically on the first
-        // open of a slave by a session leader without a controlling terminal
-        // (and without O_NOCTTY). Mimic that: ignore EPERM (not a session
-        // leader, or the session already has a terminal).
-        let terminal: Arc<dyn Terminal> = slave.clone() as Arc<dyn Terminal>;
-        let _ = terminal.set_control(&current!());
+        // read-write open of a slave by a session leader without a controlling
+        // terminal -- unless the open carried `O_NOCTTY`. That decision needs
+        // the open's status flags, which this constructor does not see, so it
+        // is made one layer up, in `PtySlaveInode::open` (via
+        // `Terminal::acquire_control_on_open`). Doing it here as well ignored
+        // `O_NOCTTY`: sshd's monitor opens the slave with `openpty()`, which
+        // sets `O_NOCTTY`, and the early claim stole the pty from the session
+        // that was about to run the shell, so the shell's own `TIOCSCTTY`
+        // answered `EPERM`.
 
         Ok(PtySlaveFile(slave))
     }
