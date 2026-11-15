@@ -24,6 +24,8 @@ use ostd::{
 };
 use spin::Once;
 
+use crate::sysrq;
+
 const INPUT_BATCH_SIZE: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,11 +118,40 @@ impl<U: Uart> UartConsole<U> {
 
         for _ in 0..batch_budget {
             let num_rcv = self.uart.recv(&mut buf);
+            let now_ms = sysrq::now_ms();
+            if self.uart.take_break() {
+                // A break may arrive with no byte at all, so it must be
+                // handled before the empty-batch return below.
+                sysrq::note_break(now_ms);
+                ostd::early_println!("ASTERINAS_SERIAL_SYSRQ break");
+            }
             if num_rcv == 0 {
                 return false;
             }
 
-            let reader = VmReader::from(&buf[..num_rcv]);
+            let (deliverable, action) = sysrq::filter(&mut buf, num_rcv, now_ms);
+            if let Some(action) = action {
+                match action {
+                    sysrq::Action::Restart => {
+                        ostd::early_println!("ASTERINAS_SERIAL_SYSRQ command=b");
+                        ostd::power::emergency_restart(ostd::power::ExitCode::Success);
+                    }
+                    sysrq::Action::PowerOff => {
+                        ostd::early_println!("ASTERINAS_SERIAL_SYSRQ command=o");
+                        ostd::power::emergency_poweroff(ostd::power::ExitCode::Success);
+                    }
+                }
+            }
+            if deliverable == 0 {
+                // The batch was consumed by the command; there is nothing for
+                // the shell to read.
+                if num_rcv < buf.len() {
+                    return false;
+                }
+                continue;
+            }
+
+            let reader = VmReader::from(&buf[..deliverable]);
             for callback_fn in &receive_callback_fns {
                 (callback_fn)(reader.clone());
             }
@@ -253,6 +284,14 @@ pub(super) trait Uart {
     #[must_use]
     fn recv(&self, buf: &mut [u8]) -> usize;
 
+    /// Returns whether a break condition was seen since the last call.
+    ///
+    /// A break is the one input event that reaches the kernel without any
+    /// process; it is what arms the serial SysRq window.
+    fn take_break(&self) -> bool {
+        false
+    }
+
     /// Flushes the received buffer.
     ///
     /// This method should be called after setting up the IRQ handlers to ensure new received data
@@ -303,6 +342,10 @@ impl<T: UartMut> Uart for SpinLock<T, LocalIrqDisabled> {
         buf.len()
     }
 
+    fn take_break(&self) -> bool {
+        self.lock().take_break()
+    }
+
     fn flush(&self) {
         let mut uart = self.lock();
 
@@ -315,6 +358,7 @@ impl<T: UartMut> Uart for &SpinLock<T, LocalIrqDisabled> {
     fn try_send_diagnostic(&self, buf: &[u8]) -> Result<(), DiagnosticSendError>;
     fn try_send_tty(&self, buf: &[u8]) -> Result<usize, ConsoleSendError>;
     fn recv(&self, buf: &mut [u8]) -> usize;
+    fn take_break(&self) -> bool;
     fn flush(&self);
 }
 

@@ -36,10 +36,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import os
 import re
 import select
+import shlex
 import sys
 import termios
 import threading
@@ -52,6 +54,49 @@ PUSH_PACE_MS = 0.15
 # the guest's line discipline from dropping characters while a line is typed.
 TYPING_PACE_MS = 20.0
 DEFAULT_CHAR_PAUSE = 0.03
+# A serial push longer than this is refused: the standing rule is that any
+# transfer past four minutes goes over the network instead. At the default
+# push pace this is 240 s of wire time.
+SERIAL_PUSH_BUDGET_SECONDS = 240.0
+# The bytes a canonical-mode line discipline passes through without acting on
+# them. Everything else is a control byte that the guest tty may interpret:
+# 0x04 ends `cat` early, 0x1a can stop an interactive shell, and the rest of
+# the binary range is mangled on the way back out. A payload made only of
+# these bytes is safe to feed to `cat` verbatim.
+PUSH_TEXT_BYTES = frozenset(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
+
+
+class UnsafePushError(RuntimeError):
+    """A serial push that cannot be run without risking the console."""
+
+
+def unsafe_push_byte(payload: bytes) -> int | None:
+    """Return the offset of the first byte a canonical tty would interpret.
+
+    A binary payload pushed through `cat > file` is how the 2026-11-11 console
+    was wedged: the guest tty stayed canonical, 0x04 ended `cat`, and the rest
+    of the bytes became shell input. Returning the offset lets the caller name
+    the problem instead of silently taking the risk.
+    """
+    for offset, byte in enumerate(payload):
+        if byte not in PUSH_TEXT_BYTES:
+            return offset
+    return None
+
+
+def push_wire_seconds(nbytes: int, pace_ms: float) -> float:
+    return nbytes * pace_ms / 1000.0
+
+
+# The keys the kernel's serial SysRq accepts. Everything else is ordinary
+# input, which is what keeps a stray break from turning console traffic into
+# a reboot.
+SYSRQ_KEYS = frozenset("boh")
+
+
+def sysrq_command(key: str) -> str | None:
+    key = key.strip()
+    return key if len(key) == 1 and key in SYSRQ_KEYS else None
 
 BAUDS = {
     9600: termios.B9600,
@@ -205,6 +250,30 @@ class Bridge:
                 line, pending = pending.split(b"\n", 1)
                 self.handle(line + b"\n")
 
+    def send_sysrq(self, key: str) -> None:
+        """Sends a break followed by one key: the kernel's serial SysRq.
+
+        This is the channel that still works when userspace cannot run a
+        command at all, so the bridge must be able to produce a real break
+        rather than typing a byte: only a line condition reaches the kernel.
+        """
+        command = sysrq_command(key)
+        if command is None:
+            self._note(f"[bridge] sysrq takes b, o or h, not {key!r}")
+            return
+        with self.lock:
+            fd = self.fd
+        try:
+            termios.tcsendbreak(fd, 0)
+            time.sleep(0.1)
+            os.write(fd, command.encode())
+            time.sleep(0.05)
+            os.write(fd, b"\n")
+        except OSError as error:
+            self._note(f"[bridge] sysrq failed: {error}")
+            return
+        self._note(f"[bridge] sysrq {command}")
+
     def handle(self, raw_line: bytes) -> None:
         line = raw_line.decode("utf-8", "replace").rstrip("\n")
         if line.startswith("!PACE "):
@@ -217,6 +286,9 @@ class Bridge:
         if line.startswith("!RAW "):
             self.raw = line.split()[1] == "1"
             self._note(f"[bridge] raw -> {self.raw}")
+            return
+        if line.startswith("!SYSRQ"):
+            self.send_sysrq(line[len("!SYSRQ") :])
             return
         if self.raw:
             # Verbatim: a transfer sender writes its payload as ordinary file
@@ -316,9 +388,29 @@ class Console:
         return ANSI.sub("", collected.replace(marker, "")), marker in collected
 
     def push(self, local: str, remote: str, pace_ms: float) -> bool:
-        payload = open(local, "rb").read()
+        """Send a file through the console without risking the shell.
+
+        Text goes through `cat` as before. Anything with a control byte goes
+        out base64-encoded and is verified by sha256 on the guest: a canonical
+        tty interprets raw control bytes (0x04 ends the `cat`, 0x1a stops an
+        interactive shell) and the resulting half-file is how the console was
+        lost on 2026-11-11.
+        """
+        with open(local, "rb") as source:
+            payload = source.read()
+        offset = unsafe_push_byte(payload)
+        if offset is not None:
+            return self.push_base64(local, remote, pace_ms, first_unsafe=offset)
+        return self._push_bytes(payload, remote, pace_ms)
+
+    def _push_bytes(self, payload: bytes, remote: str, pace_ms: float) -> bool:
+        if push_wire_seconds(len(payload), pace_ms) > SERIAL_PUSH_BUDGET_SECONDS:
+            raise UnsafePushError(
+                f"{len(payload)} bytes at {pace_ms} ms/byte exceeds the "
+                f"{SERIAL_PUSH_BUDGET_SECONDS:.0f} s serial budget; any transfer "
+                "past four minutes must use the network (HTTP/SSH), not the console"
+            )
         marker = f"ZZPUSH{os.getpid()}"
-        offset = os.path.getsize(self.log)
         # Do not push through a heredoc: bash reads heredoc lines through its
         # own line handling, which drops tabs (readline-style completion) and
         # mangles other control bytes. `cat` reads the bytes verbatim.
@@ -329,7 +421,7 @@ class Console:
         # file because cat is already reading by then.
         self.send_line("!RAW 1")
         time.sleep(0.4)
-        for char in f"cat > {remote}":
+        for char in f"cat > {shlex.quote(remote)}":
             self.send_raw(char.encode())
             time.sleep(DEFAULT_CHAR_PAUSE)
         self.send_raw(b"\n")
@@ -362,6 +454,59 @@ class Console:
             chunk, offset = self.read_since(offset)
             text += chunk
             if re.search(rf"^{marker}\r?$", text, re.MULTILINE):
+                return True
+        return False
+
+    def push_base64(
+        self,
+        local: str,
+        remote: str,
+        pace_ms: float = PUSH_PACE_MS,
+        *,
+        first_unsafe: int | None = None,
+        paces: tuple[float, ...] | None = None,
+    ) -> bool:
+        """Push a binary file as base64 text and verify the guest's sha256.
+
+        Every base64 line holds 76 characters, so the guest's canonical line
+        discipline handles short lines only. Text is the one payload shape a
+        canonical tty cannot interpret: no 0x04, no 0x1a, nothing that can end
+        `cat` early or stop the shell.
+        """
+        with open(local, "rb") as source:
+            payload = source.read()
+        expected = hashlib.sha256(payload).hexdigest()
+        encoded = base64.encodebytes(payload)
+        if push_wire_seconds(len(encoded), pace_ms) > SERIAL_PUSH_BUDGET_SECONDS:
+            where = (
+                f" (first control byte at offset {first_unsafe})"
+                if first_unsafe is not None
+                else ""
+            )
+            raise UnsafePushError(
+                f"{local}{where}: {len(encoded)} base64 bytes at {pace_ms} "
+                f"ms/byte exceeds the {SERIAL_PUSH_BUDGET_SECONDS:.0f} s serial "
+                "budget; any transfer past four minutes must use the network "
+                "(HTTP/SSH), not the console"
+            )
+        staging = remote + ".b64"
+        quoted_staging = shlex.quote(staging)
+        quoted_remote = shlex.quote(remote)
+        if paces is None:
+            paces = (pace_ms, max(pace_ms * 2, 0.3), max(pace_ms * 4, 0.6))
+        for pace in paces:
+            if push_wire_seconds(len(encoded), pace) > SERIAL_PUSH_BUDGET_SECONDS:
+                # A slower retry must not smuggle in a transfer the budget
+                # refused; stop rather than spend an hour on the wire.
+                break
+            if not self._push_bytes(encoded, staging, pace):
+                continue
+            text, completed = self.run(
+                f"base64 -d {quoted_staging} > {quoted_remote} && "
+                f"rm -f {quoted_staging} && sha256sum {quoted_remote}",
+                timeout=60.0,
+            )
+            if completed and expected in text:
                 return True
         return False
 
@@ -424,9 +569,23 @@ def cmd_type(args: argparse.Namespace) -> int:
 
 
 def cmd_push(args: argparse.Namespace) -> int:
-    ok = Console(args.log, args.fifo).push(args.local, args.remote, args.pace)
+    try:
+        ok = Console(args.log, args.fifo).push(args.local, args.remote, args.pace)
+    except UnsafePushError as error:
+        print(f"refused: {error}", file=sys.stderr)
+        return 2
     print("pushed", args.local, "->", args.remote, "ok" if ok else "FAILED")
     return 0 if ok else 1
+
+
+def cmd_sysrq(args: argparse.Namespace) -> int:
+    command = sysrq_command(args.key)
+    if command is None:
+        print("sysrq key must be one of b, o, h", file=sys.stderr)
+        return 2
+    Console(args.log, args.fifo).send_line(f"!SYSRQ {command}")
+    print(f"sysrq {command} sent")
+    return 0
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -813,11 +972,14 @@ def main() -> int:
     bridge.add_argument("--pace", type=float, default=TYPING_PACE_MS, help="ms per byte")
     bridge.set_defaults(func=lambda a: run_bridge(a.device, a.log, a.fifo, a.baud, a.pace))
 
-    for name in ("run", "type", "push", "wait"):
+    for name in ("run", "type", "push", "wait", "sysrq"):
         node = sub.add_parser(name)
         node.add_argument("--log", default="/tmp/board.log")
         node.add_argument("--fifo", default="/tmp/board.cmd")
-        if name == "run":
+        if name == "sysrq":
+            node.add_argument("key", help="b (reboot), o or h (power off)")
+            node.set_defaults(func=cmd_sysrq)
+        elif name == "run":
             node.add_argument("text")
             node.add_argument("--timeout", type=float, default=60.0)
             node.add_argument("--char-pause", type=float, default=DEFAULT_CHAR_PAUSE)

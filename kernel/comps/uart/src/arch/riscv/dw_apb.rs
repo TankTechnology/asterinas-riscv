@@ -34,7 +34,10 @@ const REQUIRED_MMIO_SIZE: usize = USR_OFFSET + REGISTER_IO_WIDTH;
 // DW's Busy Detect ID and USR acknowledgement are specified in Table 8 of
 // <https://linux-sunxi.org/images/d/d2/Dw_apb_uart_db.pdf>.
 const IER_RDI: u32 = 1 << 0;
-const IER_UNHANDLED_STANDARD_SOURCES: u32 = 0b1110;
+// Receiver line status. A break raises it even when no data byte follows, so
+// it is the only way a serial SysRq can reach the kernel with no userspace.
+const IER_ELSI: u32 = 1 << 2;
+const IER_UNHANDLED_STANDARD_SOURCES: u32 = 0b1010;
 const IIR_ID_MASK: u32 = 0x0f;
 const IIR_MODEM_STATUS: u32 = 0x00;
 const IIR_NO_INTERRUPT: u32 = 0x01;
@@ -44,6 +47,8 @@ const IIR_RLSI: u32 = 0x06;
 const IIR_BUSY: u32 = 0x07;
 const IIR_CTI: u32 = 0x0c;
 const LSR_DR: u32 = 1 << 0;
+// Break interrupt: the receive line was held low for longer than a character.
+const LSR_BI: u32 = 1 << 4;
 const LSR_THRE: u32 = 1 << 5;
 // This is one total budget per probe or buffer, not a fresh budget for every byte.
 const TX_POLL_BUDGET: usize = 100_000;
@@ -123,6 +128,11 @@ impl Drop for TxOwnerGuard<'_> {
 struct DwApbUart<A> {
     access: A,
     tx_owned: AtomicBool,
+    break_seen: AtomicBool,
+    /// The line-status ack recorded a break whose zero byte is still in the
+    /// receiver. Reading LSR clears `LSR_BI`, so the receive path can no
+    /// longer recognize that byte; this flag stands in for the cleared bit.
+    break_byte_pending: AtomicBool,
 }
 
 impl<A: DwApbAccess> DwApbUart<A> {
@@ -130,6 +140,8 @@ impl<A: DwApbAccess> DwApbUart<A> {
         Self {
             access,
             tx_owned: AtomicBool::new(false),
+            break_seen: AtomicBool::new(false),
+            break_byte_pending: AtomicBool::new(false),
         }
     }
 
@@ -189,21 +201,37 @@ impl<A: DwApbAccess> DwApbUart<A> {
     }
 
     fn receive_available(&self, buf: &mut [u8]) -> usize {
-        for (index, byte) in buf.iter_mut().enumerate() {
+        let mut received = 0;
+        while received < buf.len() {
             let Ok(line_status) = self.access.read32(LSR_OFFSET) else {
-                return index;
+                return received;
             };
             if line_status & LSR_DR == 0 {
-                return index;
+                return received;
             }
 
             let Ok(data) = self.access.read32(RBR_OFFSET) else {
-                return index;
+                return received;
             };
-            *byte = data.to_le_bytes()[0];
+            if line_status & LSR_BI != 0 {
+                // The break's zero byte is not input: record the break and
+                // drop the byte. It must not take a buffer slot, or the
+                // caller would deliver the untouched zero and lose the next
+                // real byte behind it.
+                self.break_seen.store(true, Ordering::Release);
+                self.break_byte_pending.store(false, Ordering::Release);
+                continue;
+            }
+            if self.break_byte_pending.swap(false, Ordering::AcqRel) {
+                // Already recorded by the line-status ack, which also cleared
+                // LSR.BI. The zero byte it referred to is this one.
+                continue;
+            }
+            buf[received] = data.to_le_bytes()[0];
+            received += 1;
         }
 
-        buf.len()
+        received
     }
 
     fn prepare_rx_interrupt(&self) -> Result<PreparedRxInterrupt, RxEnableError> {
@@ -215,7 +243,7 @@ impl<A: DwApbAccess> DwApbUart<A> {
             return Err(RxEnableError::UnsupportedInterruptSources);
         }
 
-        Ok(PreparedRxInterrupt(interrupt_enable | IER_RDI))
+        Ok(PreparedRxInterrupt(interrupt_enable | IER_RDI | IER_ELSI))
     }
 
     fn enable_rx_interrupt(&self, prepared: PreparedRxInterrupt) -> Result<(), RxEnableError> {
@@ -230,7 +258,7 @@ impl<A: DwApbAccess> DwApbUart<A> {
             .read32(IER_OFFSET)
             .map_err(|_| RxEnableError::Mmio)?;
         self.access
-            .write32(IER_OFFSET, interrupt_enable & !IER_RDI)
+            .write32(IER_OFFSET, interrupt_enable & !(IER_RDI | IER_ELSI))
             .map_err(|_| RxEnableError::Mmio)
     }
 
@@ -245,9 +273,23 @@ impl<A: DwApbAccess> DwApbUart<A> {
             IIR_NO_INTERRUPT => Ok(RxInterruptCause::None),
             IIR_RDI | IIR_CTI => Ok(RxInterruptCause::Receive),
             IIR_RLSI => {
-                self.access
+                // Reading LSR is what clears the error bits, so this is the
+                // only place the break is still visible: capture it before
+                // the receive path reads LSR again.
+                let line_status = self
+                    .access
                     .read32(LSR_OFFSET)
                     .map_err(|_| RxServiceError::Mmio)?;
+                if line_status & LSR_BI != 0 {
+                    self.break_seen.store(true, Ordering::Release);
+                    // This read cleared LSR_BI on real hardware. If the
+                    // break's zero byte is in the receiver, the next receive
+                    // must drop it as a line condition rather than deliver a
+                    // NUL to the tty, which would cancel the SysRq window.
+                    if line_status & LSR_DR != 0 {
+                        self.break_byte_pending.store(true, Ordering::Release);
+                    }
+                }
                 Ok(RxInterruptCause::Receive)
             }
             IIR_BUSY => {
@@ -312,6 +354,10 @@ impl<A: DwApbAccess> Uart for DwApbUart<A> {
 
     fn recv(&self, buf: &mut [u8]) -> usize {
         self.receive_available(buf)
+    }
+
+    fn take_break(&self) -> bool {
+        self.break_seen.swap(false, Ordering::AcqRel)
     }
 
     fn flush(&self) {
@@ -630,6 +676,8 @@ mod tests {
         bytes: VecDeque<u8>,
         ier: u32,
         after_empty: Option<u8>,
+        /// One synthetic line-status sample with BI set, for the next LSR read.
+        break_pending: bool,
     }
 
     #[derive(Clone)]
@@ -641,6 +689,18 @@ mod tests {
                 bytes: bytes.iter().copied().collect(),
                 ier: 0x80 | IER_RDI,
                 after_empty,
+                break_pending: false,
+            })))
+        }
+
+        /// A break condition followed by `bytes`: the zero byte the break
+        /// puts in the data register is queued ahead of the real input.
+        fn with_break(bytes: &[u8]) -> Self {
+            Self(Arc::new(Mutex::new(PendingRx {
+                bytes: core::iter::once(0).chain(bytes.iter().copied()).collect(),
+                ier: 0x80 | IER_RDI,
+                after_empty: None,
+                break_pending: true,
             })))
         }
     }
@@ -651,7 +711,11 @@ mod tests {
             Ok(match offset {
                 IER_OFFSET => state.ier,
                 IIR_OFFSET => {
-                    if state.ier & IER_RDI != 0 && !state.bytes.is_empty() {
+                    // A pending break reports the line-status cause, which has
+                    // priority over received data on real hardware.
+                    if state.break_pending {
+                        IIR_RLSI
+                    } else if state.ier & IER_RDI != 0 && !state.bytes.is_empty() {
                         IIR_CTI
                     } else {
                         IIR_NO_INTERRUPT
@@ -666,7 +730,14 @@ mod tests {
                     }
                     0
                 }
-                LSR_OFFSET => LSR_DR,
+                LSR_OFFSET => {
+                    if state.break_pending {
+                        state.break_pending = false;
+                        LSR_DR | LSR_BI
+                    } else {
+                        LSR_DR
+                    }
+                }
                 RBR_OFFSET => u32::from(state.bytes.pop_front().unwrap()),
                 _ => panic!("unexpected RX register read: {offset:#x}"),
             })
@@ -686,6 +757,40 @@ mod tests {
             delivered.push(reader.read_val::<u8>().unwrap());
         }
     };
+
+    #[ktest]
+    fn dw_apb_reports_a_break_without_delivering_its_zero_byte() {
+        // Call the driver directly: the console layer consumes the break
+        // indication to arm the SysRq window, so it is only observable here.
+        let access = ReceiveAccess::with_break(b"A");
+        let uart = DwApbUart::new(access);
+
+        let mut buf = [0u8; 4];
+        assert_eq!(Uart::recv(&uart, &mut buf), 1);
+        // The break's zero byte is a line condition, not input; the byte
+        // behind it must keep its place.
+        assert_eq!(&buf[..1], b"A");
+        assert!(uart.take_break(), "the break must be reported");
+        assert!(!uart.take_break(), "a break is reported exactly once");
+    }
+
+    #[ktest]
+    fn dw_apb_line_status_ack_consumes_the_breaks_zero_byte() {
+        // Reading LSR clears LSR_BI, so by the time the receive path runs the
+        // break's zero byte looks like ordinary data. The ack must remember
+        // it, or the tty receives a NUL and the keyboard byte behind it is
+        // what the SysRq filter sees as the batch's first byte.
+        let uart = DwApbUart::new(ReceiveAccess::with_break(b"b"));
+        assert_eq!(
+            uart.acknowledge_interrupt_cause(),
+            Ok(RxInterruptCause::Receive)
+        );
+
+        let mut buf = [0u8; 4];
+        assert_eq!(uart.receive_available(&mut buf), 1);
+        assert_eq!(&buf[..1], b"b");
+        assert!(uart.take_break(), "the break must be reported");
+    }
 
     #[ktest]
     fn dw_apb_deferred_rx_retries_at_the_budget_without_unmasking() {
@@ -708,7 +813,7 @@ mod tests {
         process_deferred_rx(&console, || retries += 1);
         assert_eq!(retries, 1);
         assert_eq!(*DELIVERED_RX.lock(), input);
-        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI);
+        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI | IER_ELSI);
         assert_eq!(console.uart().prepare_deferred_rx(), Ok(false));
         DELIVERED_RX.lock().clear();
     }
@@ -725,14 +830,14 @@ mod tests {
         assert_eq!(console.uart().prepare_deferred_rx(), Ok(true));
         process_deferred_rx(&console, || panic!("short batch should rearm RX"));
         assert_eq!(*DELIVERED_RX.lock(), b"A");
-        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI);
+        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI | IER_ELSI);
 
         // The byte injected after the empty observation must trigger another
         // receive interrupt once the real deferred handler has rearmed RX.
         assert_eq!(console.uart().prepare_deferred_rx(), Ok(true));
         process_deferred_rx(&console, || panic!("short batch should rearm RX"));
         assert_eq!(*DELIVERED_RX.lock(), b"AB");
-        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI);
+        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI | IER_ELSI);
         assert_eq!(console.uart().prepare_deferred_rx(), Ok(false));
         DELIVERED_RX.lock().clear();
     }
@@ -998,7 +1103,7 @@ mod tests {
             observation.operations(),
             vec![
                 Operation::Read32(IER_OFFSET),
-                Operation::Write32(IER_OFFSET, 0x81)
+                Operation::Write32(IER_OFFSET, 0x81 | IER_ELSI)
             ]
         );
     }
@@ -1029,7 +1134,10 @@ mod tests {
             write_error.enable_rx_interrupt(prepared),
             Err(RxEnableError::Mmio)
         );
-        assert_eq!(observation.writes(), vec![(IER_OFFSET, IER_RDI)]);
+        assert_eq!(
+            observation.writes(),
+            vec![(IER_OFFSET, IER_RDI | IER_ELSI)]
+        );
     }
 
     #[ktest]

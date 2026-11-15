@@ -65,6 +65,9 @@ pub(super) fn init(fdt_node: FdtNode) {
 
     let mut uart = Ns16550aUart::new(SerialAccess { io_mem });
     uart.init();
+    // A break must interrupt even when no data byte follows it: that is the
+    // serial SysRq entry point when userspace can no longer run anything.
+    uart.enable_break_detection();
 
     let uart_console = UartConsole::new(SpinLock::new(uart));
 
