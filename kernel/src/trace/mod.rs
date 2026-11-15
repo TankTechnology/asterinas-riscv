@@ -13,7 +13,7 @@
 //! Emitters use the [`trace_event!`] macro:
 //!
 //! ```rust,ignore
-//! trace_event!(events::syscall::SYS_ENTER, pid, tid, "nr={}", number);
+//! trace_event!(events::syscall::SYS_ENTER, pid, tid, [number, 0, 0], "nr={}", number);
 //! ```
 //!
 //! The macro checks the event's switch first, so a disabled event costs one
@@ -42,10 +42,10 @@ pub mod function {
 /// record's payload; they are only evaluated when the event is on.
 #[macro_export]
 macro_rules! trace_event {
-    ($event:expr, $pid:expr, $tid:expr, $($arg:tt)*) => {{
+    ($event:expr, $pid:expr, $tid:expr, [$a0:expr, $a1:expr, $a2:expr $(,)?], $($arg:tt)*) => {{
         let event = $event;
         if event.enabled() {
-            event.trace($pid, $tid, ::core::format_args!($($arg)*));
+            event.trace($pid, $tid, [$a0, $a1, $a2], ::core::format_args!($($arg)*));
         }
     }};
 }
@@ -76,5 +76,10 @@ fn trace_irq_hook(irq_num: u8, entering: bool) {
     let (pid, tid) = ostd::task::Task::current()
         .map(|task| crate::thread::task_ids(&task))
         .unwrap_or((0, 0));
-    event.trace(pid, tid, format_args!("irq={}", irq_num));
+    event.trace(
+        pid,
+        tid,
+        [irq_num as u64, entering as u64, 0],
+        format_args!("irq={}", irq_num),
+    );
 }

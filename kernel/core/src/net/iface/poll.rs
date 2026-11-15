@@ -38,6 +38,7 @@ fn trace_poll(iface_name: &core::ffi::CStr) {
     NET_POLL.trace(
         pid,
         tid,
+        [0, 0, 0],
         format_args!("iface={}", iface_name.to_string_lossy()),
     );
 }

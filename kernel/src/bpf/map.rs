@@ -237,7 +237,7 @@ impl Map {
                         if flags == BPF_EXIST {
                             return_errno_with_message!(Errno::ENOENT, "the key is absent");
                         }
-                        let Some(index) = Self::hash_free_slot(slots) else {
+                        let Some(index) = Self::hash_free_slot(slots, key) else {
                             return_errno_with_message!(Errno::ENOSPC, "the map is full");
                         };
                         slots[index].key = Self::key_bytes(key);
@@ -370,7 +370,7 @@ impl Map {
                         if flags == BPF_EXIST {
                             return_errno_with_message!(Errno::ENOENT, "the key is absent");
                         }
-                        let Some(index) = Self::hash_free_slot(slots) else {
+                        let Some(index) = Self::hash_free_slot(slots, key) else {
                             return_errno_with_message!(Errno::ENOSPC, "the map is full");
                         };
                         slots[index].key = Self::key_bytes(key);
@@ -474,8 +474,19 @@ impl Map {
         None
     }
 
-    fn hash_free_slot(slots: &[HashSlot]) -> Option<usize> {
-        slots.iter().position(|slot| !slot.used)
+    /// The slot a new entry must go into: the first free one along the key's
+    /// own probe path. Taking any free slot instead would put the entry where
+    /// a lookup never looks.
+    fn hash_free_slot(slots: &[HashSlot], key: u64) -> Option<usize> {
+        let needle = Self::key_bytes(key);
+        let home = Self::hash_home(&needle, slots.len());
+        for step in 0..slots.len() {
+            let index = (home + step) % slots.len();
+            if !slots[index].used {
+                return Some(index);
+            }
+        }
+        None
     }
 }
 

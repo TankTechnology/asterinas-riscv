@@ -84,7 +84,22 @@ pub fn attached(event_id: u16) -> Option<Arc<Program>> {
 /// Runs the program attached to `event_id`, if there is one.
 ///
 /// Called from the emitting context, which may be an interrupt handler.
-pub fn run(event_id: u16, pid: u32, tid: u32) {
+pub fn run(event_id: u16, pid: u32, tid: u32, args: [u64; 3]) {
+    run_at(
+        event_id,
+        pid,
+        tid,
+        args,
+        aster_time::read_monotonic_time().as_nanos() as u64,
+    );
+}
+
+/// Like [`run`], but with the emitter supplying the timestamp.
+///
+/// An emitter that can run inside the clocksource's own update -- the sampling
+/// profiler and the function tracer -- must not read the monotonic clock, so it
+/// passes a lock-free timestamp instead.
+pub fn run_at(event_id: u16, pid: u32, tid: u32, args: [u64; 3], timestamp_ns: u64) {
     let Some(program) = attached(event_id) else {
         return;
     };
@@ -95,11 +110,12 @@ pub fn run(event_id: u16, pid: u32, tid: u32) {
     };
 
     let ctx = TraceCtx {
-        timestamp_ns: aster_time::read_monotonic_time().as_nanos() as u64,
+        timestamp_ns,
         pid,
         tid,
         event: event_id as u32,
         cpu,
+        args,
     };
     program.run(&ctx);
 }

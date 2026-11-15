@@ -261,6 +261,7 @@ fn trace_wakeup(task: &Task, flags: EnqueueFlags) {
     SCHED_WAKEUP.trace(
         waker_pid,
         waker_tid,
+        [pid as u64, tid as u64, 0],
         format_args!("pid={} tid={}", pid, tid),
     );
 }

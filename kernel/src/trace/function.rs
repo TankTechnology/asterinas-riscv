@@ -147,13 +147,17 @@ pub extern "C" fn mcount_slow(caller_ra: u64) {
     // Jiffies, not the monotonic clock: this can run inside the clocksource's
     // own update (the timer interrupt calls functions too), and the clock's
     // read lock is held there.
-    ring::push_at(
-        FUNCTION.id(),
-        pid,
-        tid,
-        &caller_ra.to_le_bytes(),
-        ostd::timer::Jiffies::elapsed().as_duration(),
-    );
+    let elapsed = ostd::timer::Jiffies::elapsed().as_duration();
+    if crate::bpf::attach::is_attached(FUNCTION.id()) {
+        crate::bpf::attach::run_at(
+            FUNCTION.id(),
+            pid,
+            tid,
+            [caller_ra, 0, 0],
+            elapsed.as_nanos() as u64,
+        );
+    }
+    ring::push_at(FUNCTION.id(), pid, tid, &caller_ra.to_le_bytes(), elapsed);
 }
 
 /// The function trace's own switch, kept next to the stub that reads it.

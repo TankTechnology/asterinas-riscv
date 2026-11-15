@@ -28,7 +28,7 @@ pub use map::Map;
 pub use prog::Program;
 
 /// Size of the context a trace event passes to a program.
-pub const CTX_SIZE: usize = 24;
+pub const CTX_SIZE: usize = 48;
 
 /// The context of a trace event, as a program sees it through `r1`.
 ///
@@ -38,7 +38,15 @@ pub const CTX_SIZE: usize = 24;
 /// 12  u32  tid
 /// 16  u32  event
 /// 20  u32  cpu
+/// 24  u64  arg0
+/// 32  u64  arg1
+/// 40  u64  arg2
 /// ```
+///
+/// The arguments are the event's own: the syscall number and its first
+/// arguments for `syscall:sys_enter`, the request size for a block event, the
+/// interrupted address for a page fault, and so on (see each event's
+/// `format` line under `/proc/trace/events`).
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TraceCtx {
     pub timestamp_ns: u64,
@@ -46,6 +54,7 @@ pub struct TraceCtx {
     pub tid: u32,
     pub event: u32,
     pub cpu: u32,
+    pub args: [u64; 3],
 }
 
 impl TraceCtx {
@@ -56,6 +65,10 @@ impl TraceCtx {
         bytes[12..16].copy_from_slice(&self.tid.to_le_bytes());
         bytes[16..20].copy_from_slice(&self.event.to_le_bytes());
         bytes[20..24].copy_from_slice(&self.cpu.to_le_bytes());
+        for (index, arg) in self.args.iter().enumerate() {
+            let start = 24 + index * 8;
+            bytes[start..start + 8].copy_from_slice(&arg.to_le_bytes());
+        }
         bytes
     }
 }
@@ -159,6 +172,7 @@ mod test {
             tid: 77,
             event: 3,
             cpu: 1,
+            args: [0; 3],
         };
         for _ in 0..3 {
             assert_eq!(program.run(&ctx), 0, "the program returned zero");
@@ -172,8 +186,30 @@ mod test {
     }
 
     #[ktest]
+    fn the_context_carries_the_event_arguments() {
+        let map = Map::create(BPF_MAP_TYPE_ARRAY, 4, 8, 4, "unused").unwrap();
+        let mut insns = vec![
+            insn(0x79, 0, 1, 24, 0), // r0 = *(u64 *)(ctx + 24)
+            insn(0x95, 0, 0, 0, 0),  // exit
+        ];
+        let mut maps = Vec::new();
+        let mut resolve = |_fd: u32| Ok(map.clone());
+        verifier::verify(&mut insns, &mut maps, CTX_SIZE, &mut resolve).unwrap();
+        let program = Program::new(insns, maps, 0x8000_0001, "args", "GPL");
+
+        let ctx = TraceCtx {
+            args: [0x1122_3344_5566_7788, 9, 10],
+            ..TraceCtx::default()
+        };
+        assert_eq!(program.run(&ctx), 0x1122_3344_5566_7788);
+    }
+
+    #[ktest]
     fn a_hash_map_round_trips_a_value() {
-        let map = Map::create(BPF_MAP_TYPE_HASH, 4, 8, 8, "hash").unwrap();
+        // Deliberately larger than the number of keys: a table that is exactly
+        // full hides a broken probe order, because a lookup then has no empty
+        // slot to stop at.
+        let map = Map::create(BPF_MAP_TYPE_HASH, 4, 8, 16, "hash").unwrap();
         let key = 5u32.to_le_bytes();
         map.update(&key, &7u64.to_le_bytes(), 0).unwrap();
 
@@ -187,6 +223,23 @@ mod test {
 
         map.delete(&key).unwrap();
         assert!(map.lookup(&key, &mut value).is_err(), "the key is gone");
+
+        // Every key must be findable after its insert, whether or not the
+        // table is full.
+        let sparse: Vec<u32> = (0..5u32).map(|key| key * 7).collect();
+        for key in &sparse {
+            map.update(&key.to_le_bytes(), &(*key as u64).to_le_bytes(), 0)
+                .unwrap();
+            for live in sparse.iter().filter(|live| *live <= key) {
+                let mut value = [0u8; 8];
+                map.lookup(&live.to_le_bytes(), &mut value)
+                    .unwrap_or_else(|_| panic!("key {live} is unfindable"));
+                assert_eq!(u64::from_le_bytes(value), *live as u64);
+            }
+        }
+        for key in &sparse {
+            map.delete(&key.to_le_bytes()).unwrap();
+        }
 
         // Deleting must not hide the keys that probed past the hole.
         let keys: Vec<u32> = (0..8u32).collect();

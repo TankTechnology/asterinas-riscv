@@ -44,9 +44,15 @@ pub fn trace_hook(event: &BioHookEvent<'_>) {
     let (pid, tid) = ostd::task::Task::current()
         .map(|task| crate::thread::task_ids(&task))
         .unwrap_or((0, 0));
+    let kind = if event.submitted {
+        event.type_ as u64
+    } else {
+        event.status as u64
+    };
     trace_event.trace(
         pid,
         tid,
+        [sectors as u64, kind, sector as u64],
         format_args!(
             "sector={} nr_sectors={} kind={}",
             sector,

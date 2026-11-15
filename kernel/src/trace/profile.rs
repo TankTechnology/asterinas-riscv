@@ -36,13 +36,17 @@ fn sample(pc: usize, user: bool) {
     payload[..8].copy_from_slice(&(pc as u64).to_le_bytes());
     payload[8] = u8::from(user);
 
-    ring::push_at(
-        SAMPLE.id(),
-        pid,
-        tid,
-        &payload,
-        ostd::timer::Jiffies::elapsed().as_duration(),
-    );
+    let elapsed = ostd::timer::Jiffies::elapsed().as_duration();
+    if crate::bpf::attach::is_attached(SAMPLE.id()) {
+        crate::bpf::attach::run_at(
+            SAMPLE.id(),
+            pid,
+            tid,
+            [pc as u64, u64::from(user), 0],
+            elapsed.as_nanos() as u64,
+        );
+    }
+    ring::push_at(SAMPLE.id(), pid, tid, &payload, elapsed);
 }
 
 /// Decodes a sample record into `(pc, user)`.
