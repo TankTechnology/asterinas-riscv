@@ -3817,10 +3817,14 @@ class DebianSystemdM2GateTests(unittest.TestCase):
         return b"\n".join(
             (
                 b"Starting kernel ...",
+                b"[\x1b[0;32m  OK  \x1b[0m] Mounted \x1b[0;1;39mrun-lock.mount\x1b[0m - Legacy Locks Directory /run/lock.",
+                b"[\x1b[0;32m  OK  \x1b[0m] Mounted \x1b[0;1;39mtmp.mount\x1b[0m - Temporary Directory /tmp.",
                 b"DEBIAN_SYSTEMD_M2_READY boot=1 arch=riscv64 release=13.6",
                 b"OpenSBI v1.7",
                 b"U-Boot 2025.07",
                 b"Starting kernel ...",
+                b"[  OK  ] Mounted run-lock.mount - Legacy Locks Directory /run/lock.",
+                b"[  OK  ] Mounted tmp.mount - Temporary Directory /tmp.",
                 b"DEBIAN_SYSTEMD_M2_READY boot=2 arch=riscv64 release=13.6",
                 b"DEBIAN_SYSTEMD_M2_PASS boot=2",
                 b"",
@@ -3857,6 +3861,34 @@ class DebianSystemdM2GateTests(unittest.TestCase):
             ),
             (b"x" * (MAX_TRANSCRIPT_BYTES + 1), "8 MiB"),
             (good + b"Kernel panic - not syncing\n", "fatal"),
+            (
+                good + b"Failed to acquire watch file descriptor: Invalid argument\n",
+                "mount monitor",
+            ),
+            (
+                good + b"Failed to drain libmount events: Invalid argument\n",
+                "mount monitor",
+            ),
+            (
+                good + b"Mount process finished, but there is no mount.\n",
+                "mount protocol",
+            ),
+            (
+                good.replace(
+                    b"[  OK  ] Mounted tmp.mount - Temporary Directory /tmp.\n",
+                    b"",
+                    1,
+                ),
+                "tmp.mount",
+            ),
+            (
+                good.replace(
+                    b"[  OK  ] Mounted run-lock.mount - Legacy Locks Directory /run/lock.\n",
+                    b"",
+                    1,
+                ),
+                "run-lock.mount",
+            ),
         )
         for transcript, reason in cases:
             with self.subTest(reason=reason):
