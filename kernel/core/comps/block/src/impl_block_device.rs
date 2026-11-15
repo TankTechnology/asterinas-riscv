@@ -295,14 +295,20 @@ fn alloc_write_segment(offset: usize, len: usize) -> BioSegment {
 
 pub(super) fn general_complete_fn(
     bio_type: BioType,
+    sid_range: &core::ops::Range<Sid>,
     bio_status: BioStatus,
     complete_fn: Option<BioCompleteFn>,
 ) {
     if bio_status != BioStatus::Complete {
+        // Naming the sectors turns "a read failed somewhere" into an address
+        // that can be checked against the filesystem, which is the difference
+        // between a targeted repair and a full-disk scan.
         ostd::error!(
-            "failed to do {:?} on the device with error status: {:?}",
+            "failed to do {:?} on the device with error status: {:?} (sectors {}..{})",
             bio_type,
-            bio_status
+            bio_status,
+            sid_range.start.to_raw(),
+            sid_range.end.to_raw()
         );
     }
     if let Some(complete_fn) = complete_fn {
