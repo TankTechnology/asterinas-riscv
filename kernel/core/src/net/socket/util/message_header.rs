@@ -6,6 +6,7 @@ use super::{RecvFlags, SocketAddr};
 use crate::{
     net::socket::{netlink::NetlinkControlMessage, unix::UnixControlMessage},
     prelude::*,
+    time::{timespec_t, timeval_t},
     util::net::CSocketOptionLevel,
 };
 
@@ -153,15 +154,15 @@ impl ControlMessage {
 /// A socket-level control message produced by the kernel on receive.
 #[derive(Debug)]
 pub enum SocketControlMessage {
-    Timestamp(CTimeval),
-    TimestampNs(CTimespec),
+    Timestamp(timeval_t),
+    TimestampNs(timespec_t),
 }
 
 impl SocketControlMessage {
     fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
         let (type_, payload_len) = match self {
-            Self::Timestamp(_) => (SCM_TIMESTAMP, size_of::<CTimeval>()),
-            Self::TimestampNs(_) => (SCM_TIMESTAMPNS, size_of::<CTimespec>()),
+            Self::Timestamp(_) => (SCM_TIMESTAMP, size_of::<timeval_t>()),
+            Self::TimestampNs(_) => (SCM_TIMESTAMPNS, size_of::<timespec_t>()),
         };
         if writer.avail() < size_of::<CControlHeader>() + payload_len {
             return_errno_with_message!(Errno::EINVAL, "the control message buffer is too small");
@@ -176,22 +177,6 @@ impl SocketControlMessage {
 
         Ok((header, RecvFlags::empty()))
     }
-}
-
-/// `struct timeval` as carried by `SCM_TIMESTAMP`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod)]
-pub struct CTimeval {
-    pub sec: i64,
-    pub usec: i64,
-}
-
-/// `struct timespec` as carried by `SCM_TIMESTAMPNS`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod)]
-pub struct CTimespec {
-    pub sec: i64,
-    pub nsec: i64,
 }
 
 /// `cmsghdr` in Linux.
