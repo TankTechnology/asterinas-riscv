@@ -96,6 +96,12 @@ unsafe extern "C" fn trap_handler(f: &mut TrapFrame) {
 pub(super) fn handle_irq(trap_frame: &TrapFrame, interrupt: Interrupt, priv_level: PrivilegeLevel) {
     match interrupt {
         Interrupt::SupervisorTimer => {
+            // Sampling hooks run before the handlers so the sample is the
+            // interrupted context, not the handler's.
+            crate::irq::call_timer_sample_hook(
+                trap_frame.sepc,
+                matches!(priv_level, PrivilegeLevel::User),
+            );
             call_irq_callback_functions(
                 trap_frame,
                 &HwIrqLine::new(TIMER_IRQ.get().unwrap().num(), InterruptSource::Timer),

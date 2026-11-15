@@ -11,6 +11,7 @@ pub mod ftrace;
 pub mod irq;
 pub mod mm;
 pub mod net;
+pub mod profile;
 pub mod sched;
 pub mod syscall;
 pub mod tracing;
@@ -22,6 +23,7 @@ pub const SUBSYSTEMS: &[&str] = &[
     irq::NAME,
     mm::NAME,
     net::NAME,
+    profile::NAME,
     sched::NAME,
     syscall::NAME,
     tracing::NAME,

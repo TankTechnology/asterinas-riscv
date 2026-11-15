@@ -125,6 +125,7 @@ static EVENTS: &[&TraceEvent] = &[
     &super::events::irq::IRQ_HANDLER_EXIT,
     &super::events::mm::PAGE_FAULT_USER,
     &super::events::net::NET_POLL,
+    &super::events::profile::SAMPLE,
     &super::events::sched::SCHED_SWITCH,
     &super::events::sched::SCHED_WAKEUP,
     &super::events::syscall::SYS_ENTER,

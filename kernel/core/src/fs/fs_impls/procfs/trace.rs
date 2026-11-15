@@ -70,6 +70,9 @@ impl TraceDirOps {
         ("trace_marker", InodeType::File, |parent| {
             ProcFile::new(TraceMarkerFileOps, parent, mkmod!(a+w))
         }),
+        ("profile", InodeType::File, |parent| {
+            ProcFile::new(ProfileFileOps, parent, mkmod!(a+r))
+        }),
         ("events", InodeType::Dir, |parent| {
             ProcDir::new(EventsDirOps, parent, mkmod!(a+rx))
         }),
@@ -155,6 +158,15 @@ impl ProcFileOps for TraceMarkerFileOps {
             ring::push(TRACE_MARKER.id(), pid, tid, message.as_bytes());
         }
         Ok(text.len())
+    }
+}
+
+/// `/proc/trace/profile`: a histogram of the samples in the ring.
+struct ProfileFileOps;
+
+impl ProcFileOps for ProfileFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        crate::trace::profile::render_histogram(offset, writer)
     }
 }
 
@@ -472,6 +484,16 @@ fn format_record(line: &mut LineBuf, record: &Record<'_>) -> core::fmt::Result {
             Some((symbol, 0)) => write!(line, "func={}\n", symbol),
             Some((symbol, offset)) => write!(line, "func={}+{:#x}\n", symbol, offset),
             None => write!(line, "func=<{:#x}>\n", address),
+        }
+    } else if record.event == crate::trace::events::profile::SAMPLE.id() {
+        match crate::trace::profile::decode(record.data) {
+            Some((pc, true)) => write!(line, "pc={:#x} user\n", pc),
+            Some((pc, false)) => match crate::trace::kallsyms::lookup_with_offset(pc) {
+                Some((symbol, 0)) => write!(line, "pc={}\n", symbol),
+                Some((symbol, offset)) => write!(line, "pc={}+{:#x}\n", symbol, offset),
+                None => write!(line, "pc={:#x}\n", pc),
+            },
+            None => write!(line, "<short sample>\n"),
         }
     } else {
         let payload = core::str::from_utf8(record.data).unwrap_or("<bytes>");

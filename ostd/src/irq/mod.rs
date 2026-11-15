@@ -145,6 +145,26 @@ pub(crate) fn call_irq_callback_functions(
     call_irq_hook(hw_irq_line.irq_num(), false);
 }
 
+/// A hook run on every timer interrupt, for sampling profilers.
+///
+/// It receives the interrupted program counter and whether the interrupted
+/// context was user mode. It runs in interrupt context: no allocation, no
+/// sleeping, and it must not touch the clocksource (the timer handler itself
+/// may).
+static TIMER_SAMPLE_HOOK: Once<fn(usize, bool)> = Once::new();
+
+/// Injects the timer sampling hook.
+pub fn inject_timer_sample_hook(hook: fn(usize, bool)) {
+    TIMER_SAMPLE_HOOK.call_once(|| hook);
+}
+
+/// Runs the timer sampling hook, if one was injected.
+pub fn call_timer_sample_hook(pc: usize, user: bool) {
+    if let Some(hook) = TIMER_SAMPLE_HOOK.get() {
+        hook(pc, user);
+    }
+}
+
 /// A hook around every interrupt handler invocation, for tracing.
 ///
 /// `entering` distinguishes the call before the handlers from the one after

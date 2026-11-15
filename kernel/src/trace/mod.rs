@@ -23,6 +23,7 @@ pub mod event;
 pub mod events;
 pub mod function;
 pub mod kallsyms;
+pub mod profile;
 pub mod ring;
 
 /// Emits a trace record for `$event`, if it is enabled.
@@ -45,6 +46,7 @@ macro_rules! trace_event {
 /// network hooks are emitted at their call sites in the kernel.
 pub fn init() {
     function::init();
+    profile::init();
     ostd::irq::inject_irq_hook(trace_irq_hook);
     aster_block::bio::inject_bio_hook(events::block::trace_hook);
 }
