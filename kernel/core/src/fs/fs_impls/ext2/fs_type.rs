@@ -15,12 +15,11 @@ use crate::fs::vfs::{
 };
 
 /// VFS-visible Ext2 filesystem type.
-pub(in crate::fs) struct Ext2Type {
+pub(super) struct Ext2Type {
     cache: FsCache<DeviceId>,
 }
 
-/// The VFS filesystem type descriptor for Ext2.
-pub(in crate::fs) static EXT2_TYPE: Ext2Type = Ext2Type {
+pub(super) static EXT2_TYPE: Ext2Type = Ext2Type {
     cache: FsCache::new(),
 };
 

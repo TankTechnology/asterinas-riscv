@@ -99,7 +99,7 @@ pub(super) const ROOT_INO: u32 = 2;
 /// Filesystem-wide operations are routed through the block group selected by
 /// the target inode or block address.
 #[derive(Debug)]
-pub(crate) struct Ext2 {
+pub struct Ext2 {
     /// Backing block device.
     block_device: Arc<dyn BlockDevice>,
     /// Superblock with dirty tracking.
@@ -250,7 +250,7 @@ impl Ext2 {
                 BioSegment::new_from_segment(segment.clone().into(), BioDirection::FromDevice);
             match device.read_blocks(
                 Bid::new(super_block.group_descriptors_bid(0) as u64),
-                vec![bio_segment],
+                bio_segment,
             )? {
                 BioStatus::Complete => {}
                 err_status => {
@@ -1148,7 +1148,7 @@ impl Ext2 {
         account_block_io(&bio_segment, false);
         self.block_device.read_blocks_async(
             Bid::new(bid as u64),
-            vec![bio_segment],
+            bio_segment,
             complete_fn,
             io_batch,
         )?;
@@ -1160,7 +1160,7 @@ impl Ext2 {
         account_block_io(&bio_segment, false);
         let bio_status = self
             .block_device
-            .read_blocks(Bid::new(bid as u64), vec![bio_segment])?;
+            .read_blocks(Bid::new(bid as u64), bio_segment)?;
         match bio_status {
             BioStatus::Complete => Ok(()),
             _ => {
@@ -1180,7 +1180,7 @@ impl Ext2 {
         account_block_io(&bio_segment, true);
         self.block_device.write_blocks_async(
             Bid::new(bid as u64),
-            vec![bio_segment],
+            bio_segment,
             complete_fn,
             io_batch,
         )?;
@@ -1220,7 +1220,7 @@ impl Ext2 {
         account_block_io(&bio_segment, true);
         let bio_status = self
             .block_device
-            .write_blocks(Bid::new(bid as u64), vec![bio_segment])?;
+            .write_blocks(Bid::new(bid as u64), bio_segment)?;
         match bio_status {
             BioStatus::Complete => Ok(()),
             _ => {

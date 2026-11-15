@@ -13,11 +13,8 @@ use ostd::mm::io::util::HasVmReaderWriter;
 
 use self::block_ptr_tree::ResolvedBlockRange;
 pub(super) use self::block_ptr_tree::{BlockPtrTree, RawBlockPtrs};
-use super::io_range::{IoRange, IoRangeIter};
-use crate::{
-    fs::ext2::{fs::Ext2, prelude::*},
-    vm::page_cache::PageRun,
-};
+use super::io_range::IoRangeIter;
+use crate::fs::ext2::{fs::Ext2, prelude::*};
 
 /// Bridges the inode's logical file view and the physical block device.
 ///
@@ -203,7 +200,8 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
         if idx >= self.npages.load(Ordering::Acquire) {
             return_errno_with_message!(Errno::EINVAL, "invalid read size");
         }
-        let iblock = idx as Iblock;
+        let iblock = Iblock::try_from(idx)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "logical block number overflow"))?;
         match self.lookup_block(iblock)? {
             Some(bid) => {
                 let fs = self.fs()?;
@@ -217,39 +215,91 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
         }
     }
 
-    fn submit_read_page_run(&self, mut pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        let start_idx = pages.start_idx();
-        let end_idx = start_idx + pages.len();
-        if end_idx > self.npages.load(Ordering::Acquire) {
-            return_errno_with_message!(Errno::EINVAL, "invalid read size");
+    /// Submits a batch of pages for writeback, merging physically contiguous
+    /// pages into one BIO.
+    ///
+    /// Writeback usually dirties several adjacent pages of a file at once, and
+    /// ext2 tries to allocate them as one extent. Submitting one BIO per page
+    /// turns such a run into one small device command per 4 KiB; this override
+    /// keeps the run together so the device sees one request for up to the
+    /// controller's request boundary.
+    fn submit_write_bios(
+        &self,
+        requests: Vec<PageCacheWriteRequest>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        if requests.is_empty() {
+            return Ok(());
         }
 
-        let iblock_range = start_idx as Iblock..end_idx as Iblock;
+        let npages = self.npages.load(Ordering::Acquire);
         let fs = self.fs()?;
-        let mut io_ranges = self.iter_io_ranges(iblock_range);
+        let tree = self.block_ptr_tree.read();
 
-        while let Some(io_range) = io_ranges.next()? {
-            match io_range {
-                IoRange::Mapped(device_range) => {
-                    let range_len = device_range.len();
-                    pages.submit_contiguous_read_pages(
-                        fs.block_device(),
-                        Bid::new(device_range.start as u64),
-                        range_len,
-                        io_batch,
-                    )?;
-                }
-                IoRange::Hole(hole_range) => {
-                    let hole_len = hole_range.len();
-                    for locked_page in pages.by_ref().take(hole_len) {
-                        locked_page.fill_zeros(0, PAGE_SIZE).unwrap();
-                        locked_page.set_up_to_date();
+        // Resolve every page before submitting anything, so a metadata error
+        // can be reported without leaving half a batch in flight.
+        let mut mapped: Vec<(usize, Option<Ext2Bid>, PageCacheWriteRequest)> =
+            Vec::with_capacity(requests.len());
+        let mut requests = requests.into_iter();
+        while let Some(request) = requests.next() {
+            let idx = request.idx();
+            let result = if idx >= npages {
+                Err(Error::with_message(Errno::EINVAL, "invalid write size"))
+            } else {
+                Iblock::try_from(idx)
+                    .map_err(|_| {
+                        Error::with_message(Errno::EINVAL, "logical block number overflow")
+                    })
+                    .and_then(|iblock| tree.lookup_block(iblock))
+            };
+            match result {
+                Ok(bid) => mapped.push((idx, bid, request)),
+                Err(err) => {
+                    request.submission_failed();
+                    for (_, _, rest) in mapped {
+                        rest.submission_failed();
                     }
+                    for rest in requests {
+                        rest.submission_failed();
+                    }
+                    return Err(err);
                 }
             }
         }
 
-        Ok(())
+        let mut mapped = mapped.into_iter();
+        // The device refuses a BIO that reaches its segment limit, so close a
+        // run before that point even when the mapping stays contiguous.
+        let max_segments = fs.max_bio_segments().saturating_sub(1).max(1);
+        let mut run: Vec<(usize, Ext2Bid, PageCacheWriteRequest)> = Vec::new();
+        while let Some((idx, bid, request)) = mapped.next() {
+            let Some(bid) = bid else {
+                // Encounter a hole; the single-page path allocates a block.
+                submit_contiguous_write_run(&fs, &mut run, io_batch)?;
+                let (idx, page, bio_segment, complete_fn) = request.into_submission_parts();
+                if let Err(error) = self.submit_write_bio(idx, bio_segment, complete_fn, io_batch) {
+                    fail_writeback_page(&page);
+                    for (_, _, rest) in mapped {
+                        rest.submission_failed();
+                    }
+                    return Err(error);
+                }
+                continue;
+            };
+
+            let continues = run.last().is_some_and(|(last_idx, last_bid, _)| {
+                continues_write_run(*last_idx, *last_bid, idx, bid)
+            });
+            if !run.is_empty() && !continues {
+                submit_contiguous_write_run(&fs, &mut run, io_batch)?;
+            }
+            if run.len() >= max_segments {
+                submit_contiguous_write_run(&fs, &mut run, io_batch)?;
+            }
+            run.push((idx, bid, request));
+        }
+
+        submit_contiguous_write_run(&fs, &mut run, io_batch)
     }
 
     fn submit_write_bio(
@@ -262,7 +312,8 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
         if idx >= self.npages.load(Ordering::Acquire) {
             return_errno_with_message!(Errno::EINVAL, "invalid write size");
         }
-        let iblock = idx as Iblock;
+        let iblock = Iblock::try_from(idx)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "logical block number overflow"))?;
         let fs = self.fs()?;
 
         // TODO: Refactor `lookup_block` and `resolve_block_range`. Currently
@@ -292,40 +343,55 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
 
         fs.write_blocks_async(bid, bio_segment, Some(complete_fn), io_batch)
     }
+}
 
-    fn submit_write_page_run(&self, mut pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        let start_idx = pages.start_idx();
-        let end_idx = start_idx + pages.len();
-        if end_idx > self.npages.load(Ordering::Acquire) {
-            return_errno_with_message!(Errno::EINVAL, "invalid write size");
-        }
-        self.allocate_range_blocks(start_idx, end_idx)?;
-        let iblock_range = start_idx as Iblock..end_idx as Iblock;
-        let fs = self.fs()?;
-        let mut io_ranges = self.iter_io_ranges(iblock_range);
+/// Submits one physically contiguous write run as a single BIO and runs every
+/// page's completion callback when it finishes.
+fn submit_contiguous_write_run(
+    fs: &Ext2,
+    run: &mut Vec<(usize, Ext2Bid, PageCacheWriteRequest)>,
+    io_batch: &mut IoBatch,
+) -> Result<()> {
+    let Some((_, start_bid, _)) = run.first() else {
+        return Ok(());
+    };
+    let start_bid = *start_bid;
 
-        while let Some(io_range) = io_ranges.next()? {
-            match io_range {
-                IoRange::Mapped(device_range) => {
-                    let range_len = device_range.len();
-                    pages.submit_contiguous_write_pages(
-                        fs.block_device(),
-                        Bid::new(device_range.start as u64),
-                        range_len,
-                        io_batch,
-                    )?;
-                }
-                IoRange::Hole(_) => {
-                    return_errno_with_message!(
-                        Errno::EIO,
-                        "unexpected hole after writeback allocation"
-                    );
-                }
-            }
-        }
-
-        Ok(())
+    let mut segments = Vec::with_capacity(run.len());
+    let mut pages = Vec::with_capacity(run.len());
+    let mut complete_fns = Vec::with_capacity(run.len());
+    for (_, _, request) in run.drain(..) {
+        let (_, page, bio_segment, complete_fn) = request.into_submission_parts();
+        pages.push(page);
+        segments.push(bio_segment);
+        complete_fns.push(complete_fn);
     }
+
+    let complete_fn: BioCompleteFn = Box::new(move |status| {
+        for complete in complete_fns {
+            complete(status);
+        }
+    });
+
+    match fs.write_blocks_multi_async(start_bid, segments, Some(complete_fn), io_batch) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            for page in pages {
+                fail_writeback_page(&page);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Whether the next dirty page extends a physically contiguous write run.
+fn continues_write_run(
+    last_idx: usize,
+    last_bid: Ext2Bid,
+    next_idx: usize,
+    next_bid: Ext2Bid,
+) -> bool {
+    last_idx.checked_add(1) == Some(next_idx) && last_bid.checked_add(1) == Some(next_bid)
 }
 
 fn continues_read_run(
@@ -391,7 +457,16 @@ fn submit_contiguous_read_run(
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::{Ext2Bid, continues_read_run};
+    use super::{Ext2Bid, continues_read_run, continues_write_run};
+
+    #[ktest]
+    fn write_run_requires_logical_and_physical_contiguity() {
+        assert!(continues_write_run(4, 100, 5, 101));
+        assert!(!continues_write_run(4, 100, 6, 101));
+        assert!(!continues_write_run(4, 100, 5, 102));
+        assert!(!continues_write_run(usize::MAX, Ext2Bid::MAX, 0, 0));
+        assert!(!continues_write_run(4, Ext2Bid::MAX, 5, 0));
+    }
 
     #[ktest]
     fn read_run_requires_logical_and_physical_contiguity() {

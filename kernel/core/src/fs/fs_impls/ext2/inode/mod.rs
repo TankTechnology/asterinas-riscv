@@ -37,7 +37,7 @@
 //! |----------------------------|-----------------------------------------------------------|
 //! | `attrs`                    | Metadata: mode, uid, gid, times, xattr                    |
 //! | `block_manager`            | Page-cache backend and block-pointer tree management      |
-//! | `io_range`                 | Block-backed I/O range planning                            |
+//! | `io_range`                 | Direct-I/O block range planning                           |
 //! | `file`                     | Regular-file I/O and allocation                           |
 //! | `dir`                      | Directory entry semantics                                 |
 //! | `symlink`                  | Symlink target storage                                    |
@@ -68,8 +68,6 @@
 //! `BlockGroup::inode_cache` is independent: it is never held while
 //! acquiring `super_block` or `metadata`, nor while holding `Inode::inner`.
 
-#![short_vis_path::add(ext2)]
-
 mod attrs;
 mod block_manager;
 mod dir;
@@ -85,10 +83,7 @@ use self::{
     symlink::FastSymlinkTarget,
 };
 use super::{fs::Ext2, prelude::*, xattr::Xattr};
-use crate::{
-    fs::{ext2::utils, file::InodeMode, pipe::Pipe, vfs::inode::Extension},
-    vm::page_cache::Vmo,
-};
+use crate::fs::{ext2::utils, file::InodeMode, pipe::Pipe, vfs::inode::Extension};
 
 const MAX_LINK_COUNT: u16 = 32000;
 /// Size of the ext2 inode `i_block` byte area used by fast symlinks.
@@ -104,7 +99,7 @@ pub(super) type Ext2Ino = u32;
 
 /// Ext2 file permission bits (lower 12 bits of `i_mode`).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct FilePerm(u16);
+pub struct FilePerm(u16);
 
 impl FilePerm {
     /// Constructs a `FilePerm` from raw permission bits, discarding unknown bits.
@@ -130,7 +125,7 @@ impl FilePerm {
 /// bitmaps belong to the parent `Ext2` and `BlockGroup`. See the module-level
 /// documentation, especially the `Locking` section, for the full lock ordering
 /// across inode, filesystem, and block-group layers.
-pub(crate) struct Inode {
+pub struct Inode {
     ino: Ext2Ino,
     type_: InodeType,
     inner: RwMutex<InodeInner>,
@@ -214,12 +209,12 @@ impl Inode {
     }
 
     /// Returns a reference to the pipe if this is a named-pipe inode.
-    pub(in ext2) fn pipe(&self) -> Option<&Pipe> {
+    pub(in crate::fs::fs_impls::ext2) fn pipe(&self) -> Option<&Pipe> {
         self.pipe.as_ref()
     }
 
     /// Returns a clone of the data page cache for this inode if it has one.
-    pub(super) fn page_cache(&self) -> Option<Arc<Vmo>> {
+    pub(super) fn page_cache(&self) -> Option<PageCache> {
         self.inner.read().page_cache_clone()
     }
 }
@@ -476,7 +471,7 @@ impl InodeInner {
         }
     }
 
-    fn page_cache(&self) -> &PageCache {
+    pub(super) fn page_cache(&self) -> &PageCache {
         self.payload
             .page_cache()
             .expect("data-backed inode must have a page cache")
@@ -490,15 +485,15 @@ impl InodeInner {
         self.payload.raw_block_ptrs(self.desc.file_acl)
     }
 
-    fn page_cache_clone(&self) -> Option<Arc<Vmo>> {
-        self.payload.page_cache().map(PageCache::as_vmo).cloned()
+    fn page_cache_clone(&self) -> Option<PageCache> {
+        self.payload.page_cache().cloned()
     }
 
     fn resize_page_cache(&mut self, new_size_bytes: usize, old_size_bytes: usize) -> Result<()> {
         let InodePayload::DataBacked {
             page_cache,
             block_manager,
-        } = &mut self.payload
+        } = &self.payload
         else {
             return_errno_with_message!(Errno::EINVAL, "inode has no data page cache");
         };
@@ -627,15 +622,21 @@ impl InodePayload {
     fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
         let raw_block_ptrs = RawBlockPtrs::new(inode_desc.sector_count, inode_desc.block_ptrs);
         match inode_desc.type_ {
-            InodeType::File | InodeType::Dir => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)
-            }
+            InodeType::File | InodeType::Dir => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                inode_desc.flags.contains(FileFlags::EXTENTS),
+            ),
             InodeType::SymLink if Self::is_fast_symlink(inode_desc) => Self::FastSymlink {
                 target: FastSymlinkTarget::new(inode_desc.block_ptrs),
             },
-            InodeType::SymLink => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)
-            }
+            InodeType::SymLink => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                inode_desc.flags.contains(FileFlags::EXTENTS),
+            ),
             InodeType::CharDevice | InodeType::BlockDevice => Self::Device {
                 device_id: raw_block_ptrs.read_device_id(),
             },
@@ -643,10 +644,15 @@ impl InodePayload {
         }
     }
 
-    fn new_data_backed(size: usize, raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>) -> Self {
+    fn new_data_backed(
+        size: usize,
+        raw_block_ptrs: RawBlockPtrs,
+        fs: Weak<Ext2>,
+        has_extents: bool,
+    ) -> Self {
         let page_cache_size = size.align_up(PAGE_SIZE);
         let page_count = page_cache_size / PAGE_SIZE;
-        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone());
+        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone(), has_extents);
         let block_manager = Arc::new(InodeBlockManager::new(
             block_ptr_tree,
             fs.clone(),
@@ -711,53 +717,57 @@ impl InodePayload {
 }
 
 bitflags! {
-    #[derive(Clone, Copy, Debug)]
     struct FileFlags: u32 {
         /// Secure deletion.
-        const SECURE_DEL   = 1 << 0;
+        const SECURE_DEL = 1 << 0;
         /// Undelete.
-        const UNDELETE     = 1 << 1;
+        const UNDELETE = 1 << 1;
         /// Compresses the file.
-        const COMPRESS     = 1 << 2;
+        const COMPRESS = 1 << 2;
         /// Synchronous updates.
-        const SYNC_UPDATE  = 1 << 3;
+        const SYNC_UPDATE = 1 << 3;
         /// Immutable file.
-        const IMMUTABLE    = 1 << 4;
+        const IMMUTABLE = 1 << 4;
         /// Append only.
-        const APPEND_ONLY  = 1 << 5;
+        const APPEND_ONLY = 1 << 5;
         /// Do not dump file.
-        const NO_DUMP      = 1 << 6;
+        const NO_DUMP = 1 << 6;
         /// Does not update `atime`.
-        const NO_ATIME     = 1 << 7;
+        const NO_ATIME = 1 << 7;
         /// Dirty.
-        const DIRTY        = 1 << 8;
+        const DIRTY = 1 << 8;
         /// One or more compressed clusters.
         const COMPRESS_BLK = 1 << 9;
         /// Does not compress.
-        const NO_COMPRESS  = 1 << 10;
+        const NO_COMPRESS = 1 << 10;
         /// Encrypted file.
-        const ENCRYPT      = 1 << 11;
+        const ENCRYPT = 1 << 11;
         /// Hash-indexed directory.
-        const INDEX_DIR    = 1 << 12;
+        const INDEX_DIR = 1 << 12;
+        /// Inode data is stored in an ext4 extent tree.
+        const EXTENTS = 1 << 19;
         /// AFS directory.
-        const IMAGIC       = 1 << 13;
+        const IMAGIC = 1 << 13;
         /// Journal file data.
         const JOURNAL_DATA = 1 << 14;
         /// File tail should not be merged.
-        const NO_TAIL      = 1 << 15;
+        const NO_TAIL = 1 << 15;
         /// Dirsync behavior (directories only).
-        const DIR_SYNC     = 1 << 16;
+        const DIR_SYNC = 1 << 16;
         /// Top of directory hierarchies.
-        const TOP_DIR      = 1 << 17;
+        const TOP_DIR = 1 << 17;
         /// Reserved for the ext2 library.
-        const RESERVED     = 1 << 31;
+        const RESERVED = 1 << 31;
     }
 }
 
 #[cfg(ktest)]
 pub(in crate::fs::fs_impls::ext2) mod test {
     use super::*;
-    use crate::fs::fs_impls::ext2::test_utils::{self, RawInodeBuilder};
+    use crate::{
+        fs::fs_impls::ext2::test_utils::{self, RawInodeBuilder},
+        prelude::*,
+    };
 
     /// Reads a `RawInode` directly from the test fixture's disk image.
     pub(in crate::fs::fs_impls::ext2) fn read_raw_inode_from_disk(

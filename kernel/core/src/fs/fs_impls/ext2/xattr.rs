@@ -340,7 +340,7 @@ impl XattrCache {
     // when the caller passes User, list only user.* entries; otherwise
     // list all entries (matching root visibility in Linux).  The proper
     // fix is to enumerate all visible namespaces in the syscall layer
-    // (see `kernel/core/src/syscall/listxattr.rs`).
+    // (see `kernel/src/syscall/listxattr.rs`).
     fn list_entries(
         &mut self,
         namespace: XattrNamespace,

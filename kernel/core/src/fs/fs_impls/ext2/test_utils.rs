@@ -162,7 +162,7 @@ impl BlockDevice for Ext2MemoryDisk {
         for seg in bio.segments() {
             let io_size = match bio.type_() {
                 BioType::Read => seg
-                    .dma_slice()
+                    .inner_dma_slice()
                     .writer()
                     .unwrap()
                     .write(self.segment.reader().skip(cur_device_ofs)),
@@ -170,7 +170,7 @@ impl BlockDevice for Ext2MemoryDisk {
                     .segment
                     .writer()
                     .skip(cur_device_ofs)
-                    .write(&mut seg.dma_slice().reader().unwrap()),
+                    .write(&mut seg.inner_dma_slice().reader().unwrap()),
                 _ => {
                     bio.complete(BioStatus::NotSupported);
                     return Ok(());

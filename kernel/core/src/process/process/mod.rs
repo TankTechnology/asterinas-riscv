@@ -40,6 +40,7 @@ use crate::{
 
 mod init_proc;
 pub(crate) mod io_accounting;
+pub use io_accounting::IoAccounting;
 mod job_control;
 mod process_group;
 mod session;
@@ -129,6 +130,8 @@ pub struct Process {
     /// The adjustment value of the out-of-memory (OOM) killer score.
     // FIXME: Support OOM killer.
     oom_score_adj: AtomicI16,
+    /// Per-process I/O and page-fault accounting exposed through procfs.
+    io_accounting: IoAccounting,
 
     // Child reaper attribute
     /// Whether the process is a child subreaper.
@@ -276,6 +279,7 @@ impl Process {
                 cgroup: RcuOption::new(None),
                 nice: AtomicNice::new(nice),
                 oom_score_adj: AtomicI16::new(oom_score_adj),
+                io_accounting: IoAccounting::new(),
                 is_child_subreaper: AtomicBool::new(false),
                 has_child_subreaper: AtomicBool::new(false),
                 sig_dispositions: Mutex::new(sig_dispositions),
@@ -304,6 +308,11 @@ impl Process {
     }
 
     // *********** Basic structures ***********
+
+    /// Returns the per-process I/O and page-fault accounting.
+    pub fn io_accounting(&self) -> &IoAccounting {
+        &self.io_accounting
+    }
 
     pub fn pid(&self) -> u32 {
         self.pid

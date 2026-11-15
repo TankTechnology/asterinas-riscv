@@ -7,8 +7,6 @@
 //! File size, page-cache state, and ext2 block mappings must stay coherent
 //! across those entry points.
 
-#![short_vis_path::add(ext2)]
-
 use ostd::mm::io::util::HasVmReaderWriter;
 
 use super::{super::Ext2, FileFlags, Inode, InodeInner, io_range::IoRange};
@@ -20,7 +18,7 @@ use crate::fs::{
 
 impl Inode {
     /// Reads file data at `offset` through the page cache.
-    pub(in ext2) fn read_at(
+    pub(in crate::fs::fs_impls::ext2) fn read_at(
         &self,
         offset: usize,
         writer: &mut VmWriter,
@@ -43,7 +41,11 @@ impl Inode {
     }
 
     /// Writes file data at `offset` through the page cache.
-    pub(in ext2) fn write_at(&self, offset: usize, reader: &mut VmReader) -> Result<usize> {
+    pub(in crate::fs::fs_impls::ext2) fn write_at(
+        &self,
+        offset: usize,
+        reader: &mut VmReader,
+    ) -> Result<usize> {
         if self.type_ == InodeType::Dir {
             return_errno!(Errno::EISDIR);
         }
@@ -59,7 +61,7 @@ impl Inode {
     }
 
     /// Direct-I/O read path.
-    pub(in ext2) fn read_direct_at(
+    pub(in crate::fs::fs_impls::ext2) fn read_direct_at(
         &self,
         offset: usize,
         writer: &mut VmWriter,
@@ -88,7 +90,11 @@ impl Inode {
     }
 
     /// Direct-I/O write path with pre-allocation and rollback.
-    pub(in ext2) fn write_direct_at(&self, offset: usize, reader: &mut VmReader) -> Result<usize> {
+    pub(in crate::fs::fs_impls::ext2) fn write_direct_at(
+        &self,
+        offset: usize,
+        reader: &mut VmReader,
+    ) -> Result<usize> {
         if self.type_ == InodeType::Dir {
             return_errno!(Errno::EISDIR);
         }
@@ -109,7 +115,7 @@ impl Inode {
     }
 
     /// Truncates or extends the file to `new_size` bytes.
-    pub(in ext2) fn resize(&self, new_size: usize) -> Result<()> {
+    pub(in crate::fs::fs_impls::ext2) fn resize(&self, new_size: usize) -> Result<()> {
         if self.type_ == InodeType::Dir {
             return_errno!(Errno::EISDIR);
         }
@@ -145,7 +151,12 @@ impl Inode {
     }
 
     /// Implements fallocate operations for ext2.
-    pub(in ext2) fn fallocate(&self, mode: FallocMode, offset: usize, len: usize) -> Result<()> {
+    pub(in crate::fs::fs_impls::ext2) fn fallocate(
+        &self,
+        mode: FallocMode,
+        offset: usize,
+        len: usize,
+    ) -> Result<()> {
         if len == 0 {
             return Ok(());
         }
@@ -486,15 +497,11 @@ mod test {
 
     use super::{super::RAW_BLOCK_PTRS_LEN, *};
     use crate::{
-        fs::{
-            ext2::{
-                inode::test::make_live_file_inode,
-                test_utils::{Ext2FixtureBuilder, assert_errno, create_file},
-            },
-            vfs::inode::Inode,
+        fs::ext2::{
+            inode::test::make_live_file_inode,
+            test_utils::{Ext2FixtureBuilder, assert_errno, create_file},
         },
         time::clocks,
-        vm::page_cache::VmoMapMode,
     };
 
     #[ktest]
@@ -534,46 +541,135 @@ mod test {
     }
 
     #[ktest]
-    fn file_sparse_buffered_write_preserves_mmap_dirty_tail() {
-        clocks::init_for_ktest();
+    fn buffered_read_coalesces_contiguous_blocks() {
+        const NUM_BLOCKS: usize = 4;
 
+        clocks::init_for_ktest();
         let f = Ext2FixtureBuilder::new(1, 256)
-            .with_free_blocks(2, 2)
+            .with_free_blocks(64, 64)
             .with_free_inodes(1000, 1000)
+            .with_group0_used_dirs(1)
             .build()
             .unwrap();
-        let root = f.root();
-        let file: Arc<dyn Inode> = create_file(&root, "mmap_dirty_tail") as _;
-        let vmo = file.page_cache().unwrap();
+        let file = create_file(&f.root(), "batched-read");
+        let payload = (0..NUM_BLOCKS * BLOCK_SIZE)
+            .map(|offset| (offset / BLOCK_SIZE) as u8 + 1)
+            .collect::<Vec<_>>();
 
-        let file_dentry = crate::fs::vfs::path::Dentry::new_root(file.clone());
-        file.resize(&file_dentry, BLOCK_SIZE * 3).unwrap();
-
-        let block_start = BLOCK_SIZE;
-        let mmap_offset = block_start + 200;
-        let mmap_payload = [0x5au8; 32];
-
-        vmo.commit_on(block_start / PAGE_SIZE, VmoMapMode::SharedWrite)
-            .unwrap();
-        let (page, mode) = vmo
-            .try_commit_page(block_start, VmoMapMode::SharedWrite)
-            .unwrap();
-        assert_eq!(mode, VmoMapMode::SharedWrite);
-        page.write_bytes(mmap_offset % PAGE_SIZE, &mmap_payload)
+        let mut source = VmReader::from(payload.as_slice()).to_fallible();
+        assert_eq!(file.write_at(0, &mut source).unwrap(), payload.len());
+        file.sync_data().unwrap();
+        file.page_cache()
+            .unwrap()
+            .evict_range(0..payload.len())
             .unwrap();
 
-        let buffered_offset = block_start + 100;
-        let buffered_payload = [0xa5u8; 100];
+        f.disk.reset_read_stats();
+        let mut readback = vec![0; payload.len()];
+        let mut destination = VmWriter::from(readback.as_mut_slice()).to_fallible();
         assert_eq!(
-            file.write_bytes_at(buffered_offset, &buffered_payload)
+            file.read_at(0, &mut destination, StatusFlags::empty())
                 .unwrap(),
-            buffered_payload.len()
+            payload.len()
         );
 
-        let mut read_back = [0xffu8; 32];
-        file.read_bytes_at(mmap_offset, &mut read_back).unwrap();
-        assert_eq!(read_back, mmap_payload);
+        assert_eq!(readback, payload);
+        assert_eq!(f.disk.read_bio_count(), 1);
+        assert_eq!(f.disk.max_read_bio_blocks(), NUM_BLOCKS);
+
+        f.ext2.sync_all().unwrap();
     }
+
+    #[ktest]
+    fn failed_batched_read_is_reported_and_retryable() {
+        const NUM_BLOCKS: usize = 4;
+
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .with_free_inodes(1000, 1000)
+            .with_group0_used_dirs(1)
+            .build()
+            .unwrap();
+        let file = create_file(&f.root(), "failed-batched-read");
+        let payload = vec![0xa5; NUM_BLOCKS * BLOCK_SIZE];
+
+        let mut source = VmReader::from(payload.as_slice()).to_fallible();
+        file.write_at(0, &mut source).unwrap();
+        file.sync_data().unwrap();
+        file.page_cache()
+            .unwrap()
+            .evict_range(0..payload.len())
+            .unwrap();
+
+        f.disk.reset_read_stats();
+        f.disk.set_fail_reads(true);
+        let mut failed_readback = vec![0; payload.len()];
+        let mut failed_destination = VmWriter::from(failed_readback.as_mut_slice()).to_fallible();
+        assert_errno!(
+            file.read_at(0, &mut failed_destination, StatusFlags::empty()),
+            Errno::EIO
+        );
+        assert_eq!(f.disk.read_bio_count(), 1);
+        assert_eq!(f.disk.max_read_bio_blocks(), NUM_BLOCKS);
+
+        f.disk.set_fail_reads(false);
+        f.disk.reset_read_stats();
+        let mut readback = vec![0; payload.len()];
+        let mut destination = VmWriter::from(readback.as_mut_slice()).to_fallible();
+        file.read_at(0, &mut destination, StatusFlags::empty())
+            .unwrap();
+
+        assert_eq!(readback, payload);
+        assert_eq!(f.disk.read_bio_count(), 1);
+        assert_eq!(f.disk.max_read_bio_blocks(), NUM_BLOCKS);
+
+        f.ext2.sync_all().unwrap();
+    }
+
+    #[ktest]
+    fn buffered_read_splits_runs_at_sparse_holes() {
+        const NUM_BLOCKS: usize = 4;
+
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .with_free_inodes(1000, 1000)
+            .with_group0_used_dirs(1)
+            .build()
+            .unwrap();
+        let file = create_file(&f.root(), "sparse-batched-read");
+        file.resize(NUM_BLOCKS * BLOCK_SIZE).unwrap();
+
+        let first_block = vec![0x11; BLOCK_SIZE];
+        let last_block = vec![0x44; BLOCK_SIZE];
+        let mut first_source = VmReader::from(first_block.as_slice()).to_fallible();
+        file.write_at(0, &mut first_source).unwrap();
+        let mut last_source = VmReader::from(last_block.as_slice()).to_fallible();
+        file.write_at(3 * BLOCK_SIZE, &mut last_source).unwrap();
+        file.sync_data().unwrap();
+        file.page_cache()
+            .unwrap()
+            .evict_range(0..NUM_BLOCKS * BLOCK_SIZE)
+            .unwrap();
+
+        f.disk.reset_read_stats();
+        let mut readback = vec![0xff; NUM_BLOCKS * BLOCK_SIZE];
+        let mut destination = VmWriter::from(readback.as_mut_slice()).to_fallible();
+        file.read_at(0, &mut destination, StatusFlags::empty())
+            .unwrap();
+
+        assert_eq!(&readback[..BLOCK_SIZE], first_block);
+        assert_eq!(&readback[BLOCK_SIZE..3 * BLOCK_SIZE], &[0; 2 * BLOCK_SIZE]);
+        assert_eq!(&readback[3 * BLOCK_SIZE..], last_block);
+        assert_eq!(f.disk.read_bio_count(), 2);
+        assert_eq!(f.disk.max_read_bio_blocks(), 1);
+
+        f.ext2.sync_all().unwrap();
+    }
+
+    // Shared mmap writeback and buffered-write interleaving are exercised
+    // through the syscall path in regression/fs/ext2/firefox_state.c.
 
     #[ktest]
     fn falloc_allocate_returns_enospc_after_consuming_blocks() {

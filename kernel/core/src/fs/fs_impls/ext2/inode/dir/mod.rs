@@ -7,8 +7,6 @@
 //! lookup, creation, hard links, rename, removal, and iteration while keeping
 //! directory entries and link counts consistent.
 
-#![short_vis_path::add(ext2)]
-
 mod dir_entry;
 
 use self::dir_entry::{DOT_BYTE, DOT_DOT_BYTE, DirBlockView, DirEntryFileType, DirEntryHeader};
@@ -134,7 +132,7 @@ impl InodeInner {
 
 impl Inode {
     /// Looks up a directory entry by name and returns the referenced inode.
-    pub(in ext2) fn lookup(&self, name: &str) -> Result<Arc<Inode>> {
+    pub(in crate::fs::fs_impls::ext2) fn lookup(&self, name: &str) -> Result<Arc<Inode>> {
         let ino = {
             let inner = self.inner.read();
             inner.find_entry_info(name)?.ino
@@ -144,7 +142,7 @@ impl Inode {
     }
 
     /// Iterates directory entries starting at `offset` and feeds them to `visitor`.
-    pub(in ext2) fn readdir_at(
+    pub(in crate::fs::fs_impls::ext2) fn readdir_at(
         &self,
         offset: usize,
         visitor: &mut dyn DirentVisitor,
@@ -158,9 +156,14 @@ impl Inode {
     }
 
     /// Removes an empty sub-directory.
-    pub(in ext2) fn rmdir(&self, name: &str, child: &Inode) -> Result<()> {
+    pub(in crate::fs::fs_impls::ext2) fn rmdir(&self, name: &str) -> Result<()> {
+        let entry_info = {
+            let parent_inner = self.inner.read();
+            parent_inner.find_entry_info(name)?
+        };
         let fs = self.fs()?;
-        let lock_targets = [self, child];
+        let child = fs.read_inode(entry_info.ino)?;
+        let lock_targets = [self, child.as_ref()];
 
         // The `DirDentry.children` lock in the VFS layer keeps the parent
         // directory entry stable during this operation, so we only need to
@@ -175,57 +178,45 @@ impl Inode {
             return_errno!(Errno::ENOTEMPTY);
         }
 
+        let parent_inner = guards.inner_mut(self.ino());
+        parent_inner.delete_entry(&entry_info)?;
+        parent_inner.dec_link_count(1);
+        parent_inner.mark_dir_modified();
+        parent_inner.stage_directory_blocks(&fs)?;
+
+        let child_inner = guards.inner_mut(child.ino());
         child_inner.set_ctime(utils::now());
         child_inner.dec_link_count(2);
 
         if child_inner.link_count() == 0 {
-            child_inner.write_back_inode_desc(&fs, child.ino())?;
-            let _ = fs.remove_inode(child.ino());
+            child_inner.stage_inode_desc(&fs, entry_info.ino)?;
+            let _ = fs.remove_inode(entry_info.ino);
         }
-
-        let parent_inner = guards.inner_mut(self.ino());
-
-        let entry_info = parent_inner.find_entry_info(name)?;
-        debug_assert_eq!(entry_info.ino, child.ino);
-
-        parent_inner.delete_entry(&entry_info)?;
-        parent_inner.dec_link_count(1);
-        parent_inner.set_mtime_ctime(utils::now());
 
         Ok(())
     }
 
     /// Creates a child inode and directory entry under this directory.
-    ///
-    /// To create a symbolic link, use [`Inode::create_symlink`] instead.
-    pub(in ext2) fn create(
+    pub(in crate::fs::fs_impls::ext2) fn create(
         &self,
         name: &str,
         type_: InodeType,
         perm: FilePerm,
     ) -> Result<Arc<Inode>> {
-        if matches!(type_, InodeType::Unknown | InodeType::SymLink) {
+        if !matches!(
+            type_,
+            InodeType::File
+                | InodeType::Dir
+                | InodeType::SymLink
+                | InodeType::CharDevice
+                | InodeType::BlockDevice
+                | InodeType::NamedPipe
+                | InodeType::Socket
+        ) {
             return_errno!(Errno::EINVAL);
         }
 
-        self.create_initialized_child(name, type_, perm, |fs, child| {
-            if type_ == InodeType::Dir {
-                let child_ino = child.ino();
-                let mut child_inner = child.inner.write();
-                child_inner.make_empty(fs, child_ino, self.ino)?;
-            }
-            Ok(())
-        })
-    }
-
-    /// Creates a child inode, initializes it, and publishes its directory entry.
-    pub(super) fn create_initialized_child(
-        &self,
-        name: &str,
-        type_: InodeType,
-        perm: FilePerm,
-        init_child_fn: impl FnOnce(&Arc<Ext2>, &Inode) -> Result<()>,
-    ) -> Result<Arc<Inode>> {
+        let is_dir = type_ == InodeType::Dir;
         let dir_entry_file_type = DirEntryFileType::from(type_);
 
         // Find a slot before creating the child inode to avoid wasting
@@ -246,8 +237,16 @@ impl Inode {
         // from Inode desc and then insert it into inode cache.
         let child = fs.create_inode(self.ino, type_, perm)?;
         let child_ino = child.ino();
-        let result = init_child_fn(&fs, &child)
-            .and_then(|_| parent_inner.add_entry(&slot, name, child_ino, dir_entry_file_type));
+
+        let result = if is_dir {
+            child
+                .inner
+                .write()
+                .make_empty(&fs, child_ino, self.ino)
+                .and_then(|_| parent_inner.add_entry(&slot, name, child_ino, dir_entry_file_type))
+        } else {
+            parent_inner.add_entry(&slot, name, child_ino, dir_entry_file_type)
+        };
 
         if let Err(err) = result {
             // Clear the link count so other resources are reclaimed by `Drop`.
@@ -257,16 +256,20 @@ impl Inode {
         }
 
         // Link the child dir's `..` to parent dir.
-        if type_ == InodeType::Dir {
+        if is_dir {
             parent_inner.inc_link_count(1);
         }
-        parent_inner.set_mtime_ctime(utils::now());
+        parent_inner.mark_dir_modified();
+        parent_inner.stage_directory_blocks(&fs)?;
+        if is_dir {
+            child.inner.write().stage_directory_blocks(&fs)?;
+        }
         fs.insert_inode(child.clone());
         Ok(child)
     }
 
     /// Adds a hard link in this directory to an existing non-directory inode.
-    pub(in ext2) fn link(&self, old: &Inode, name: &str) -> Result<()> {
+    pub(in crate::fs::fs_impls::ext2) fn link(&self, old: &Inode, name: &str) -> Result<()> {
         let fs = self.fs()?;
         let dir_entry_file_type = DirEntryFileType::from(old.type_);
         let lock_targets = [self, old];
@@ -282,7 +285,8 @@ impl Inode {
             None => dir_inner.grow_dir_block(&fs)?,
         };
         dir_inner.add_entry(&slot, name, old.ino, dir_entry_file_type)?;
-        dir_inner.set_mtime_ctime(utils::now());
+        dir_inner.mark_dir_modified();
+        dir_inner.stage_directory_blocks(&fs)?;
 
         let old_inner = guards.inner_mut(old.ino());
         old_inner.set_ctime(utils::now());
@@ -291,14 +295,19 @@ impl Inode {
     }
 
     /// Removes a non-directory entry from this directory.
-    pub(in ext2) fn unlink(&self, name: &str, child: &Inode) -> Result<()> {
+    pub(in crate::fs::fs_impls::ext2) fn unlink(&self, name: &str) -> Result<()> {
+        let entry_info = {
+            let parent_inner = self.inner.read();
+            parent_inner.find_entry_info(name)?
+        };
         let fs = self.fs()?;
+        let child = fs.read_inode(entry_info.ino)?;
 
         // The `DirDentry.children` lock in the VFS layer keeps the parent
         // directory entry stable during this operation, so we only need to
         // lock all related inodes in order, without rechecking the lookup
         // result.
-        let lock_targets = [self, child];
+        let lock_targets = [self, child.as_ref()];
         let mut guards = MultiInodeInnerGuards::lock(&lock_targets);
 
         let child_inner = guards.inner_mut(child.ino());
@@ -307,33 +316,59 @@ impl Inode {
         }
 
         let parent_inner = guards.inner_mut(self.ino());
-
-        let entry_info = parent_inner.find_entry_info(name)?;
-        debug_assert_eq!(entry_info.ino, child.ino);
-
         parent_inner.delete_entry(&entry_info)?;
-        parent_inner.set_mtime_ctime(utils::now());
+        parent_inner.mark_dir_modified();
+        parent_inner.stage_directory_blocks(&fs)?;
 
         // Update timestamps before dropping the target link count.
         let child_inner = guards.inner_mut(child.ino());
         child_inner.set_ctime(utils::now());
         child_inner.dec_link_count(1);
         if child_inner.link_count() == 0 {
-            child_inner.write_back_inode_desc(&fs, child.ino())?;
-            let _ = fs.remove_inode(child.ino());
+            child_inner.stage_inode_desc(&fs, entry_info.ino)?;
+            let _ = fs.remove_inode(entry_info.ino);
         }
         Ok(())
     }
 
-    /// Renames or moves an entry from this directory to directory referred by `new_dir_inode`.
-    pub(in ext2) fn rename(
+    /// Renames or moves an entry from this directory to `target` directory.
+    pub(in crate::fs::fs_impls::ext2) fn rename(
         &self,
         old_name: &str,
-        old_inode: &Inode,
-        new_dir_inode: &Inode,
+        target: &Inode,
         new_name: &str,
-        replaced_inode: Option<&Inode>,
     ) -> Result<()> {
+        let fs = self.fs()?;
+        let is_same_dir = self.ino == target.ino;
+        if is_same_dir && old_name == new_name {
+            return Ok(());
+        }
+
+        // Step 1: read inode numbers without write locks so we know which
+        // inodes to lock.
+        let old_info = {
+            let source_inner = self.inner.read();
+            source_inner.find_entry_info(old_name)?
+        };
+        let old_ino = old_info.ino;
+        let old_inode = fs.read_inode(old_ino)?;
+        let replaced_inode = {
+            let target_inner = target.inner.read();
+            target_inner
+                .find_entry_info(new_name)
+                .ok()
+                .map(|entry_info| fs.read_inode(entry_info.ino))
+                .transpose()?
+        };
+
+        // Renaming one hard link over another link to the same inode is a no-op.
+        if replaced_inode
+            .as_ref()
+            .is_some_and(|replaced| replaced.ino() == old_ino)
+        {
+            return Ok(());
+        }
+
         // The `DirDentry.children` lock in the VFS layer keeps the parent
         // directory entry stable during this operation, so we only need to
         // lock all related inodes in order, without rechecking the lookup
@@ -341,22 +376,22 @@ impl Inode {
         // Step 2: lock all participating inodes in global ino order.
         let lock_targets = [
             self as &Inode,
-            new_dir_inode,
-            old_inode,
-            replaced_inode.unwrap_or(old_inode),
+            target,
+            old_inode.as_ref(),
+            replaced_inode.as_deref().unwrap_or(old_inode.as_ref()),
         ];
         let mut guards = MultiInodeInnerGuards::lock(&lock_targets);
 
         // Step 3: validate invariants under lock.
-        self.validate_rename_invariants(&guards, old_inode, replaced_inode)?;
+        self.validate_rename_invariants(&guards, &old_inode, replaced_inode.as_deref())?;
 
         // Step 4: apply directory mutations and metadata updates.
         self.apply_dir_mutations(
             &mut guards,
-            new_dir_inode,
+            target,
             old_name,
-            old_inode,
-            replaced_inode,
+            &old_inode,
+            replaced_inode.as_deref(),
             new_name,
         )?;
 
@@ -404,7 +439,7 @@ impl Inode {
     fn apply_dir_mutations(
         &self,
         guards: &mut MultiInodeInnerGuards,
-        new_dir_inode: &Inode,
+        target: &Inode,
         old_name: &str,
         old_inode: &Inode,
         replaced_inode: Option<&Inode>,
@@ -413,7 +448,7 @@ impl Inode {
         let old_is_dir = old_inode.type_ == InodeType::Dir;
         let has_replaced = replaced_inode.is_some();
         let old_ino = old_inode.ino();
-        let is_same_dir = self.ino == new_dir_inode.ino;
+        let is_same_dir = self.ino == target.ino;
         let moved_file_type = DirEntryFileType::from(old_inode.type_);
         let fs = self.fs()?;
 
@@ -432,25 +467,25 @@ impl Inode {
             if old_is_dir && has_replaced {
                 dir_inner.dec_link_count(1);
             }
-            dir_inner.set_mtime_ctime(utils::now());
+            dir_inner.mark_dir_modified();
         } else {
-            let new_dir_inner = guards.inner_mut(new_dir_inode.ino);
+            let target_inner = guards.inner_mut(target.ino);
             if has_replaced {
-                new_dir_inner.overwrite_entry(new_name, old_ino, moved_file_type)?;
+                target_inner.overwrite_entry(new_name, old_ino, moved_file_type)?;
             } else {
-                new_dir_inner.add_new_entry(&fs, new_name, old_ino, moved_file_type)?;
+                target_inner.add_new_entry(&fs, new_name, old_ino, moved_file_type)?;
             }
             if old_is_dir && !has_replaced {
-                new_dir_inner.inc_link_count(1);
+                target_inner.inc_link_count(1);
             }
-            new_dir_inner.set_mtime_ctime(utils::now());
+            target_inner.mark_dir_modified();
             let source_inner = guards.inner_mut(self.ino);
             let old_info = &source_inner.find_entry_info(old_name)?;
             source_inner.delete_entry(old_info)?;
             if old_is_dir {
                 source_inner.dec_link_count(1);
             }
-            source_inner.set_mtime_ctime(utils::now());
+            source_inner.mark_dir_modified();
         }
 
         // Step 4.2: update replaced inode link count.
@@ -463,7 +498,7 @@ impl Inode {
             replaced_inner.dec_link_count(1);
 
             if replaced_inner.link_count() == 0 {
-                replaced_inner.write_back_inode_desc(&fs, replaced.ino())?;
+                replaced_inner.stage_inode_desc(&fs, replaced.ino())?;
                 let _ = fs.remove_inode(replaced.ino());
             }
         }
@@ -472,15 +507,20 @@ impl Inode {
         let old_inner = guards.inner_mut(old_inode.ino());
         if old_is_dir && !is_same_dir {
             let dotdot_entry_info = old_inner.find_entry_info("..")?;
-            old_inner.set_entry_target(
-                &dotdot_entry_info,
-                new_dir_inode.ino,
-                DirEntryFileType::Dir,
-            )?;
-            old_inner.remove_flags(FileFlags::INDEX_DIR);
-            old_inner.set_mtime_ctime(utils::now());
+            old_inner.set_entry_target(&dotdot_entry_info, target.ino, DirEntryFileType::Dir)?;
+            old_inner.mark_dir_modified();
         } else {
             old_inner.set_ctime(utils::now());
+        }
+
+        guards.inner_mut(self.ino).stage_directory_blocks(&fs)?;
+        if target.ino != self.ino {
+            guards.inner_mut(target.ino).stage_directory_blocks(&fs)?;
+        }
+        if old_is_dir {
+            guards
+                .inner_mut(old_inode.ino())
+                .stage_directory_blocks(&fs)?;
         }
 
         Ok(())
@@ -488,6 +528,35 @@ impl Inode {
 }
 
 impl InodeInner {
+    fn stage_directory_blocks(&self, fs: &Ext2) -> Result<()> {
+        if self.inode_type() != InodeType::Dir || !fs.has_journal() {
+            return Ok(());
+        }
+        let block_manager = self.block_manager()?;
+        let block_count = self.file_size().div_ceil(BLOCK_SIZE);
+        for logical_block in 0..block_count {
+            let Some(bid) =
+                block_manager.lookup_block(logical_block.try_into().map_err(|_| {
+                    Error::with_message(Errno::EIO, "directory block index overflow")
+                })?)?
+            else {
+                continue;
+            };
+            let mut payload = vec![0u8; BLOCK_SIZE];
+            self.page_cache()
+                .read_bytes(logical_block * BLOCK_SIZE, &mut payload)?;
+            fs.stage_metadata_block(bid, &payload);
+        }
+        Ok(())
+    }
+
+    /// Linear directory updates invalidate Linux's on-disk HTree lookup index.
+    fn mark_dir_modified(&mut self) {
+        debug_assert_eq!(self.inode_type(), InodeType::Dir);
+        self.remove_flags(FileFlags::INDEX_DIR);
+        self.set_mtime_ctime(utils::now());
+    }
+
     /// Initializes an empty directory with `.` and `..` entries.
     fn make_empty(&mut self, fs: &Ext2, ino: Ext2Ino, parent_ino: Ext2Ino) -> Result<()> {
         // Allocate one block for the directory.
@@ -913,7 +982,7 @@ mod test {
         old.write_direct_at(0, &mut payload_reader).unwrap();
 
         let free_blocks_before = f.ext2.super_block().free_blocks_count();
-        root.unlink("old", old.as_ref()).unwrap();
+        root.unlink("old").unwrap();
         assert_errno!(f.ext2.read_inode(old_ino), Errno::ESTALE);
         assert!(
             f.ext2
@@ -947,5 +1016,71 @@ mod test {
             f.ext2.super_block().free_blocks_count(),
             free_blocks_before + 1
         );
+    }
+
+    #[ktest]
+    fn unlink_after_write_without_sync_releases_data_blocks() {
+        let (f, root) = default_fixture();
+        let file = create_file(&root, "temporary");
+        let ino = file.ino();
+        let free_before_write = f.ext2.super_block().free_blocks_count();
+        let payload = vec![0x6au8; BLOCK_SIZE];
+        let mut reader = VmReader::from(payload.as_slice()).to_fallible();
+        file.write_direct_at(0, &mut reader).unwrap();
+        assert_eq!(
+            f.ext2.super_block().free_blocks_count(),
+            free_before_write - 1
+        );
+
+        root.unlink("temporary").unwrap();
+        drop(file);
+
+        assert_eq!(f.ext2.super_block().free_blocks_count(), free_before_write);
+        assert!(
+            !f.ext2
+                .block_group(0)
+                .metadata()
+                .inode_bitmap
+                .is_allocated((ino - 1) as u16)
+        );
+        f.ext2.sync_all().unwrap();
+        let raw_inode = read_raw_inode_from_disk(&f, ino);
+        assert_eq!(raw_inode.sector_count, 0);
+        assert_eq!(raw_inode.block[0], 0);
+    }
+
+    #[ktest]
+    fn mutating_indexed_directory_disables_stale_hash_index() {
+        let (f, root) = default_fixture();
+        let old = create_file(&root, "user.js");
+        let old_ino = old.ino();
+        create_file(&root, "user.js.tmp");
+
+        root.inner.write().desc.flags.insert(FileFlags::INDEX_DIR);
+        root.rename("user.js.tmp", &root, "user.js").unwrap();
+        assert_ne!(root.lookup("user.js").unwrap().ino(), old_ino);
+        assert!(!root.inner.read().desc.flags.contains(FileFlags::INDEX_DIR));
+
+        f.ext2.sync_all().unwrap();
+        let raw = read_raw_inode_from_disk(&f, root.ino());
+        assert_eq!(raw.flags & FileFlags::INDEX_DIR.bits(), 0);
+    }
+
+    #[ktest]
+    fn rename_two_hardlinks_to_same_inode_is_noop() {
+        let (f, root) = default_fixture();
+        let source = create_file(&root, "source");
+        root.link(&source, "target").unwrap();
+        assert_eq!(source.link_count(), 2);
+
+        root.rename("source", &root, "target").unwrap();
+
+        assert_eq!(root.lookup("source").unwrap().ino(), source.ino());
+        assert_eq!(root.lookup("target").unwrap().ino(), source.ino());
+        assert_eq!(source.link_count(), 2);
+
+        f.ext2.sync_all().unwrap();
+        let raw = read_raw_inode_from_disk(&f, source.ino());
+        assert_eq!(raw.link_count, 2);
     }
 }
