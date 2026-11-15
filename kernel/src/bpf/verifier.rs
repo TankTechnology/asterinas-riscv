@@ -666,6 +666,34 @@ fn call(state: &mut State, instruction: Insn, maps: &[Arc<Map>]) -> Result<()> {
                 _ => Reg::scalar(0),
             }
         }
+        helper_id::RINGBUF_OUTPUT => {
+            let map_reg = arg(state, R1);
+            if map_reg.kind != Kind::Map {
+                return_errno_with_message!(Errno::EINVAL, "the first argument is not a map");
+            }
+            let map = maps
+                .get(map_reg.map as usize)
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "bad map index"))?;
+            if map.map_type() != crate::bpf::map::BPF_MAP_TYPE_RINGBUF {
+                return_errno_with_message!(Errno::EINVAL, "the map is not a ring buffer");
+            }
+            if !stack_initialised(state, &arg(state, R2), 1) {
+                return_errno_with_message!(Errno::EINVAL, "the record is not readable");
+            }
+            if arg(state, R3).kind != Kind::Scalar || arg(state, R4).kind != Kind::Scalar {
+                return_errno_with_message!(Errno::EINVAL, "the size or flags are not values");
+            }
+            Reg::scalar(0)
+        }
+        helper_id::KSYMS_LOOKUP => {
+            if !stack_initialised(state, &arg(state, R1), 1) {
+                return_errno_with_message!(Errno::EINVAL, "the name is not readable");
+            }
+            if arg(state, R2).kind != Kind::Scalar {
+                return_errno_with_message!(Errno::EINVAL, "the name length is not a value");
+            }
+            Reg::scalar(0)
+        }
         // ktime_get_ns, get_current_pid_tgid, get_smp_processor_id: no arguments.
         helper_id::KTIME_GET_NS
         | helper_id::GET_CURRENT_PID_TGID

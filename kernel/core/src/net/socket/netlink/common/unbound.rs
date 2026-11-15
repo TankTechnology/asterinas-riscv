@@ -3,6 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::{
+    bpf::Program,
     events::IoEvents,
     net::{
         net_ns::NetNamespace,
@@ -23,6 +24,7 @@ pub(super) struct UnboundNetlink<P: SupportedNetlinkProtocol> {
     net_ns: Arc<NetNamespace>,
     groups: GroupIdSet,
     filter: Option<Arc<Vec<SockFilter>>>,
+    ebpf: Option<Arc<Program>>,
     phantom: PhantomData<BoundNetlink<P::Message>>,
 }
 
@@ -32,6 +34,7 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
             net_ns,
             groups: GroupIdSet::new_empty(),
             filter: None,
+            ebpf: None,
             phantom: PhantomData,
         }
     }
@@ -50,6 +53,10 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
 
     pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) {
         self.filter = filter;
+    }
+
+    pub(super) fn set_ebpf_filter(&mut self, program: Option<Arc<Program>>) {
+        self.ebpf = program;
     }
 
     fn bind_common(
@@ -74,6 +81,7 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
             bound_handle,
             message_queue,
             self.filter.take(),
+            self.ebpf.take(),
             self.net_ns.clone(),
         ))
     }

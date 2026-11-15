@@ -99,6 +99,25 @@ impl Program {
         *self.attached_event.lock() = event;
     }
 
+    /// Runs the program on a packet, as a socket filter does.
+    ///
+    /// Returns the filter verdict (the byte count to accept; zero drops the
+    /// packet), or `None` when the program faulted.
+    pub fn run_on_packet(&self, packet: &[u8]) -> Option<u64> {
+        self.runs.fetch_add(1, Ordering::Relaxed);
+        match interp::run_with_context(self, packet) {
+            Ok((retval, steps)) => {
+                self.steps.fetch_add(steps, Ordering::Relaxed);
+                Some(retval)
+            }
+            Err(error) => {
+                self.run_errors.fetch_add(1, Ordering::Relaxed);
+                debug!("a bpf socket filter faulted: {:?}", error);
+                None
+            }
+        }
+    }
+
     /// Runs the program on `ctx`.
     ///
     /// This is called from the context that emitted the trace event, which may
@@ -117,6 +136,17 @@ impl Program {
                 u64::MAX
             }
         }
+    }
+}
+
+impl Debug for Program {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Program")
+            .field("name", &self.name)
+            .field("type", &self.prog_type)
+            .field("insns", &self.insns.len())
+            .field("maps", &self.maps.len())
+            .finish()
     }
 }
 

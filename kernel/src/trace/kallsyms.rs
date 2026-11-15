@@ -88,6 +88,20 @@ pub fn symbol_count() -> usize {
     read_u32(4) as usize
 }
 
+/// The address of the function named `name`, if the table has one.
+///
+/// The table is sorted by address, not by name, so this is a scan; it is the
+/// bpf kallsyms helper's path and nothing hot.
+pub fn lookup_name(name: &str) -> Option<u64> {
+    let mut found = None;
+    for_each_symbol(|address, symbol| {
+        if found.is_none() && symbol == name {
+            found = Some(address);
+        }
+    });
+    found
+}
+
 /// Answers whether an image carries a usable table.
 #[allow(dead_code)] // the bpf kallsyms helper and the trace interfaces ask this
 pub fn is_available() -> bool {
@@ -208,7 +222,6 @@ pub fn lookup_with_offset(addr: u64) -> Option<(&'static str, u64)> {
 }
 
 /// Calls `visit` for every symbol, in address order, as `(addr, name)`.
-#[allow(dead_code)] // the bpf kallsyms helper walks the table
 pub fn for_each_symbol<F: FnMut(u64, &'static str)>(mut visit: F) {
     let Some(layout) = layout() else {
         return;

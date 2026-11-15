@@ -12,13 +12,15 @@
 //! Nothing here allocates, and every map operation takes an IRQ-safe lock, so
 //! a program can run from an interrupt handler or from the scheduler.
 
+use ostd::{cpu::PinCurrentCpu, task::disable_preempt, util::id_set::Id};
+
 use super::{
-    CTX_SIZE, TraceCtx,
+    TraceCtx,
     insn::{
         Class, Insn, MAX_INSNS, PSEUDO_MAP_FD, PSEUDO_MAP_INDEX, R0, R1, R2, R3, R4, R5, R10,
         REG_COUNT, STACK_SIZE, helper_id, op,
     },
-    map::{Map, read_le},
+    map::{MAX_RINGBUF_RECORD, Map, read_le},
     prog::Program,
 };
 use crate::{prelude::*, trace};
@@ -65,14 +67,22 @@ impl Reg {
     }
 }
 
-struct Vm {
+struct Vm<'a> {
     regs: [Reg; REG_COUNT],
     stack: [u8; STACK_SIZE],
-    ctx: [u8; CTX_SIZE],
+    /// The context a program reads through `r1`: the 48-byte event context,
+    /// or the packet bytes for a socket filter.
+    ctx: &'a [u8],
+    /// The CPU this run is pinned to, for per-CPU maps.
+    cpu: u32,
+    /// The event that triggered this run; zero for a socket filter.
+    pid: u32,
+    tid: u32,
+    timestamp_ns: u64,
 }
 
-impl Vm {
-    fn new(ctx: &TraceCtx) -> Self {
+impl<'a> Vm<'a> {
+    fn new(ctx: &'a [u8], cpu: u32, trace: Option<&TraceCtx>) -> Self {
         let mut regs = [Reg::UNINIT; REG_COUNT];
         regs[R1 as usize] = Reg {
             kind: Kind::Ctx,
@@ -87,11 +97,15 @@ impl Vm {
         Self {
             regs,
             stack: [0; STACK_SIZE],
-            ctx: ctx.to_bytes(),
+            ctx,
+            cpu,
+            pid: trace.map_or(0, |trace| trace.pid),
+            tid: trace.map_or(0, |trace| trace.tid),
+            timestamp_ns: trace.map_or(0, |trace| trace.timestamp_ns),
         }
     }
 
-    fn map_arg<'a>(&self, prog: &'a Program, reg: u8) -> Result<(u8, &'a Arc<Map>)> {
+    fn map_arg<'p>(&self, prog: &'p Program, reg: u8) -> Result<(u8, &'p Arc<Map>)> {
         let reg = self.regs[reg as usize];
         if reg.kind != Kind::Map {
             return_errno_with_message!(Errno::EINVAL, "the argument is not a map");
@@ -117,10 +131,19 @@ impl Vm {
         match reg.kind {
             Kind::Ctx => {
                 let addr = reg.val as i64 + offset;
-                if addr < 0 || addr as usize + out.len() > CTX_SIZE {
+                if addr < 0 {
                     return_errno_with_message!(Errno::EINVAL, "the access is outside the context");
                 }
-                out.copy_from_slice(&self.ctx[addr as usize..][..out.len()]);
+                // The bytes are the event context, or a packet that may be
+                // shorter than the program expects: read what is there and
+                // zero-fill the rest, so a short packet is data, not a fault.
+                let start = addr as usize;
+                let available = self.ctx.len().saturating_sub(start);
+                let taken = out.len().min(available);
+                if taken > 0 {
+                    out[..taken].copy_from_slice(&self.ctx[start..start + taken]);
+                }
+                out[taken..].fill(0);
                 Ok(())
             }
             Kind::Stack => {
@@ -140,7 +163,7 @@ impl Vm {
                     .maps()
                     .get(reg.map as usize)
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "bad map index"))?;
-                map.elem_read_bytes(reg.val, offset as usize, out)
+                map.elem_read_bytes(self.cpu, reg.val, offset as usize, out)
             }
             _ => return_errno_with_message!(Errno::EINVAL, "the register is not a pointer"),
         }
@@ -165,7 +188,7 @@ impl Vm {
                     .maps()
                     .get(reg.map as usize)
                     .ok_or_else(|| Error::with_message(Errno::EINVAL, "bad map index"))?;
-                map.elem_write_bytes(reg.val, offset as usize, bytes)
+                map.elem_write_bytes(self.cpu, reg.val, offset as usize, bytes)
             }
             Kind::Ctx => {
                 return_errno_with_message!(Errno::EPERM, "the context is read-only");
@@ -192,13 +215,36 @@ impl Vm {
     }
 }
 
-/// Runs `prog` on `ctx`, returning its `r0` and the number of steps taken.
+/// Runs `prog` on a trace event context, returning its `r0` and the number of
+/// steps taken.
 pub fn run(prog: &Program, ctx: &TraceCtx) -> Result<(u64, u64)> {
+    let bytes = ctx.to_bytes();
+    run_with_context_impl(prog, &bytes, Some(ctx))
+}
+
+/// Runs `prog` on an arbitrary context slice.
+///
+/// A socket filter passes the packet here. The run is pinned to one CPU for
+/// its whole length, which is what makes a per-CPU map coherent within a run.
+pub fn run_with_context(prog: &Program, ctx: &[u8]) -> Result<(u64, u64)> {
+    run_with_context_impl(prog, ctx, None)
+}
+
+fn run_with_context_impl(
+    prog: &Program,
+    ctx: &[u8],
+    trace_context: Option<&TraceCtx>,
+) -> Result<(u64, u64)> {
     if prog.insns().len() > MAX_INSNS {
         return_errno_with_message!(Errno::EINVAL, "the program is too long");
     }
 
-    let mut vm = Vm::new(ctx);
+    // The guard stays for the whole run: a migration halfway through would
+    // make two accesses to the same per-CPU element disagree.
+    let guard = disable_preempt();
+    let cpu = guard.current_cpu().as_usize() as u32;
+    let mut vm = Vm::new(ctx, cpu, trace_context);
+
     let mut pc = 0usize;
     let mut steps = 0u64;
 
@@ -271,7 +317,7 @@ pub fn run(prog: &Program, ctx: &TraceCtx) -> Result<(u64, u64)> {
                     return Ok((vm.regs[R0 as usize].val, steps));
                 }
                 if insn.op() == op::CALL {
-                    call_helper(&mut vm, prog, insn, ctx)?;
+                    call_helper(&mut vm, prog, insn)?;
                 } else {
                     next = jump(&vm, insn, pc, insn.class() == Class::Jmp32)?;
                 }
@@ -489,7 +535,7 @@ fn helper_key(vm: &Vm, prog: &Program, reg: u8, key_size: u32) -> Result<[u8; 8]
 
 /// Calls a helper. `r1..=r5` hold the arguments and are clobbered; the result
 /// lands in `r0`.
-fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn, ctx: &TraceCtx) -> Result<()> {
+fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn) -> Result<()> {
     if insn.src != 0 {
         return_errno_with_message!(Errno::EINVAL, "only helper calls are supported");
     }
@@ -539,7 +585,7 @@ fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn, ctx: &TraceCtx) -> Resul
                         result = Ok(Reg::scalar(errno_value(&error)));
                         break;
                     }
-                    if let Err(error) = map.elem_write_bytes(key, offset, &buf[..chunk]) {
+                    if let Err(error) = map.elem_write_bytes(vm.cpu, key, offset, &buf[..chunk]) {
                         result = Ok(Reg::scalar(errno_value(&error)));
                         break;
                     }
@@ -557,11 +603,40 @@ fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn, ctx: &TraceCtx) -> Resul
             };
             result
         }
-        helper_id::KTIME_GET_NS => Ok(Reg::scalar(ctx.timestamp_ns)),
-        helper_id::GET_CURRENT_PID_TGID => {
-            Ok(Reg::scalar(((ctx.pid as u64) << 32) | ctx.tid as u64))
+        helper_id::RINGBUF_OUTPUT => {
+            let (_, map) = vm.map_arg(prog, R1)?;
+            let size = vm.scalar_arg(R3)? as usize;
+            if size == 0 || size > MAX_RINGBUF_RECORD {
+                Ok(Reg::scalar(errno_value(&Error::new(Errno::EINVAL))))
+            } else {
+                let mut record = [0u8; MAX_RINGBUF_RECORD];
+                match vm.read_bytes(prog, vm.regs[R2 as usize], 0, &mut record[..size]) {
+                    Ok(()) => match map.ring_output(&record[..size]) {
+                        Ok(_) => Ok(Reg::scalar(0)),
+                        Err(error) => Ok(Reg::scalar(errno_value(&error))),
+                    },
+                    Err(error) => Ok(Reg::scalar(errno_value(&error))),
+                }
+            }
         }
-        helper_id::GET_SMP_PROCESSOR_ID => Ok(Reg::scalar(ctx.cpu as u64)),
+        helper_id::KSYMS_LOOKUP => {
+            let mut name = [0u8; 64];
+            let len = (vm.scalar_arg(R2)? as usize).min(name.len());
+            if len == 0 {
+                Ok(Reg::scalar(0))
+            } else {
+                match vm.read_bytes(prog, vm.regs[R1 as usize], 0, &mut name[..len]) {
+                    Ok(()) => {
+                        let text = core::str::from_utf8(&name[..len]).unwrap_or("\0");
+                        Ok(Reg::scalar(trace::kallsyms::lookup_name(text).unwrap_or(0)))
+                    }
+                    Err(error) => Ok(Reg::scalar(errno_value(&error))),
+                }
+            }
+        }
+        helper_id::KTIME_GET_NS => Ok(Reg::scalar(vm.timestamp_ns)),
+        helper_id::GET_CURRENT_PID_TGID => Ok(Reg::scalar(((vm.pid as u64) << 32) | vm.tid as u64)),
+        helper_id::GET_SMP_PROCESSOR_ID => Ok(Reg::scalar(vm.cpu as u64)),
         helper_id::TRACE_PRINTK => {
             let reg = vm.regs[R1 as usize];
             let mut format = [0u8; 64];
@@ -574,7 +649,7 @@ fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn, ctx: &TraceCtx) -> Resul
             for (slot, reg) in args.iter_mut().zip([R3, R4, R5]) {
                 *slot = vm.scalar_arg(reg)?;
             }
-            print_formatted(ctx, &format[..len], &args);
+            print_formatted(vm, &format[..len], &args);
             Ok(Reg::scalar(0))
         }
         _ => return_errno_with_message!(Errno::EINVAL, "unknown helper"),
@@ -588,7 +663,7 @@ fn call_helper(vm: &mut Vm, prog: &Program, insn: Insn, ctx: &TraceCtx) -> Resul
     Ok(())
 }
 
-impl Vm {
+impl Vm<'_> {
     /// A helper call clobbers `r1..=r5`.
     fn clear_call_clobbers(&mut self) {
         for reg in 1..=5usize {
@@ -606,7 +681,7 @@ fn errno_value(error: &Error) -> u64 {
 /// Only `%d`, `%u`, `%x`, `%p`, `%c`, `%%` and optional length modifiers are
 /// understood; a program that needs more should write into a map instead.
 /// Nothing here allocates.
-fn print_formatted(ctx: &TraceCtx, format: &[u8], args: &[u64; 3]) {
+fn print_formatted(vm: &Vm, format: &[u8], args: &[u64; 3]) {
     let mut out = [0u8; 96];
     let mut len = 0usize;
     let mut next_arg = 0usize;
@@ -656,13 +731,12 @@ fn print_formatted(ctx: &TraceCtx, format: &[u8], args: &[u64; 3]) {
     let marker = trace::event::event_named("tracing", "trace_marker");
     let text = core::str::from_utf8(&out[..len]).unwrap_or("<binary>");
     if let Some(event) = marker {
-        trace::ring::push_at(
-            event.id(),
-            ctx.pid,
-            ctx.tid,
-            text.as_bytes(),
-            core::time::Duration::from_nanos(ctx.timestamp_ns),
-        );
+        let timestamp = if vm.timestamp_ns != 0 {
+            core::time::Duration::from_nanos(vm.timestamp_ns)
+        } else {
+            ostd::timer::Jiffies::elapsed().as_duration()
+        };
+        trace::ring::push_at(event.id(), vm.pid, vm.tid, text.as_bytes(), timestamp);
     }
 }
 

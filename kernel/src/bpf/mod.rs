@@ -30,6 +30,13 @@ pub use prog::Program;
 /// Size of the context a trace event passes to a program.
 pub const CTX_SIZE: usize = 48;
 
+/// Largest packet a socket filter may address through its context.
+///
+/// A socket filter's context *is* the packet, so the verifier has to allow
+/// offsets into a full-size one; at run time the interpreter zero-fills the
+/// bytes a shorter packet does not have.
+pub const SOCKET_CTX_MAX: usize = 2048;
+
 /// The context of a trace event, as a program sees it through `r1`.
 ///
 /// ```text
@@ -256,6 +263,186 @@ mod test {
                 assert_eq!(u64::from_le_bytes(value), *other as u64);
             }
         }
+    }
+
+    #[ktest]
+    fn a_per_cpu_map_keeps_one_value_per_cpu() {
+        let map = Map::create(super::map::BPF_MAP_TYPE_PERCPU_ARRAY, 4, 8, 4, "per-cpu").unwrap();
+        let cpus = map.element_size() / 8;
+        assert!(cpus >= 1);
+
+        let mut values = vec![0u8; map.element_size()];
+        for cpu in 0..cpus {
+            values[cpu * 8..cpu * 8 + 8].copy_from_slice(&(100 + cpu as u64).to_le_bytes());
+        }
+        map.update(&0u32.to_le_bytes(), &values, 0).unwrap();
+
+        let mut slot = [0u8; 8];
+        map.elem_read_bytes(0, 0, 0, &mut slot).unwrap();
+        assert_eq!(u64::from_le_bytes(slot), 100);
+        if cpus > 1 {
+            map.elem_read_bytes(1, 0, 0, &mut slot).unwrap();
+            assert_eq!(u64::from_le_bytes(slot), 101, "cpu 1 has its own value");
+        }
+        assert!(
+            map.elem_read_bytes(cpus as u32, 0, 0, &mut slot).is_err(),
+            "a per-CPU map refuses a CPU it has no slot for"
+        );
+
+        // A map that is not per-CPU answers the same value for every CPU.
+        let plain = Map::create(BPF_MAP_TYPE_ARRAY, 4, 8, 4, "plain").unwrap();
+        plain
+            .update(&0u32.to_le_bytes(), &7u64.to_le_bytes(), 0)
+            .unwrap();
+        for cpu in 0..8u32 {
+            plain.elem_read_bytes(cpu, 0, 0, &mut slot).unwrap();
+            assert_eq!(u64::from_le_bytes(slot), 7, "cpu {cpu} sees the one value");
+        }
+
+        // Userspace sees every CPU's value in one element.
+        let mut whole = vec![0u8; map.element_size()];
+        map.lookup(&0u32.to_le_bytes(), &mut whole).unwrap();
+        assert_eq!(whole, values);
+    }
+
+    #[ktest]
+    fn a_ring_buffer_carries_a_record() {
+        let map = Map::create(
+            super::map::BPF_MAP_TYPE_RINGBUF,
+            0,
+            0,
+            4 * PAGE_SIZE as u32,
+            "ring",
+        )
+        .unwrap();
+
+        let mut insns = vec![
+            insn(0x18, 1, PSEUDO_MAP_FD, 0, 0), // r1 = map
+            insn(0, 0, 0, 0, 0),
+            insn(0xbf, 2, 10, 0, 0),     // r2 = r10
+            insn(0x07, 2, 0, 0, -8),     // r2 += -8
+            insn(0x7a, 2, 0, 0, 0x1122), // *(u64 *)(r2) = 0x1122
+            insn(0xb7, 3, 0, 0, 8),      // r3 = 8
+            insn(0xb7, 4, 0, 0, 0),      // r4 = 0
+            insn(0x85, 0, 0, 0, 130),    // call bpf_ringbuf_output
+            insn(0xb7, 0, 0, 0, 0),      // r0 = 0
+            insn(0x95, 0, 0, 0, 0),      // exit
+        ];
+        let mut maps = Vec::new();
+        let mut resolve = |_fd: u32| Ok(map.clone());
+        verifier::verify(&mut insns, &mut maps, CTX_SIZE, &mut resolve).unwrap();
+        let program = Program::new(insns, maps, 0x8000_0001, "ring", "GPL");
+        assert_eq!(
+            program.run(&TraceCtx::default()),
+            0,
+            "the program returned zero"
+        );
+        assert_eq!(program.run_errors(), 0);
+
+        let vmo = map.mappable().expect("a ring buffer is mappable");
+        let mut header = [0u8; 24];
+        vmo.read(0, &mut VmWriter::from(header.as_mut_slice()).to_fallible())
+            .unwrap();
+        let consumer = u64::from_le_bytes(header[0..8].try_into().unwrap());
+        let producer = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let capacity = u64::from_le_bytes(header[16..24].try_into().unwrap());
+        assert_eq!(consumer, 0);
+        assert_eq!(capacity, map.max_entries() as u64);
+        assert_eq!(producer, 16, "one 8-byte record with its 8-byte header");
+
+        let mut record = [0u8; 16];
+        vmo.read(
+            super::map::RINGBUF_DATA_OFFSET,
+            &mut VmWriter::from(record.as_mut_slice()).to_fallible(),
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(record[0..4].try_into().unwrap()), 8);
+        assert_eq!(
+            u64::from_le_bytes(record[8..16].try_into().unwrap()),
+            0x1122
+        );
+    }
+
+    #[ktest]
+    fn a_socket_filter_reads_the_packet() {
+        let map = Map::create(BPF_MAP_TYPE_ARRAY, 4, 8, 4, "unused").unwrap();
+        let mut insns = vec![
+            insn(0x71, 0, 1, 0, 0), // r0 = *(u8 *)(ctx + 0)
+            insn(0x95, 0, 0, 0, 0),
+        ];
+        let mut maps = Vec::new();
+        let mut resolve = |_fd: u32| Ok(map.clone());
+        verifier::verify(&mut insns, &mut maps, super::SOCKET_CTX_MAX, &mut resolve).unwrap();
+        let program = Program::new(insns, maps, 1, "filter", "GPL");
+
+        assert_eq!(program.run_on_packet(&[7, 9, 9]), Some(7));
+        assert_eq!(
+            program.run_on_packet(&[]),
+            Some(0),
+            "a short packet reads as zero"
+        );
+
+        // A realistic filter: accept only an IPv4 ethertype.
+        let mut insns = vec![
+            insn(0xb7, 0, 0, 0, 0),      // r0 = 0
+            insn(0x69, 1, 1, 12, 0),     // r1 = *(u16 *)(ctx + 12)
+            insn(0x55, 1, 0, 1, 0x0800), // if r1 != 0x0800 goto exit
+            insn(0xb7, 0, 0, 0, 64),     // r0 = 64
+            insn(0x95, 0, 0, 0, 0),      // exit
+        ];
+        let mut maps = Vec::new();
+        let mut resolve = |_fd: u32| Ok(map.clone());
+        verifier::verify(&mut insns, &mut maps, super::SOCKET_CTX_MAX, &mut resolve).unwrap();
+        let program = Program::new(insns, maps, 1, "ipv4", "GPL");
+
+        // The interpreter loads little-endian, so the bytes are the value's
+        // little-endian encoding.
+        let mut ipv4 = [0u8; 14];
+        ipv4[12..14].copy_from_slice(&0x0800u16.to_le_bytes());
+        assert_eq!(program.run_on_packet(&ipv4), Some(64), "IPv4 is accepted");
+        let mut ipv6 = ipv4;
+        ipv6[12..14].copy_from_slice(&0x86ddu16.to_le_bytes());
+        assert_eq!(program.run_on_packet(&ipv6), Some(0), "IPv6 is dropped");
+
+        // Reading past the end of a packet gives zeros, not a fault.
+        let mut insns = vec![
+            insn(0x71, 0, 1, 4, 0), // r0 = *(u8 *)(ctx + 4)
+            insn(0x95, 0, 0, 0, 0),
+        ];
+        let mut maps = Vec::new();
+        let mut resolve = |_fd: u32| Ok(map.clone());
+        verifier::verify(&mut insns, &mut maps, super::SOCKET_CTX_MAX, &mut resolve).unwrap();
+        let program = Program::new(insns, maps, 1, "filter", "GPL");
+        assert_eq!(program.run_on_packet(&[1, 2]), Some(0));
+    }
+
+    #[ktest]
+    fn the_kallsyms_helper_loads() {
+        let map = Map::create(BPF_MAP_TYPE_ARRAY, 4, 8, 1, "ksym").unwrap();
+        let mut insns = vec![
+            insn(0x62, 10, 0, -64, 0x1122), // *(u32 *)(r10 - 64) = name
+            insn(0x18, 1, PSEUDO_MAP_FD, 0, 0),
+            insn(0, 0, 0, 0, 0),
+            insn(0xbf, 6, 1, 0, 0),    // r6 = map
+            insn(0xbf, 1, 10, 0, 0),   // r1 = r10
+            insn(0x07, 1, 0, 0, -64),  // r1 += -64
+            insn(0xb7, 2, 0, 0, 4),    // r2 = 4
+            insn(0x85, 0, 0, 0, 1000), // call kallsyms
+            insn(0x7b, 10, 0, -72, 0), // *(u64 *)(r10 - 72) = r0 (the value)
+            insn(0x62, 10, 0, -80, 0), // *(u32 *)(r10 - 80) = 0 (the key)
+            insn(0xbf, 1, 6, 0, 0),    // r1 = map
+            insn(0xbf, 2, 10, 0, 0),   // r2 = &key
+            insn(0x07, 2, 0, 0, -80),
+            insn(0xbf, 3, 10, 0, 0), // r3 = &value
+            insn(0x07, 3, 0, 0, -72),
+            insn(0xb7, 4, 0, 0, 0),
+            insn(0x85, 0, 0, 0, 2), // call map_update
+            insn(0xb7, 0, 0, 0, 0),
+            insn(0x95, 0, 0, 0, 0),
+        ];
+        let mut maps = Vec::new();
+        let mut resolve = |_fd: u32| Ok(map.clone());
+        verifier::verify(&mut insns, &mut maps, CTX_SIZE, &mut resolve).unwrap();
     }
 
     #[ktest]

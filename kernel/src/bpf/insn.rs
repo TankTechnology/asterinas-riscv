@@ -158,4 +158,8 @@ pub mod helper_id {
     pub const GET_CURRENT_PID_TGID: u32 = 14;
     /// `bpf_trace_printk`: formats into the trace ring.
     pub const TRACE_PRINTK: u32 = 6;
+    /// `bpf_ringbuf_output`: appends a record to a ring buffer map.
+    pub const RINGBUF_OUTPUT: u32 = 130;
+    /// The kernel's own: the address of a symbol, by name.
+    pub const KSYMS_LOOKUP: u32 = 1000;
 }

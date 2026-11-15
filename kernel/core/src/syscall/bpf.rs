@@ -18,7 +18,7 @@
 use super::SyscallReturn;
 use crate::{
     bpf::{
-        CTX_SIZE, Map, Program,
+        CTX_SIZE, Map, Program, SOCKET_CTX_MAX,
         attach::{self, LinkFile},
         insn::{Insn, MAX_INSNS},
         map::{BPF_MAP_TYPE_ARRAY, MAX_ENTRIES, MAX_KEY_SIZE, MAX_VALUE_SIZE, MapFile},
@@ -189,7 +189,15 @@ fn map_create(attr: u64, size: u64, ctx: &Context) -> Result<i32> {
     if max_entries > MAX_ENTRIES {
         return_errno_with_message!(Errno::EINVAL, "too many entries");
     }
-    if map_type != BPF_MAP_TYPE_ARRAY && map_type != crate::bpf::map::BPF_MAP_TYPE_HASH {
+    let known = matches!(
+        map_type,
+        crate::bpf::map::BPF_MAP_TYPE_ARRAY
+            | crate::bpf::map::BPF_MAP_TYPE_HASH
+            | crate::bpf::map::BPF_MAP_TYPE_PERCPU_ARRAY
+            | crate::bpf::map::BPF_MAP_TYPE_PERCPU_HASH
+            | crate::bpf::map::BPF_MAP_TYPE_RINGBUF
+    );
+    if !known {
         return_errno_with_message!(Errno::EINVAL, "unsupported map type");
     }
 
@@ -208,7 +216,7 @@ fn map_lookup(attr: u64, size: u64, ctx: &Context) -> Result<i32> {
     }
 
     let key = read_user_bytes(ctx, key_addr, map.key_size() as usize)?;
-    let mut value = vec![0u8; map.value_size() as usize];
+    let mut value = vec![0u8; map.element_size()];
     map.lookup(&key, &mut value)?;
     write_user_bytes(ctx, value_addr, &value)?;
     Ok(0)
@@ -222,7 +230,7 @@ fn map_update(attr: u64, size: u64, ctx: &Context) -> Result<i32> {
     let flags = u64_at(&bytes, 24);
 
     let key = read_user_bytes(ctx, key_addr, map.key_size() as usize)?;
-    let value = read_user_bytes(ctx, value_addr, map.value_size() as usize)?;
+    let value = read_user_bytes(ctx, value_addr, map.element_size())?;
     map.update(&key, &value, flags)?;
     Ok(0)
 }
@@ -288,7 +296,12 @@ fn prog_load(attr: u64, size: u64, ctx: &Context) -> Result<i32> {
 
     let mut maps = Vec::new();
     let mut resolve = |fd: u32| map_of_fd(ctx, fd as RawFileDesc);
-    verifier::verify(&mut insns, &mut maps, CTX_SIZE, &mut resolve)?;
+    let ctx_size = if prog_type == BPF_PROG_TYPE_SOCKET_FILTER {
+        SOCKET_CTX_MAX
+    } else {
+        CTX_SIZE
+    };
+    verifier::verify(&mut insns, &mut maps, ctx_size, &mut resolve)?;
 
     let program = Program::new(insns, maps, prog_type, &name, &license);
     let file: Arc<dyn FileLike> = Arc::new(ProgFile::new(program));

@@ -30,6 +30,7 @@ The kernel's context for a trace event is 48 bytes:
 import argparse
 import ctypes
 import errno
+import mmap
 import os
 import struct
 import sys
@@ -47,6 +48,21 @@ BPF_RAW_TRACEPOINT_OPEN = 17
 
 BPF_MAP_TYPE_HASH = 1
 BPF_MAP_TYPE_ARRAY = 2
+BPF_MAP_TYPE_PERCPU_HASH = 5
+BPF_MAP_TYPE_PERCPU_ARRAY = 6
+BPF_MAP_TYPE_RINGBUF = 27
+
+PROG_TYPE_SOCKET_FILTER = 1
+
+SO_ATTACH_BPF = 50
+SO_DETACH_FILTER = 27
+
+# Ring buffer layout, matching kernel/src/bpf/map.rs.
+RING_CONSUMER = 0
+RING_PRODUCER = 8
+RING_CAPACITY = 16
+RING_DATA = 4096
+RING_WRAP = 0xFFFFFFFF
 
 PROG_TYPE_TRACE_EVENT = 0x80000001
 
@@ -87,6 +103,7 @@ LDX_MEM_W = 0x61
 STX_MEM_W = 0x63
 LDX_MEM_DW = 0x79
 STX_MEM_DW = 0x7B
+ST_IMM_W = 0x62
 LD_IMM64 = 0x18
 CALL = 0x85
 EXIT = 0x95
@@ -107,6 +124,8 @@ HELPER_KTIME = 5
 HELPER_TRACE_PRINTK = 6
 HELPER_SMP_ID = 8
 HELPER_PID_TGID = 14
+HELPER_RINGBUF_OUTPUT = 130
+HELPER_KSYMS_LOOKUP = 1000
 
 # Context offsets.
 CTX_PID = 8
@@ -258,6 +277,81 @@ def histogram_program(map_fd, kind):
     return asm.build()
 
 
+def ringbuf_program(map_fd):
+    """Appends `{nr, pid, tid}` for every event to a ring buffer."""
+    asm = Assembly()
+    asm.i(MOV64_REG, dst=R6, src=R1)                      # r6 = ctx
+    asm.i(LDX_MEM_DW, dst=R7, src=R6, off=CTX_ARG0)       # r7 = syscall number
+    asm.i(STX_MEM_DW, dst=R10, src=R7, off=-16)
+    asm.i(LDX_MEM_W, dst=R8, src=R6, off=CTX_PID)         # r8 = pid
+    asm.i(STX_MEM_W, dst=R10, src=R8, off=-8)
+    asm.i(LDX_MEM_W, dst=R8, src=R6, off=CTX_PID + 4)     # r8 = tid
+    asm.i(STX_MEM_W, dst=R10, src=R8, off=-4)
+    asm.map_load(R1, map_fd)
+    asm.i(MOV64_REG, dst=R2, src=R10)
+    asm.i(ADD64_IMM, dst=R2, imm=-16)
+    asm.i(MOV64_IMM, dst=R3, imm=16)
+    asm.i(MOV64_IMM, dst=R4, imm=0)
+    asm.i(CALL, imm=HELPER_RINGBUF_OUTPUT)
+    asm.i(MOV64_IMM, dst=R0, imm=0)
+    asm.i(EXIT)
+    return asm.build()
+
+
+def percpu_program(map_fd):
+    """`array[0] += 1` in the running CPU's own slot."""
+    asm = Assembly()
+    asm.i(ST_IMM_W, dst=R10, off=-4, imm=0)           # key = 0
+    asm.map_load(R1, map_fd)
+    asm.i(MOV64_REG, dst=R2, src=R10)
+    asm.i(ADD64_IMM, dst=R2, imm=-4)
+    asm.i(CALL, imm=HELPER_MAP_LOOKUP)
+    asm.i(JEQ_IMM, dst=R0, target="exit", imm=0)
+    asm.i(LDX_MEM_DW, dst=R1, src=R0, off=0)
+    asm.i(ADD64_IMM, dst=R1, imm=1)
+    asm.i(STX_MEM_DW, dst=R0, src=R1, off=0)
+    asm.i(MOV64_IMM, dst=R0, imm=0)
+    asm.label("exit")
+    asm.i(EXIT)
+    return asm.build()
+
+
+def packet_program(verdict):
+    """A socket filter that accepts (`verdict` > 0) or drops (0) everything."""
+    asm = Assembly()
+    asm.i(MOV64_IMM, dst=R0, imm=verdict)
+    asm.i(EXIT)
+    return asm.build()
+
+
+def ksym_program(map_fd, name):
+    """Resolves a symbol name with the kernel's table and stores the address."""
+    data = name.encode()
+    asm = Assembly()
+    for offset in range(0, len(data), 4):                 # name at r10 - 64
+        chunk = data[offset:offset + 4]
+        value = int.from_bytes(chunk.ljust(4, b"\0"), "little")
+        asm.i(ST_IMM_W, dst=R10, off=-64 + offset, imm=value)
+    asm.map_load(R1, map_fd)
+    asm.i(MOV64_REG, dst=R6, src=R1)          # keep the map pointer in r6
+    asm.i(MOV64_REG, dst=R1, src=R10)
+    asm.i(ADD64_IMM, dst=R1, imm=-64)
+    asm.i(MOV64_IMM, dst=R2, imm=len(data))
+    asm.i(CALL, imm=HELPER_KSYMS_LOOKUP)     # r0 = address
+    asm.i(STX_MEM_DW, dst=R10, src=R0, off=-72)       # value = address
+    asm.i(ST_IMM_W, dst=R10, off=-80, imm=0)          # key = 0
+    asm.i(MOV64_REG, dst=R1, src=R6)
+    asm.i(MOV64_REG, dst=R2, src=R10)
+    asm.i(ADD64_IMM, dst=R2, imm=-80)                 # &key
+    asm.i(MOV64_REG, dst=R3, src=R10)
+    asm.i(ADD64_IMM, dst=R3, imm=-72)                 # &value
+    asm.i(MOV64_IMM, dst=R4, imm=0)
+    asm.i(CALL, imm=HELPER_MAP_UPDATE)
+    asm.i(MOV64_IMM, dst=R0, imm=0)
+    asm.i(EXIT)
+    return asm.build()
+
+
 # --- bpf(2) wrappers --------------------------------------------------------
 
 
@@ -316,12 +410,12 @@ def map_next_key(fd, key=None, key_size=8):
     return next_buffer.raw[:key_size]
 
 
-def prog_load(code, name=b"lite"):
+def prog_load(code, name=b"lite", prog_type=PROG_TYPE_TRACE_EVENT):
     insns = ctypes.create_string_buffer(code, len(code))
     license_buffer = ctypes.create_string_buffer(b"GPL", 4)
     name_bytes = name[:16].ljust(16, b"\0")
     attr = bytearray(72)
-    struct.pack_into("<IIQQ", attr, 0, PROG_TYPE_TRACE_EVENT,
+    struct.pack_into("<IIQQ", attr, 0, prog_type,
                      len(code) // 8, ctypes.addressof(insns),
                      ctypes.addressof(license_buffer))
     struct.pack_into("<16s", attr, 48, name_bytes)
@@ -461,6 +555,177 @@ def cmd_histogram(args, kind):
                     lambda fd: histogram_program(fd, kind), dump)
 
 
+def cmd_ringbuf(args):
+    """Appends a record per event and drains the ring through mmap."""
+    map_fd = map_create(BPF_MAP_TYPE_RINGBUF, 0, 0, args.capacity, b"ring")
+    prog_fd = prog_load(ringbuf_program(map_fd), b"ring")
+    link_fd = raw_tracepoint_open(args.event, prog_fd)
+
+    mapping = mmap.mmap(map_fd, RING_DATA + args.capacity, flags=mmap.MAP_SHARED,
+                        prot=mmap.PROT_READ | mmap.PROT_WRITE)
+    consumer, producer, capacity = struct.unpack_from("<QQQ", mapping, 0)
+    if capacity == 0:
+        print("the kernel reported no capacity", file=sys.stderr)
+        return 1
+
+    rows = {}
+    dropped = 0
+    deadline = time.time() + args.seconds
+    while time.time() < deadline:
+        consumer, producer, capacity = struct.unpack_from("<QQQ", mapping, 0)
+        while consumer < producer:
+            position = consumer % capacity
+            if position + 8 > capacity:
+                consumer += capacity - position
+                continue
+            length, _ = struct.unpack_from("<II", mapping, RING_DATA + position)
+            if length == RING_WRAP:
+                consumer += capacity - position
+                continue
+            total = (8 + length + 7) & ~7
+            if position + total > capacity:
+                consumer += capacity - position
+                continue
+            payload = bytes(mapping[RING_DATA + position + 8:
+                                    RING_DATA + position + 8 + length])
+            if len(payload) >= 16:
+                number, pid, tid = struct.unpack("<QII", payload[:16])
+                rows[(pid, number)] = rows.get((pid, number), 0) + 1
+            consumer += total
+        struct.pack_into("<Q", mapping, RING_CONSUMER, consumer)
+        time.sleep(0.05)
+
+    print(f"capacity={capacity} bytes, records={sum(rows.values())} dropped={dropped}")
+    print(f"{'records':>10} {'pid':>6}  {'syscall':<20} comm")
+    for (pid, number), count in sorted(rows.items(), key=lambda item: -item[1])[: args.top]:
+        name = SYSCALLS.get(number, f"syscall {number}")
+        print(f"{count:>10} {pid:>6}  {name:<20} {process_name(pid)}")
+
+    mapping.close()
+    os.close(link_fd)
+    os.close(prog_fd)
+    os.close(map_fd)
+    return 0
+
+
+def cmd_percpu(args):
+    """Counts events in per-CPU slots and shows each CPU's share."""
+    map_fd = map_create(BPF_MAP_TYPE_PERCPU_ARRAY, 4, 8, 1, b"percpu")
+    probe_fd = prog_load(percpu_program(map_fd), b"percpu")
+    link_fd = raw_tracepoint_open(args.event, probe_fd)
+    time.sleep(args.seconds)
+    os.close(link_fd)
+
+    raw = map_lookup(map_fd, struct.pack("<I", 0), value_size=8 * 64)
+    slots = [struct.unpack_from("<Q", raw, index * 8)[0]
+             for index in range(len(raw) // 8)]
+    while slots and slots[-1] == 0:
+        slots.pop()
+
+    total = sum(slots)
+    print(f"cpus={len(slots)} total={total}")
+    for cpu, count in enumerate(slots):
+        share = count * 100.0 / total if total else 0.0
+        print(f"  cpu {cpu}: {count:>10} {share:5.1f}%")
+
+    os.close(probe_fd)
+    os.close(map_fd)
+    return 0 if total else 1
+
+
+def cmd_sockfilter(args):
+    """Attaches an eBPF filter to a netlink socket and checks the plumbing.
+
+    This kernel has no producer for the one family that applies socket
+    filters (kernel uevents), so what can be checked here is the syscall
+    path: the attach and detach succeed, a bad descriptor is refused, and a
+    non-program descriptor is refused. The filter's own verdicts are covered
+    by the kernel tests, which run programs against packet bytes directly.
+    """
+    import socket as socket_module
+
+    netlink = socket_module.socket(socket_module.AF_NETLINK,
+                                   socket_module.SOCK_RAW,
+                                   args.protocol)
+    netlink.bind((os.getpid(), args.group))
+
+    accepted = prog_load(packet_program(64), b"accept-all", PROG_TYPE_SOCKET_FILTER)
+    failures = 0
+
+    try:
+        netlink.setsockopt(socket_module.SOL_SOCKET, SO_ATTACH_BPF,
+                           struct.pack("<i", accepted))
+        print("ok   attach a socket filter to a netlink socket")
+    except OSError as error:
+        print(f"FAIL attach: {error}")
+        failures += 1
+
+    try:
+        netlink.setsockopt(socket_module.SOL_SOCKET, SO_DETACH_FILTER,
+                           struct.pack("<i", 0))
+        print("ok   detach it again")
+    except OSError as error:
+        print(f"FAIL detach: {error}")
+        failures += 1
+
+    try:
+        netlink.setsockopt(socket_module.SOL_SOCKET, SO_ATTACH_BPF,
+                           struct.pack("<i", 1_000_000))
+        print("FAIL attach with a bad descriptor was accepted")
+        failures += 1
+    except OSError as error:
+        print(f"ok   a bad descriptor is refused ({error.strerror})")
+
+    device_fd = os.open("/dev/null", os.O_RDONLY)
+    try:
+        netlink.setsockopt(socket_module.SOL_SOCKET, SO_ATTACH_BPF,
+                           struct.pack("<i", device_fd))
+        print("FAIL a non-program descriptor was accepted")
+        failures += 1
+    except OSError as error:
+        print(f"ok   a non-program descriptor is refused ({error.strerror})")
+    finally:
+        os.close(device_fd)
+
+    netlink.close()
+    os.close(accepted)
+    if failures:
+        print("socket filter: FAIL", file=sys.stderr)
+        return 1
+    print("socket filter: PASS")
+    return 0
+
+
+def cmd_ksym(args):
+    """Resolves a symbol through the program helper, not through /proc."""
+    map_fd = map_create(BPF_MAP_TYPE_ARRAY, 4, 8, 1, b"ksym")
+    prog_fd = prog_load(ksym_program(map_fd, args.name), b"ksym")
+    link_fd = raw_tracepoint_open("syscall:sys_enter", prog_fd)
+    time.sleep(0.3)
+    os.close(link_fd)
+
+    address = struct.unpack("<Q", map_lookup(map_fd, struct.pack("<I", 0))[:8])[0]
+    if address:
+        print(f"{args.name} -> 0x{address:x}  ({address_name(address)})")
+    else:
+        print(f"{args.name} -> not found in the kernel's symbol table")
+    os.close(prog_fd)
+    os.close(map_fd)
+    return 0 if address else 1
+
+
+def address_name(address):
+    try:
+        with open("/proc/kallsyms") as handle:
+            for line in handle:
+                parts = line.split()
+                if len(parts) == 3 and int(parts[0], 16) == address:
+                    return parts[2]
+    except (OSError, ValueError):
+        pass
+    return "?"
+
+
 def cmd_verifier(args):
     """Loads one good and three bad programs, checking the verifier's verdicts."""
     map_fd = map_create(BPF_MAP_TYPE_ARRAY, 4, 8, 1024, b"check")
@@ -538,6 +803,22 @@ def main():
     blocks = sampling("blocks", "histogram of block request sizes per process",
                       default_event="block:block_rq_issue")
     blocks.set_defaults(run=lambda args: cmd_histogram(args, "block"))
+
+    ringbuf = sampling("ringbuf", "append a record per event and read the ring")
+    ringbuf.add_argument("--capacity", type=int, default=64 * 1024)
+    ringbuf.set_defaults(run=cmd_ringbuf)
+
+    percpu = sampling("percpu", "count events into per-CPU slots")
+    percpu.set_defaults(run=cmd_percpu)
+
+    sockfilter = subcommands.add_parser("sockfilter", help="check SO_ATTACH_BPF on a netlink socket")
+    sockfilter.add_argument("--protocol", type=int, default=15, help="NETLINK_KOBJECT_UEVENT")
+    sockfilter.add_argument("--group", type=int, default=1)
+    sockfilter.set_defaults(run=cmd_sockfilter)
+
+    ksym = subcommands.add_parser("ksym", help="resolve a symbol through the bpf helper")
+    ksym.add_argument("name")
+    ksym.set_defaults(run=cmd_ksym)
 
     verifier = subcommands.add_parser("verifier", help="check the verifier's verdicts")
     verifier.set_defaults(run=cmd_verifier)

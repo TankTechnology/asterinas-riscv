@@ -8,13 +8,14 @@
 | 项 | 状态 |
 | --- | --- |
 | `bpf(2)` 命令 | `MAP_CREATE` / `MAP_LOOKUP_ELEM` / `MAP_UPDATE_ELEM` / `MAP_DELETE_ELEM` / `MAP_GET_NEXT_KEY` / `PROG_LOAD` / `BPF_RAW_TRACEPOINT_OPEN` |
-| map 类型 | `ARRAY`(2)、`HASH`(1)；值预分配，锁内零分配 |
-| 程序类型 | `BPF_PROG_TYPE_TRACE_EVENT`(0x80000001) |
-| 挂点 | 内核自己的 trace 事件（`subsystem:event`），关闭 link fd 即解除 |
-| helper | 1 `map_lookup_elem`、2 `map_update_elem`、3 `map_delete_elem`、5 `ktime_get_ns`、6 `trace_printk`、8 `get_smp_processor_id`、14 `get_current_pid_tgid` |
+| map 类型 | `ARRAY`(2)、`HASH`(1)、`PERCPU_ARRAY`(6)、`PERCPU_HASH`(5)、`RINGBUF`(27)；值预分配，锁内零分配 |
+| 程序类型 | `BPF_PROG_TYPE_TRACE_EVENT`(0x80000001)、`BPF_PROG_TYPE_SOCKET_FILTER`(1) |
+| 挂点 | 内核自己的 trace 事件（`subsystem:event`），关闭 link fd 即解除；socket 过滤器走 `SO_ATTACH_BPF`(50) |
+| 用户态环形缓冲 | `RINGBUF` 用 `Vmo`，fd 直接 `mmap` 共享；程序用 `bpf_ringbuf_output` 追加 |
+| helper | 1 `map_lookup_elem`、2 `map_update_elem`、3 `map_delete_elem`、5 `ktime_get_ns`、6 `trace_printk`、8 `get_smp_processor_id`、14 `get_current_pid_tgid`、130 `bpf_ringbuf_output`、1000 kallsyms 查询（内核自定义） |
 | 指令 | ALU64/ALU32（MOV/ADD/SUB/MUL/DIV/MOD/AND/OR/XOR/LSH/RSH/ARSH/NEG）、JMP/JMP32 全部条件跳转、CALL、EXIT、`LDX/STX/ST` 的 B/H/W/DW、`LD_IMM64`（含 map fd 伪指令） |
 | 权限 | 仅 root |
-| 未实现 | ringbuf（mmap 页环）、per-CPU map、`SO_ATTACH_BPF`、JIT、kprobe/BTF |
+| 未实现 | JIT、kprobe/BTF、`bpf_ringbuf_reserve/submit`（只做了 output） |
 
 ## 2. 验证器（保守、静态）
 
@@ -56,6 +57,26 @@ python3 bpftool_lite.py load              # 加载后读 /proc/trace/bpf
 两个分析程序：按 (pid, syscall 号) 计数、按 (pid, 大小桶, 读写) 计数。
 键用 `pid << 32 | value`（块事件用 `pid << 40 | kind << 32 | bucket`）。
 
+## 4b. P2 的三块新地面
+
+**per-CPU map**：元素按 CPU 分槽（`PERCPU_*`），程序只读写自己那颗 CPU 的槽；
+解释器整段运行期间关抢占（`disable_preempt`），所以一次运行内 CPU 不会变。
+用户态 lookup 返回所有 CPU 的值拼起来（每 CPU 按 8 字节对齐）。
+不属于 per-CPU 的 map 对任何 CPU 都给同一个值——线上这条最早写反了：
+非 per-CPU map 在 CPU≠0 上报 EINVAL，`syscalls` 直方图在 4 核板上 2/3 的运行失败，
+ktest（只跑在 CPU 0）没抓到时硬件测出来了。
+
+**RINGBUF**：一个 `Vmo`，第一页是头（consumer/producer/容量），后面是数据区；
+记录是 `{u32 len, u32 保留, payload, 补齐}`，跨界时用一个 `0xFFFFFFFF` 的标记头跳到 0。
+创建时把整个 Vmo 预写零，之后程序追加记录不会缺页、不会在锁里分配。
+工具侧就是普通 `mmap` + 轮询 producer（没有事件通知）。
+
+**socket filter**：`SO_ATTACH_BPF` 的载荷是程序 fd（只有 syscall 层能解析），
+程序的上下文**就是报文本身**：加载时按 `SOCKET_CTX_MAX`(2048) 校验偏移，运行期超出报文
+长度的部分补零（短包是数据而不是错误）。返回值 >0 表示放行。目前挂在经典 cBPF 过滤器
+所在的 netlink 收包路径上（内核自己的 uevent 投递），**这条路径在本内核没有生产者**，
+所以过滤语义靠 ktest（`run_on_packet`）覆盖，板上只验证 attach/detach/错误码。
+
 ## 5. 板上实测
 
 **每进程 syscall 直方图**（桌面空闲、5 秒）：
@@ -70,6 +91,16 @@ python3 bpftool_lite.py load              # 加载后读 /proc/trace/bpf
 
 `node-MainThread` 是板上的 `dsh web`（我们自己的 harness），空闲时仍有 ~180 次
 statx/读 每秒——测桌面性能时它是背景噪声源。
+
+**P2 的四条命令**（同一块板、同一版内核）：
+
+```
+verifier  3 个反例全部拒绝、正例加载
+sockfilter  attach/detach/坏 fd/非程序 fd 四项全对
+percpu     4 颗 CPU 各自的计数（约 1/4 各一份）
+ringbuf    2 s 抓 12157 条记录、0 丢弃（mmap 共享页）
+ksym       "<aster_mmc::arch::MmioHost>::wait_sdma" -> 0xffffffff80595900
+```
 
 **块请求直方图**（16 MiB 写，同一文件、同一块大小）：
 
@@ -96,3 +127,9 @@ trace 记录（`sector=... nr_sectors=8 kind=1`）显示新文件每个 4 KiB �
   的路径（采样/函数跟踪）必须用 `Jiffies`。
 - `bpf_attr` 的布局按 Linux 前缀读取；工具侧寄存器常量写错（`R10=7`）会让验证器报
   EINVAL，而错误信息不会传到用户态——先跑 `verifier` 子命令排除编码问题。
+- **同一个线程的 file table 不能嵌套借用**：`SO_ATTACH_BPF` 里先借到 socket、又借一次
+  解析程序 fd，直接 panic，整机被硬件看门狗复位。取 socket 时 `.into_owned()` 再退出
+  借用块。
+- `map_update` 的 r3 是**值指针**，不是长度；工具里写错过一次，ktest 一跑就露馅。
+- socket filter 的上下文是报文，而解释器按小端加载：比较以太网类型这类大端字段时，
+  要么在字节层面比较，要么把常量按小端写。
