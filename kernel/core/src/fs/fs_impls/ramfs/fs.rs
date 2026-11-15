@@ -1062,14 +1062,21 @@ impl FileOps for RamInode {
     ) -> Result<usize> {
         let read_len = match &self.inner {
             Inner::File(page_cache) => {
-                let (offset, read_len) = {
-                    let file_size = self.size();
-                    let start = file_size.min(offset);
-                    let end = file_size.min(offset + writer.avail());
-                    (start, end - start)
-                };
+                let file_size = self.size();
+                if offset >= file_size {
+                    return Ok(0);
+                }
+                // Clamp the request to the bytes the inode actually reports, so
+                // a reader can never observe page-cache contents past the end
+                // of the file. Report what the page cache really delivered
+                // instead of the pre-computed length: a short copy must reach
+                // the caller, or a concurrent writer's half-extended page turns
+                // into a `readv` that claims bytes it never produced.
+                let allowed = (file_size - offset).min(writer.avail());
+                writer.limit(allowed);
+                let before = writer.avail();
                 page_cache.lock().read(offset, writer)?;
-                read_len
+                before - writer.avail()
             }
             _ => return_errno_with_message!(Errno::EISDIR, "read is not supported"),
         };
