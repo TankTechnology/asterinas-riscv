@@ -64,3 +64,26 @@ Initramfs test programs are raw-syscall statics (`-nostdlib -static -Os
 board's init stdout is the VT. Procfs and sysfs must be mounted by the init
 before either is read — an unmounted `/proc` reads as a missing file and cost
 one debugging cycle already.
+
+## Update: what the cgroup.events poll path needs (2026-11-16, later)
+
+Reading the code settled three questions:
+
+* `poll` is not a `FileOps` method. `FileOps` only has `read_at`/`write_at`/
+  `readdir_at`; polling lives on the open file (`InodeHandle::poll`), whose
+  fallback branch returns `IN | OUT & mask`, so a regular file is always
+  "readable" and `POLLPRI` is never ready. That is why the QEMU test saw
+  `POLLIN` fire immediately and `POLLPRI` never fire.
+* `FsEventPublisher` takes subscribers through `add_subscriber(Arc<dyn
+  FsEventSubscriber>)` and broadcasts with `publish_event`. A subscriber
+  implements `deliver_event(&self, FsEvents, Option<String>) -> bool`,
+  `interesting_events() -> FsEvents` and optionally `is_oneshot_and_dead()`.
+  It must not sleep: the publisher may hold a spin lock.
+* `notify_events_modified()` currently publishes on the cgroup *directory*
+  inode, so even a working poll path on `cgroup.events` would not see it; the
+  weak reference has to be filled from that file's inode instead.
+
+So the work is: a waker subscriber in `InodeHandle` that sets `IoEvents::PRI`,
+cleared when the file is read; the events file's inode stored on the node; and
+the test in `/tmp/board-net/cgtest.c` (already switched to `ppoll` with
+`POLLPRI`, since riscv64 has no `poll` syscall — 7 is `fsetxattr` there).
