@@ -300,8 +300,10 @@ pub(super) fn init() {
             capabilities.contexts_64byte,
         );
 
+        // The first controller owns the driver's single host state. Later
+        // controllers are still probed so their presence and capabilities are
+        // visible; enumerating their devices needs the per-instance rework.
         HOST_RESOURCES.call_once(|| HostResources { config, mmio });
-        break;
     }
 }
 
