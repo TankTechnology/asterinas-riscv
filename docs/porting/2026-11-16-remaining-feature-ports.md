@@ -87,3 +87,38 @@ So the work is: a waker subscriber in `InodeHandle` that sets `IoEvents::PRI`,
 cleared when the file is read; the events file's inode stored on the node; and
 the test in `/tmp/board-net/cgtest.c` (already switched to `ppoll` with
 `POLLPRI`, since riscv64 has no `poll` syscall — 7 is `fsetxattr` there).
+
+## Update: cgroup.events polling works (2026-11-16, final)
+
+The wake path is in and verified in QEMU (`/tmp/board-net/cgtest2.c`). Three
+things had to change beyond the plan above, each invisible until the previous
+one was fixed:
+
+* **`fs_event_publisher()` does not create the publisher.** It returns `None`
+  until someone calls `fs_event_publisher_or_init()`, so a reader that polls
+  before any event exists subscribed to nothing, and the notifier (which used
+  the non-initializing getter, so an unsubscribed cgroup still costs nothing)
+  found nothing to publish to. `InodeHandle` now initializes on first poll.
+* **`Pollee` caches the events its check closure produced.** `notify()`
+  invalidates that cache, but a subscription can cache `PRI` *after* the
+  notify, and a read that only cleared the pending flag left the cached `PRI`
+  visible. `InodeHandle::read` invalidates the pollee as well, which is what
+  makes the event level-triggered.
+* **`cgroup.events` inodes are per lookup.** Every `lookup` on the attribute
+  builds a fresh inode, so a single weak slot is silently overwritten by any
+  intervening `stat` or second opener. `CgroupNode` now keeps a `Vec` of weak
+  inodes, notifies all live ones and prunes dead entries.
+
+The node also wakes **itself**, not only its ancestors: moving the first
+process into a cgroup flips that cgroup's own `populated`, which the earlier
+`propagate_*`-only notification missed.
+
+Verified sequence: `poll` times out before migration; after writing the pid to
+`cgroup.procs` the reader wakes with `POLLPRI` even though the file was looked
+up a second time in between; `read` returns `populated 1` / `frozen 0` and
+clears `POLLPRI`; moving the process back to the root cgroup wakes it again.
+
+Known gap: the hierarchy root (`/sys/cgroup.events`, served by `CgroupSystem`,
+not `CgroupNode`) still has no notifier. Nothing in a systemd-style workload
+polls it, and the root's `populated` is not tracked there.
+

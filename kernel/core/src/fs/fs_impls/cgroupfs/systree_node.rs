@@ -171,17 +171,7 @@ impl CgroupMembership {
 
         // Remove the process from the old cgroup second.
         if let Some(old_cgroup) = old_cgroup {
-            old_cgroup
-                .with_inner_mut(|old_cgroup_processes| {
-                    old_cgroup_processes.remove(&process.pid()).unwrap();
-                    if old_cgroup_processes.is_empty() {
-                        let old_count = old_cgroup.populated_count.fetch_sub(1, Ordering::Relaxed);
-                        if old_count == 1 {
-                            old_cgroup.propagate_sub_populated();
-                        }
-                    }
-                })
-                .unwrap();
+            self.remove_process_from_node(&process, &old_cgroup);
 
             // Uncharge the pids sub-controller for the old cgroup.
             old_cgroup.controller.uncharge_pids();
@@ -215,19 +205,25 @@ impl CgroupMembership {
         if !new_cgroup.controller.active_set().is_empty() {
             return Err(Error::ResourceUnavailable);
         }
+        let mut became_populated = false;
         new_cgroup
             .with_inner_mut(|current_processes| {
                 if current_processes.is_empty() {
                     let old_count = new_cgroup.populated_count.fetch_add(1, Ordering::Relaxed);
-                    if old_count == 0 {
-                        new_cgroup.propagate_add_populated();
-                    }
+                    became_populated = old_count == 0;
                 }
 
                 current_processes.insert(process.pid(), Arc::downgrade(process));
                 process.set_cgroup(Some(new_cgroup.fields.weak_self().upgrade().unwrap()));
             })
             .ok_or(Error::IsDead)?;
+
+        if became_populated {
+            // The cgroup's own `cgroup.events` changed too, not only its
+            // ancestors'.
+            new_cgroup.notify_events_modified();
+            new_cgroup.propagate_add_populated();
+        }
 
         Ok(())
     }
@@ -243,20 +239,33 @@ impl CgroupMembership {
 
         process.set_cgroup(None);
 
-        old_cgroup
+        self.remove_process_from_node(process, &old_cgroup);
+
+        // Uncharge the pids sub-controller for the old cgroup.
+        old_cgroup.controller.uncharge_pids();
+    }
+
+    /// Removes a process from `old_cgroup`, waking `cgroup.events` readers if
+    /// the cgroup becomes unpopulated.
+    fn remove_process_from_node(&self, process: &Process, old_cgroup: &CgroupNode) {
+        let became_unpopulated = old_cgroup
             .with_inner_mut(|old_cgroup_processes| {
                 old_cgroup_processes.remove(&process.pid()).unwrap();
                 if old_cgroup_processes.is_empty() {
                     let old_count = old_cgroup.populated_count.fetch_sub(1, Ordering::Relaxed);
-                    if old_count == 1 {
-                        old_cgroup.propagate_sub_populated();
-                    }
+                    old_count == 1
+                } else {
+                    false
                 }
             })
             .unwrap();
 
-        // Uncharge the pids sub-controller for the old cgroup.
-        old_cgroup.controller.uncharge_pids();
+        if became_unpopulated {
+            // The cgroup's own `cgroup.events` changed, not only its
+            // descendants' view of it.
+            old_cgroup.notify_events_modified();
+            old_cgroup.propagate_sub_populated();
+        }
     }
 }
 
@@ -304,11 +313,14 @@ pub(crate) struct CgroupNode {
     /// either on itself or in any of its descendant nodes. Consequently,
     /// a count > 0 indicates that this node is populated.
     populated_count: AtomicUsize,
-    /// The `cgroup.events` inode this node's readers hold, when one exists.
+    /// Every `cgroup.events` inode opened so far.
     ///
-    /// Weak so the inode owns the node and not the other way around; a
-    /// membership change wakes its poll/inotify subscribers through this.
-    events_inode: ostd::sync::Mutex<alloc::sync::Weak<super::inode::CgroupInode>>,
+    /// Weak so the inodes own the node and not the other way around, and a
+    /// list rather than a single entry because every lookup builds a new
+    /// inode: a reader holds the one its open created, while a later lookup
+    /// (a `stat`, another reader) builds a different one. Notifying all live
+    /// inodes reaches every reader, and dead entries are pruned here.
+    events_inodes: ostd::sync::Mutex<Vec<alloc::sync::Weak<dyn crate::fs::vfs::inode::Inode>>>,
 }
 
 impl Debug for CgroupNode {
@@ -432,7 +444,7 @@ impl CgroupNode {
         Arc::new_cyclic(|weak_self| {
             let fields = BranchNodeFields::new(name, attrs, weak_self.clone());
             CgroupNode {
-                events_inode: ostd::sync::Mutex::new(alloc::sync::Weak::new()),
+                events_inodes: ostd::sync::Mutex::new(Vec::new()),
                 fields,
                 controller: Controller::new(Some(parent_controller)),
                 inner: RwMutex::new(Some(Inner::default())),
@@ -451,23 +463,37 @@ impl CgroupSysNode for CgroupNode {
 
 // For process management
 impl CgroupNode {
-    /// Records the inode that serves `cgroup.events` for this node.
-    pub(super) fn set_events_inode(&self, inode: alloc::sync::Weak<super::inode::CgroupInode>) {
-        *self.events_inode.lock() = inode;
+    /// Records an inode that serves this node's `cgroup.events` file.
+    pub(crate) fn set_events_inode(&self, inode: alloc::sync::Weak<dyn crate::fs::vfs::inode::Inode>) {
+        let mut inodes = self.events_inodes.lock();
+        // Drop the entries of inodes that are already gone.
+        inodes.retain(|weak| weak.strong_count() > 0 && !weak.ptr_eq(&inode));
+        inodes.push(inode);
     }
 
     /// Wakes `cgroup.events` readers after the populated state changed.
     fn notify_events_modified(&self) {
         use crate::fs::vfs::{fs_apis::inode_ext::InodeExt, notify::FsEvents};
 
-        let inode = self.events_inode.lock().upgrade();
-        let Some(inode) = inode else {
-            return;
+        // Take the list so that publishing does not happen under the lock; a
+        // subscriber may take other locks of its own.
+        let inodes = {
+            let mut guard = self.events_inodes.lock();
+            core::mem::take(&mut *guard)
         };
-        let inode: &dyn crate::fs::vfs::inode::Inode = &*inode;
-        if let Some(publisher) = inode.fs_event_publisher() {
-            publisher.publish_event(FsEvents::MODIFY, None);
+
+        let mut live = Vec::with_capacity(inodes.len());
+        for weak in inodes {
+            let Some(inode) = weak.upgrade() else {
+                continue;
+            };
+            if let Some(publisher) = inode.fs_event_publisher() {
+                publisher.publish_event(FsEvents::MODIFY, None);
+            }
+            live.push(weak);
         }
+
+        self.events_inodes.lock().extend(live);
     }
 
     fn propagate_add_populated(&self) {

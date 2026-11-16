@@ -42,16 +42,6 @@ impl SysTreeInodeTy for CgroupInode {
         Self: Sized,
     {
         Arc::new_cyclic(|this| {
-            // The cgroup node keeps a weak reference to the inode that serves
-            // `cgroup.events`, so a membership change can wake its readers.
-            if let SysTreeNodeKind::Branch(branch) = &node_kind
-                && let Some(node) = branch
-                    .as_any()
-                    .downcast_ref::<crate::fs::fs_impls::cgroupfs::systree_node::CgroupNode>()
-            {
-                node.set_events_inode(this.clone());
-            }
-
             Self {
                 node_kind,
                 metadata,

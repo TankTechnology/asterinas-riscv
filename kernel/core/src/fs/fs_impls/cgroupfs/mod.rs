@@ -51,7 +51,7 @@ mod cgroup_ns;
 mod controller;
 mod fs;
 mod inode;
-mod systree_node;
+pub(crate) mod systree_node;
 
 // This method should be called during kernel file system initialization,
 // _after_ `aster_systree::init`.

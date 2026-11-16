@@ -102,11 +102,24 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
     where
         Self: Sized + 'static,
     {
-        let node_kind = SysTreeNodeKind::Attr(attr.clone(), node);
+        let node_kind = SysTreeNodeKind::Attr(attr.clone(), node.clone());
         let ino = ino::from_node_kind(&node_kind);
         let metadata = Self::new_metadata(ino, InodeType::File, sb);
         let mode = attr.perms().into();
-        Self::new_arc(node_kind, metadata, mode, parent)
+        let inode = Self::new_arc(node_kind, metadata, mode, parent);
+
+        // A cgroup remembers the inode that serves its `cgroup.events` file so
+        // a membership change can wake that file's poll/inotify subscribers.
+        if attr.name() == "cgroup.events"
+            && let Some(cgroup) = node.as_any().downcast_ref::<
+                crate::fs::fs_impls::cgroupfs::systree_node::CgroupNode,
+            >()
+        {
+            let erased: alloc::sync::Arc<dyn crate::fs::vfs::inode::Inode> = inode.clone();
+            cgroup.set_events_inode(alloc::sync::Arc::downgrade(&erased));
+        }
+
+        inode
     }
 
     fn new_symlink(symlink: Arc<dyn SysSymlink>, parent: Weak<Self>, sb: &SuperBlock) -> Arc<Self>

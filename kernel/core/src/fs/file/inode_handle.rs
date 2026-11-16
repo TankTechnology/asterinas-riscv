@@ -335,9 +335,9 @@ impl InodeHandle {
         if self.event_subscriber.lock().is_some() {
             return;
         }
-        let Some(publisher) = self.path().inode().fs_event_publisher() else {
-            return;
-        };
+        // The publisher is created on first use, so a reader that polls before
+        // any event exists still gets one.
+        let publisher = self.path().inode().fs_event_publisher_or_init();
         let subscriber = Arc::new(InodeEventSubscriber {
             pollee: self.event_pollee.clone(),
             pending: self.events_pending.clone(),
@@ -376,9 +376,11 @@ impl FileLike for InodeHandle {
         if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
         }
-        // A read consumes the pending event, as with Linux's POLLPRI files.
+        // A read consumes the pending event, as with Linux's POLLPRI files. The
+        // cache inside the pollee still holds `PRI`, so drop it as well.
         self.events_pending
             .store(false, core::sync::atomic::Ordering::Release);
+        self.event_pollee.invalidate();
 
         let (file_ops, is_offset_aware) = self.file_ops_and_is_offset_aware();
         let status_flags = self.status_flags();
