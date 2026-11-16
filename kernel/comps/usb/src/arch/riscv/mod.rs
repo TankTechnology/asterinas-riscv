@@ -238,62 +238,71 @@ pub(super) fn init() {
     let Some(selector) = selector else {
         return;
     };
-    let Some(selector) = selector.as_str() else {
+    let Some(selectors) = selector.as_str() else {
         ostd::warn!("invalid '/chosen/{}' property", USB_HOST_SELECTOR);
         return;
     };
-    let Some(node) = resolve_selected(Some(selector), |path| device_tree.find_node(path)) else {
-        ostd::warn!(
-            "failed to resolve USB host selected by '/chosen/{}' (value {:?})",
-            USB_HOST_SELECTOR,
-            selector
+
+    // The property is a NUL-separated list: Megrez names both DWC3
+    // controllers in it. This driver still holds one host, so the first
+    // path that resolves and validates is the one that is brought up; the
+    // second needs a multi-host model.
+    for selector in selectors.split('\0').filter(|path| !path.is_empty()) {
+        let Some(node) = resolve_selected(Some(selector), |path| device_tree.find_node(path))
+        else {
+            ostd::warn!(
+                "failed to resolve USB host selected by '/chosen/{}' (value {:?})",
+                USB_HOST_SELECTOR,
+                selector
+            );
+            continue;
+        };
+        let config = match config_from_node(node) {
+            Ok(config) => config,
+            Err(error) => {
+                ostd::warn!("rejected selected USB host {:?}: {:?}", selector, error);
+                continue;
+            }
+        };
+
+        ostd::info!(
+            "Selected DWC3 USB host: mmio={:#x?}, interrupt={}:{}, DMA={:#x}+{:#x}->{:#x}",
+            config.mmio_range,
+            config.interrupt_parent,
+            config.interrupt,
+            config.dma_window.device_start(),
+            config.dma_window.size(),
+            config.dma_window.cpu_start(),
         );
-        return;
-    };
-    let config = match config_from_node(node) {
-        Ok(config) => config,
-        Err(error) => {
-            ostd::warn!("rejected selected USB host: {:?}", error);
-            return;
-        }
-    };
 
-    ostd::info!(
-        "Selected DWC3 USB host: mmio={:#x?}, interrupt={}:{}, DMA={:#x}+{:#x}->{:#x}",
-        config.mmio_range,
-        config.interrupt_parent,
-        config.interrupt,
-        config.dma_window.device_start(),
-        config.dma_window.size(),
-        config.dma_window.cpu_start(),
-    );
+        let mmio = match IoMem::acquire(config.mmio_range.clone()) {
+            Ok(mmio) => mmio,
+            Err(_) => {
+                ostd::warn!("failed to retain selected xHCI MMIO range");
+                continue;
+            }
+        };
 
-    let mmio = match IoMem::acquire(config.mmio_range.clone()) {
-        Ok(mmio) => mmio,
-        Err(_) => {
-            ostd::warn!("failed to retain selected xHCI MMIO range");
-            return;
-        }
-    };
+        let capabilities = match capability::probe(&mmio) {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                ostd::warn!("xHCI capability probe failed: {:?}", error);
+                continue;
+            }
+        };
+        ostd::info!(
+            "Detected xHCI {:#06x}: slots={}, ports={}, interrupters={}, AC64={}, CSZ64={}",
+            capabilities.version,
+            capabilities.max_slots,
+            capabilities.max_ports,
+            capabilities.max_interrupters,
+            capabilities.addresses_64bit,
+            capabilities.contexts_64byte,
+        );
 
-    let capabilities = match capability::probe(&mmio) {
-        Ok(capabilities) => capabilities,
-        Err(error) => {
-            ostd::warn!("xHCI capability probe failed: {:?}", error);
-            return;
-        }
-    };
-    ostd::info!(
-        "Detected xHCI {:#06x}: slots={}, ports={}, interrupters={}, AC64={}, CSZ64={}",
-        capabilities.version,
-        capabilities.max_slots,
-        capabilities.max_ports,
-        capabilities.max_interrupters,
-        capabilities.addresses_64bit,
-        capabilities.contexts_64byte,
-    );
-
-    HOST_RESOURCES.call_once(|| HostResources { config, mmio });
+        HOST_RESOURCES.call_once(|| HostResources { config, mmio });
+        break;
+    }
 }
 
 static KEYBOARD: Once<Mutex<PollingUsbKeyboard>> = Once::new();
