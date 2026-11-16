@@ -40,7 +40,7 @@ pub struct IfaceCommon<E: Ext> {
     index: u32,
     name: InterfaceName,
     type_: InterfaceType,
-    flags: InterfaceFlags,
+    flags: SpinLock<InterfaceFlags, BottomHalfDisabled>,
 
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
@@ -125,7 +125,7 @@ impl<E: Ext> IfaceCommon<E> {
             index,
             name,
             type_,
-            flags,
+            flags: SpinLock::new(flags),
             interface: SpinLock::new(PollableIface::new(interface)),
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
@@ -146,7 +146,11 @@ impl<E: Ext> IfaceCommon<E> {
     }
 
     pub(super) fn flags(&self) -> InterfaceFlags {
-        self.flags
+        *self.flags.lock()
+    }
+
+    pub(super) fn set_flags(&self, flags: InterfaceFlags) {
+        *self.flags.lock() = flags;
     }
 
     pub(super) fn ipv4_cidr(&self) -> Option<Ipv4Cidr> {

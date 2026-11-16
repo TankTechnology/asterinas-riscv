@@ -7,7 +7,7 @@ use aster_bigtcp::wire::EthernetAddress;
 use super::util::{self, ResponseMode};
 use crate::{
     net::{
-        iface::{DEFAULT_TX_QUEUE_LEN, Iface, iter_all_ifaces},
+        iface::{DEFAULT_TX_QUEUE_LEN, Iface, InterfaceFlags, iter_all_ifaces},
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{CIfinfoMsg, LinkAttr, LinkAttrClass, LinkSegment, RtnlSegment},
@@ -55,6 +55,67 @@ pub(super) fn do_get_link(
     );
 
     Ok(response_segments)
+}
+
+/// Handles an `RTM_SETLINK` request against an existing link.
+///
+/// Supported: the `ifi_flags`/`ifi_change` pair, which is what `ip link set
+/// <dev> up|down` sends, and requests that change nothing at all. Attributes
+/// the kernel cannot honour are refused instead of ignored: an attribute-only
+/// request (for example `ip link set dev eth0 mtu 1400`) carries no flags, and
+/// treating its empty flag fields as the new state used to clear `IFF_UP`
+/// while reporting success.
+pub(super) fn do_set_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+    if body.index == 0 {
+        return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
+    }
+
+    let iface = iter_all_ifaces()
+        .find(|iface| iface.index() == body.index)
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
+
+    for attr in request_segment.attrs() {
+        match attr {
+            LinkAttr::Mtu(mtu) if *mtu != iface.mtu() as u32 => {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "changing the MTU of an interface is not supported"
+                );
+            }
+            LinkAttr::Name(name) if name != iface.name() => {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "renaming an interface is not supported"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // Apply `new = (old & !change) | (flags & change)`, as in Linux, limited
+    // to the administrative bits this kernel models. A request with neither
+    // field set changes no flag.
+    if body.flags != 0 || body.change != 0 {
+        let admin = InterfaceFlags::UP | InterfaceFlags::RUNNING;
+        let requested = InterfaceFlags::from_bits_truncate(body.flags) & admin;
+        let old_flags = iface.flags();
+        let new_flags = if body.change == 0 {
+            (old_flags & !admin) | requested
+        } else {
+            let change = InterfaceFlags::from_bits_truncate(body.change) & admin;
+            (old_flags & !change) | (requested & change)
+        };
+        iface.set_flags(new_flags);
+        debug!(
+            "RTM_SETLINK index={} flags {:#x} -> {:#x}",
+            body.index,
+            old_flags.bits(),
+            new_flags.bits()
+        );
+    }
+
+    Ok(Vec::new())
 }
 
 enum FilterBy<'a> {

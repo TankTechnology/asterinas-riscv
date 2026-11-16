@@ -80,6 +80,15 @@ impl<E: Ext> dyn Iface<E> {
         self.common().flags()
     }
 
+    /// Replaces the interface flags.
+    ///
+    /// Used by `RTM_SETLINK` (`ip link set <dev> up|down`). The run-time
+    /// flags that the driver owns (`RUNNING`, `LOWER_UP`) stay as the caller
+    /// sets them; nothing in the transmit path consults them yet.
+    pub fn set_flags(&self, flags: InterfaceFlags) {
+        self.common().set_flags(flags);
+    }
+
     // FIXME: Linux and smoltcp allow multiple IP CIDRs per interface, while the
     // address-related APIs below only account for the first CIDR of each family.
 
