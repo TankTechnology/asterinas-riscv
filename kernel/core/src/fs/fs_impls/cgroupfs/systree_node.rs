@@ -304,6 +304,11 @@ pub(crate) struct CgroupNode {
     /// either on itself or in any of its descendant nodes. Consequently,
     /// a count > 0 indicates that this node is populated.
     populated_count: AtomicUsize,
+    /// The `cgroup.events` inode this node's readers hold, when one exists.
+    ///
+    /// Weak so the inode owns the node and not the other way around; a
+    /// membership change wakes its poll/inotify subscribers through this.
+    events_inode: ostd::sync::Mutex<alloc::sync::Weak<super::inode::CgroupInode>>,
 }
 
 impl Debug for CgroupNode {
@@ -427,6 +432,7 @@ impl CgroupNode {
         Arc::new_cyclic(|weak_self| {
             let fields = BranchNodeFields::new(name, attrs, weak_self.clone());
             CgroupNode {
+                events_inode: ostd::sync::Mutex::new(alloc::sync::Weak::new()),
                 fields,
                 controller: Controller::new(Some(parent_controller)),
                 inner: RwMutex::new(Some(Inner::default())),
@@ -445,6 +451,25 @@ impl CgroupSysNode for CgroupNode {
 
 // For process management
 impl CgroupNode {
+    /// Records the inode that serves `cgroup.events` for this node.
+    pub(super) fn set_events_inode(&self, inode: alloc::sync::Weak<super::inode::CgroupInode>) {
+        *self.events_inode.lock() = inode;
+    }
+
+    /// Wakes `cgroup.events` readers after the populated state changed.
+    fn notify_events_modified(&self) {
+        use crate::fs::vfs::{fs_apis::inode_ext::InodeExt, notify::FsEvents};
+
+        let inode = self.events_inode.lock().upgrade();
+        let Some(inode) = inode else {
+            return;
+        };
+        let inode: &dyn crate::fs::vfs::inode::Inode = &*inode;
+        if let Some(publisher) = inode.fs_event_publisher() {
+            publisher.publish_event(FsEvents::MODIFY, None);
+        }
+    }
+
     fn propagate_add_populated(&self) {
         if self.depth <= 1 {
             return;
@@ -458,6 +483,9 @@ impl CgroupNode {
             if old_count > 0 {
                 break;
             }
+            // This parent became populated: `cgroup.events` readers must see
+            // the new value.
+            current_parent.notify_events_modified();
 
             if current_parent.depth == 1 {
                 break;
@@ -480,6 +508,8 @@ impl CgroupNode {
             if old_count != 1 {
                 break;
             }
+            // This parent became unpopulated: wake its `cgroup.events` readers.
+            current_parent.notify_events_modified();
 
             if current_parent.depth == 1 {
                 break;
