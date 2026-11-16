@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-mod ext;
+pub(crate) mod ext;
 mod init;
 mod poll;
 mod sched;
 
 pub(in crate::net) use aster_bigtcp::iface::{InterfaceFlags, InterfaceType};
-pub(in crate::net) use init::{init, iter_all_ifaces, new_ns_loopback};
+pub(in crate::net) use init::{init, new_ns_loopback};
+pub(crate) use init::iter_all_ifaces;
 pub(super) use poll::init_in_first_kthread;
 pub(in crate::net) use poll::spawn_poll_thread;
 
-pub(super) type Iface = dyn aster_bigtcp::iface::Iface<ext::BigtcpExt>;
+pub(crate) type Iface = dyn aster_bigtcp::iface::Iface<ext::BigtcpExt>;
 pub(super) type BoundTcpPort = aster_bigtcp::iface::BoundTcpPort<ext::BigtcpExt>;
 pub(super) type BoundUdpPort = aster_bigtcp::iface::BoundUdpPort<ext::BigtcpExt>;
 

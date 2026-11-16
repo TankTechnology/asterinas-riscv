@@ -22,7 +22,7 @@ static NEIGHBOR_PROFILES: Once<Vec<BootNeighborProfile>> = Once::new();
 aster_cmdline::define_repeatable_kv_param!("asterinas.net", NETWORK_PROFILES);
 aster_cmdline::define_repeatable_kv_param!("asterinas.neighbor", NEIGHBOR_PROFILES);
 
-pub(in crate::net) fn iter_all_ifaces() -> Iter<'static, Arc<Iface>> {
+pub(crate) fn iter_all_ifaces() -> Iter<'static, Arc<Iface>> {
     IFACES.get().unwrap().iter()
 }
 
