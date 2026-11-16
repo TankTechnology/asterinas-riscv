@@ -127,7 +127,8 @@
     "host DRM uapi headers predate VIRTGPU_CONTEXT_INIT",
     "requires the local experimental runner",
     "requires the pinned Firefox archive",
-    "requires the pinned Firefox archive and cached Node"
+    "requires the pinned Firefox archive and cached Node",
+    "the pinned DRM contract belongs to the retired in-tree driver"
   ],
   "test_ids": [
     "tools.riscv.tests.test_apps_matrix.AppManifestTests.test_gui_entries_have_a_window_and_cli_entries_an_expectation",
