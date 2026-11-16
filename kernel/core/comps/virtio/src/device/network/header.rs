@@ -5,12 +5,17 @@ use int_to_c_enum::TryFromInt;
 
 /// VirtioNet header precedes each packet
 ///
-/// The `num_buffers` field is present only when `VIRTIO_NET_F_MRG_RXBUF` is
-/// negotiated. This driver does not negotiate that feature (see
-/// [`NetworkFeatures::supported_features`]), so the header is the plain
-/// 10-byte `virtio_net_hdr`. Including `num_buffers` here would shift every
-/// packet by two bytes and corrupt TX (the device would read the trailing two
-/// zero bytes as the start of the frame) and truncate RX.
+/// The wire size of the header depends on the transport, not on the feature
+/// set alone:
+///
+/// * a legacy transport uses the plain 10-byte `virtio_net_hdr`;
+/// * a VIRTIO 1.0+ transport always carries the trailing `num_buffers` field,
+///   so the header is 12 bytes even though this driver does not negotiate
+///   `VIRTIO_NET_F_MRG_RXBUF`.
+///
+/// Writing the wrong size shifts every frame by two bytes: the device reads
+/// the end of the header as the start of the Ethernet header (TX) or the
+/// driver skips two bytes of the frame (RX). Both look like a dead link.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct VirtioNetHdr {
@@ -21,6 +26,13 @@ pub(super) struct VirtioNetHdr {
     csum_start: u16,
     csum_offset: u16,
 }
+
+/// Wire size of [`VirtioNetHdr`] on a legacy transport.
+pub(super) const LEGACY_HDR_LEN: usize = size_of::<VirtioNetHdr>();
+
+/// Wire size of [`VirtioNetHdr`] on a VIRTIO 1.0+ transport: the 10-byte
+/// header plus the always-present `num_buffers` field.
+pub(super) const MODERN_HDR_LEN: usize = LEGACY_HDR_LEN + size_of::<u16>();
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default)]
