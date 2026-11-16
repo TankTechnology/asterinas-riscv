@@ -244,8 +244,9 @@ pub(super) fn init() {
     };
     let Some(node) = resolve_selected(Some(selector), |path| device_tree.find_node(path)) else {
         ostd::warn!(
-            "failed to resolve USB host selected by '/chosen/{}'",
-            USB_HOST_SELECTOR
+            "failed to resolve USB host selected by '/chosen/{}' (value {:?})",
+            USB_HOST_SELECTOR,
+            selector
         );
         return;
     };
