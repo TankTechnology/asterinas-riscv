@@ -190,9 +190,13 @@ impl MtlRxLossDiagnostics {
 }
 
 impl TxDiagnostics {
+    pub(super) fn can_sample_frame(&self) -> bool {
+        self.report.observed < FRAME_SAMPLE_LIMIT
+    }
+
     /// Records one frame and reports whether it is the first TCP data frame.
     pub(super) fn record_frame(&mut self, frame: &[u8]) -> bool {
-        if self.report.observed >= FRAME_SAMPLE_LIMIT {
+        if !self.can_sample_frame() {
             return false;
         }
 

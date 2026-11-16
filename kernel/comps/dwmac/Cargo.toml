@@ -10,6 +10,7 @@ aster-network.workspace = true
 aster-softirq.workspace = true
 aster-time.workspace = true
 component.workspace = true
+dma-pool.workspace = true
 ostd.workspace = true
 ostd-pod.workspace = true
 spin.workspace = true

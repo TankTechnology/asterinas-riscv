@@ -267,6 +267,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-dwmac"
+version = "0.1.0"
+dependencies = [
+ "aster-bigtcp",
+ "aster-logger",
+ "aster-network",
+ "aster-softirq",
+ "aster-time",
+ "component",
+ "dma-pool",
+ "fdt",
+ "ostd",
+ "ostd-pod",
+ "spin 0.9.9",
+ "zerocopy",
+]
+
+[[package]]
 name = "aster-framebuffer"
 version = "0.1.0"
 dependencies = [
@@ -553,6 +571,7 @@ version = "0.1.0"
 dependencies = [
  "aster-core",
  "aster-drm",
+ "aster-dwmac",
  "aster-i8042",
  "aster-mmc",
  "aster-simpledrm",

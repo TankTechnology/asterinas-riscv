@@ -123,7 +123,7 @@ impl PlatformConfig {
     fn interrupt_source(&self) -> InterruptSourceInFdt {
         InterruptSourceInFdt {
             interrupt_parent: self.interrupt.0,
-            interrupt: self.interrupt.1,
+            arguments: [self.interrupt.1],
         }
     }
 }
@@ -855,7 +855,7 @@ pub(super) fn prepare() -> Result<Option<MegrezPlatform>, PlatformError> {
             config.controller_id,
             config.mmio_range,
             interrupt_source.interrupt_parent,
-            interrupt_source.interrupt,
+            interrupt_source.arguments[0],
             config.mac_address,
             config.phy_address,
             id1,

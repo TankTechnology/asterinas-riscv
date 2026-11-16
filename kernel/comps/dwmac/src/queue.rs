@@ -6,7 +6,8 @@ extern crate alloc;
 
 use alloc::{sync::Arc, vec::Vec};
 
-use aster_network::{RxBuffer, TxBuffer, dma_pool::DmaPool};
+use aster_bigtcp::packet::{LinkLayer, RxBuffer, RxPacket, TxBuffer, TxPacket};
+use dma_pool::DmaPool;
 use ostd::mm::{
     HasDaddr, HasPaddr, PAGE_SIZE, VmIo, VmIoOnce,
     dma::{DmaCoherent, FromDevice, ToDevice},
@@ -30,6 +31,21 @@ const POOL_HIGH_WATERMARK: usize = 64;
 
 static RX_POOL: Once<Arc<DmaPool<FromDevice>>> = Once::new();
 static TX_POOL: Once<Arc<DmaPool<ToDevice>>> = Once::new();
+
+/// Creates the frame pools on first use.
+fn init_pools() {
+    RX_POOL.call_once(|| DmaPool::new(BUFFER_SIZE, POOL_INIT_PAGES, POOL_HIGH_WATERMARK, false));
+    TX_POOL.call_once(|| DmaPool::new(BUFFER_SIZE, POOL_INIT_PAGES, POOL_HIGH_WATERMARK, false));
+}
+
+/// Returns the transmit pool so packets handed to the stack can share it.
+///
+/// `AnyNetworkDevice::alloc_tx_buffer` is associated with the device type
+/// rather than a device instance, so it reaches the pool through here.
+pub(super) fn tx_packet_pool() -> Option<Arc<DmaPool<ToDevice>>> {
+    init_pools();
+    TX_POOL.get().cloned()
+}
 
 /// A bounded queue-state failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,11 +184,10 @@ pub(super) struct DmaQueue {
 impl DmaQueue {
     pub fn new() -> Result<Self, QueueError> {
         const { assert!(RING_BYTES <= PAGE_SIZE) };
-        RX_POOL
-            .call_once(|| DmaPool::new(BUFFER_SIZE, POOL_INIT_PAGES, POOL_HIGH_WATERMARK, false));
-        TX_POOL
-            .call_once(|| DmaPool::new(BUFFER_SIZE, POOL_INIT_PAGES, POOL_HIGH_WATERMARK, false));
-        let rx_pool = RX_POOL.get().unwrap();
+        init_pools();
+        let rx_pool = RX_POOL
+            .get()
+            .ok_or(QueueError::Allocation)?;
         // Hardware and the CPU update adjacent 16-byte descriptors independently.
         // An uncached mapping prevents one side from writing back a stale sibling
         // descriptor while synchronizing their shared 64-byte cache line.
@@ -192,7 +207,7 @@ impl DmaQueue {
             tx_reclaimed: 0,
         };
         for slot in 0..QUEUE_SIZE {
-            let buffer = RxBuffer::new(0, rx_pool).map_err(|_| QueueError::Allocation)?;
+            let buffer = RxBuffer::alloc(rx_pool).map_err(|_| QueueError::Allocation)?;
             let mut descriptor = Descriptor::zeroed();
             descriptor.publish_rx(DmaAddress::new(buffer.daddr() as u64), BUFFER_SIZE)?;
             queue.write_descriptor(false, slot, &descriptor)?;
@@ -225,20 +240,24 @@ impl DmaQueue {
             .is_ok_and(|descriptor| !descriptor.is_owned_by_dma())
     }
 
-    pub fn send(&mut self, packet: &[u8]) -> Result<usize, QueueError> {
-        if packet.is_empty() || packet.len() > MAX_FRAME_SIZE {
+    pub fn send(&mut self, packet: TxPacket<LinkLayer>) -> Result<usize, QueueError> {
+        let packet_len = packet.len();
+        if packet_len == 0 || packet_len > MAX_FRAME_SIZE {
             return Err(QueueError::InvalidFrame);
         }
         self.reclaim_tx(POLL_BUDGET)?;
-        let tx_pool = TX_POOL.get().ok_or(QueueError::Allocation)?;
-        let buffer =
-            TxBuffer::new(&[0u8; 0], packet, tx_pool).map_err(|_| QueueError::Allocation)?;
+        // No device-layer header exists on this MAC, so the link-layer packet
+        // is already the whole frame the DMA engine must read.
+        let buffer = packet
+            .pack(0)
+            .map_dma(false)
+            .map_err(|_| QueueError::Allocation)?;
         let slot = self.tx.reserve()?;
         if self.tx_buffers[slot].is_some() {
             return Err(QueueError::Full);
         }
         let mut descriptor = Descriptor::zeroed();
-        descriptor.publish_tx(DmaAddress::new(buffer.daddr() as u64), packet.len())?;
+        descriptor.publish_tx(DmaAddress::new(buffer.daddr() as u64), packet_len)?;
         self.write_descriptor(true, slot, &descriptor)?;
         self.tx_buffers[slot] = Some(buffer);
         self.tx_submitted = self.tx_submitted.saturating_add(1);
@@ -246,7 +265,7 @@ impl DmaQueue {
         Ok(self.addresses().tx_ring + next * size_of::<Descriptor>())
     }
 
-    pub fn receive(&mut self) -> Result<RxBuffer, QueueError> {
+    pub fn receive(&mut self) -> Result<RxPacket<LinkLayer>, QueueError> {
         let slot = self.rx_head;
         let mut descriptor = self.read_descriptor(false, slot)?;
         let length = match descriptor.take_completed_rx(BUFFER_SIZE) {
@@ -265,15 +284,15 @@ impl DmaQueue {
             }
         };
         let rx_pool = RX_POOL.get().ok_or(QueueError::Allocation)?;
-        let replacement = RxBuffer::new(0, rx_pool).map_err(|_| QueueError::Allocation)?;
+        let replacement = RxBuffer::alloc(rx_pool).map_err(|_| QueueError::Allocation)?;
         descriptor.publish_rx(DmaAddress::new(replacement.daddr() as u64), BUFFER_SIZE)?;
         self.write_descriptor(false, slot, &descriptor)?;
-        let mut completed = self.rx_buffers[slot]
+        let completed = self.rx_buffers[slot]
             .replace(replacement)
             .ok_or(QueueError::DmaAccess)?;
-        completed.set_payload_len(length);
         self.advance_rx();
-        Ok(completed)
+        // The GMAC writes link-layer frames with no device header of its own.
+        Ok(completed.finish_dma(length).peel::<LinkLayer>(0))
     }
 
     pub fn reclaim_tx(&mut self, budget: usize) -> Result<PollResult, QueueError> {

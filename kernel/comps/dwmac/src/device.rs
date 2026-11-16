@@ -7,8 +7,10 @@ extern crate alloc;
 use alloc::{string::ToString, sync::Arc};
 use core::{fmt, hint::spin_loop, time::Duration};
 
-use aster_bigtcp::device::{Checksum, DeviceCapabilities, Medium};
-use aster_network::{AnyNetworkDevice, EthernetAddr, NetError, RxBuffer};
+use aster_bigtcp::{
+    device::{AnyNetworkDevice, Checksum, DeviceCapabilities, EthernetAddress, Medium, NetError},
+    packet::{FreshTxPacket, LinkLayer, RxPacket, TxPacket},
+};
 use aster_softirq::BottomHalfDisabled;
 use ostd::{
     arch::irq::{DeferredMappedIrqLine, IRQ_CHIP},
@@ -23,7 +25,9 @@ use crate::{
     descriptor::DescriptorError,
     diagnostics::{MtlRxLossDiagnostics, RxDescriptorDrop, RxDiagnostics, TxDiagnostics},
     poll::{PollEndAction, RxPollBudget},
-    queue::{DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError},
+    queue::{
+        BUFFER_SIZE, DmaQueue, POLL_BUDGET, QUEUE_SIZE, QueueAddresses, QueueError, tx_packet_pool,
+    },
     regs::{
         DMA_CHANNEL0_CONTROL, DMA_CHANNEL0_INTERRUPT_ENABLE, DMA_CHANNEL0_RX_CONTROL,
         DMA_CHANNEL0_RX_DESCRIPTOR_LIST, DMA_CHANNEL0_RX_DESCRIPTOR_LIST_HIGH,
@@ -514,13 +518,13 @@ impl DwmacDevice {
         status
     }
 
-    fn record_received_frame(&mut self, buffer: &RxBuffer) {
+    fn record_received_frame(&mut self, buffer: &RxPacket<LinkLayer>) {
         if !self.rx_diagnostics.can_sample_frame() {
             return;
         }
 
         let mut prefix = [0u8; RX_DIAGNOSTIC_PREFIX_LEN];
-        let mut payload = buffer.payload();
+        let mut payload = buffer.reader();
         let prefix_len = payload.remain().min(prefix.len());
         payload.limit(prefix_len);
         let copied = payload.read(&mut VmWriter::from(&mut prefix[..prefix_len]));
@@ -591,8 +595,8 @@ impl DwmacDevice {
 }
 
 impl AnyNetworkDevice for DwmacDevice {
-    fn mac_addr(&self) -> EthernetAddr {
-        EthernetAddr(self.selected.mac_address)
+    fn mac_addr(&self) -> EthernetAddress {
+        EthernetAddress(self.selected.mac_address)
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -607,7 +611,7 @@ impl AnyNetworkDevice for DwmacDevice {
         !self.fatal && self.queue.can_send()
     }
 
-    fn receive(&mut self) -> Result<RxBuffer, NetError> {
+    fn receive(&mut self) -> Result<RxPacket<LinkLayer>, NetError> {
         let packet = self.queue.receive();
         if let Some(tail) = self.queue.take_rx_tail() {
             dma_write_barrier();
@@ -635,19 +639,38 @@ impl AnyNetworkDevice for DwmacDevice {
         }
     }
 
-    fn send(&mut self, packet: &[u8]) -> Result<(), NetError> {
+    fn send(&mut self, packet: TxPacket<LinkLayer>) -> Result<(), NetError> {
+        // The transmit classifier needs the whole frame (it validates the
+        // IPv4 total length), so the sample is copied out before the packet
+        // moves into the ring. Only the first frames of a boot are sampled.
+        let first_tcp_data = if self.tx_diagnostics.can_sample_frame() {
+            let mut frame = alloc::vec![0u8; packet.len()];
+            let mut reader = packet.reader();
+            let copied = reader.read(&mut VmWriter::from(&mut frame[..]));
+            frame.truncate(copied);
+            self.tx_diagnostics.record_frame(&frame)
+        } else {
+            false
+        };
         let tail = match self.queue.send(packet) {
             Ok(tail) => tail,
             Err(QueueError::Allocation) => return Err(NetError::NoMemory),
             Err(QueueError::Full) => return Err(NetError::Busy),
             Err(_) => return Err(NetError::NotReady),
         };
-        if self.tx_diagnostics.record_frame(packet) {
+        if first_tcp_data {
             ostd::info!("ASTERINAS_GMAC_TX stage=tcp-data-submitted");
         }
         dma_write_barrier();
         self.write(DMA_CHANNEL0_TX_TAIL_POINTER.offset(), tail as u32)
             .map_err(|_| NetError::NotReady)
+    }
+
+    fn alloc_tx_buffer(payload_len: usize) -> Result<FreshTxPacket, ostd::Error> {
+        if payload_len > BUFFER_SIZE {
+            return Err(ostd::Error::InvalidArgs);
+        }
+        FreshTxPacket::alloc_from_pool(&tx_packet_pool().ok_or(ostd::Error::InvalidArgs)?)
     }
 
     fn free_processed_tx_buffers(&mut self) {
