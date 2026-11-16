@@ -518,6 +518,11 @@ impl VmMapping {
                         cursor.unmap(PAGE_SIZE);
                         cursor.jump(va.start).unwrap();
                         cursor.map(new_frame.into(), prop);
+                        // Drop this CPU's translation for the remapped page. The
+                        // remote flush below does not cover the CPU that faults,
+                        // and a cached read-only entry makes the store fault
+                        // forever (the handler keeps "succeeding").
+                        TlbFlushOp::for_range(va).perform_on_current();
                         // FIXME: Linux re-classifies the page from `File` to `Anon` in RSS,
                         // when a COW on a file-backed mapping happens.
                         // We currently do not support this re-classification,
@@ -885,7 +890,13 @@ impl VmMapping {
         let range = self.range();
         let mut cursor = vm_space.cursor_mut(&preempt_guard, &range).unwrap();
 
-        let op = |flags: &mut PageFlags, _cache: &mut CachePolicy| *flags = new_flags;
+        // Keep the accessed and dirty bits: the hardware faults on a present
+        // entry with a clear accessed bit, and the fault handler treats the
+        // page as already mapped, so clearing them here would fault forever.
+        let op = |flags: &mut PageFlags, _cache: &mut CachePolicy| {
+            let kept = *flags & (PageFlags::ACCESSED | PageFlags::DIRTY);
+            *flags = new_flags | kept;
+        };
         while cursor.virt_addr() < range.end {
             if let Some(va) = cursor.protect_next(range.end - cursor.virt_addr(), op) {
                 cursor.flusher().issue_tlb_flush(TlbFlushOp::for_range(va));

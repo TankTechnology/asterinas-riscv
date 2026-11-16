@@ -44,7 +44,12 @@ pub(crate) fn init_in_first_process(ctx: &Context) {
     let fs = ctx.thread_local.borrow_fs();
     let path_resolver = fs.resolver().read();
 
-    if init::booted_from_rootfs() {
+    // The kernel's device nodes (ttys, block devices) live in devtmpfs, so it
+    // has to be mounted in both boot paths. An initramfs init that boots
+    // another root (for example, stage1 handing off to a disk root) needs the
+    // block devices just as much as a direct rootfs init does; without them
+    // its root discovery finds nothing.
+    {
         let dev_path = lookup_or_create_dev(&path_resolver).unwrap();
         dev_path
             .mount(
@@ -54,6 +59,9 @@ pub(crate) fn init_in_first_process(ctx: &Context) {
                 ctx,
             )
             .unwrap();
+        // The mount shadows whatever `/dev` the initramfs carried, including
+        // its `/dev/console`; make sure the node exists in the new mount.
+        initramfs::ensure_dev_console(&path_resolver).unwrap();
     }
 
     // Initialize the file table for the first process.

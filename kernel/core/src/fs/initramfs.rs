@@ -83,7 +83,7 @@ fn unpack_to_rootfs<R: Read>(
     Ok(())
 }
 
-fn ensure_dev_console(path_resolver: &PathResolver) -> Result<()> {
+pub(crate) fn ensure_dev_console(path_resolver: &PathResolver) -> Result<()> {
     // Linux's default built-in initramfs provides /dev and /dev/console so
     // early userspace can open the console even if the external initramfs does
     // not carry this node. Asterinas provides the same default entries after
