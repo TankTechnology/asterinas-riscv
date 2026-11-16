@@ -108,14 +108,18 @@ impl OptionSet {
 impl StreamSocket {
     pub(crate) fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new();
-        Arc::new(Self {
+        let socket = Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Init(init_stream))),
             family,
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
             common: new_socket_common(is_nonblocking),
-        })
+        });
+        crate::net::net_ns::current_net_ns()
+            .proc_net_sockets()
+            .register(Arc::downgrade(&socket) as alloc::sync::Weak<dyn crate::net::socket::proc_net::ProcNetSocket>);
+        socket
     }
 
     fn new_accepted(
@@ -1022,5 +1026,38 @@ impl Drop for StreamSocket {
 
         let linger = self.options.get_mut().socket.linger();
         close_and_linger(conn, linger, &self.pollee);
+    }
+}
+
+impl crate::net::socket::proc_net::ProcNetSocket for StreamSocket {
+    fn proc_net_entries(&self, out: &mut Vec<crate::net::socket::proc_net::ProcNetEntry>) {
+        use crate::net::socket::proc_net::{InetProtocol, InetSocketEntry, ProcNetEntry};
+
+        let state = self.state.read();
+        let (local, remote, code) = match &**state {
+            State::Init(init) => match init.local_endpoint() {
+                Some(local) => (local, None, 7 /* TCP_CLOSE */),
+                None => return,
+            },
+            State::Connecting(connecting) => (
+                connecting.local_endpoint(),
+                Some(connecting.remote_endpoint()),
+                2, /* TCP_SYN_SENT */
+            ),
+            State::Connected(connected) => (
+                connected.local_endpoint(),
+                Some(connected.remote_endpoint()),
+                1, /* TCP_ESTABLISHED */
+            ),
+            State::Listen(listen) => (listen.local_endpoint(), None, 10 /* TCP_LISTEN */),
+        };
+        out.push(ProcNetEntry::Inet(InetSocketEntry {
+            protocol: InetProtocol::Tcp,
+            local,
+            remote,
+            state: code,
+            inode: self.common.inode_number(),
+            uid: 0,
+        }));
     }
 }
