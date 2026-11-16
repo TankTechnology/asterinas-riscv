@@ -321,12 +321,13 @@ impl ToEarlyBootInfo for MultibootLegacyInfo {
             return None;
         }
 
-        Some(BootloaderFramebufferArg {
-            address: self.framebuffer_table.addr as usize,
-            width: self.framebuffer_table.width as usize,
-            height: self.framebuffer_table.height as usize,
-            bpp: self.framebuffer_table.bpp as usize,
-        })
+        BootloaderFramebufferArg::from_legacy_bpp(
+            self.framebuffer_table.addr as usize,
+            self.framebuffer_table.width as usize,
+            self.framebuffer_table.height as usize,
+            self.framebuffer_table.pitch as usize,
+            self.framebuffer_table.bpp as usize,
+        )
     }
 
     fn memory_regions(

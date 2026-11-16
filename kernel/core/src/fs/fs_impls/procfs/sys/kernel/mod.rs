@@ -8,7 +8,6 @@ use crate::{
         procfs::{
             ProcDir, StaticEntry,
             sys::kernel::{
-                asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps,
                 cap_last_cap::CapLastCapFileOps,
                 overflow_gid::OverflowGidFileOps,
                 overflow_uid::OverflowUidFileOps,
@@ -29,6 +28,10 @@ use crate::{
     security::lsm::is_yama_enabled,
 };
 
+#[cfg(target_arch = "riscv64")]
+use crate::fs::procfs::sys::kernel::asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps;
+
+#[cfg(target_arch = "riscv64")]
 mod asterinas_reboot_watchdog;
 #[cfg(target_arch = "riscv64")]
 mod asterinas_watchdog_drill;
@@ -53,6 +56,7 @@ impl KernelDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntry] = &[
+        #[cfg(target_arch = "riscv64")]
         (
             "asterinas_reboot_watchdog",
             InodeType::File,
@@ -89,7 +93,7 @@ impl KernelDirOps {
     ];
 }
 
-#[cfg(ktest)]
+#[cfg(all(ktest, target_arch = "riscv64"))]
 mod tests {
     use ostd::prelude::*;
 

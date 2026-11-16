@@ -148,12 +148,13 @@ impl ToEarlyBootInfo for BootParams {
             return None;
         }
 
-        Some(BootloaderFramebufferArg {
+        BootloaderFramebufferArg::from_legacy_bpp(
             address,
-            width: screen_info.lfb_width as usize,
-            height: screen_info.lfb_height as usize,
-            bpp: screen_info.lfb_depth as usize,
-        })
+            screen_info.lfb_width as usize,
+            screen_info.lfb_height as usize,
+            screen_info.lfb_linelength as usize,
+            screen_info.lfb_depth as usize,
+        )
     }
 
     fn memory_regions(

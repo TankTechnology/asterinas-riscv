@@ -41,6 +41,7 @@ macro_rules! __log_prefix {
 #[cfg_attr(target_arch = "aarch64", path = "arch/arm/mod.rs")]
 mod arch;
 pub(crate) mod bpf;
+#[cfg(target_arch = "riscv64")]
 pub(crate) mod hardware_watchdog;
 
 #[cfg(target_arch = "riscv64")]

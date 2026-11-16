@@ -54,7 +54,7 @@ use super::{
         meta::{AnyFrameMeta, MetaPageMeta, mapping},
     },
     page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags},
-    page_table::{PageTable, PageTableConfig, largest_pages, max_page_level},
+    page_table::{PageTable, largest_pages, max_page_level},
 };
 use crate::{
     arch::mm::PagingConsts,

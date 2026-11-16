@@ -101,12 +101,13 @@ impl ToEarlyBootInfo for BootInformation<'_> {
     fn framebuffer_arg(&self) -> Option<BootloaderFramebufferArg> {
         let fb_tag = self.framebuffer_tag()?.ok()?;
 
-        Some(BootloaderFramebufferArg {
-            address: fb_tag.address() as usize,
-            width: fb_tag.width() as usize,
-            height: fb_tag.height() as usize,
-            bpp: fb_tag.bpp() as usize,
-        })
+        BootloaderFramebufferArg::from_legacy_bpp(
+            fb_tag.address() as usize,
+            fb_tag.width() as usize,
+            fb_tag.height() as usize,
+            fb_tag.pitch() as usize,
+            fb_tag.bpp() as usize,
+        )
     }
 
     fn memory_regions(
