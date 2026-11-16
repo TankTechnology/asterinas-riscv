@@ -177,3 +177,44 @@ Known gap: the hierarchy root (`/sys/cgroup.events`, served by `CgroupSystem`,
 not `CgroupNode`) still has no notifier. Nothing in a systemd-style workload
 polls it, and the root's `populated` is not tracked there.
 
+
+## 4. Rebase kernel as the full Megrez desktop (2026-11-17)
+
+The rebase kernel now boots the deployed `stage1-daily.cpio` + rootfs to
+`ASTERINAS_DESKTOP_BOOT_READY` in 14.6 s, with Xorg on the framebuffer, both
+USB HID devices open in Xorg, the campus network live, and Firefox rendering
+the Baidu home page (`ASTERINAS_BROWSER_NAVIGATE_OK`). Commit `06ea8220e`.
+
+Three kernel defects kept user space from getting that far; each one showed up
+as "the board hangs with no output", because the process it killed was the init
+itself:
+
+* **`mprotect` dropped the accessed/dirty bits.** `VmMapping::protect` replaced
+  each entry's flags with the new permission bits. The EIC7700 faults on a
+  present entry whose accessed bit is clear, and the fault handler treats a
+  present entry as already mapped, so the store/load repeated forever (2239
+  identical faults at one address in the trace). QEMU sets the bits itself, so
+  only the board saw it. Preserve ACCESSED and DIRTY.
+* **Copy-on-write never flushed the faulting CPU.** After `unmap` + `map` it
+  only flushed the remote CPUs; the local translation stayed read-only and the
+  store faulted again, forever. Flush the page locally as well.
+* **devtmpfs was mounted only for a direct rootfs boot.** An initramfs init
+  that hands off to a disk root (`stage1`, `--root-init=systemd`) therefore saw
+  an empty `/dev`: no `/dev/mmcblk0p2`, so stage1's root discovery timed out.
+  Mount devtmpfs on both boot paths and re-create `/dev/console`, which the
+  mount shadows.
+
+Boot the test with **`asterinas.reboot_after=900`**, the deployed value. The
+userspace timer derives its 720 s deadline from the kernel deadline
+(`KERNEL_REBOOT_GUARD_SECONDS = 180`); with the 300 s deadline used for the
+raw-init tests it fires ~15 s after desktop readiness and reboots a healthy
+desktop. Its own `ASTERINAS_USERSPACE_REBOOT_DISARMED reason=desktop-ready`
+then never appears.
+
+Remaining gaps on this kernel (both non-fatal: the desktop's device-access
+check logs `ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did
+not appear`, and the session continues):
+
+* `/proc/bus/input/devices` and `/sys/class/input/` do not exist. The evdev
+  nodes (`/dev/input/event0`, `event1`) do, and Xorg opens both.
+* The rootfs sees the desktop-ready path; nothing else was found missing.
