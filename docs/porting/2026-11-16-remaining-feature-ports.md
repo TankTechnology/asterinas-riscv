@@ -57,6 +57,38 @@ second controller is what the downstream commit enumerates. Port it on top of
 the current device model (`kernel/core/comps/device`) and verify with the
 board's two root ports.
 
+### Done (2026-11-16): `092162b00`
+
+The NUL-separated `/chosen/asterinas,usb-host` list was already understood; the
+gap was that the driver kept exactly one host in process-wide statics
+(`HOST_RESOURCES`, `KEYBOARD`, `KEYBOARD_WAKER`, `IRQ_LINE`, and a deferred
+keyboard decoder). Now:
+
+* `init` collects every controller that validates into `HOST_CONFIGS`;
+  `host_count`/`run_host(index)` let the kernel spawn one worker per controller
+  (`kernel/core/src/init.rs`).
+* A worker owns its MMIO mapping, IRQ mapping, waker, decoders and input
+  devices. Mouse reports, previously dropped by the loop, are decoded through
+  the descriptor-derived layout and registered as their own input device.
+
+Two MMIO rules decide how the mapping reaches a worker, and both had already
+broken the previous board boot:
+
+* `PollingUsbHidHost::open` rejects a mapping whose `IoMem` is shared
+  (`is_unique` = the `KVirtArea` has one owner), so cloning the stored `IoMem`
+  fails with `InvalidMmio`. The PCI host config is taken
+  (`take_host_config`), and DWC3 workers acquire their range directly.
+* `IoMemAllocator::recycle` is dead code: an MMIO range is never freed when its
+  `IoMem` drops. A range probed in `init` could not be acquired again by the
+  worker, so the capability probe moved into the worker.
+
+Board result: both workers start (`Starting USB host 0/1`), each controller
+reports its single connected port, and the loops split the devices —
+`keyboard=true, mouse=false` on one and `keyboard=false, mouse=true` on the
+other. The single-host driver could only ever serve one of the two sockets.
+QEMU virt still takes the PCI path; a controller with no HID device now logs
+that instead of an error.
+
 ## Testing recipe used for the finished items
 
 Initramfs test programs are raw-syscall statics (`-nostdlib -static -Os
@@ -64,6 +96,29 @@ Initramfs test programs are raw-syscall statics (`-nostdlib -static -Os
 board's init stdout is the VT. Procfs and sysfs must be mounted by the init
 before either is read — an unmounted `/proc` reads as a missing file and cost
 one debugging cycle already.
+
+### Booting a direct-init test kernel on the board
+
+`megrez_console.py boot` only validates stage1 (`--root-init=`) command lines,
+so a `init=/init` handoff is driven directly through the bridge FIFO
+(`/tmp/board-net/boot_cg.py` does this):
+
+1. Confirm the persistent bootcmd still boots the deployed system — on this
+   board it is `ext4load ... /root/boot.scr && source`, not a literal `booti`.
+2. Interrupt autoboot by writing a line containing one space to the FIFO (a
+   bare space is never flushed: the bridge flushes on LF only).
+3. `ext4load mmc 1:2` the initrd and kernel, `ext4load mmc 1:1` the DTB, set
+   `bootargs`, compare the reported kernel size with the local file.
+4. Arm the DesignWare watchdog exactly as bootcmd does, then
+   `booti 0x80200000 0x88300000:${initrd_size} 0x88000000` with
+   `asterinas.reboot_after=120 asterinas.panic_reboot=1
+   asterinas.hardware_watchdog_handoff=1` and both `mmc_write_partition2/3`.
+5. The deadline returns the board to U-Boot and then to the deployed desktop
+   on its own; nothing has to be recovered by hand.
+
+Prefer the network for the transfer (`scp` to `/root` while the deployed
+desktop is portal-authenticated): the dev kernel image is ~20 MiB, far past the
+console-push budget.
 
 ## Update: what the cgroup.events poll path needs (2026-11-16, later)
 
