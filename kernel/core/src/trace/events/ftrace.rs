@@ -15,5 +15,9 @@ use crate::trace::event::TraceEvent;
 pub const NAME: &str = "ftrace";
 
 /// Emitted on entry to (almost) every function.
-pub static FUNCTION: TraceEvent =
-    TraceEvent::new(12, NAME, "function", "field:ip hex; field:func char[]; field:offset long");
+pub static FUNCTION: TraceEvent = TraceEvent::new(
+    12,
+    NAME,
+    "function",
+    "field:ip hex; field:func char[]; field:offset long",
+);

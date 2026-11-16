@@ -48,9 +48,9 @@ fi
 cargo osdk build --release --target-arch riscv64 --scheme riscv \
     --features=riscv_sv39_mode $ARGS
 
-ELF=target/osdk/aster-kernel/aster-kernel-osdk-bin
-IMAGE=target/osdk/aster-kernel/aster-kernel-osdk-bin.Image
-TOP=target/osdk/aster-kernel-osdk-bin.Image
+ELF=target/osdk/asterinas/asterinas-osdk-bin
+IMAGE=target/osdk/asterinas/asterinas-osdk-bin.Image
+TOP=target/osdk/asterinas-osdk-bin.Image
 
 if [ ! -f "$ELF" ] || [ ! -f "$IMAGE" ]; then
     echo "build_kernel: expected $ELF and $IMAGE after the build" >&2

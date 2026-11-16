@@ -8,9 +8,11 @@
 //! and takes it under a spinlock with local interrupts disabled, which is also
 //! what makes an event emitted from an interrupt handler safe.
 
-use core::{sync::atomic::AtomicBool, time::Duration};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
-use core::sync::atomic::Ordering;
 use ostd::{
     cpu::PinCurrentCpu,
     sync::{LocalIrqDisabled, SpinLock},
@@ -178,7 +180,9 @@ pub fn for_each_record_bounded(mut visit: impl FnMut(Record<'_>) -> bool, bounds
 
     // Reading locks this CPU's ring too, and the reader's own function calls
     // are instrumented; see `IN_RING`.
-    let Some(self_cpu) = current_cpu() else { return };
+    let Some(self_cpu) = current_cpu() else {
+        return;
+    };
     if IN_RING[self_cpu].swap(RING_ALREADY_ACTIVE, Ordering::Relaxed) {
         return;
     }
@@ -284,7 +288,11 @@ mod test {
             pids.push(record.pid);
             true
         });
-        assert_eq!(pids.len(), RING_SLOTS, "a full ring keeps RING_SLOTS records");
+        assert_eq!(
+            pids.len(),
+            RING_SLOTS,
+            "a full ring keeps RING_SLOTS records"
+        );
         assert_eq!(pids[0], 5, "the oldest five were overwritten");
         assert_eq!(pids[RING_SLOTS - 1], (total - 1) as u32);
     }

@@ -42,6 +42,7 @@ enum CSocketOptionName {
     RCVTIMEO_OLD = 20,
     SNDTIMEO_OLD = 21,
     ATTACH_FILTER = 26,
+    ATTACH_BPF = 50,
     DETACH_FILTER = 27,
     ACCPETCONN = 30,
     PEERSEC = 31,

@@ -2,10 +2,15 @@
 
 use super::SyscallReturn;
 use crate::{
+    bpf::prog::ProgFile,
     fs::file::file_table::{RawFileDesc, get_file_fast},
+    net::socket::options::AttachBpf,
     prelude::*,
     util::net::{CSocketOptionLevel, new_raw_socket_option},
 };
+
+/// `SO_ATTACH_BPF`: the payload is an eBPF program file descriptor.
+const SO_ATTACH_BPF: i32 = 50;
 
 pub(super) fn sys_setsockopt(
     sockfd: RawFileDesc,
@@ -41,9 +46,37 @@ pub(super) fn sys_setsockopt(
         return_errno_with_message!(Errno::EINVAL, "the option length is zero");
     }
 
-    let mut file_table = ctx.thread_local.borrow_file_table_mut();
-    let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
+    // The descriptor is taken out of the table before anything else is looked
+    // up: resolving the program below needs the table again, and the thread's
+    // table can only be borrowed once.
+    let file = {
+        let mut file_table = ctx.thread_local.borrow_file_table_mut();
+        get_file_fast!(&mut file_table, sockfd.try_into()?).into_owned()
+    };
     let socket = file.as_socket_or_err()?;
+
+    // Unlike every other socket option, this one's payload is a file
+    // descriptor rather than a value, so it is resolved here.
+    if level == CSocketOptionLevel::SOL_SOCKET && optname == SO_ATTACH_BPF {
+        if optlen != size_of::<i32>() as u32 {
+            return_errno_with_message!(Errno::EINVAL, "SO_ATTACH_BPF takes one descriptor");
+        }
+        let user_space = ctx.user_space();
+        let mut reader = user_space.reader(optval, size_of::<i32>())?;
+        let program_fd: i32 = reader.read_val()?;
+
+        let program_file = {
+            let mut file_table = ctx.thread_local.borrow_file_table_mut();
+            get_file_fast!(&mut file_table, program_fd.try_into()?).into_owned()
+        };
+        let program_file = program_file.downcast_ref::<ProgFile>().ok_or_else(|| {
+            Error::with_message(Errno::EBADF, "the descriptor is not a bpf program")
+        })?;
+        let mut option = AttachBpf::new();
+        option.set(program_file.program().clone());
+        socket.set_option(&option)?;
+        return Ok(SyscallReturn::Return(0));
+    }
 
     let raw_option = {
         // An unsupported level is `ENOPROTOOPT` for `setsockopt(2)`.

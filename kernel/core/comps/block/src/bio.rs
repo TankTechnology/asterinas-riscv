@@ -127,6 +127,13 @@ impl Bio {
         );
         assert!(result.is_ok());
 
+        call_bio_hook(&BioHookEvent {
+            submitted: true,
+            sid_range: metadata.sid_range(),
+            type_: metadata.type_(),
+            status: BioStatus::Submit,
+        });
+
         let waiter_metadata = metadata.clone();
         let submitted_bio = SubmittedBio {
             metadata,
@@ -254,6 +261,13 @@ impl SubmittedBio {
 
         drop(segments);
 
+        call_bio_hook(&BioHookEvent {
+            submitted: false,
+            sid_range: metadata.sid_range(),
+            type_: metadata.type_(),
+            status,
+        });
+
         // Complete the `complete_fn` before publishing the status change,
         // so that the effects of the callback function are visible to users.
         general_complete_fn(metadata.type_(), metadata.sid_range(), status, complete_fn);
@@ -344,6 +358,34 @@ pub enum BioType {
     /// Flush the volatile write cache.
     Flush = 2,
     // TODO: Add support for other BIO types, such as discarding sectors.
+}
+
+/// What a BIO hook is told when a request is submitted or completed.
+///
+/// Tracing lives in the kernel, which this crate cannot see, so the kernel
+/// injects a hook the same way it does with `ostd`.
+pub struct BioHookEvent<'a> {
+    /// `true` for submission, `false` for completion.
+    pub submitted: bool,
+    /// The sector range the request covers.
+    pub sid_range: &'a Range<Sid>,
+    /// Read, write or flush.
+    pub type_: BioType,
+    /// The completion status; `Submit` for a submission.
+    pub status: BioStatus,
+}
+
+static BIO_HOOK: Once<fn(&BioHookEvent<'_>)> = Once::new();
+
+/// Injects the hook run when a BIO is submitted and when it completes.
+pub fn inject_bio_hook(hook: fn(&BioHookEvent<'_>)) {
+    BIO_HOOK.call_once(|| hook);
+}
+
+fn call_bio_hook(event: &BioHookEvent<'_>) {
+    if let Some(hook) = BIO_HOOK.get() {
+        hook(event);
+    }
 }
 
 /// The status of `Bio`.
@@ -484,9 +526,7 @@ impl BioSegment {
         let mut writer = self.inner.dma_slice().writer()?;
         writer.skip(offset);
         let mut reader = VmReader::from(buf).to_fallible();
-        writer
-            .write_fallible(&mut reader)
-            .map_err(|(err, _)| err)?;
+        writer.write_fallible(&mut reader).map_err(|(err, _)| err)?;
         Ok(())
     }
 
@@ -511,9 +551,7 @@ impl BioSegment {
         let mut reader = self.inner.dma_slice().reader()?;
         reader.skip(offset);
         let mut writer = VmWriter::from(buf).to_fallible();
-        reader
-            .read_fallible(&mut writer)
-            .map_err(|(err, _)| err)?;
+        reader.read_fallible(&mut writer).map_err(|(err, _)| err)?;
         Ok(())
     }
 }

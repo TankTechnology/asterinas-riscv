@@ -58,6 +58,7 @@ pub fn init() {
     function::init();
     profile::init();
     ostd::irq::inject_irq_hook(trace_irq_hook);
+    aster_block::bio::inject_bio_hook(events::block::trace_hook);
 }
 
 /// Runs around every interrupt handler invocation.

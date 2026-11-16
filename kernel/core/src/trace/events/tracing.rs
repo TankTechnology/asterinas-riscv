@@ -11,9 +11,5 @@ pub const NAME: &str = "tracing";
 ///
 /// The kernel never emits this one; the file's write path appends the record,
 /// which is how a trace gets a "this is where my test begins" landmark.
-pub static TRACE_MARKER: TraceEvent = TraceEvent::new(
-    3,
-    NAME,
-    "trace_marker",
-    "field:message char[]",
-);
+pub static TRACE_MARKER: TraceEvent =
+    TraceEvent::new(3, NAME, "trace_marker", "field:message char[]");

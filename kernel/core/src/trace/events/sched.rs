@@ -20,9 +20,5 @@ pub static SCHED_SWITCH: TraceEvent = TraceEvent::new(
 );
 
 /// Emitted when a sleeping task is made runnable (not when it is spawned).
-pub static SCHED_WAKEUP: TraceEvent = TraceEvent::new(
-    5,
-    NAME,
-    "sched_wakeup",
-    "field:pid int; field:tid int",
-);
+pub static SCHED_WAKEUP: TraceEvent =
+    TraceEvent::new(5, NAME, "sched_wakeup", "field:pid int; field:tid int");

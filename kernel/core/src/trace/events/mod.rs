@@ -6,6 +6,7 @@
 //! to directly, which is why the guard branch in `trace_event!` folds away to
 //! nothing when the event is off.
 
+pub mod block;
 pub mod ftrace;
 pub mod irq;
 pub mod mm;
@@ -17,6 +18,7 @@ pub mod tracing;
 
 /// Subsystems in the order they appear under `events/`.
 pub const SUBSYSTEMS: &[&str] = &[
+    block::NAME,
     ftrace::NAME,
     irq::NAME,
     mm::NAME,

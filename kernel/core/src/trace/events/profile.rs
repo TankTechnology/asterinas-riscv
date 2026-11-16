@@ -13,9 +13,5 @@ pub const NAME: &str = "profile";
 /// that says whether the interrupted context was user mode; the name is
 /// resolved when the buffer is read, off the interrupt path. Turns into a
 /// sampling profiler by enabling it: one sample per timer tick per CPU.
-pub static SAMPLE: TraceEvent = TraceEvent::new(
-    13,
-    NAME,
-    "sample",
-    "field:pc hex; field:user bool",
-);
+pub static SAMPLE: TraceEvent =
+    TraceEvent::new(13, NAME, "sample", "field:pc hex; field:user bool");

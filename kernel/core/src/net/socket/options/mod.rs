@@ -42,5 +42,6 @@ impl_socket_options!(
     pub(crate) struct SockDomain(i32);
     pub(crate) struct SockProtocol(i32);
     pub(crate) struct AttachFilter(Arc<Vec<SockFilter>>);
+    pub(crate) struct AttachBpf(Arc<crate::bpf::Program>);
     pub(crate) struct DetachFilter(i32);
 );

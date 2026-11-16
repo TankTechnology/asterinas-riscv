@@ -48,7 +48,7 @@ for arg in "$@"; do
         *) IMAGE=$arg ;;
     esac
 done
-IMAGE=${IMAGE:-$REPO/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image}
+IMAGE=${IMAGE:-$REPO/target/osdk/asterinas/asterinas-osdk-bin.Image}
 
 echo "== preflight"
 if [ "$SKIP_PREFLIGHT" -eq 1 ]; then
