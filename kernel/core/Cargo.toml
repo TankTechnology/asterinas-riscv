@@ -11,6 +11,7 @@ boot-recovery.workspace = true
 tlb-staleness.workspace = true
 cow-decision.workspace = true
 aster-bigtcp.workspace = true
+smoltcp.workspace = true
 aster-block.workspace = true
 aster-cmdline.workspace = true
 aster-console.workspace = true
