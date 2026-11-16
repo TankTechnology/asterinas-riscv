@@ -75,6 +75,23 @@ becomes a hard reset instead of a hang.
   board by itself; that is what the first `EARLY_RESET` builds were actually
   doing.
 
+## The failure narrows to a cross-CPU call storm while the init ELF loads
+
+Instrumenting the IPI path (`inter_processor_call` sender and
+`do_inter_processor_call`) shows CPU 0 issuing the **same** callback
+(`0xffffffff8064c92c`, unchanged in every send) to CPUs 1/2/3 dozens of times
+within a few milliseconds while `create_init_task` loads the init image, and
+the boot never moves past it: the targets all run the callback (the handler's
+enter is logged on each), so it is a storm of state changes, not an
+unanswered IPI. This is the callback a TLB flush dispatch sends, so the loader
+is redoing page-table work in a tight loop.
+
+The same boot in a different build shows the other face of the instability: a
+repeated user fault at one address. Both are consistent with one defect in the
+fast path that maps/remaps pages for a process that is still being built
+(exec/init creation), where the board's translation caches make the retry
+never observe the new mapping.
+
 ## Where to look next
 
 * The IPI path itself: `ostd/src/arch/riscv/irq/ipi.rs` and
