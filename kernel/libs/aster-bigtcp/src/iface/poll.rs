@@ -482,6 +482,15 @@ impl<E: Ext> PollContext<'_, E> {
                 break;
             }
 
+            // A packet held back by a cold ARP table is sent as soon as its
+            // neighbor answers, in the same round the answer was processed.
+            if let Some(tx_packet) = phy.drain_pending()
+                && let Err(err) = device.send(tx_packet)
+            {
+                ostd::error!("failed to send a held network packet: {:?}", err);
+                break;
+            }
+
             if !did_something {
                 break;
             }

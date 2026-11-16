@@ -74,6 +74,15 @@ pub(super) trait PollPhy {
     ) -> Option<TxPacket<LinkLayer>>;
 
     fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error>;
+
+    /// Returns one packet that was held back while its next hop was unresolved.
+    ///
+    /// A link-layer interface that queues packets during neighbor resolution
+    /// (see the Ethernet implementation) returns them here, already framed, so
+    /// the poll loop can hand them to the device in later rounds.
+    fn drain_pending(&self) -> Option<TxPacket<LinkLayer>> {
+        None
+    }
 }
 
 /// A normalized IP address for binding purposes.

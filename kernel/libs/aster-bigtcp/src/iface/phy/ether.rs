@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
@@ -22,7 +22,7 @@ use crate::{
         time::get_network_timestamp,
         wire::{arp, ether},
     },
-    packet::{FreshTxPacket, LinkLayer, RxPacket, TransportLayer, TxPacket},
+    packet::{FreshTxPacket, LinkLayer, NetworkLayer, RxPacket, TransportLayer, TxPacket},
 };
 
 pub struct EtherIface<D, E: Ext> {
@@ -30,7 +30,22 @@ pub struct EtherIface<D, E: Ext> {
     common: IfaceCommon<E>,
     ether_addr: EthernetAddress,
     arp_table: SpinLock<BTreeMap<Ipv4Address, EthernetAddress>, BottomHalfDisabled>,
+    /// Packets whose next hop was not yet in the ARP table.
+    pending: SpinLock<Vec<PendingLinkLayer>, BottomHalfDisabled>,
 }
+
+/// A link-layer packet held back until its next hop resolves.
+struct PendingLinkLayer {
+    next_hop: Ipv4Address,
+    queued_at_ms: i64,
+    packet: TxPacket<NetworkLayer>,
+}
+
+/// How long a packet may wait for a neighbor before it is dropped, and how
+/// many may wait at once. Without a bound, a destination that never answers
+/// (a stale route, a dead peer) would let every send fill kernel memory.
+const PENDING_TIMEOUT_MS: i64 = 3000;
+const MAX_PENDING_PACKETS: usize = 16;
 
 impl<D: WithDevice, E: Ext> EtherIface<D, E> {
     pub fn new(
@@ -77,6 +92,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             common,
             ether_addr,
             arp_table,
+            pending: SpinLock::new(Vec::new()),
         })
     }
 }
@@ -142,9 +158,52 @@ impl<D: WithDevice + 'static, E: Ext> PollPhy for EtherIface<D, E> {
     ) -> Option<TxPacket<LinkLayer>> {
         match self.resolve_ether_or_generate_arp(packet.dst_addr, iface_cx) {
             Ok(ether_repr) => Some(ether::emit(packet.packet, &ether_repr)),
-            Err(Some(arp_repr)) => Self::emit_arp(&arp_repr, packet.packet.reset_to_fresh()),
+            Err(Some(arp_repr)) => {
+                // Keep the packet instead of dropping it: the first packet of a
+                // connection (a SYN, a DNS query) is usually what finds the ARP
+                // table cold, and losing it costs the peer a retransmission
+                // timeout. It goes out as soon as the reply arrives.
+                if let ArpRepr::EthernetIpv4 {
+                    target_protocol_addr,
+                    ..
+                } = arp_repr
+                {
+                    self.enqueue_pending(target_protocol_addr, packet.packet);
+                }
+                match self.alloc_tx_buffer(0) {
+                    Ok(fresh) => Self::emit_arp(&arp_repr, fresh),
+                    Err(err) => {
+                        ostd::error!("failed to allocate a network packet: {:?}", err);
+                        None
+                    }
+                }
+            }
             Err(None) => None,
         }
+    }
+
+    fn drain_pending(&self) -> Option<TxPacket<LinkLayer>> {
+        let now = get_network_timestamp().total_millis();
+        let mut pending = self.pending.lock();
+        pending.retain(|held| now.saturating_sub(held.queued_at_ms) <= PENDING_TIMEOUT_MS);
+
+        let arp_table = self.arp_table.lock();
+        let index = pending
+            .iter()
+            .position(|held| arp_table.contains_key(&held.next_hop))?;
+        let held = pending.remove(index);
+        let dst_addr = arp_table[&held.next_hop];
+        drop(arp_table);
+        drop(pending);
+
+        Some(ether::emit(
+            held.packet,
+            &EthernetRepr {
+                src_addr: self.ether_addr,
+                dst_addr,
+                ethertype: EthernetProtocol::Ipv4,
+            },
+        ))
     }
 
     fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error> {
@@ -249,6 +308,21 @@ impl<D, E: Ext> EtherIface<D, E> {
             dst_addr: next_hop_ether,
             ethertype: EthernetProtocol::Ipv4,
         })
+    }
+
+    /// Remembers a packet that is waiting for `next_hop` to be resolved.
+    fn enqueue_pending(&self, next_hop: Ipv4Address, packet: TxPacket<NetworkLayer>) {
+        let mut pending = self.pending.lock();
+        if pending.len() >= MAX_PENDING_PACKETS {
+            // Drop the oldest: the newest packets belong to the traffic the
+            // peer is still waiting for.
+            pending.remove(0);
+        }
+        pending.push(PendingLinkLayer {
+            next_hop,
+            queued_at_ms: get_network_timestamp().total_millis(),
+            packet,
+        });
     }
 
     fn emit_arp(arp_repr: &ArpRepr, packet: FreshTxPacket) -> Option<TxPacket<LinkLayer>> {
