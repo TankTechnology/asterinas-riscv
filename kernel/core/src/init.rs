@@ -52,8 +52,12 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
     crate::device::init_in_first_process().unwrap();
     #[cfg(target_arch = "riscv64")]
     crate::first_process_diag::on_device_init_ready();
+    // One worker per USB host controller: Megrez wires its USB sockets to two
+    // independent DWC3 controllers, and each one enumerates its own devices.
     #[cfg(target_arch = "riscv64")]
-    ThreadOptions::new(aster_usb::run_polling).spawn();
+    for index in 0..aster_usb::host_count() {
+        ThreadOptions::new(move || aster_usb::run_host(index)).spawn();
+    }
     crate::fs::init_in_first_process(ctx);
     #[cfg(target_arch = "riscv64")]
     crate::first_process_diag::on_stdio_init_ready();

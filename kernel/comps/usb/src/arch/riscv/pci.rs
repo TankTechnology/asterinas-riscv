@@ -100,7 +100,7 @@ impl PciDriver for PciXhciDriver {
         let device_id = *device.device_id();
         let dma_window = DmaWindow::new(0, 0, usize::MAX).expect("identity DMA window");
         let interrupt_source = resolve_pci_interrupt(&device, interrupt_line);
-        PCI_HOST_CONFIG.call_once(|| PciHostConfig {
+        *PCI_HOST_CONFIG.lock() = Some(PciHostConfig {
             mmio,
             dma_window,
             interrupt_source,
@@ -207,11 +207,19 @@ pub(crate) struct PciHostConfig {
     pub(crate) interrupt_source: InterruptSourceInFdt,
 }
 
-static PCI_HOST_CONFIG: spin::Once<PciHostConfig> = spin::Once::new();
+static PCI_HOST_CONFIG: spin::Mutex<Option<PciHostConfig>> = spin::Mutex::new(None);
 
-/// Returns the PCI-discovered xHCI host config, if any.
-pub(crate) fn pci_host_config() -> Option<&'static PciHostConfig> {
-    PCI_HOST_CONFIG.get()
+/// Returns whether a PCI xHCI host was discovered.
+pub(crate) fn has_host() -> bool {
+    PCI_HOST_CONFIG.lock().is_some()
+}
+
+/// Takes the PCI-discovered xHCI host config so its worker owns the mapping.
+///
+/// The xHCI host refuses a shared MMIO mapping, so the worker must receive the
+/// only reference instead of a clone.
+pub(crate) fn take_host_config() -> Option<PciHostConfig> {
+    PCI_HOST_CONFIG.lock().take()
 }
 
 /// Registers the PCI xHCI driver with the PCI bus.

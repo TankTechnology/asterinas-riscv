@@ -31,7 +31,20 @@ fn init() -> Result<(), ComponentInitError> {
     Ok(())
 }
 
-/// Runs the architecture-specific USB host polling worker.
+/// Returns how many USB host workers [`run_host`] can start.
+///
+/// A platform with one controller returns one; the Megrez board's two DWC3
+/// controllers return two, so the kernel spawns one worker per controller.
+pub fn host_count() -> usize {
+    arch::host_count()
+}
+
+/// Runs the USB host worker for controller `index`.
+pub fn run_host(index: usize) {
+    arch::run_host(index)
+}
+
+/// Runs the first USB host worker.
 pub fn run_polling() {
     arch::run_polling();
 }
