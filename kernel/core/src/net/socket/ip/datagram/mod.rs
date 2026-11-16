@@ -65,13 +65,17 @@ impl OptionSet {
 impl DatagramSocket {
     pub(crate) fn new(is_nonblocking: bool) -> Arc<Self> {
         let unbound_datagram = UnboundDatagram::new();
-        Arc::new(Self {
+        let socket = Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
             common: new_socket_common(is_nonblocking),
-        })
+        });
+        crate::net::net_ns::current_net_ns()
+            .proc_net_sockets()
+            .register(Arc::downgrade(&socket) as alloc::sync::Weak<dyn crate::net::socket::proc_net::ProcNetSocket>);
+        socket
     }
 
     fn try_recv(
@@ -347,5 +351,29 @@ impl SetIpLevelOption for Inner<UnboundDatagram, BoundDatagram> {
             Errno::ENOPROTOOPT,
             "IP_HDRINCL cannot be set on UDP sockets"
         );
+    }
+}
+
+impl crate::net::socket::proc_net::ProcNetSocket for DatagramSocket {
+    fn proc_net_entries(&self, out: &mut Vec<crate::net::socket::proc_net::ProcNetEntry>) {
+        use crate::net::socket::proc_net::{InetProtocol, InetSocketEntry, ProcNetEntry};
+
+        let inner = self.inner.read();
+        let Inner::Bound(bound) = &*inner else {
+            // An unbound socket has no address to report yet.
+            return;
+        };
+        let local = Bound::local_endpoint(bound);
+        let remote = Bound::remote_endpoint(bound).copied();
+        // Linux reports UDP sockets as connected (01) or unconnected (07).
+        let state = if remote.is_some() { 1 } else { 7 };
+        out.push(ProcNetEntry::Inet(InetSocketEntry {
+            protocol: InetProtocol::Udp,
+            local,
+            remote,
+            state,
+            inode: self.common.inode_number(),
+            uid: 0,
+        }));
     }
 }

@@ -2,7 +2,7 @@
 
 //! State shared by all references to a file description.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::{AccessMode, AtomicStatusFlags, FileLike, StatusFlags, file_handle::StatusFlagsUpdate};
 use crate::{
@@ -24,17 +24,30 @@ pub(crate) struct FileCommon {
     access_mode: AccessMode,
     status_flags: AtomicStatusFlags,
     owner: FileOwner,
+    /// The inode number this file description is reported under.
+    ///
+    /// `SOCK_DIAG` and `/proc/net` need a stable per-socket identifier, and
+    /// user space uses it to match a socket row to its process.
+    inode_number: u64,
 }
 
 impl FileCommon {
     /// Creates common state for a file description.
     pub(crate) fn new(path: Path, access_mode: AccessMode, status_flags: StatusFlags) -> Self {
+        static NEXT_INODE_NUMBER: AtomicU64 = AtomicU64::new(1);
+
         Self {
             path,
             access_mode,
             status_flags: AtomicStatusFlags::new(status_flags),
             owner: FileOwner::new(),
+            inode_number: NEXT_INODE_NUMBER.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// Returns the inode number of this file description.
+    pub(crate) fn inode_number(&self) -> u64 {
+        self.inode_number
     }
 
     /// Returns the path associated with the file description.
