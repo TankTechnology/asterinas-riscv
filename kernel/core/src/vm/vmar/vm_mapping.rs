@@ -675,6 +675,15 @@ impl VmMapping {
             VmoMapMode::SharedRead
         };
 
+        // Read the window's cold pages in as few backend calls as possible; the
+        // per-page loop below then finds them initialized.
+        if let Err(error) = vmo.vmo().prefetch_run(
+            (start_addr - self.map_to_addr) / PAGE_SIZE,
+            (end_addr - self.map_to_addr) / PAGE_SIZE,
+        ) {
+            debug!("windowed page-cache read failed: {:?}", error);
+        }
+
         'retry: loop {
             let preempt_guard = disable_preempt();
             let mut cursor = vm_space.cursor_mut(&preempt_guard, &(start_addr..end_addr))?;

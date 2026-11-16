@@ -15,6 +15,7 @@
 //! - Memory-mapping, page-fault, and other lower-level VM paths that need
 //!   direct page-oriented access should work with [`Vmo`].
 
+use super::cache_page::LockedCachePage;
 use core::{
     cmp::min,
     ops::{Deref, Range},
@@ -293,6 +294,67 @@ impl Vmo {
     ///
     /// For anonymous VMOs the page is zero-filled on first access.
     /// For VMOs with a backend this may perform synchronous I/O.
+    /// Reads a half-open range of pages with one backend call per run of
+    /// uninitialized pages.
+    ///
+    /// This is the windowed form of [`Self::commit_on`]: a fault on a cold
+    /// page usually means its neighbours are cold too, and handing them to the
+    /// backend as a `PageRun` lets a block-backed file system merge the reads
+    /// instead of issuing one BIO per page.
+    pub(crate) fn prefetch_run(&self, start_idx: usize, end_idx: usize) -> Result<()> {
+        let Some(backed) = self.as_backed_vmo() else {
+            return Ok(());
+        };
+        if end_idx <= start_idx || start_idx >= self.size().div_ceil(PAGE_SIZE) {
+            return Ok(());
+        }
+        let end_idx = end_idx.min(self.size().div_ceil(PAGE_SIZE));
+
+        let mut pages: Vec<CachePage> = Vec::with_capacity(end_idx - start_idx);
+        {
+            let mut locked_pages = self.pages.lock();
+            let mut cursor = locked_pages.cursor_mut(start_idx as u64);
+            for _ in start_idx..end_idx {
+                match cursor.load() {
+                    Some(page) => pages.push(page.clone()),
+                    None => {
+                        let page = CachePage::alloc_uninit()?;
+                        cursor.store(page.clone());
+                        pages.push(page);
+                    }
+                }
+                cursor.next();
+            }
+        }
+
+        let mut run_start = 0;
+        while run_start < pages.len() {
+            if !pages[run_start].is_uninit() {
+                run_start += 1;
+                continue;
+            }
+            let mut run_end = run_start;
+            while run_end < pages.len() && pages[run_end].is_uninit() {
+                run_end += 1;
+            }
+
+            let locked: Vec<LockedCachePage> = pages[run_start..run_end]
+                .iter()
+                .cloned()
+                .map(|page| page.lock())
+                .collect();
+            let mut pages_iter = locked.into_iter();
+            let run = PageRun::new(start_idx + run_start, &mut pages_iter);
+            let mut io_batch = IoBatch::with_capacity(1);
+            backed.backend.read_pages_async(run, &mut io_batch)?;
+            io_batch.wait_all()?;
+
+            run_start = run_end;
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn commit_on(&self, page_idx: usize, map_mode: VmoMapMode) -> Result<()> {
         let page = self.commit_on_internal(page_idx, CommitMode::Read)?;
         map_mode.ensure(page);
