@@ -10,6 +10,7 @@ use super::{
 };
 use crate::{
     events::IoEvents,
+    fs::vfs::notify::{FsEventSubscriber, FsEvents},
     fs::{
         utils::DirentVisitor,
         vfs::{
@@ -23,7 +24,7 @@ use crate::{
     prelude::*,
     process::{
         posix_thread::FileTableRefMut,
-        signal::{PollHandle, Pollable},
+        signal::{PollHandle, Pollee, Pollable},
     },
     util::ioctl::RawIoctl,
     vm::vmar::FileMmapRequest,
@@ -35,6 +36,12 @@ pub(crate) struct InodeHandle {
     /// and `ioctl` will be provided by the per-open file object instead of `path`.
     open_file: Option<Box<dyn PerOpenFileOps>>,
     offset: Mutex<usize>,
+    /// Wakes `poll` callers when the inode publishes a filesystem event.
+    event_pollee: Pollee,
+    /// The subscriber attached to the inode's publisher, while one is attached.
+    event_subscriber: Mutex<Option<Arc<InodeEventSubscriber>>>,
+    /// Whether an event arrived since the file was last read.
+    events_pending: Arc<core::sync::atomic::AtomicBool>,
     /// Path and common states of the handle.
     //
     // This field is placed last so that its `Path` keeps the corresponding filesystem alive
@@ -112,6 +119,9 @@ impl InodeHandle {
         Ok(Self {
             open_file,
             offset: Mutex::new(0),
+            event_pollee: Pollee::new(),
+            event_subscriber: Mutex::new(None),
+            events_pending: Arc::new(core::sync::atomic::AtomicBool::new(false)),
             common: FileCommon::new(path, access_mode, status_flags),
         })
     }
@@ -295,6 +305,49 @@ impl InodeHandle {
     }
 }
 
+/// Turns a filesystem event published by the inode into a `POLLPRI` wakeup.
+struct InodeEventSubscriber {
+    pollee: Pollee,
+    pending: Arc<core::sync::atomic::AtomicBool>,
+}
+
+impl FsEventSubscriber for InodeEventSubscriber {
+    fn deliver_event(&self, events: FsEvents, _name: Option<String>) -> bool {
+        use core::sync::atomic::Ordering;
+
+        if events.contains(FsEvents::MODIFY) {
+            self.pending.store(true, Ordering::Release);
+            self.pollee.notify(IoEvents::PRI);
+        }
+        false
+    }
+
+    fn interesting_events(&self) -> FsEvents {
+        FsEvents::MODIFY
+    }
+}
+
+impl InodeHandle {
+    /// Attaches the event subscriber to the inode's publisher on first use.
+    fn ensure_event_subscription(&self) {
+        use core::sync::atomic::Ordering;
+
+        if self.event_subscriber.lock().is_some() {
+            return;
+        }
+        let Some(publisher) = self.path().inode().fs_event_publisher() else {
+            return;
+        };
+        let subscriber = Arc::new(InodeEventSubscriber {
+            pollee: self.event_pollee.clone(),
+            pending: self.events_pending.clone(),
+        });
+        if publisher.add_subscriber(subscriber.clone()) {
+            *self.event_subscriber.lock() = Some(subscriber);
+        }
+    }
+}
+
 impl Pollable for InodeHandle {
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
         if let Some(ref open_file) = self.open_file {
@@ -304,8 +357,16 @@ impl Pollable for InodeHandle {
         if self.status_flags().contains(StatusFlags::O_PATH) {
             IoEvents::NVAL
         } else {
-            let events = IoEvents::IN | IoEvents::OUT;
-            events & mask
+            // A regular file is always readable and writable. A pending
+            // filesystem event additionally reports `POLLPRI`, which is what
+            // `cgroup.events` watchers wait for.
+            self.ensure_event_subscription();
+            let pending = self
+                .events_pending
+                .load(core::sync::atomic::Ordering::Acquire);
+            let base = IoEvents::IN | IoEvents::OUT
+                | if pending { IoEvents::PRI } else { IoEvents::empty() };
+            self.event_pollee.poll_with(mask, poller, || base)
         }
     }
 }
@@ -315,6 +376,9 @@ impl FileLike for InodeHandle {
         if self.status_flags().contains(StatusFlags::O_PATH) || !self.access_mode().is_readable() {
             return_errno_with_message!(Errno::EBADF, "the file is not opened readable");
         }
+        // A read consumes the pending event, as with Linux's POLLPRI files.
+        self.events_pending
+            .store(false, core::sync::atomic::Ordering::Release);
 
         let (file_ops, is_offset_aware) = self.file_ops_and_is_offset_aware();
         let status_flags = self.status_flags();
