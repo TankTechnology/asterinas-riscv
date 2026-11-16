@@ -567,6 +567,15 @@ impl VmMapping {
 
                     cursor.map(frame, map_prop);
                     rss_delta.add(self.rss_type(), 1);
+
+                    // A CPU that faults on a not-present translation may cache that
+                    // outcome (RISC-V permits implementations to cache invalid
+                    // entries). Retrying the instruction without dropping the entry
+                    // faults forever, which on the EIC7700 shows up as the same
+                    // `InstructionPageFault` at one address repeating. Flush just
+                    // the page that faulted; the surrounding pages take this path
+                    // themselves if they fault.
+                    TlbFlushOp::for_range(va).perform_on_current();
                 }
             }
             break 'retry;
@@ -694,7 +703,13 @@ impl VmMapping {
             let start_offset = start_addr - self.map_to_addr;
             let end_offset = end_addr - self.map_to_addr;
             match vmo.try_operate_on_range(&(start_offset..end_offset), operate, mode) {
-                Ok(_) => return Ok(()),
+                Ok(_) => {
+                    // See `handle_single_page_fault`: drop the cached negative
+                    // translation of the page that faulted before retrying it.
+                    TlbFlushOp::for_range(page_aligned_addr..page_aligned_addr + PAGE_SIZE)
+                        .perform_on_current();
+                    return Ok(());
+                }
                 Err(err) => {
                     let index = err.pending_index()?;
                     drop(preempt_guard);
