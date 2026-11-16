@@ -53,6 +53,7 @@ pub(crate) use ctrl_msg::NetlinkControlMessage;
 pub(crate) use kobject_uevent::NetlinkUeventSocket;
 pub(crate) use options::{AddMembership, DropMembership, StrictCheck};
 pub(super) use receiver::NETLINK_DEFAULT_BUF_SIZE;
+pub(crate) use diag::NetlinkDiagSocket;
 pub(crate) use route::NetlinkRouteSocket;
 pub(crate) use table::{StandardNetlinkProtocol, is_valid_protocol};
 

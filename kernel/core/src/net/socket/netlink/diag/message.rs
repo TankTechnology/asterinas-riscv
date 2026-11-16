@@ -79,6 +79,10 @@ pub(crate) struct CDiagMsg {
 }
 
 impl CDiagMsg {
+    pub(crate) const AF_INET: u8 = 2;
+    pub(crate) const PROTOCOL_TCP: u8 = 6;
+    pub(crate) const PROTOCOL_UDP: u8 = 17;
+
     /// Builds the reply for one TCP/UDP socket.
     pub(crate) fn new(
         family: u8,
