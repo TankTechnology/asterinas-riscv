@@ -69,3 +69,6 @@ __pycache__/
 
 # The DMA failure corpus is intentionally retained outside git.
 /docs/research/dma-failure-corpus/
+
+# Local agent/editor state (not part of the tree)
+.claude/
