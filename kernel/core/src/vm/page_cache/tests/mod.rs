@@ -385,11 +385,29 @@ fn concurrent_page_faults() {
     assert_eq!(read_buffer, vec![0x6b; PAGE_SIZE]);
 }
 
-// TODO: Sequential cold-page reads used to submit one I/O batch per window
-// (the downstream `BackedVmo::commit_range` path). The collector has not been
-// re-based onto the current `PageRun`/`read_pages_async` shape yet, so every
-// cold page still waits for its own read BIO. Restore the test together with
-// the collector.
+/// A cold window is read with one backend call, not one per page.
+#[ktest]
+fn windowed_read_submits_one_batch_per_run() {
+    const PAGES: usize = 8;
+
+    let backend = MockPageCacheBackend::new(PAGES);
+    for idx in 0..PAGES {
+        backend.set_persisted_page_bytes(idx, &[0x5a; PAGE_SIZE]);
+    }
+    let page_cache = new_backend_page_cache(&backend, PAGES);
+    let vmo = page_cache.as_vmo().clone();
+
+    vmo.prefetch_run(0, PAGES).unwrap();
+
+    assert_eq!(
+        backend.read_batch_calls(),
+        1,
+        "the window must reach the backend as one batch"
+    );
+    for idx in 0..PAGES {
+        assert_eq!(backend.read_count(idx), 1, "page {idx} read exactly once");
+    }
+}
 
 /// Keeps backend reads failing for one page and checks both the initial
 /// committer and a later waiter return `EIO` instead of livelocking.
