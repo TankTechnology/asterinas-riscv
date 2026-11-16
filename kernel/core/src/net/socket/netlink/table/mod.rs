@@ -11,7 +11,7 @@ use super::{
 use crate::{
     net::socket::netlink::{
         addr::UNSPECIFIED_PORT, kobject_uevent::UeventMessage, receiver::MessageReceiver,
-        route::RtnlMessage,
+        diag::DiagMessage, route::RtnlMessage,
     },
     prelude::*,
     util::random::getrandom,
@@ -25,6 +25,7 @@ static NETLINK_SOCKET_TABLE: Once<NetlinkSocketTable> = Once::new();
 struct NetlinkSocketTable {
     route: RwMutex<ProtocolSocketTable<RtnlMessage>>,
     uevent: RwMutex<ProtocolSocketTable<UeventMessage>>,
+    diag: RwMutex<ProtocolSocketTable<DiagMessage>>,
 }
 
 impl NetlinkSocketTable {
@@ -32,6 +33,7 @@ impl NetlinkSocketTable {
         Self {
             route: RwMutex::new(ProtocolSocketTable::new()),
             uevent: RwMutex::new(ProtocolSocketTable::new()),
+            diag: RwMutex::new(ProtocolSocketTable::new()),
         }
     }
 }
@@ -74,6 +76,16 @@ impl SupportedNetlinkProtocol for NetlinkRouteProtocol {
 
     fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
         &NETLINK_SOCKET_TABLE.get().unwrap().route
+    }
+}
+
+pub(crate) enum NetlinkDiagProtocol {}
+
+impl SupportedNetlinkProtocol for NetlinkDiagProtocol {
+    type Message = DiagMessage;
+
+    fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
+        &NETLINK_SOCKET_TABLE.get().unwrap().diag
     }
 }
 

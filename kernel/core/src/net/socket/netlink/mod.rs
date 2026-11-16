@@ -39,6 +39,7 @@
 
 mod addr;
 mod ctrl_msg;
+mod diag;
 mod common;
 mod kobject_uevent;
 mod message;
