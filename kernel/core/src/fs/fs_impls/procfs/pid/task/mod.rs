@@ -44,6 +44,7 @@ mod mem;
 mod mountinfo;
 mod mounts;
 mod mountstats;
+mod net;
 mod ns;
 mod oom_score_adj;
 pub(super) mod stat;
@@ -128,6 +129,7 @@ impl TidDirOps {
         ("mem", InodeType::File, MemFileOps::new_inode),
         ("mountinfo", InodeType::File, MountInfoFileOps::new_inode),
         ("mountstats", InodeType::File, MountStatsFileOps::new_inode),
+        ("net", InodeType::Dir, net::NetDirOps::new_inode),
         ("ns", InodeType::Dir, NsDirOps::new_inode),
         (
             "oom_score_adj",

@@ -8,7 +8,10 @@
 //! table (`route`) and the neighbour table (`arp`). `netstat`, `ss`'s
 //! `/proc`-based peers, `lsof` and monitoring scripts read these.
 
-use aster_bigtcp::wire::{IpAddress, IpEndpoint};
+use aster_bigtcp::{
+    iface::IfaceStatsSnapshot,
+    wire::{IpAddress, IpEndpoint},
+};
 use aster_util::printer::{VmPrinter, VmPrinterError};
 
 use super::TidDirOps;
@@ -119,7 +122,9 @@ impl NetDirOps {
         let proxy = ns_proxy
             .as_ref()
             .ok_or_else(|| Error::with_message(Errno::ENOENT, "the thread has exited"))?;
-        Ok(proxy.net_ns().clone())
+        // The socket namespace is not associated with `NsProxy` yet, so the
+        // initial namespace is what this task sees.
+        Ok(crate::net::net_ns::current_net_ns())
     }
 }
 
@@ -206,7 +211,8 @@ fn show_dev(
     )?;
 
     for iface in net_ns.ifaces() {
-        let stats = iface.stats();
+        // Packet counters are not instrumented on the interface yet.
+        let stats = IfaceStatsSnapshot::default();
         // Only packet and byte counters are instrumented today. The other
         // Linux columns remain zero until their corresponding events are tracked.
         let fields = [
@@ -227,7 +233,7 @@ fn show_dev(
             0,
             0,
         ];
-        write!(printer, "{:>6}:", iface.name().to_str().unwrap_or("?"))?;
+        write!(printer, "{:>6}:", iface.name().as_str().unwrap_or("?"))?;
         for value in fields {
             write!(printer, " {:>8}", value)?;
         }
@@ -368,7 +374,7 @@ fn show_route(
         let Some(cidr) = iface.ipv4_cidr() else {
             continue;
         };
-        let name = iface.name().to_str().unwrap_or("?");
+        let name = iface.name().as_str().unwrap_or("?");
         let mask = cidr.netmask();
         let network =
             aster_bigtcp::wire::Ipv4Address::from_bits(cidr.address().to_bits() & mask.to_bits());
@@ -390,8 +396,18 @@ fn show_route(
             0
         )?;
 
-        // The default route, when the interface has a gateway.
-        if let Some(gateway) = iface.ipv4_gateway() {
+        // The default route, when the interface has one.
+        let gateway = iface
+            .routes()
+            .iter()
+            .find(|route| route.cidr.prefix_len() == 0)
+            .map(|route| route.via_router)
+            .filter(|addr| !addr.is_unspecified())
+            .and_then(|addr| match addr {
+                IpAddress::Ipv4(gateway) => Some(gateway),
+                IpAddress::Ipv6(_) => None,
+            });
+        if let Some(gateway) = gateway {
             writeln!(
                 printer,
                 "{}\t{:08X}\t{:08X}\t{:04X}\t{}\t{}\t{}\t{:08X}\t{}\t{}\t{}",
