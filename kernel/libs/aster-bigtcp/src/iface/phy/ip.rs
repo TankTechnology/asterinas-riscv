@@ -97,6 +97,6 @@ impl<D: WithDevice + 'static, E: Ext> PollPhy for IpIface<D, E> {
     }
 
     fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error> {
-        D::Device::alloc_tx_buffer(payload_len)
+        self.driver.alloc_tx_buffer(payload_len)
     }
 }

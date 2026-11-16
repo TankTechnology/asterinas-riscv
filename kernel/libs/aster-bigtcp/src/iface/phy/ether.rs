@@ -13,7 +13,7 @@ use smoltcp::{
 };
 
 use crate::{
-    device::{AnyNetworkDevice, WithDevice, new_interface},
+    device::{WithDevice, new_interface},
     ext::Ext,
     iface::{
         Iface, InterfaceFlags, InterfaceName,
@@ -36,8 +36,9 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
     pub fn new(
         driver: D,
         ether_addr: EthernetAddress,
-        ip_cidr: Ipv4Cidr,
-        gateway: Ipv4Address,
+        ip_cidr: Option<Ipv4Cidr>,
+        gateway: Option<Ipv4Address>,
+        static_neighbors: &[(Ipv4Address, EthernetAddress)],
         name: InterfaceName,
         sched_poll: E::ScheduleNextPoll,
         flags: InterfaceFlags,
@@ -47,24 +48,35 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             let now = get_network_timestamp();
 
             let mut interface = new_interface(config, device.capabilities(), now);
-            interface.update_ip_addrs(|ip_addrs| {
-                debug_assert!(ip_addrs.is_empty());
-                ip_addrs.push(wire::IpCidr::Ipv4(ip_cidr)).unwrap();
-            });
-            interface
-                .routes_mut()
-                .add_default_ipv4_route(gateway)
-                .unwrap();
+            if let Some(ip_cidr) = ip_cidr {
+                interface.update_ip_addrs(|ip_addrs| {
+                    debug_assert!(ip_addrs.is_empty());
+                    ip_addrs.push(wire::IpCidr::Ipv4(ip_cidr)).unwrap();
+                });
+            }
+            if let Some(gateway) = gateway {
+                interface
+                    .routes_mut()
+                    .add_default_ipv4_route(gateway)
+                    .unwrap();
+            }
             interface
         });
 
         let common = IfaceCommon::new(name, InterfaceType::ETHER, flags, interface, sched_poll);
 
+        let arp_table = SpinLock::new(
+            static_neighbors
+                .iter()
+                .copied()
+                .collect::<BTreeMap<_, _>>(),
+        );
+
         Arc::new(Self {
             driver,
             common,
             ether_addr,
-            arp_table: SpinLock::new(BTreeMap::new()),
+            arp_table,
         })
     }
 }
@@ -136,7 +148,7 @@ impl<D: WithDevice + 'static, E: Ext> PollPhy for EtherIface<D, E> {
     }
 
     fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error> {
-        D::Device::alloc_tx_buffer(payload_len)
+        self.driver.alloc_tx_buffer(payload_len)
     }
 }
 

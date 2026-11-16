@@ -71,13 +71,18 @@ pub trait AnyNetworkDevice: Send + Sync + Any + Debug {
 /// A device is usually protected by a lock and may be stored behind a shared pointer. This trait
 /// hides those storage details from the network interface.
 pub trait WithDevice: Send + Sync {
-    // This is a hack to make `AnyNetworkDevice::alloc_tx_buffer` usable without always acquiring
-    // the device lock.
-    type Device: AnyNetworkDevice;
-
+    /// Calls `f` with the device while it is locked for a polling operation.
     fn with<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut dyn AnyNetworkDevice) -> R;
+
+    /// Allocates a packet buffer for transmission without acquiring the device lock.
+    ///
+    /// Transmit buffers are sometimes allocated from inside [`Self::with`] (for example, when
+    /// answering an ARP request), so this method must not lock the device again. The device's
+    /// allocator is a property of its type, not of the locked state, so it is provided
+    /// separately instead of through [`AnyNetworkDevice`].
+    fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error>;
 }
 
 /// Creates a smoltcp [`Interface`] with the specified capabilities.

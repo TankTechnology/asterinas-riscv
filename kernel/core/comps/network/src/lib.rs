@@ -8,7 +8,10 @@ extern crate alloc;
 
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
-use aster_bigtcp::device::AnyNetworkDevice;
+use aster_bigtcp::{
+    device::AnyNetworkDevice,
+    packet::FreshTxPacket,
+};
 use aster_softirq::{
     BottomHalfDisabled, SoftIrqLine,
     softirq_id::{NETWORK_RX_SOFTIRQ_ID, NETWORK_TX_SOFTIRQ_ID},
@@ -19,10 +22,10 @@ use spin::Once;
 
 pub trait NetDeviceCallback = Fn() + Send + Sync + 'static;
 
-pub fn register_device(
+pub fn register_device<D: AnyNetworkDevice + 'static>(
     name: String,
     is_link_up: bool,
-    device: Arc<SpinLock<dyn AnyNetworkDevice, BottomHalfDisabled>>,
+    device: Arc<SpinLock<D, BottomHalfDisabled>>,
 ) -> Result<(), RegisterDeviceError> {
     COMPONENT
         .get()
@@ -123,6 +126,7 @@ pub struct RegisteredNetworkDevice {
     key: String,
     is_link_up: bool,
     device: NetworkDeviceRef,
+    tx_allocator: TxAllocator,
 }
 
 impl RegisteredNetworkDevice {
@@ -136,6 +140,14 @@ impl RegisteredNetworkDevice {
 
     pub fn device(&self) -> NetworkDeviceRef {
         self.device.clone()
+    }
+
+    /// Allocates a transmit buffer from the device's own pool.
+    ///
+    /// The interface calls this while holding the device lock, so it must not lock the device
+    /// again; it reaches the type-level allocator recorded at registration instead.
+    pub fn alloc_tx_buffer(&self, payload_len: usize) -> Result<FreshTxPacket, ostd::Error> {
+        (self.tx_allocator)(payload_len)
     }
 }
 
@@ -161,6 +173,7 @@ fn init() -> Result<(), ComponentInitError> {
 
 type NetDeviceCallbackListRef = Arc<SpinLock<Vec<Arc<dyn NetDeviceCallback>>, BottomHalfDisabled>>;
 type NetworkDeviceRef = Arc<SpinLock<dyn AnyNetworkDevice, BottomHalfDisabled>>;
+type TxAllocator = fn(usize) -> Result<FreshTxPacket, ostd::Error>;
 
 struct Component {
     network_device_table: SpinLock<DeviceRegistry, BottomHalfDisabled>,
@@ -177,11 +190,11 @@ impl DeviceRegistry {
         }
     }
 
-    fn register(
+    fn register<D: AnyNetworkDevice + 'static>(
         &mut self,
         key: String,
         is_link_up: bool,
-        device: NetworkDeviceRef,
+        device: Arc<SpinLock<D, BottomHalfDisabled>>,
     ) -> Result<(), RegisterDeviceError> {
         if !is_valid_device_key(&key) {
             return Err(RegisterDeviceError::InvalidKey);
@@ -189,8 +202,11 @@ impl DeviceRegistry {
         if self.entries.contains_key(&key) {
             return Err(RegisterDeviceError::DuplicateKey);
         }
-        self.entries
-            .insert(key, NetworkDeviceIrqCallbackSet::new(device, is_link_up));
+        let device: NetworkDeviceRef = device;
+        self.entries.insert(
+            key,
+            NetworkDeviceIrqCallbackSet::new(device, is_link_up, D::alloc_tx_buffer),
+        );
         Ok(())
     }
 
@@ -201,6 +217,7 @@ impl DeviceRegistry {
                 key: key.clone(),
                 is_link_up: callbacks.is_link_up,
                 device: callbacks.device.clone(),
+                tx_allocator: callbacks.tx_allocator,
             })
             .collect()
     }
@@ -218,15 +235,17 @@ fn is_valid_device_key(key: &str) -> bool {
 struct NetworkDeviceIrqCallbackSet {
     device: NetworkDeviceRef,
     is_link_up: bool,
+    tx_allocator: TxAllocator,
     recv_callbacks: NetDeviceCallbackListRef,
     send_callbacks: NetDeviceCallbackListRef,
 }
 
 impl NetworkDeviceIrqCallbackSet {
-    fn new(device: NetworkDeviceRef, is_link_up: bool) -> Self {
+    fn new(device: NetworkDeviceRef, is_link_up: bool, tx_allocator: TxAllocator) -> Self {
         Self {
             device,
             is_link_up,
+            tx_allocator,
             recv_callbacks: Arc::new(SpinLock::new(Vec::new())),
             send_callbacks: Arc::new(SpinLock::new(Vec::new())),
         }
@@ -288,7 +307,7 @@ mod tests {
         fn notify_poll_end(&mut self) {}
     }
 
-    fn fake_device() -> NetworkDeviceRef {
+    fn fake_device() -> Arc<SpinLock<FakeNetworkDevice, BottomHalfDisabled>> {
         Arc::new(SpinLock::new(FakeNetworkDevice))
     }
 
