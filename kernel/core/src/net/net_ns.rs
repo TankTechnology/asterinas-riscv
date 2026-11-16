@@ -35,6 +35,8 @@ pub struct NetNamespace {
     default_ipv4_tag: AtomicI32,
     loopback_ipv4_tag: AtomicI32,
     stashed_dentry: StashedDentry,
+    /// The sockets this namespace exposes through `/proc/net` and `SOCK_DIAG`.
+    proc_net: crate::net::socket::proc_net::ProcNetRegistry,
 }
 
 impl NetNamespace {
@@ -49,6 +51,7 @@ impl NetNamespace {
                 default_ipv4_tag: AtomicI32::new(0),
                 loopback_ipv4_tag: AtomicI32::new(0),
                 stashed_dentry: StashedDentry::new(),
+                proc_net: crate::net::socket::proc_net::ProcNetRegistry::default(),
             })
         })
     }
@@ -65,12 +68,18 @@ impl NetNamespace {
             default_ipv4_tag: AtomicI32::new(0),
             loopback_ipv4_tag: AtomicI32::new(0),
             stashed_dentry: StashedDentry::new(),
+            proc_net: crate::net::socket::proc_net::ProcNetRegistry::default(),
         })
     }
 
     /// Returns the interfaces visible in this namespace.
     pub fn ifaces(&self) -> &[Arc<Iface>] {
         &self.ifaces
+    }
+
+    /// Returns the socket registry this namespace publishes to user space.
+    pub fn proc_net_sockets(&self) -> &crate::net::socket::proc_net::ProcNetRegistry {
+        &self.proc_net
     }
 
     /// Counts the sockets that exist in this namespace.
