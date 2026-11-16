@@ -108,6 +108,13 @@ impl_untyped_frame_meta_for!(CachePageMeta);
 /// Implemented for every [`CachePage`], this gives access to the page lock,
 /// the per-page wait queue, and lifecycle helpers used during page commit.
 pub(crate) trait CachePageExt: Sized {
+    /// Returns whether the page still needs its contents read from the backend.
+    ///
+    /// Used by the windowed read path to pick the pages a batch has to cover.
+    fn is_uninit(&self) -> bool {
+        self.state().is_uninit()
+    }
+
     /// Gets the metadata associated with the cache page.
     fn metadata(&self) -> &CachePageMeta;
 
@@ -190,6 +197,7 @@ pub(crate) trait CachePageExt: Sized {
     fn state(&self) -> PageState {
         self.metadata().state.load(Ordering::Acquire)
     }
+
 }
 
 impl CachePageExt for CachePage {
