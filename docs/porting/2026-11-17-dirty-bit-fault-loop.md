@@ -127,7 +127,44 @@ still there and the deterministic test above is what proves it.
 * Cold desktop boots on the fixed kernel (sha `0ab45aa0`, no trace probes):
   `DESKTOP_READY` in each run, classified by `/tmp/board-net/boot_once.py`.
 * `aster-core` ktest `windowed_read_submits_one_batch_per_run`: 1 passed.
+* Full desktop through the deployed path: the fixed kernel was copied over
+  `/root/kernel-rel.img` (the original kept as `kernel-rel.img.orig`, then
+  removed), `run bootcmd` in U-Boot booted it to
+  `ASTERINAS_DESKTOP_BOOT_READY` in 13--14 s with
+  `ASTERINAS_USERSPACE_REBOOT_DISARMED reason=desktop-ready`; Xorg opened both
+  evdev devices (`2` `Using input driver "evdev"` entries,
+  `/dev/input/event0..1`), `/dev/fb0` present, `xwd` grabbed an 8 MB screen,
+  and `curl https://www.baidu.com` returned 200 with the page body. eBPF:
+  verifier refusals, `load` (`map_fd=3 prog_fd=4`), `count`/`percpu`/`ringbuf`
+  sampling, `sockfilter` PASS, `ksym __kernel_start -> 0xffffffff80200000`.
 * The three board fixes from `06ea8220e` are unchanged and still in the tree.
+
+## Board operations learned the hard way (2026-11-17, evening)
+
+* **Use `run bootcmd` (boot.scr) for boots; the typed `booti` harness is
+  currently unreliable on this board.** From ~13:30 the manual path
+  (`boot_once.py`, identical addresses, args, kernel bytes, initrd and dtb)
+  hung every kernel -- the fixed one, the unfixed probe build, *and* the
+  deployed release image -- at a different early point each time (component
+  init, stage1, or the first desktop services), while `boot.scr` booted the
+  same images cleanly one minute later. The kernel image read back from p2
+  matched the host CRC, the loads reported the same sizes, and the bootargs
+  were byte-identical to boot.scr's. Not explained; recorded so the next
+  session starts from boot.scr.
+* **The repair initramfs lives on the data partition**, `mmc 1:3
+  repair.cpio.gz`; `mmc 1:1` has no copy, and boot.scr's fallback tries p1
+  first. Booting the repair image by hand therefore needs `mmc 1:3`.
+* **Two `e2fsck -fy` passes are the minimum** after a full-disk episode; the
+  second run of the day (after the first repair) reported `FSCK_RC=0` and its
+  read-only pass `VERIFY_RC=0`.
+* **A file copied by the running system onto a nearly-full p2 can land on slow
+  blocks.** `/root/kernel-rel.img` written with `cp` read back at 4.1 s for
+  9 MB (0.7 s is normal) and pushed the boot past the watchdog window, which
+  turned into a restart loop until the file was rewritten with U-Boot's
+  `ext4write` from a good copy (9.1 MiB/s again, CRC equal). Check the load
+  time, not only `bytes read`.
+* `/var/log/journal` grows by tens of MB per boot; vacuum it before boot tests
+  on this 3 GB partition.
 
 ## Artifacts
 
