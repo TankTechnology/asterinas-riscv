@@ -476,9 +476,32 @@ impl VmMapping {
             match item {
                 Some(VmQueriedItem::MappedRam { frame, mut prop }) => {
                     if VmPerms::from(prop.flags).contains(required_perms) {
-                        // The page fault is already handled maybe by other threads.
-                        // Just flush the TLB and return.
-                        TlbFlushOp::for_range(va).perform_on_current();
+                        // The entry already grants the access, so either another
+                        // thread resolved this fault concurrently, or the CPU
+                        // faulted on the accessed/dirty bits: the EIC7700 raises
+                        // a page fault for a store to a writable entry whose
+                        // DIRTY bit is clear, and a page mapped by a read fault
+                        // is writable but not dirty. Flushing alone cannot fix
+                        // that -- the retried store would fault on the same
+                        // entry forever -- so record the access on the entry
+                        // before returning.
+                        let needed = PageFlags::ACCESSED
+                            | if is_write {
+                                PageFlags::DIRTY
+                            } else {
+                                PageFlags::empty()
+                            };
+                        if !prop.flags.contains(needed) {
+                            cursor.protect_next(PAGE_SIZE, move |flags, _cache| {
+                                *flags |= needed;
+                            });
+                            cursor.flusher().issue_tlb_flush(TlbFlushOp::for_range(
+                                page_aligned_addr..page_aligned_addr + PAGE_SIZE,
+                            ));
+                            cursor.flusher().dispatch_tlb_flush();
+                        }
+                        TlbFlushOp::for_range(page_aligned_addr..page_aligned_addr + PAGE_SIZE)
+                            .perform_on_current();
                         return Ok(());
                     }
                     assert!(is_write);
