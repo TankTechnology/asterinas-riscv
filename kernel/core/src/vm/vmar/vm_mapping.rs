@@ -704,10 +704,12 @@ impl VmMapping {
         };
 
         // Read the window's cold pages in as few backend calls as possible; the
-        // per-page loop below then finds them initialized.
+        // per-page loop below then finds them initialized. The VMO is indexed
+        // from its own start, while the window is expressed relative to the
+        // mapping, so the mapping's offset into the VMO has to be added.
         if let Err(error) = vmo.vmo().prefetch_run(
-            (start_addr - self.map_to_addr) / PAGE_SIZE,
-            (end_addr - self.map_to_addr) / PAGE_SIZE,
+            (vmo.offset() + start_addr - self.map_to_addr) / PAGE_SIZE,
+            (vmo.offset() + end_addr - self.map_to_addr) / PAGE_SIZE,
         ) {
             debug!("windowed page-cache read failed: {:?}", error);
         }

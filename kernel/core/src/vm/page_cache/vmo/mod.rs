@@ -290,10 +290,6 @@ impl VmoMapMode {
 }
 
 impl Vmo {
-    /// Commits the page at `page_idx`, blocking on backend I/O if required.
-    ///
-    /// For anonymous VMOs the page is zero-filled on first access.
-    /// For VMOs with a backend this may perform synchronous I/O.
     /// Reads a half-open range of pages with one backend call per run of
     /// uninitialized pages.
     ///
@@ -305,10 +301,11 @@ impl Vmo {
         let Some(backed) = self.as_backed_vmo() else {
             return Ok(());
         };
-        if end_idx <= start_idx || start_idx >= self.size().div_ceil(PAGE_SIZE) {
+        let page_limit = self.size().div_ceil(PAGE_SIZE);
+        if end_idx <= start_idx || start_idx >= page_limit {
             return Ok(());
         }
-        let end_idx = end_idx.min(self.size().div_ceil(PAGE_SIZE));
+        let end_idx = end_idx.min(page_limit);
 
         let mut pages: Vec<CachePage> = Vec::with_capacity(end_idx - start_idx);
         {
@@ -327,22 +324,29 @@ impl Vmo {
             }
         }
 
+        // The state seen above can be stale: another thread may be reading one
+        // of these pages right now (its state only becomes up-to-date when its
+        // I/O completes). So the decision of what to read has to be taken again
+        // under the page lock, and a page that is no longer uninitialized ends
+        // the current run.
         let mut run_start = 0;
         while run_start < pages.len() {
-            if !pages[run_start].is_uninit() {
-                run_start += 1;
-                continue;
-            }
             let mut run_end = run_start;
-            while run_end < pages.len() && pages[run_end].is_uninit() {
+            let mut locked: Vec<LockedCachePage> = Vec::new();
+            while run_end < pages.len() {
+                let locked_page = pages[run_end].clone().lock();
+                if !locked_page.state().is_uninit() {
+                    break;
+                }
+                locked.push(locked_page);
                 run_end += 1;
             }
 
-            let locked: Vec<LockedCachePage> = pages[run_start..run_end]
-                .iter()
-                .cloned()
-                .map(|page| page.lock())
-                .collect();
+            if locked.is_empty() {
+                run_start = run_end + 1;
+                continue;
+            }
+
             let mut pages_iter = locked.into_iter();
             let run = PageRun::new(start_idx + run_start, &mut pages_iter);
             let mut io_batch = IoBatch::with_capacity(1);
@@ -355,6 +359,10 @@ impl Vmo {
         Ok(())
     }
 
+    /// Commits the page at `page_idx`, blocking on backend I/O if required.
+    ///
+    /// For anonymous VMOs the page is zero-filled on first access.
+    /// For VMOs with a backend this may perform synchronous I/O.
     pub(crate) fn commit_on(&self, page_idx: usize, map_mode: VmoMapMode) -> Result<()> {
         let page = self.commit_on_internal(page_idx, CommitMode::Read)?;
         map_mode.ensure(page);
