@@ -1,8 +1,16 @@
 # The rebase kernel's flaky desktop boot on Megrez (2026-11-17)
 
-Status: **investigation in progress**. The three fixes in `06ea8220e` are kept;
-nothing is pushed. This note records what reproduces, what the traces say, and
-what has been ruled out, so the next session does not re-derive it.
+Status: **resolved 2026-11-17**. The three fixes in `06ea8220e` are kept and
+nothing is pushed. The repeated fault at `0x3ffeffe27e` is the EIC7700 faulting
+on a store to a writable entry whose DIRTY bit is clear: the handler's
+"already permitted" branch only flushed and never recorded the access, so the
+store could never retire. See `2026-11-17-dirty-bit-fault-loop.md` for the
+mechanism, the deterministic reproduction and the fix. The sections below are
+kept as the record of how the investigation went, including the two
+conclusions that turned out to be wrong (the IPI "storm" is ordinary boot-time
+TLB shootdown traffic printed at `loglevel=debug`, and the failures were
+observed while the rootfs was corrupt and full, which is also when the desktop
+happened to touch a page in the load-then-store order).
 
 ## What flips between success and failure
 
