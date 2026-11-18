@@ -1,6 +1,6 @@
 {
-  "max_production_python": 198,
-  "max_production_shell": 108,
+  "max_production_python": 200,
+  "max_production_shell": 110,
   "max_top_level_shell": 0,
   "schema_version": 1,
   "top_level_shell": []

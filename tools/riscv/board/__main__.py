@@ -15,6 +15,7 @@ from pathlib import Path
 
 TOOLS = {
     "console": "megrez_console.py",
+    "diag": "megrez_diag_round.py",
     "flash": "megrez_flash_rootfs.py",
     "portal": "megrez_portal_login.py",
     "prepare": "prepare_board_image.py",
