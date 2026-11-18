@@ -148,11 +148,45 @@ sit on a socket that never speaks.
    `Failed to create udev watchers` is gone. Still open on this step: no
    session is created yet, because the desktop is a service rather than a
    PAM login.
-2. **uevent emitter** (medium): broadcast `add`/`change`/`remove` from the
-   device-model registration path and implement `try_send`. Prove with
-   `udevadm monitor` printing the events a device registration produces, then
-   unmask `systemd-udevd` and require `udevadm info /sys/class/graphics/fb0`
-   to resolve and no unit failures.
+2. **uevent emitter** (medium, not started): the pieces exist but no
+   call site connects them. What is already in the tree:
+   * `kobject_uevent/message/uevent.rs` builds the NUL-separated payload
+     (`action@devpath\0ACTION=..\0DEVPATH=..\0SUBSYSTEM=..\0..SEQNUM=n\0`)
+     with a monotonic `SEQNUM`;
+   * `UeventMessage` implements `MulticastMessage`, and
+     `SupportedNetlinkProtocol::multicast(groups, message)` delivers to every
+     socket bound to those groups -- it is currently `dead_code`;
+   * `syn_uevent.rs` already parses what user space writes to a
+     `/sys/.../uevent` file.
+   What is missing is (a) a kernel-facing `broadcast_uevent(...)` over
+   `multicast`, (b) a call at registration, and (c) the `uevent` attribute in
+   the device model that makes (c) reachable at all.
+
+   Design that fits the tree:
+   * **emit on registration**: `aster_device`'s `common/registration.rs` is
+     the single choke point -- `add_steps` ends after the `/dev` node exists
+     and the subsystem ran (`on_added`), and `teardown` runs before the node
+     is deleted. Both are the right place, and both are in a crate that
+     cannot call kernel core, so the bridge is the existing
+     `hooks::KernelHooks` trait: add a default no-op
+     `fn emit_uevent(&self, request: &UeventRequest) {}` and a free
+     `hooks::emit_uevent(...)` beside `create_devnode`;
+   * **the sysfs file**: every device needs `uevent`, so the attribute
+     belongs in `aster_device`'s core attribute set next to `DEV_ATTR`, with
+     writes parsed by the existing `SyntheticUevent::from_str` and handed to
+     the same hook. Without it udevd's coldplug (it writes `add` to every
+     `/sys/class/*/uevent` at startup) cannot see devices that registered
+     before it started -- which is *all* of them on this kernel.
+
+   Acceptance, in order:
+   a. `udevadm monitor` running, then `echo add > /sys/class/graphics/fb0/uevent`
+      prints an `add@/devices/...` line with `SUBSYSTEM=graphics`;
+   b. unmask `systemd-udevd`; during boot the journal shows it processing
+      events, and `/run/udev/data/` gains entries;
+   c. `udevadm info -q property /dev/vda` answers with `SUBSYSTEM`/`DEVNAME`;
+   d. only then can the filter attached in step 1 be shown to select: bind a
+      monitor to one subsystem and prove events from another do not arrive.
+
 3. **`CLONE_INTO_CGROUP`** (small once trusted): plumb the `cgroup` field
    through `CloneArgs` into `cgroupfs::cgroup_node_from_fd` and place the new
    process there at fork time. Prove with `clone3` carrying a cgroup fd (a
