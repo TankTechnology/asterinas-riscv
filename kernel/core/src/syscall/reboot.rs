@@ -58,11 +58,14 @@ pub(super) fn sys_reboot(
 
     let cmd = RebootCmd::try_from(op)?;
 
-    // A direct reboot(2) must persist dirty filesystems too: callers may not
-    // have run sync(2), and the power operation does not return on success.
-    // Propagate flush errors instead of silently losing data on restart.
-    super::sync::sys_sync(ctx)?;
-
+    // Deliberately no sync here, matching Linux: `reboot(2)` resets without
+    // flushing, and every caller that wants its data persisted runs `sync(2)`
+    // first (`reboot(8)`, `systemctl reboot`, `shutdown`). Syncing here made
+    // the emergency paths unusable on the Megrez board: a filesystem write
+    // that never completes parks `sync` in an uncancellable wait, so
+    // `reboot -f` -- the command whose whole point is to skip the flush --
+    // hung instead of restarting, and only a power cycle brought the board
+    // back. Callers that need the flush still get it, from their own sync.
     match cmd {
         RebootCmd::Restart => restart(ExitCode::Success),
         RebootCmd::Halt | RebootCmd::PowerOff => poweroff(ExitCode::Success),
