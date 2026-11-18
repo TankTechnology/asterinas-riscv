@@ -20,6 +20,8 @@ readonly UNIT_DIR="${ASTERINAS_SAFE_REBOOT_UNIT_DIR:-/etc/systemd/system}"
 readonly DESKTOP_READY_FILE="${ASTERINAS_SAFE_REBOOT_DESKTOP_READY_FILE:-/run/asterinas-desktop-ready}"
 readonly BOOT_ID_FILE="${ASTERINAS_SAFE_REBOOT_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
 readonly WATCHDOG_FILE="${ASTERINAS_SAFE_REBOOT_WATCHDOG_FILE:-/proc/sys/kernel/asterinas_reboot_watchdog}"
+readonly SYSRQ_FILE="${ASTERINAS_SAFE_REBOOT_SYSRQ_FILE:-/proc/sysrq-trigger}"
+readonly DRILL_FILE="${ASTERINAS_SAFE_REBOOT_DRILL_FILE:-/proc/sys/kernel/asterinas_watchdog_drill}"
 readonly -a WRITE_HEAVY_UNITS=(
     asterinas-browser-web.service
     asterinas-desktop-m5-network.service
@@ -45,11 +47,41 @@ force_reboot() {
     local reason="$1"
 
     emit "ASTERINAS_USERSPACE_REBOOT_FORCED reason=$reason"
+    # Ask for the restart without touching the filesystem first. `reboot(2)` in
+    # Asterinas syncs before it resets, so it lands on the very wait this path
+    # exists to escape; `/proc/sysrq-trigger` deliberately skips that.
+    if [[ -w $SYSRQ_FILE ]]; then
+        if printf 'b' >"$SYSRQ_FILE" 2>/dev/null; then
+            exit 0
+        fi
+        emit "ASTERINAS_USERSPACE_REBOOT_SYSRQ_FAILED reason=$reason"
+    else
+        emit "ASTERINAS_USERSPACE_REBOOT_SYSRQ_ABSENT reason=$reason"
+    fi
+    # Next, stop feeding the hardware watchdog: on a board whose handoff
+    # armed one, the SoC resets on its own within the watchdog timeout, with
+    # no filesystem work at all. The drill is one-way, so read it first and
+    # say so when there is nothing feeding -- a board with no watchdog must
+    # not be left waiting for a reset that cannot come.
+    local drill=$DRILL_FILE
+    if [[ -r $drill && -w $drill ]]; then
+        local kicking
+        kicking=$(cat "$drill" 2>/dev/null || true)
+        if [[ "$kicking" == 1 ]]; then
+            if printf '1' >"$drill" 2>/dev/null; then
+                emit "ASTERINAS_USERSPACE_REBOOT_WATCHDOG_ARMED reason=$reason"
+                # The counter is at most about ten seconds; give the reset
+                # room and then keep escalating.
+                sleep "$KERNEL_DEADLINE_RESERVE_SECONDS" || true
+            fi
+        else
+            emit "ASTERINAS_USERSPACE_REBOOT_WATCHDOG_UNAVAILABLE reason=$reason value=${kicking:-unreadable}"
+        fi
+    else
+        emit "ASTERINAS_USERSPACE_REBOOT_WATCHDOG_UNAVAILABLE reason=$reason value=no-file"
+    fi
     if reboot -f; then
         exit 0
-    fi
-    if [[ -w /proc/sysrq-trigger ]]; then
-        printf 'b' >/proc/sysrq-trigger && exit 0
     fi
     fail "forced-reboot-failed-$reason"
 }

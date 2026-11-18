@@ -558,7 +558,8 @@ build_riscv_rootfs_image:
 		-f "$(RISCV_ROOTFS_DOCKERFILE)" \
 		-t "$(RISCV_ROOTFS_IMAGE)" .
 
-.PHONY: test_riscv_host test_riscv_host_list test_riscv_host_integration test_riscv_host_all
+.PHONY: test_riscv_host test_riscv_host_list test_riscv_host_integration test_riscv_host_all \
+	test_riscv_rebase_gate
 test_riscv_host:
 	@tools/riscv/rt test \
 		--jobs "$(HOST_TEST_JOBS)"
@@ -570,6 +571,13 @@ test_riscv_host_integration:
 test_riscv_host_all:
 	@tools/riscv/rt test --tier all \
 		--jobs "$(HOST_TEST_JOBS)"
+
+# Boots the desktop image in QEMU and asserts the interfaces a rebase has
+# dropped before: devtmpfs char nodes, the framebuffer's sysfs class device,
+# evdev nodes, journald, the mount units, and the desktop readiness marker.
+# Run it after every rebase; a red line means something was lost again.
+test_riscv_rebase_gate:
+	@python3 tools/riscv/tests/rebase_gate.py
 
 test_riscv_host_list:
 	@tools/riscv/rt test \

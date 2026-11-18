@@ -232,3 +232,19 @@ and the ordered identity mode reaches `browser-start` every time, and a run
 without devices is not comparable to the board, where the keyboard and mouse
 both register within 2.5 seconds. The trap is that both cases print the same
 `stage=input-wait` line and then the same nothing.
+
+## The gate to run after every rebase
+
+The five defects above were each found by booting the board, watching it fail,
+and power-cycling it. `tools/riscv/tests/rebase_gate.py` replaces that loop for
+the next rebase: it boots the desktop image in QEMU and asserts, from inside
+the guest, everything a rebase has silently dropped here.
+
+```
+make test_riscv_rebase_gate
+```
+
+It refuses to start if `target/osdk/asterinas/bundle.toml` says the image was
+built for another architecture — an x86 build writes into the same folder and
+replaces the riscv image, and a gate that boots the wrong binary fails for
+reasons that have nothing to do with the kernel.

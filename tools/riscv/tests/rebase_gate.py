@@ -59,6 +59,29 @@ CHECKS = (
 )
 
 
+def check_arch() -> bool:
+    """Refuse to boot if the image at KERNEL is not a riscv64 build.
+
+    The OSDK writes every build into the same `target/osdk/asterinas` folder,
+    so an x86 build silently replaces the riscv image and the gate then fails
+    for a reason that has nothing to do with the kernel. The bundle manifest
+    next to the image records the architecture it was built for.
+    """
+    bundle = KERNEL.parent / "bundle.toml"
+    try:
+        text = bundle.read_text()
+    except OSError:
+        print(f"missing {bundle}; run the riscv build first", file=sys.stderr)
+        return False
+    match = re.search(r'^arch\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    arch = match.group(1) if match else "unknown"
+    if arch != "riscv64":
+        print(f"image was built for {arch}, not riscv64: rebuild with "
+              f"--target-arch riscv64 --scheme riscv", file=sys.stderr)
+        return False
+    return True
+
+
 def boot():
     for path in (SOCKET, LOG):
         try:
@@ -128,6 +151,8 @@ def main() -> int:
         if not path.exists():
             print(f"missing {path}", file=sys.stderr)
             return 2
+    if not check_arch():
+        return 2
 
     proc, ready = boot()
     failures = []
