@@ -78,6 +78,12 @@ mod clock_tick_tests {
 }
 
 pub(super) fn init() {
+    // `SystemTime::now`/`SystemTime::set` take `START_TIME` for granted, so it
+    // has to be installed before any clock syscall runs. `8e90d6159` brought
+    // the `system_time` module back without restoring this call, which left
+    // `START_TIME` empty and made `adjtimex`/`clock_settime` panic with
+    // `Option::unwrap()` on `None` (systemd-timesyncd hits that at boot).
+    system_time::init();
     clocks::init();
     softirq::init();
     cpu_time_stats::init();
