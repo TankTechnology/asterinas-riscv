@@ -283,3 +283,21 @@ It refuses to start if `target/osdk/asterinas/bundle.toml` says the image was
 built for another architecture — an x86 build writes into the same folder and
 replaces the riscv image, and a gate that boots the wrong binary fails for
 reasons that have nothing to do with the kernel.
+
+Every check is a shell expression evaluated in the guest over the debug
+console, so the harness itself can lie: a garbled reply, an echoing shell, a
+socket that returns the command instead of its output. After the positive
+checks the gate therefore probes a path that cannot exist and **requires the
+red branch**; a check channel that cannot say "fail" fails the gate.
+
+That probe did not stay hypothetical for long. Its first run showed that every
+positive check could be satisfied by the console's echo of the command itself:
+the echoed line contains `echo CHECK_ok` verbatim, so a check could match its
+own input without the shell ever evaluating it — green meant "the console
+echoed", not "the guest answered". The marker is now built from a variable
+(`M=CHECK; … echo ${M}_ok`), which the echo shows unexpanded, so only the
+guest's own output reads as `CHECK_ok`.
+
+The 2026-11-19 run is the first one that asserts `/proc/sysrq-trigger`, added
+in the same commit that restored its registration after a `procfs/mod.rs`
+rewrite dropped it.

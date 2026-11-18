@@ -23,6 +23,9 @@ only found on the board, one power cycle at a time:
 * `ASTERINAS_DESKTOP_BOOT_READY` -- the whole desktop chain, including the
   readiness markers that `<6>` used to hide.
 
+It also probes a path that cannot exist and requires the red branch, so a
+broken check channel cannot pass the suite green.
+
 Run it after every rebase; a red line means something was dropped again.
 
     tools/riscv/tests/rebase_gate.py [--keep]
@@ -52,16 +55,27 @@ LOG = "/tmp/rebase-gate.log"
 BOOT_TIMEOUT = 240
 ANSI = re.compile(r"\x1b\[[0-9;:?]*[A-Za-z]")
 
+# The debug console echoes every line it is sent, so a marker written
+# literally into the command would be found in the echo and every check would
+# pass without the shell ever evaluating it. Build the marker from a variable:
+# the echoed line shows `${M}_ok`, and only the guest's real output shows
+# `CHECK_ok`. The negative probe below is what proved this was happening.
+MARK = "M=CHECK; "
+
 CHECKS = (
-    ("serial node", "[ -c /dev/ttyS0 ] && echo CHECK_ok || echo CHECK_fail"),
-    ("framebuffer node", "[ -c /dev/fb0 ] && echo CHECK_ok || echo CHECK_fail"),
-    ("fb sysfs class", "[ -e /sys/class/graphics/fb0 ] && echo CHECK_ok || echo CHECK_fail"),
-    ("evdev nodes", "[ \"$(ls /dev/input/event* 2>/dev/null | wc -l)\" -ge 2 ] && echo CHECK_ok || echo CHECK_fail"),
-    ("journald", "systemctl is-active systemd-journald >/dev/null && echo CHECK_ok || echo CHECK_fail"),
-    ("sysrq trigger", "[ -w /proc/sysrq-trigger ] && echo CHECK_ok || echo CHECK_fail"),
-    ("run-lock.mount", "systemctl is-active run-lock.mount >/dev/null && echo CHECK_ok || echo CHECK_fail"),
-    ("tmp.mount", "systemctl is-active tmp.mount >/dev/null && echo CHECK_ok || echo CHECK_fail"),
+    ("serial node", "[ -c /dev/ttyS0 ] && echo ${M}_ok || echo ${M}_fail"),
+    ("framebuffer node", "[ -c /dev/fb0 ] && echo ${M}_ok || echo ${M}_fail"),
+    ("fb sysfs class", "[ -e /sys/class/graphics/fb0 ] && echo ${M}_ok || echo ${M}_fail"),
+    ("evdev nodes", "[ \"$(ls /dev/input/event* 2>/dev/null | wc -l)\" -ge 2 ] && echo ${M}_ok || echo ${M}_fail"),
+    ("journald", "systemctl is-active systemd-journald >/dev/null && echo ${M}_ok || echo ${M}_fail"),
+    ("sysrq trigger", "[ -w /proc/sysrq-trigger ] && echo ${M}_ok || echo ${M}_fail"),
+    ("run-lock.mount", "systemctl is-active run-lock.mount >/dev/null && echo ${M}_ok || echo ${M}_fail"),
+    ("tmp.mount", "systemctl is-active tmp.mount >/dev/null && echo ${M}_ok || echo ${M}_fail"),
 )
+
+# A path that cannot exist. The red branch has to come back from the guest, or
+# the harness itself is broken.
+NEGATIVE_PROBE = "[ -w /proc/.rebase-gate-absent ] && echo ${M}_ok || echo ${M}_fail"
 
 
 def check_arch() -> bool:
@@ -171,11 +185,21 @@ def main() -> int:
         print("desktop: PASS (ASTERINAS_DESKTOP_BOOT_READY)")
 
         for name, cmd in CHECKS:
-            reply = ask(cmd)
+            reply = ask(MARK + cmd)
             ok = "CHECK_ok" in reply
             print(f"{name}: {'PASS' if ok else 'FAIL'}")
             if not ok:
                 failures.append(name)
+
+        # A gate that only ever prints PASS is worthless: a garbled reply, a
+        # stale socket or a shell that echoes the command back would read as
+        # green. Probe a path that cannot exist and require the red branch.
+        reply = ask(MARK + NEGATIVE_PROBE)
+        if "CHECK_fail" in reply and "CHECK_ok" not in reply:
+            print("negative probe: PASS (an absent node reports fail)")
+        else:
+            print("negative probe: FAIL (the check channel does not discriminate)")
+            failures.append("negative probe")
     finally:
         proc.kill()
         proc.wait()
