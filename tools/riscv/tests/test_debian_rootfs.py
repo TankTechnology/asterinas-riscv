@@ -1788,9 +1788,12 @@ int main(void)
         self.assertNotIn('if [ "$attempt" -ge 240 ]', startup)
         self.assertIn("readiness_deadline", startup)
         self.assertIn("readiness_deadline=$((readiness_started + 220))", startup)
-        self.assertIn("printf '<6>%s\\n' \"$1\" >/dev/kmsg", source)
+        # Readiness markers have to survive a boot whose log level filters
+        # them out of printk, so they are KERN_WARNING and also written to the
+        # console: `<6>` was stored in the kernel log but never printed.
+        self.assertIn("printf '<4>%s\\n' \"$1\" >/dev/kmsg", source)
+        self.assertIn("printf '%s\\n' \"$1\" >/dev/console", source)
         self.assertNotIn("printf '%s\\n' \"$1\"\n", source)
-        self.assertNotIn("printf '%s\\n' \"$1\" >/dev/console", source)
 
     def test_physical_graphics_control_has_bounded_startup_snapshot(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
@@ -7373,6 +7376,75 @@ class DebianSystemdM2GateTests(unittest.TestCase):
             f'setenv bootargs "{SYSTEMD_EXT4_M3_BOOTARGS}"',
             commands,
         )
+
+
+class ConsoleWatchdogTests(unittest.TestCase):
+    """The debug console's last recovery layer must reach the image intact.
+
+    `configure_console_watchdog` is only called from two configure paths, so a
+    rename or a moved path fails silently: the image simply stops carrying a
+    watchdog that nothing else notices until the console is the only channel
+    left. Assert the installed artifacts, their modes and the link that pulls
+    the unit in.
+    """
+
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.directory = Path(self.temporary_directory.name)
+
+    def test_installs_the_watchdog_and_wants_it_from_the_debug_target(self) -> None:
+        stage = self.directory / "stage"
+        source_directory = REPOSITORY_ROOT / "tools/riscv/debian/rootfs"
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; configure_console_watchdog "$2" "$3"',
+                "builder-console-watchdog-test",
+                str(BUILD_SCRIPT),
+                str(stage),
+                str(source_directory),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        script = stage / "usr/lib/asterinas/console-watchdog"
+        unit = stage / "etc/systemd/system/asterinas-console-watchdog.service"
+        wants = (
+            stage
+            / "etc/systemd/system/asterinas-debug-console.target.wants"
+            / "asterinas-console-watchdog.service"
+        )
+        self.assertEqual(
+            script.read_bytes(),
+            (source_directory / "asterinas_console_watchdog.sh").read_bytes(),
+        )
+        self.assertEqual(stat.S_IMODE(script.stat().st_mode), 0o755)
+        self.assertEqual(
+            unit.read_bytes(),
+            (source_directory / "asterinas-console-watchdog.service").read_bytes(),
+        )
+        self.assertEqual(stat.S_IMODE(unit.stat().st_mode), 0o644)
+        self.assertTrue(wants.is_symlink())
+        self.assertEqual(os.readlink(wants), "../asterinas-console-watchdog.service")
+        # A .wants link is only meaningful when it resolves onto the unit that
+        # was just installed next to it.
+        self.assertEqual(wants.resolve(), unit.resolve())
+        unit_text = unit.read_text()
+        self.assertIn(
+            "ExecStart=/bin/sh /usr/lib/asterinas/console-watchdog",
+            unit_text,
+        )
+        # The debug-console target is the only boot driver on this image;
+        # `multi-user.target` never activates, so a unit wanted there is
+        # enabled and never started.
+        self.assertIn("WantedBy=asterinas-debug-console.target", unit_text)
 
 
 if __name__ == "__main__":
