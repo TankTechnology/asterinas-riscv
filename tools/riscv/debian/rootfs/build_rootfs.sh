@@ -1079,6 +1079,23 @@ drop_unsupported_sysctl_files() {
 # answered, so a shim that cannot reach the host leaves the guest as it found
 # it.  Both the daily-use image and browser-web need this; the unit skips
 # itself when no forwarder is configured.
+configure_console_watchdog() {
+    local stage="$1"
+    local script_directory="$2"
+
+    # The console is the last channel that works when the network is blocked
+    # and every other recovery layer is off. The watchdog restarts the debug
+    # console when its shell is gone, stopped or a zombie -- states that
+    # `Restart=always` cannot see -- and reboots when restarts keep failing.
+    install -D -m 0755 -- "$script_directory/asterinas_console_watchdog.sh" \
+        "$stage/usr/lib/asterinas/console-watchdog"
+    install -D -m 0644 -- "$script_directory/asterinas-console-watchdog.service" \
+        "$stage/etc/systemd/system/asterinas-console-watchdog.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/asterinas-debug-console.target.wants"
+    ln -sf ../asterinas-console-watchdog.service \
+        "$stage/etc/systemd/system/asterinas-debug-console.target.wants/asterinas-console-watchdog.service"
+}
+
 configure_dns_shim() {
     local stage="$1"
     local script_directory="$2"
@@ -1224,6 +1241,7 @@ EOF
         # the shim is the only DNS path.  It skips itself when the board
         # bootargs do not name a forwarder, so the QEMU gate is unaffected.
         configure_dns_shim "$stage" "$script_directory"
+        configure_console_watchdog "$stage" "$script_directory"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -2159,6 +2177,8 @@ EOF
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
             configure_dns_shim "$stage" "$script_directory"
+            configure_console_watchdog "$stage" "$script_directory"
+        configure_console_watchdog "$stage" "$script_directory"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
