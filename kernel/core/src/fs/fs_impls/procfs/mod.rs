@@ -50,6 +50,7 @@ mod pid;
 mod self_;
 mod stat;
 mod sys;
+mod sysrq;
 mod template;
 mod thread_self;
 mod uptime;
@@ -164,6 +165,11 @@ impl RootDirOps {
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_inode),
         ("sys", InodeType::Dir, SysDirOps::new_inode),
+        (
+            "sysrq-trigger",
+            InodeType::File,
+            sysrq::SysRqTriggerFileOps::new_inode,
+        ),
         (
             "thread-self",
             InodeType::SymLink,

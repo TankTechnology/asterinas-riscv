@@ -14,6 +14,10 @@ only found on the board, one power cycle at a time:
 * `/dev/input/event*` -- the boot HID devices were registered on their first
   report, which the desktop gate waits for before starting X (`e220093b6`).
 * journald active -- it needs `/dev/kmsg` and `SO_TIMESTAMP` (`ad34a4ea4`).
+* `/proc/sysrq-trigger` -- `17d522210` added it and a later rewrite of
+  `procfs/mod.rs` dropped the registration, leaving `sysrq.rs` compiled into
+  nothing. It is the only reset that needs neither a working filesystem nor an
+  executable.
 * `run-lock.mount` / `tmp.mount` active -- the mount table has to notify its
   pollers (`d2709e89c`).
 * `ASTERINAS_DESKTOP_BOOT_READY` -- the whole desktop chain, including the
@@ -54,6 +58,7 @@ CHECKS = (
     ("fb sysfs class", "[ -e /sys/class/graphics/fb0 ] && echo CHECK_ok || echo CHECK_fail"),
     ("evdev nodes", "[ \"$(ls /dev/input/event* 2>/dev/null | wc -l)\" -ge 2 ] && echo CHECK_ok || echo CHECK_fail"),
     ("journald", "systemctl is-active systemd-journald >/dev/null && echo CHECK_ok || echo CHECK_fail"),
+    ("sysrq trigger", "[ -w /proc/sysrq-trigger ] && echo CHECK_ok || echo CHECK_fail"),
     ("run-lock.mount", "systemctl is-active run-lock.mount >/dev/null && echo CHECK_ok || echo CHECK_fail"),
     ("tmp.mount", "systemctl is-active tmp.mount >/dev/null && echo CHECK_ok || echo CHECK_fail"),
 )
