@@ -212,6 +212,19 @@ sit on a socket that never speaks.
       signalled), and whether it accepts a message that carries no netlink
       header. A blocking `recvmsg` from a plain socket does receive the frame
       and its credentials, so the delivery itself works;
+      The experiment that separates them, and the first thing to run next:
+
+      * a minimal client that binds group 1, registers the socket with
+        `epoll`/`EPOLLIN` and waits. If it is never woken, the kernel's poll
+        path is at fault and libudev is not involved at all;
+      * if so, check that `BoundNetlink`'s `Pollable` implementation registers
+        the same pollee that `MessageReceiver::enqueue_message` notifies.
+        A different pollee would produce exactly this: a blocking `recvmsg`
+        returns because the queue is checked, and an `epoll` waiter sleeps
+        forever because nothing signals it.
+
+      (An attempt at the first one during the night was inconclusive: the
+      probe printed nothing, which is a harness problem, not a result.)
    c. only then can the filter attached in step 1 be shown to select: bind a
       monitor to one subsystem and prove events from another do not arrive.
 
