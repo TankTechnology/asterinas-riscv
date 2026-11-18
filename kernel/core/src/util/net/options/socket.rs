@@ -8,7 +8,7 @@ use crate::{
     net::socket::options::{
         AcceptConn, Broadcast, Error, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
         RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-        SendTimeout, SocketOption, SocketType,
+        SendTimeout, SocketOption, SocketType, Timestamp,
     },
     prelude::*,
     process::Gid,
@@ -42,6 +42,7 @@ enum CSocketOptionName {
     RCVTIMEO_OLD = 20,
     SNDTIMEO_OLD = 21,
     ATTACH_FILTER = 26,
+    TIMESTAMP = 29,
     ATTACH_BPF = 50,
     DETACH_FILTER = 27,
     ACCPETCONN = 30,
@@ -78,6 +79,7 @@ pub(crate) fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CSocketOptionName::PASSCRED => Ok(Box::new(PassCred::new())),
         CSocketOptionName::PEERCRED => Ok(Box::new(PeerCred::new())),
         CSocketOptionName::ACCPETCONN => Ok(Box::new(AcceptConn::new())),
+        CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
         CSocketOptionName::SNDBUFFORCE => Ok(Box::new(SendBufForce::new())),
         CSocketOptionName::RCVBUFFORCE => Ok(Box::new(RecvBufForce::new())),
         CSocketOptionName::PEERGROUPS => Ok(Box::new(PeerGroups::new())),
@@ -101,6 +103,7 @@ impl_raw_socket_option!(PassCred);
 impl_raw_sock_option_get_only!(PeerCred);
 impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
+impl_raw_socket_option!(Timestamp);
 impl_raw_socket_option!(RecvBufForce);
 
 // SO_PEERGROUPS is a read-only option. However, calling setsockopt on SO_PEERGROUPS will return EINVAL

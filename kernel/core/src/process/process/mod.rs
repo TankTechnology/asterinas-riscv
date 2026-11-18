@@ -643,7 +643,14 @@ impl Process {
             return;
         }
 
-        self.sig_queues.enqueue_without_notify(signal);
+        if self.sig_queues.enqueue_without_notify(signal) {
+            // The queue mutation releases its lock before returning, so the pollee is
+            // notified outside it. Without this, a `signalfd` watched through epoll never
+            // becomes readable even though the signal is pending: epoll only re-arms on an
+            // observer notification for this kind of file, so PID 1 would never learn that
+            // its children exited and every oneshot service would stall.
+            self.sig_queues.notify_enqueue();
+        }
 
         for task in self.tasks.lock().as_slice() {
             let posix_thread = task.as_posix_thread().unwrap();

@@ -52,6 +52,7 @@ pub(super) fn init_in_first_kthread() {
     MEM_CLASS.call_once(|| class::register(MemClass).unwrap());
 
     add_device(MemFile::Full).unwrap();
+    add_device(MemFile::Kmsg).unwrap();
     add_device(MemFile::Null).unwrap();
     add_device(MemFile::Random).unwrap();
     add_device(MemFile::Urandom).unwrap();

@@ -268,7 +268,11 @@ impl PosixThread {
     /// Therefore, unless the caller can ensure that there are no permission issues,
     /// this method should be used to enqueue kernel signals or fault signals.
     pub(crate) fn enqueue_signal(&self, signal: Box<dyn Signal>) {
-        self.sig_queues.enqueue_without_notify(signal);
+        if self.sig_queues.enqueue_without_notify(signal) {
+            // See the process-directed path: the signalfd pollee must be notified outside
+            // the queue lock, or an epoll waiter never sees the pending signal.
+            self.sig_queues.notify_enqueue();
+        }
         self.wake_signalled_waker();
     }
 
