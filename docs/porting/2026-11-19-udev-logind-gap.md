@@ -148,43 +148,48 @@ sit on a socket that never speaks.
    `Failed to create udev watchers` is gone. Still open on this step: no
    session is created yet, because the desktop is a service rather than a
    PAM login.
-2. **uevent emitter** (medium, not started): the pieces exist but no
-   call site connects them. What is already in the tree:
-   * `kobject_uevent/message/uevent.rs` builds the NUL-separated payload
-     (`action@devpath\0ACTION=..\0DEVPATH=..\0SUBSYSTEM=..\0..SEQNUM=n\0`)
-     with a monotonic `SEQNUM`;
-   * `UeventMessage` implements `MulticastMessage`, and
-     `SupportedNetlinkProtocol::multicast(groups, message)` delivers to every
-     socket bound to those groups -- it is currently `dead_code`;
-   * `syn_uevent.rs` already parses what user space writes to a
-     `/sys/.../uevent` file.
-   What is missing is (a) a kernel-facing `broadcast_uevent(...)` over
-   `multicast`, (b) a call at registration, and (c) the `uevent` attribute in
-   the device model that makes (c) reachable at all.
+2. **uevent emitter** (done 2026-11-19): a device that is added, removed, or
+   asked for an event through its `uevent` file is announced on the kernel
+   group. What the pieces were, and what was missing:
 
-   Design that fits the tree:
-   * **emit on registration**: `aster_device`'s `common/registration.rs` is
-     the single choke point -- `add_steps` ends after the `/dev` node exists
-     and the subsystem ran (`on_added`), and `teardown` runs before the node
-     is deleted. Both are the right place, and both are in a crate that
-     cannot call kernel core, so the bridge is the existing
-     `hooks::KernelHooks` trait: add a default no-op
-     `fn emit_uevent(&self, request: &UeventRequest) {}` and a free
-     `hooks::emit_uevent(...)` beside `create_devnode`;
-   * **the sysfs file**: every device needs `uevent`, so the attribute
-     belongs in `aster_device`'s core attribute set next to `DEV_ATTR`, with
-     writes parsed by the existing `SyntheticUevent::from_str` and handed to
-     the same hook. Without it udevd's coldplug (it writes `add` to every
-     `/sys/class/*/uevent` at startup) cannot see devices that registered
-     before it started -- which is *all* of them on this kernel.
+   * `kobject_uevent/message/uevent.rs` already built the NUL-separated
+     payload with a monotonic `SEQNUM`;
+   * `UeventMessage` already implemented `MulticastMessage`, and
+     `SupportedNetlinkProtocol::multicast` already delivered to bound
+     sockets -- as `dead_code`;
+   * `syn_uevent.rs` already parsed what user space writes to
+     `/sys/.../uevent`.
 
-   Acceptance, in order:
-   a. `udevadm monitor` running, then `echo add > /sys/class/graphics/fb0/uevent`
-      prints an `add@/devices/...` line with `SUBSYSTEM=graphics`;
-   b. unmask `systemd-udevd`; during boot the journal shows it processing
-      events, and `/run/udev/data/` gains entries;
-   c. `udevadm info -q property /dev/vda` answers with `SUBSYSTEM`/`DEVNAME`;
-   d. only then can the filter attached in step 1 be shown to select: bind a
+   Missing were the `/sys/.../uevent` attribute itself (it did not exist, so
+   udevd's coldplug had nothing to open), a publish point at registration,
+   and the bridge between `aster-device` and the kernel's netlink code.
+   `hooks::KernelHooks` carries it, the way it already carries devnode
+   requests. `add` is emitted at the end of registration -- after the sysfs
+   directory and `/dev` node exist -- and `remove` before teardown deletes
+   them, so a listener that reads the device on the event still finds it.
+
+   Verified in QEMU, 2026-11-19, image built 01:58 (sha256 aa3ea94887de...).
+   A `NETLINK_KOBJECT_UEVENT` socket bound to group 1 receives, for
+   `echo add > /sys/class/graphics/fb0/uevent`:
+
+   ```
+   add@/devices/virtual/platform/framebuffer/fb0\0ACTION=add\0
+   DEVPATH=/devices/virtual/platform/framebuffer/fb0\0SUBSYSTEM=graphics\0
+   MAJOR=29\0MINOR=0\0DEVNAME=fb0\0SEQNUM=19\0
+   ```
+
+   `echo change >` produces `ACTION=change`, and the DEVPATH it carries
+   exists under /sys.
+
+   Still open on this step:
+   a. unmask `systemd-udevd` and require it to process the coldplug: entries
+      under `/run/udev/data/`, `udevadm info -q property /dev/vda` answering
+      with `SUBSYSTEM`/`DEVNAME`, and no unit failures;
+   b. check the credentials on a delivered message. sd-device's kernel
+      monitor inspects `SCM_CREDENTIALS` and expects the sender to be the
+      kernel (pid 0); the verification above read the payload without
+      `SO_PASSCRED`, so this is unproven;
+   c. only then can the filter attached in step 1 be shown to select: bind a
       monitor to one subsystem and prove events from another do not arrive.
 
 3. **`CLONE_INTO_CGROUP`** (small once trusted): plumb the `cgroup` field
