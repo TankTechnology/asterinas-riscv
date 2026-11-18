@@ -182,9 +182,9 @@ sit on a socket that never speaks.
    exists under /sys.
 
    Still open on this step:
-   a. unmask `systemd-udevd` and require it to process the coldplug: entries
-      under `/run/udev/data/`, `udevadm info -q property /dev/vda` answering
-      with `SUBSYSTEM`/`DEVNAME`, and no unit failures;
+   a. ~~unmask `systemd-udevd` and require it to process the coldplug~~ --
+      done: `/run/udev/data/c29:0` appears for the framebuffer after a
+      trigger, and `udevadm monitor` prints the add and change events;
    b. deliver `SCM_CREDENTIALS`. The netlink receive path has no control
       messages at all -- `recvmsg` carries a `// TODO: Receive control
       message` and returns an empty vector -- and libudev's kernel monitor
@@ -223,10 +223,27 @@ sit on a socket that never speaks.
         returns because the queue is checked, and an `epoll` waiter sleeps
         forever because nothing signals it.
 
-      (An attempt at the first one during the night was inconclusive: the
-      probe printed nothing, which is a harness problem, not a result.)
-   c. only then can the filter attached in step 1 be shown to select: bind a
-      monitor to one subsystem and prove events from another do not arrive.
+      Both were run. The minimal epoll client is woken (`POLL= [(3, 1)]`) and
+      reads the frame, so the kernel's poll path was never the problem. What
+      was: the message's source address was the unspecified one, with
+      `nl_groups == 0`, and a listener reads that as a unicast frame from
+      nobody and ignores it. Stamping the announced group on the source
+      address fixed it:
+
+      ```
+      KERNEL[25.825497] add      /devices/.../framebuffer/fb0 (graphics)
+      KERNEL[28.719694] change   /devices/.../framebuffer/fb0 (graphics)
+      $ ls /run/udev/data
+      c29:0
+      ```
+
+      `systemd-udevd` now processes the device, and the classic-BPF filter
+      accepted in step 1 is finally observable: a monitor matching
+      `graphics` prints the event above, one matching `block` prints nothing
+      for the same write.
+   c. ~~only then can the filter attached in step 1 be shown to select~~ --
+      done: `--subsystem-match=graphics` receives the event,
+      `--subsystem-match=block` does not.
 
 3. **`CLONE_INTO_CGROUP`** (small once trusted): plumb the `cgroup` field
    through `CloneArgs` into `cgroupfs::cgroup_node_from_fd` and place the new
