@@ -39,6 +39,30 @@ pub trait KernelHooks: Send + Sync + 'static {
     /// Deletes a `/dev` node created earlier.
     /// The request is the one that created the node.
     fn delete_devnode(&self, request: &DevNodeRequest) -> core::result::Result<(), HookError>;
+
+    /// Publishes a device event.
+    ///
+    /// Unlike devnode requests, events are not queued until the hooks are
+    /// installed. A device registered that early has already been added by
+    /// the time any subscriber could care, and user space recovers those by
+    /// writing `add` to `/sys/.../uevent`.
+    fn emit_uevent(&self, _request: &UeventRequest) {}
+}
+
+/// A device event to publish to user space.
+///
+/// The three fields are what a `NETLINK_KOBJECT_UEVENT` subscriber needs to
+/// act on the device: what happened, where the device lives in `/sys`, and
+/// which subsystem owns it. Everything else (`MAJOR`, `DEVNAME`, ...) is
+/// derived by the emitter, which knows the device number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UeventRequest {
+    /// The action, e.g. `add` or `remove`.
+    pub action: SysStr,
+    /// The device's path under sysfs, e.g. `/devices/platform/soc/...`.
+    pub devpath: SysStr,
+    /// The subsystem the device belongs to, e.g. `graphics`.
+    pub subsystem: SysStr,
 }
 
 /// A request to create or delete a `/dev` node.
@@ -62,6 +86,13 @@ pub(crate) fn create_devnode(request: DevNodeRequest) -> Result<()> {
 
 pub(crate) fn delete_devnode(request: &DevNodeRequest) -> Result<()> {
     HOOKS.delete_devnode(request)
+}
+
+/// Publishes a device event, if the hooks are installed.
+pub(crate) fn emit_uevent(request: &UeventRequest) {
+    if let Some(hooks) = HOOKS.installed() {
+        hooks.emit_uevent(request);
+    }
 }
 
 /// The hooks, once installed, and the requests waiting for them.
@@ -92,6 +123,10 @@ impl HookSlot {
             // the request long ago; the node is simply absent.
             let _ = installed.create_devnode(&request);
         }
+    }
+
+    fn installed(&self) -> Option<&'static dyn KernelHooks> {
+        self.hooks.get().map(|hooks| *hooks)
     }
 
     pub(crate) fn create_devnode(&self, request: DevNodeRequest) -> Result<()> {

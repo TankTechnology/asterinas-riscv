@@ -5,7 +5,7 @@
 
 use aster_device::{
     common::DevKind,
-    hooks::{self, DevNodeRequest, HookError, KernelHooks},
+    hooks::{self, DevNodeRequest, HookError, KernelHooks, UeventRequest},
 };
 
 use crate::{
@@ -35,6 +35,13 @@ impl KernelHooks for Hooks {
             );
             HookError
         })
+    }
+
+    fn emit_uevent(&self, _request: &UeventRequest) {
+        // The netlink side is not wired yet: broadcasting an event needs a
+        // sender the device model cannot reach from here (see
+        // docs/porting/2026-11-19-udev-logind-gap.md). Accepting the call
+        // keeps every registration path unchanged until it is.
     }
 
     fn delete_devnode(&self, request: &DevNodeRequest) -> core::result::Result<(), HookError> {
