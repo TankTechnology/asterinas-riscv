@@ -196,14 +196,22 @@ sit on a socket that never speaks.
       * `systemd-udevd` starts and stays `active`, `udevadm trigger` returns
         0, and `/run/udev/data` is still empty.
 
-      Attaching kernel credentials (per-socket `SO_PASSCRED`,
-      `CUserCred::kernel()`, a new `SocketControlMessage::Credentials`) was
-      tried and reverted: the ancillary data came back as `(0, 0)` -- a
-      malformed control message rather than a delivered credential -- and
-      udev still dropped the frame. Debugging that serialization
-      (`CControlHeader`, `CMSG_ALIGN`, and how the header and payload are
-      written for this path) is the next step, and it is the last thing
-      between the emitter and an udevd that actually works;
+      `SCM_CREDENTIALS` is now delivered, per socket and only when
+      `SO_PASSCRED` was set, carrying the kernel's identity (pid 0). An
+      earlier attempt was reverted after a probe reported the ancillary data
+      as `(0, 0)` -- that probe was reading `recvmsg()`'s fourth element (the
+      netlink address) instead of its second (the ancillary data). With the
+      probe fixed the control message is `[(1, 2, b'\0' * 12)]`: SOL_SOCKET,
+      SCM_CREDENTIALS, pid=uid=gid=0, which is what libudev checks.
+
+      And udev still ignores the frames: `udevadm monitor --kernel` prints
+      nothing and `/run/udev/data` stays empty while the daemon is `active`
+      and `udevadm trigger` returns 0. With credentials ruled out, the
+      suspects left are how a listener is woken and served by this netlink
+      socket (a `udevadm monitor` waits in `epoll` and reads only when
+      signalled), and whether it accepts a message that carries no netlink
+      header. A blocking `recvmsg` from a plain socket does receive the frame
+      and its credentials, so the delivery itself works;
    c. only then can the filter attached in step 1 be shown to select: bind a
       monitor to one subsystem and prove events from another do not arrive.
 
