@@ -1,0 +1,18 @@
+[Unit]
+Description=Asterinas durable uptime heartbeat
+# Deliberately weak ordering: the heartbeat is most useful while everything
+# else is failing, so it must not wait for a target that the failure takes
+# down with it.
+DefaultDependencies=no
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/asterinas/asterinas-heartbeat
+Restart=always
+RestartSec=1s
+# The whole point is to keep running when the rest of the system does not.
+OOMPolicy=continue
+
+[Install]
+WantedBy=sysinit.target
