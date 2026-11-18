@@ -185,10 +185,25 @@ sit on a socket that never speaks.
    a. unmask `systemd-udevd` and require it to process the coldplug: entries
       under `/run/udev/data/`, `udevadm info -q property /dev/vda` answering
       with `SUBSYSTEM`/`DEVNAME`, and no unit failures;
-   b. check the credentials on a delivered message. sd-device's kernel
-      monitor inspects `SCM_CREDENTIALS` and expects the sender to be the
-      kernel (pid 0); the verification above read the payload without
-      `SO_PASSCRED`, so this is unproven;
+   b. deliver `SCM_CREDENTIALS`. The netlink receive path has no control
+      messages at all -- `recvmsg` carries a `// TODO: Receive control
+      message` and returns an empty vector -- and libudev's kernel monitor
+      checks that the sender is the kernel (pid 0) before it accepts a frame.
+      This one piece explains three observations made the same night:
+
+      * our own python listener receives `add@...` frames;
+      * `udevadm monitor --kernel` prints its banner and then nothing;
+      * `systemd-udevd` starts and stays `active`, `udevadm trigger` returns
+        0, and `/run/udev/data` is still empty.
+
+      Attaching kernel credentials (per-socket `SO_PASSCRED`,
+      `CUserCred::kernel()`, a new `SocketControlMessage::Credentials`) was
+      tried and reverted: the ancillary data came back as `(0, 0)` -- a
+      malformed control message rather than a delivered credential -- and
+      udev still dropped the frame. Debugging that serialization
+      (`CControlHeader`, `CMSG_ALIGN`, and how the header and payload are
+      written for this path) is the next step, and it is the last thing
+      between the emitter and an udevd that actually works;
    c. only then can the filter attached in step 1 be shown to select: bind a
       monitor to one subsystem and prove events from another do not arrive.
 
