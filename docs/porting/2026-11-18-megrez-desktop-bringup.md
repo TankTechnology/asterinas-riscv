@@ -102,3 +102,40 @@ this boot id together with a disarmed watchdog.
    uncancellable predicate, so neither `timeout` nor a signal can interrupt a
    `sync` that is waiting on the block layer, and the forced-reboot fallback
    never runs. That is why a wedged boot needed a power cycle.
+
+## The self-recovery loop, measured
+
+With the arming sequence persisted in the U-Boot environment (`saveenv`), a
+boot no longer needs anything typed by hand:
+
+```
+9094936 bytes read in 132 ms        kernel
+1105408 bytes read in  61 ms        stage1 initramfs
+155097 bytes read in  55 ms         dtb
+Starting kernel ...
+ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=active period_seconds=1
+usb: USB boot mouse registered: 30fa:0302      (2.388 s)
+usb: USB boot keyboard registered: 046d:c31c   (2.396 s)
+stage=input-wait -> input-ready -> desktop-start -> desktop-ready -> browser-start
+```
+
+The desktop then stalls the kernel (see the open item below), and about ten
+seconds later the SoC resets itself. U-Boot comes back, autoboots the same
+`bootcmd` with no operator input, and the next boot reports
+`status=active` again. Two consecutive cycles were observed; one cycle takes
+roughly a minute.
+
+The U-Boot side of that recipe needs one detail that is easy to get wrong:
+
+```
+setenv bc1 'load kernel; load initramfs; setenv initrd_size ${filesize}; load dtb;'
+setenv bc2 'mw.l 0x51828444 0x1; mw.l 0x50800004 0xf; mw.l 0x5080000c 0x76; mw.l 0x50800000 0x1f;'
+setenv bc3 'setenv bootargs ${as_args}; booti ...'
+setenv bootcmd "${bc1} ${bc2} ${bc3}"     # double quotes
+```
+
+Double quotes, not single: `run` only splits the variable's own text on `;`,
+so a `bootcmd` that merely expands to the pieces passes the whole line to
+`ext4load` and fails with its usage message. With double quotes the pieces are
+expanded while the variable is set, and the stored text carries real
+semicolons.
