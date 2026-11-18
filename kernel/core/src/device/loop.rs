@@ -33,7 +33,6 @@ use crate::{
     },
     events::IoEvents,
     fs::{
-        devtmpfs::{self, DevtmpfsNode},
         file::{
             FileLike, InodeHandle, PerOpenFileOps, SeekFrom, SettableStatusFlags, StatusFlags,
             file_table::WithFileTable,
@@ -1019,18 +1018,14 @@ pub(super) fn init_in_first_kthread() {
 }
 
 pub(super) fn init_in_first_process() -> Result<()> {
-    // /dev/loopN nodes are created automatically by the block registry
-    // (block::init_in_first_process) which iterates all registered block
-    // devices. We only need to create /dev/loop-control manually.
+    // /dev/loopN and /dev/loop-control nodes are created by the block and char
+    // registries, which create a devtmpfs node for every device that registers.
 
     let ctl_major = char::allocate_major()?;
     let ctl_id = DeviceId::new(ctl_major.get(), MinorId::new(237));
     let ctl_device = LoopControlDevice::new(ctl_id);
     char::register(ctl_device).expect("failed to register loop-control");
     *LOOP_CONTROL_MAJOR.lock() = Some(ctl_major);
-    let ctl_meta = DevtmpfsNodeMeta::new("loop-control")
-        .expect("the loop-control node path is valid");
-    devtmpfs::create_node(DevtmpfsNode::new(DeviceType::Char, ctl_id, ctl_meta))?;
 
     Ok(())
 }

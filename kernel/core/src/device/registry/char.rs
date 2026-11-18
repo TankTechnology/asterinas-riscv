@@ -8,10 +8,7 @@ use device_id::{DeviceId, MajorId};
 
 use crate::{
     device::Device,
-    fs::{
-        devtmpfs::{self, DevtmpfsNode},
-        vfs::path::PathResolver,
-    },
+    fs::devtmpfs::{self, DevtmpfsNode},
     prelude::*,
 };
 
@@ -67,7 +64,10 @@ where
     }
 }
 
-static DEVICE_REGISTRY: Mutex<DeviceRegistrationTable<Arc<dyn Device>, PathResolver>> =
+// The node context carries nothing: the devtmpfs node for a device is derived
+// from the device itself. It exists only to tell "registered before devtmpfs
+// was ready" (no node yet) apart from "registered later" (create the node now).
+static DEVICE_REGISTRY: Mutex<DeviceRegistrationTable<Arc<dyn Device>, ()>> =
     Mutex::new(DeviceRegistrationTable::new());
 
 /// Registers a new char device.
@@ -80,8 +80,11 @@ pub fn register(device: Arc<dyn Device>) -> Result<()> {
     let node = insertion
         .map_err(|_| Error::with_message(Errno::EEXIST, "the char device already exists"))?;
 
-    if let Some((device, path_resolver)) = node
-        && let Err(error) = add_device_node(&device, &path_resolver)
+    if let Some((device, ())) = node
+        && let Err(error) = add_device_node(&device)
+        // A device that also goes through `aster_device` has had its node
+        // created by that path already, which is not a registration failure.
+        && error.error() != Errno::EEXIST
     {
         let _removed = {
             let mut registry = DEVICE_REGISTRY.lock();
@@ -188,16 +191,22 @@ impl Drop for MajorIdOwner {
     }
 }
 
-pub(super) fn init_in_first_process(path_resolver: &PathResolver) -> Result<()> {
-    let devices = DEVICE_REGISTRY.lock().activate(path_resolver.clone());
+pub(super) fn init_in_first_process() -> Result<()> {
+    let devices = DEVICE_REGISTRY.lock().activate(());
     for device in devices {
-        add_device_node(&device, path_resolver)?;
+        // Devices that also go through `aster_device` (the memory devices, the
+        // console) have had their nodes created by that path already.
+        if let Err(error) = add_device_node(&device)
+            && error.error() != Errno::EEXIST
+        {
+            return Err(error);
+        }
     }
 
     Ok(())
 }
 
-fn add_device_node(device: &Arc<dyn Device>, _path_resolver: &PathResolver) -> Result<()> {
+fn add_device_node(device: &Arc<dyn Device>) -> Result<()> {
     let Some(devtmpfs_meta) = device.devtmpfs_meta() else {
         return Ok(());
     };
