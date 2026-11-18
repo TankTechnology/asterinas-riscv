@@ -98,6 +98,19 @@ impl CUserCred {
         }
     }
 
+    /// The kernel's own identity: pid 0, root UID and GID.
+    ///
+    /// This is what a message the kernel originates carries in
+    /// `SCM_CREDENTIALS`; libudev's kernel monitor drops anything whose
+    /// sender is not pid 0.
+    pub(in crate::net) const fn kernel() -> Self {
+        Self {
+            pid: 0,
+            uid: Uid::new_root(),
+            gid: Gid::new_root(),
+        }
+    }
+
     pub(in crate::net) fn new_overflow() -> Self {
         Self {
             pid: 0,

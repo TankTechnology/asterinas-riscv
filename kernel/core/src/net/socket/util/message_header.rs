@@ -4,7 +4,10 @@ use align_ext::AlignExt;
 
 use super::{RecvFlags, SocketAddr};
 use crate::{
-    net::socket::{netlink::NetlinkControlMessage, unix::UnixControlMessage},
+    net::socket::{
+        netlink::NetlinkControlMessage,
+        unix::{CUserCred, UnixControlMessage},
+    },
     prelude::*,
     time::{timespec_t, timeval_t},
     util::net::CSocketOptionLevel,
@@ -154,6 +157,8 @@ impl ControlMessage {
 /// A socket-level control message produced by the kernel on receive.
 #[derive(Debug)]
 pub enum SocketControlMessage {
+    /// The sender's credentials (`SO_PASSCRED`).
+    Credentials(CUserCred),
     Timestamp(timeval_t),
     TimestampNs(timespec_t),
     /// The hop limit of a received IPv4 packet (`IP_RECVTTL`).
@@ -163,6 +168,11 @@ pub enum SocketControlMessage {
 impl SocketControlMessage {
     fn write_to(&self, writer: &mut VmWriter) -> Result<(CControlHeader, RecvFlags)> {
         let (level, type_, payload_len) = match self {
+            Self::Credentials(_) => (
+                CSocketOptionLevel::SOL_SOCKET,
+                SCM_CREDENTIALS,
+                size_of::<CUserCred>(),
+            ),
             Self::Timestamp(_) => (
                 CSocketOptionLevel::SOL_SOCKET,
                 SCM_TIMESTAMP,
@@ -182,6 +192,7 @@ impl SocketControlMessage {
         let header = CControlHeader::new(level, type_, payload_len);
         writer.write_val(&header)?;
         match self {
+            Self::Credentials(value) => writer.write_val(value)?,
             Self::Timestamp(value) => writer.write_val(value)?,
             Self::TimestampNs(value) => writer.write_val(value)?,
             Self::IpTtl(value) => writer.write_val(value)?,
@@ -211,6 +222,7 @@ pub(crate) struct CControlHeader {
 const CMSG_ALIGN: usize = size_of::<usize>();
 
 /// Ancillary message types carried at `SOL_SOCKET`.
+const SCM_CREDENTIALS: i32 = 2;
 const SCM_TIMESTAMP: i32 = 29;
 const SCM_TIMESTAMPNS: i32 = 35;
 

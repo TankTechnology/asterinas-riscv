@@ -20,8 +20,10 @@ use crate::{
             macros::{sock_option_mut, sock_option_ref},
         },
         private::SocketPrivate,
+        unix::CUserCred,
         util::{
-            MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
+            ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
+            SocketControlMessage,
             datagram_common::{Bound, Inner, select_remote_and_bind},
             options::{
                 GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
@@ -195,9 +197,19 @@ where
             self.try_recv(writer, flags)
         })?;
 
-        // TODO: Receive control message
+        // A listener that asked for credentials must get them, or it cannot
+        // tell a kernel-originated message from a forged one. Everything this
+        // socket delivers is produced by the kernel, so the credentials are
+        // the kernel's own (pid 0).
+        let control_messages = if self.options.read().socket.pass_cred() {
+            vec![ControlMessage::Socket(SocketControlMessage::Credentials(
+                CUserCred::kernel(),
+            ))]
+        } else {
+            Vec::new()
+        };
 
-        let message_header = MessageHeader::new(Some(addr), Vec::new());
+        let message_header = MessageHeader::new(Some(addr), control_messages);
 
         Ok((output, message_header))
     }
