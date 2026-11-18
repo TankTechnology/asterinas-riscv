@@ -26,6 +26,11 @@ const COUNTER_RESTART_OFFSET: usize = 0x0c;
 const COMPONENT_TYPE_OFFSET: usize = 0xfc;
 const CONTROL_ENABLE: u32 = 1;
 const COUNTER_RESTART_VALUE: u32 = 0x76;
+/// The `COMP_TYPE` signature of the DesignWare watchdog.
+///
+/// This is a fixed peripheral id, not a version: the version lives in
+/// `COMP_VERSION` at `0xf8`. `0x4457_0140` is a different DesignWare block
+/// (I2C), so the comparison below stays exact.
 const COMPONENT_TYPE: u32 = 0x4457_0120;
 const KICK_PERIOD: Duration = Duration::from_secs(1);
 
@@ -101,9 +106,13 @@ pub(super) fn handoff_if_requested() {
         ostd::early_println!("ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=control-read");
         return;
     };
+    // Keep the whole word in the message: a zero here means the block is still
+    // held in reset (U-Boot's `mw.l 0x51828444 0x1` un-resets it), which is a
+    // different problem from a wrong signature.
     if component != COMPONENT_TYPE {
         ostd::early_println!(
-            "ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=component-mismatch"
+            "ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=component-mismatch value={:#x}",
+            component
         );
         return;
     }

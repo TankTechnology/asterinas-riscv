@@ -436,9 +436,28 @@ pub(crate) fn run_hid_host(
 
     let hid_info = host.info();
     let mut keyboard_decoder = hid_info.keyboard.map(|_| HidBootKeyboard::new());
-    let mut keyboard_device: Option<RegisteredInputDevice> = None;
+    // Register the input devices now, not on the first report. A desktop
+    // session starts X only once `/dev/input/event*` exists, and waiting for an
+    // operator to press a key before that is a deadlock: the node the gate
+    // waits for is exactly the node that would accept the key.
+    let mut keyboard_device: Option<RegisteredInputDevice> = hid_info.keyboard.map(|info| {
+        ostd::info!(
+            "USB boot keyboard registered: {:04x}:{:04x}",
+            info.vendor_id,
+            info.product_id,
+        );
+        register_keyboard(info.vendor_id, info.product_id)
+    });
     let mut mouse_decoder = hid_info.mouse_layout.map(HidBootMouse::new);
-    let mut mouse_device: Option<RegisteredInputDevice> = None;
+    let mut mouse_device: Option<RegisteredInputDevice> = hid_info.mouse.and_then(|info| {
+        let layout = hid_info.mouse_layout?;
+        ostd::info!(
+            "USB boot mouse registered: {:04x}:{:04x}",
+            info.vendor_id,
+            info.product_id,
+        );
+        Some(register_mouse(info.vendor_id, info.product_id, layout))
+    });
 
     // The interrupt handler only wakes this thread; all report processing
     // runs here, in task context (device registration, evdev dispatch and tty
@@ -509,17 +528,9 @@ pub(crate) fn run_hid_host(
                     if events.is_empty() {
                         continue;
                     }
-                    let device = keyboard_device.get_or_insert_with(|| {
-                        let info = hid_info
-                            .keyboard
-                            .expect("a keyboard report implies a boot keyboard");
-                        ostd::info!(
-                            "USB boot keyboard registered: {:04x}:{:04x}",
-                            info.vendor_id,
-                            info.product_id,
-                        );
-                        register_keyboard(info.vendor_id, info.product_id)
-                    });
+                    let Some(device) = keyboard_device.as_mut() else {
+                        continue;
+                    };
                     device.submit_events(&events);
                 }
                 UsbHidReport::Mouse {
@@ -539,18 +550,9 @@ pub(crate) fn run_hid_host(
                     if events.is_empty() {
                         continue;
                     }
-                    let device = mouse_device.get_or_insert_with(|| {
-                        let info = hid_info.mouse.expect("a mouse report implies a boot mouse");
-                        let layout = hid_info
-                            .mouse_layout
-                            .expect("a decoded report implies a known layout");
-                        ostd::info!(
-                            "USB boot mouse registered: {:04x}:{:04x}",
-                            info.vendor_id,
-                            info.product_id,
-                        );
-                        register_mouse(info.vendor_id, info.product_id, layout)
-                    });
+                    let Some(device) = mouse_device.as_mut() else {
+                        continue;
+                    };
                     device.submit_events(&events);
                 }
             }
