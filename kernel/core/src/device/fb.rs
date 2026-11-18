@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use aster_device::{
+    class::{self, Class, ClassDevice},
+    common::{AnyDevice, Attr, DevNode, DevNum},
+};
 use aster_framebuffer::{
     framebuffer::{ColorMapEntry, FRAMEBUFFER, FrameBuffer, MAX_CMAP_SIZE},
     pixel::PixelFormat,
@@ -14,7 +18,7 @@ use crate::{
     events::IoEvents,
     fs::{
         devtmpfs::DevtmpfsNodeMeta,
-        file::{Mappable, MappableObject, MappedObject, PerOpenFileOps, StatusFlags},
+        file::{Mappable, MappableObject, MappedObject, PerOpenFileOps, StatusFlags, mkmod},
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
@@ -23,8 +27,44 @@ use crate::{
     vm::vmar::{FileMmapRequest, MapHandle},
 };
 
-#[derive(Debug)]
-struct Fb;
+/// A class device that only supplies the platform parent of the framebuffer.
+///
+/// Xorg's fbdev driver reads `/sys/class/graphics/fb0/device/subsystem` and
+/// rejects the framebuffer unless that link exists and does not point at PCI.
+/// A virtual platform parent gives the framebuffer class device the `device`
+/// link and a non-PCI `subsystem` target.
+struct PlatformClass;
+
+impl Class for PlatformClass {
+    const NAME: &'static str = "platform";
+    type Device = ();
+
+    fn dev_attrs(&self) -> &'static [Attr<ClassDevice<Self>>] {
+        &[]
+    }
+}
+
+/// The `graphics` class, which owns `/sys/class/graphics/fb0`.
+struct GraphicsClass;
+
+impl Class for GraphicsClass {
+    const NAME: &'static str = "graphics";
+    type Device = ();
+
+    /// Creates `/dev/fb0`. Linux gives the framebuffer node `crw-rw----`, which
+    /// is what the desktop session's device-access helper expects to widen to
+    /// the desktop user.
+    fn devnode(&self, _dev: &ClassDevice<Self>) -> Option<DevNode> {
+        Some(DevNode {
+            path: None,
+            mode: Some(mkmod!(u+rw, g+r).bits()),
+        })
+    }
+
+    fn dev_attrs(&self) -> &'static [Attr<ClassDevice<Self>>] {
+        &[]
+    }
+}
 
 #[derive(Debug)]
 struct FbHandle {
@@ -223,22 +263,24 @@ mod ioctl_defs {
     pub(super) type Blank            = ioc!(FBIOBLANK,           0x4611, NoData);
 }
 
-impl Device for Fb {
+type PlatformDevice = ClassDevice<PlatformClass>;
+type GraphicsDevice = ClassDevice<GraphicsClass>;
+
+impl Device for GraphicsDevice {
     fn type_(&self) -> DeviceType {
         DeviceType::Char
     }
 
     fn id(&self) -> DeviceId {
         // Same value with Linux: major 29, minor 0
-        DeviceId::new(MajorId::new(29), MinorId::new(0))
+        self.devnum()
+            .expect("framebuffer always has a device number")
+            .id()
     }
 
     fn devtmpfs_meta(&self) -> Option<DevtmpfsNodeMeta> {
-        // Linux names framebuffer device nodes as `fbN`.
-        // TODO: We currently expose only one framebuffer device,
-        // so the devtmpfs node is fixed to `fb0`.
-        // Reference: <https://elixir.bootlin.com/linux/v6.18/source/drivers/video/fbdev/core/fbsysfs.c#L482>.
-        Some(DevtmpfsNodeMeta::new("fb0").unwrap())
+        // The device model creates `/dev/fb0` from the class devnode.
+        None
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -588,5 +630,23 @@ pub(super) fn init_in_first_kthread() {
         return;
     }
 
-    char::register(Arc::new(Fb)).expect("failed to register framebuffer char device");
+    // Xorg's fbdev driver only accepts a framebuffer whose class device has a
+    // `device/subsystem` link that does not point at PCI. Give it a virtual
+    // platform parent, exactly like Linux's `simple-framebuffer` platform
+    // device.
+    let platform_class = class::register(PlatformClass).expect("failed to register platform class");
+    let parent = PlatformDevice::builder(&platform_class, "framebuffer", ()).build();
+    aster_device::add_device(&parent).expect("failed to register framebuffer parent");
+
+    let graphics_class =
+        class::register(GraphicsClass).expect("failed to register graphics class");
+    let device = GraphicsDevice::builder(&graphics_class, "fb0", ())
+        .parent(parent)
+        .devnum(DevNum::char(DeviceId::new(
+            MajorId::new(29),
+            MinorId::new(0),
+        )))
+        .build();
+    aster_device::add_device(&device).expect("failed to register framebuffer device");
+    char::register(device).expect("failed to register framebuffer char device");
 }
