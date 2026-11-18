@@ -10,8 +10,8 @@ use super::{
 };
 use crate::{
     net::socket::netlink::{
-        addr::UNSPECIFIED_PORT, kobject_uevent::UeventMessage, receiver::MessageReceiver,
-        diag::DiagMessage, route::RtnlMessage,
+        addr::UNSPECIFIED_PORT, diag::DiagMessage, kobject_uevent::UeventMessage,
+        receiver::MessageReceiver, route::RtnlMessage,
     },
     prelude::*,
     util::random::getrandom,
@@ -59,7 +59,6 @@ pub(crate) trait SupportedNetlinkProtocol {
         socket_table.unicast(dst_port, message)
     }
 
-    #[cfg_attr(not(ktest), expect(dead_code))]
     fn multicast(dst_groups: GroupIdSet, message: Self::Message) -> Result<()>
     where
         Self::Message: MulticastMessage,

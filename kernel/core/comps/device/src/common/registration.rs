@@ -21,7 +21,7 @@ use crate::{
         node::{SysTreeEdit, add_link, remove_link},
         registry,
     },
-    hooks::{self, DevNodeRequest},
+    hooks::{self, DevNodeRequest, UeventRequest},
 };
 
 /// Registers a device, publishing its sysfs directory and optional `/dev` node.
@@ -52,6 +52,9 @@ pub fn remove<D: AnyDevice + ?Sized>(dev: &Arc<D>) -> Result<()> {
         }
         *state = State::Removed;
     }
+    // Announced before the node disappears, so a listener that reads it in
+    // response still finds the device.
+    hooks::emit_uevent(&uevent_request(this.as_ref(), "remove"));
     teardown(&this);
     Ok(())
 }
@@ -227,6 +230,10 @@ fn add_steps(this: &Arc<dyn AnyDevice>) -> Result<()> {
         ops.on_added(this);
     }
 
+    // 7. Announce the device. Its sysfs directory and `/dev` node exist by
+    // now, which is what a listener looks for when the event arrives.
+    hooks::emit_uevent(&uevent_request(this.as_ref(), "add"));
+
     Ok(())
 }
 
@@ -379,6 +386,38 @@ fn devnode_request(dev: &dyn AnyDevice, devnum: DevNum) -> DevNodeRequest {
 
 const DEV_ATTR: Attr<dyn AnyDevice> = Attr::ro("dev", show_dev);
 
+/// The event describing this device in the given state.
+fn uevent_request(dev: &dyn AnyDevice, action: &str) -> UeventRequest {
+    let base = dev.base();
+    let (major, minor) = match dev.devnum() {
+        Some(devnum) => (
+            Some(devnum.id().major().get() as u32),
+            Some(devnum.id().minor().get()),
+        ),
+        None => (None, None),
+    };
+    // The `/dev` name uses `/` where the sysfs name uses `!`
+    // (see `devnode_request`), and that is the form udev expects.
+    let devname = dev
+        .devnum()
+        .map(|_| SysStr::from(dev.name().replace('!', "/")));
+    let mut devpath = base.tree_path();
+    if !devpath.starts_with('/') {
+        devpath.insert(0, '/');
+    }
+    let subsystem = dev.subsystem();
+    let subsystem_name = subsystem.name().unwrap_or_default().to_string();
+
+    UeventRequest {
+        action: SysStr::from(action.to_string()),
+        devpath: SysStr::from(devpath),
+        subsystem: SysStr::from(subsystem_name),
+        major,
+        minor,
+        devname,
+    }
+}
+
 const UEVENT_ATTR: Attr<dyn AnyDevice> = Attr::rw("uevent", show_uevent, store_uevent);
 
 fn show_uevent(dev: &dyn AnyDevice, w: &mut dyn Write) -> Result<()> {
@@ -397,7 +436,7 @@ const UEVENT_ACTIONS: [&str; 8] = [
     "add", "remove", "change", "move", "online", "offline", "bind", "unbind",
 ];
 
-fn store_uevent(_dev: &dyn AnyDevice, input: &str) -> Result<()> {
+fn store_uevent(dev: &dyn AnyDevice, input: &str) -> Result<()> {
     // The syntax is checked even though nothing is broadcast yet: a write that
     // is going to be rejected should be rejected now, not on the day the
     // emitter lands. Linux takes an action plus optional `KEY=VALUE` pairs;
@@ -406,10 +445,10 @@ fn store_uevent(_dev: &dyn AnyDevice, input: &str) -> Result<()> {
     if !UEVENT_ACTIONS.contains(&action) {
         return Err(Error::InvalidValue);
     }
-    // The event is not broadcast yet: the bridge (`hooks::emit_uevent`) has
-    // no implementation that can reach the netlink socket so far. Accepting
-    // the write keeps udevd's coldplug from failing; see
-    // docs/porting/2026-11-19-udev-logind-gap.md, step 2.
+    // This is what udevd's coldplug does for every device that existed
+    // before it started: the write is the request, and the event goes out
+    // with the action the caller asked for.
+    hooks::emit_uevent(&uevent_request(dev, action));
     Ok(())
 }
 

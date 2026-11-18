@@ -28,6 +28,20 @@ pub(crate) struct UeventMessage {
 }
 
 impl UeventMessage {
+    /// Creates a message the kernel announces to the kernel group.
+    pub(super) fn new_kernel_event(
+        action: &str,
+        devpath: &str,
+        subsystem: &str,
+        envs: Vec<(String, String)>,
+    ) -> Result<Self> {
+        let action = action.parse()?;
+        Ok(Self::new(
+            Uevent::from_kernel(action, devpath.to_string(), subsystem.to_string(), envs),
+            NetlinkSocketAddr::new_unspecified(),
+        ))
+    }
+
     /// Creates a new uevent message.
     fn new(uevent: Uevent, src_addr: NetlinkSocketAddr) -> Self {
         Self {

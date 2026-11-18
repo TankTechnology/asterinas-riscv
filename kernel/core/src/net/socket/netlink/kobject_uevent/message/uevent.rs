@@ -96,6 +96,16 @@ pub(super) struct Uevent {
 }
 
 impl Uevent {
+    /// Creates a uevent the kernel announces on its own behalf.
+    pub(super) fn from_kernel(
+        action: SysObjAction,
+        devpath: String,
+        subsystem: String,
+        envs: Vec<(String, String)>,
+    ) -> Self {
+        Self::new(action, devpath, subsystem, envs)
+    }
+
     /// Creates a new uevent.
     fn new(
         action: SysObjAction,

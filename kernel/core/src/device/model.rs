@@ -14,6 +14,7 @@ use crate::{
         devtmpfs::{self, DevtmpfsNode, DevtmpfsNodeMeta},
         file::InodeMode,
     },
+    net,
     prelude::*,
 };
 
@@ -37,11 +38,30 @@ impl KernelHooks for Hooks {
         })
     }
 
-    fn emit_uevent(&self, _request: &UeventRequest) {
-        // The netlink side is not wired yet: broadcasting an event needs a
-        // sender the device model cannot reach from here (see
-        // docs/porting/2026-11-19-udev-logind-gap.md). Accepting the call
-        // keeps every registration path unchanged until it is.
+    fn emit_uevent(&self, request: &UeventRequest) {
+        let mut envs = Vec::new();
+        if let (Some(major), Some(minor)) = (request.major, request.minor) {
+            envs.push(("MAJOR".into(), major.to_string()));
+            envs.push(("MINOR".into(), minor.to_string()));
+        }
+        if let Some(devname) = request.devname.as_ref() {
+            envs.push(("DEVNAME".into(), devname.to_string()));
+        }
+
+        // A listener that is not there yet is not an error: the event is
+        // simply unobserved, and user space recovers those by writing `add`
+        // to `/sys/.../uevent`.
+        if let Err(error) = net::socket::netlink::broadcast_uevent(
+            request.action.as_ref(),
+            request.devpath.as_ref(),
+            request.subsystem.as_ref(),
+            envs,
+        ) {
+            warn!(
+                "failed to announce {} for {}: {:?}",
+                request.action, request.devpath, error
+            );
+        }
     }
 
     fn delete_devnode(&self, request: &DevNodeRequest) -> core::result::Result<(), HookError> {

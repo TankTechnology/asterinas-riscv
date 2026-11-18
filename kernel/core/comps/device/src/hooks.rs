@@ -63,6 +63,12 @@ pub struct UeventRequest {
     pub devpath: SysStr,
     /// The subsystem the device belongs to, e.g. `graphics`.
     pub subsystem: SysStr,
+    /// The device number, if user space can open the device.
+    pub major: Option<u32>,
+    /// The minor number, meaningful only with `major`.
+    pub minor: Option<u32>,
+    /// The node name under `/dev`, e.g. `fb0` or `input/event0`.
+    pub devname: Option<SysStr>,
 }
 
 /// A request to create or delete a `/dev` node.
