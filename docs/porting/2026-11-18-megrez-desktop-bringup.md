@@ -184,3 +184,43 @@ ASTERINAS_DESKTOP_BOOT_READY firefox_pid=181
 
 `journalctl -k` shows kernel records in the guest from this same change, so the
 console is a usable debug channel for both userspace and the kernel.
+
+## The board stalls; QEMU does not
+
+Five QEMU boots with the board's boot arguments do **not** reproduce the board's
+stall, and the first attempt to measure it was wrong in a way worth recording.
+
+The board stops about a minute into a desktop boot and only the hardware
+watchdog brings it back. In QEMU the guest goes quiet at `stage=input-wait`
+and stays quiet — which looks identical from the log. It is not: after ninety
+seconds of silence a probe sent to the serial console is echoed and executed,
+
+```
+echo QEMU_ALIVE_PROBE
+QEMU_ALIVE_PROBE
+root@asterinas-debug:/#
+```
+
+so the QEMU guest is alive and merely quiet, because the gate polls its input
+window without printing anything and `desktop-input-identity` times out on
+every attempt:
+
+```
+A_SIGKILL_PROVENANCE stage=delivery origin=pending-signal target_comm="timeout" target_pid=110
+A_SIGKILL_PROVENANCE stage=delivery origin=pending-signal target_comm="python3" target_pid=111
+```
+
+Two consequences:
+
+* **Silence in the log is not evidence of a hang.** Any harness that judges a
+  boot by "the log stopped" must probe the guest afterwards; this one did not,
+  and its first five verdicts were meaningless.
+* **The stall is board specific.** It needs something QEMU does not model —
+  the DWC3 input path, the EIC7700 display, or the board's timer behaviour —
+  so it has to be diagnosed on hardware, with the kernel log now available
+  through `/dev/kmsg` and the durable journal.
+
+On the board the same window is short: the gate prints `stage=input-wait` and
+about six seconds later the console and the kernel log both stop, which is why
+the durable heartbeat and the persistent journal were added before the next
+board session.
