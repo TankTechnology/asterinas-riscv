@@ -185,6 +185,7 @@ fn add_steps(this: &Arc<dyn AnyDevice>) -> Result<()> {
     if base.devnum().is_some() {
         attrs.push(TyErasedAttr::from_dyn(&DEV_ATTR));
     }
+    attrs.push(TyErasedAttr::from_dyn(&UEVENT_ATTR));
 
     // 3. Subsystem, device type, and device attributes.
     attrs.extend(this.attr_groups());
@@ -377,6 +378,40 @@ fn devnode_request(dev: &dyn AnyDevice, devnum: DevNum) -> DevNodeRequest {
 }
 
 const DEV_ATTR: Attr<dyn AnyDevice> = Attr::ro("dev", show_dev);
+
+const UEVENT_ATTR: Attr<dyn AnyDevice> = Attr::rw("uevent", show_uevent, store_uevent);
+
+fn show_uevent(dev: &dyn AnyDevice, w: &mut dyn Write) -> Result<()> {
+    if let Some(devnum) = dev.devnum() {
+        writeln!(w, "MAJOR={}", devnum.id().major().get())?;
+        writeln!(w, "MINOR={}", devnum.id().minor().get())?;
+        // The `/dev` name uses `/` where the sysfs name uses `!`
+        // (see `devnode_request`), and that is the form udev expects.
+        writeln!(w, "DEVNAME={}", dev.name().replace('!', "/"))?;
+    }
+    Ok(())
+}
+
+/// The actions Linux accepts on a `uevent` file, in its order.
+const UEVENT_ACTIONS: [&str; 8] = [
+    "add", "remove", "change", "move", "online", "offline", "bind", "unbind",
+];
+
+fn store_uevent(_dev: &dyn AnyDevice, input: &str) -> Result<()> {
+    // The syntax is checked even though nothing is broadcast yet: a write that
+    // is going to be rejected should be rejected now, not on the day the
+    // emitter lands. Linux takes an action plus optional `KEY=VALUE` pairs;
+    // the pairs are ignored until the broadcast exists.
+    let action = input.split_whitespace().next().unwrap_or_default();
+    if !UEVENT_ACTIONS.contains(&action) {
+        return Err(Error::InvalidValue);
+    }
+    // The event is not broadcast yet: the bridge (`hooks::emit_uevent`) has
+    // no implementation that can reach the netlink socket so far. Accepting
+    // the write keeps udevd's coldplug from failing; see
+    // docs/porting/2026-11-19-udev-logind-gap.md, step 2.
+    Ok(())
+}
 
 fn show_dev(dev: &dyn AnyDevice, w: &mut dyn Write) -> Result<()> {
     let devnum = dev.devnum().ok_or(Error::NoDevNum)?;
