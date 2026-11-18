@@ -233,6 +233,41 @@ without devices is not comparable to the board, where the keyboard and mouse
 both register within 2.5 seconds. The trap is that both cases print the same
 `stage=input-wait` line and then the same nothing.
 
+## Reading the journal of the boot that died
+
+The board cannot be read while it is stalled, and a watchdog reset throws away
+everything that only lived in RAM. The plan is therefore: let the boot stall,
+let the watchdog reset the SoC, come back into U-Boot, boot the vendor
+initramfs, mount p2, and read the dead boot out of the root filesystem:
+
+```
+mount -t ext4 /dev/mmcblkXp2 /mnt2
+chroot /mnt2 /usr/bin/journalctl -D /var/log/journal --list-boots --no-pager
+chroot /mnt2 /usr/bin/journalctl -D /var/log/journal -b -1 -k --no-pager | tail -80
+```
+
+That whole path was rehearsed in QEMU on 2026-11-19 (a qcow2 overlay on the
+desktop image, `kill -9` on QEMU standing in for the reset) and it works, with
+one condition that the first rehearsal got wrong:
+
+* **`/var/log/journal` has to exist before the boot whose journal is wanted.**
+  Creating it at runtime and restarting `systemd-journald` does *not* switch
+  the running journald to persistent storage — it keeps writing to
+  `/run/log/journal`, and the hard reset then loses everything. In the
+  rehearsal the directory and its `<machine-id>/system.journal` only appeared
+  in the *next* boot, which is exactly the boot whose log was already gone. So
+  create the directory offline (in the chroot, then `sync`) and check it before
+  the boot, not after.
+* With the directory in place, `--list-boots` shows `-1` after the reset, `-b
+  -1 -k` returns the dead boot's kernel lines, and `grep` for a marker written
+  with `echo ... > /dev/kmsg` finds it. An uncleanly closed journal file is
+  fine; the last entries land a few seconds before the reset because journald
+  does not sync on every record.
+* Kernel records reach the journal (`cgroup is not supported`,
+  `UNIX sockets in SCM_RIGHTS...` came back tagged `kernel:`), so a kernel-side
+  stall will show up as the journal simply stopping, with the last line naming
+  whatever the kernel was doing.
+
 ## The gate to run after every rebase
 
 The five defects above were each found by booting the board, watching it fail,

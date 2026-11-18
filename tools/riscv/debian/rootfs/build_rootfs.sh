@@ -1383,6 +1383,18 @@ finalize_browser_startup_caches() {
         fi
     fi
 
+    # journald picks the persistent directory only when it exists when journald
+    # starts; creating it from a root shell during a later boot and restarting
+    # the unit leaves the running instance writing to /run/log/journal, which
+    # the reset on the board throws away. A stall on the board is diagnosed by
+    # reading the journal of the boot that died, so the directory has to ship
+    # in the image. sysusers above has already created systemd-journal.
+    local journal_gid
+    journal_gid="$(awk -F: '$1=="systemd-journal"{print $3}' "$stage/etc/group")"
+    [[ "$journal_gid" =~ ^[0-9]+$ ]] ||
+        die "staged systemd-journal group is absent"
+    install -d -m 2755 -o 0 -g "$journal_gid" -- "$stage/var/log/journal"
+
     run_chroot "$stage" /sbin/ldconfig
     install -d -m 0755 -- "$stage/usr/share/asterinas"
     cache_sha256="$(sha256sum "$stage/etc/ld.so.cache" | awk '{print $1}')"
@@ -2716,6 +2728,11 @@ create_and_verify_image() {
     debugfs_require_path "$root_image" /lib/ld-linux-riscv64-lp64d.so.1
     debugfs_require_path "$root_image" /var/lib/dpkg/status
     debugfs_require_path "$root_image" /etc/asterinas-rootfs.bashrc
+    if profile_uses_startup_caches "$PROFILE"; then
+        # A journal in /run dies with the reset that the board needs in order
+        # to read why it reset.
+        debugfs_require_path "$root_image" /var/log/journal
+    fi
     debugfs_reject_path "$root_image" /usr/bin/qemu-riscv64-static
     debugfs -R "dump /bin/bash $dumped_bash" "$root_image" >/dev/null 2>&1 ||
         die "failed to extract Bash from root image"
