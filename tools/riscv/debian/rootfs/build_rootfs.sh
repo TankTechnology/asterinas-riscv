@@ -2178,7 +2178,6 @@ EOF
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
             configure_dns_shim "$stage" "$script_directory"
             configure_console_watchdog "$stage" "$script_directory"
-        configure_console_watchdog "$stage" "$script_directory"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
