@@ -106,6 +106,11 @@ impl Device for MemDevice {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
+        // `/dev/kmsg` is not a byte stream: it is a record interface backed by
+        // the kernel log buffer, with its own read/seek/poll semantics.
+        if matches!(self.payload(), MemFile::Kmsg) {
+            return Ok(Box::new(super::kmsg::KmsgFile::new()));
+        }
         Ok(Box::new(*self.payload()))
     }
 }

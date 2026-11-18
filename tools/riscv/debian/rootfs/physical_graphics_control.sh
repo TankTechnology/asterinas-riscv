@@ -277,10 +277,14 @@ start_browser() {
 }
 
 boot_phase() {
-    # The isolated debug shell owns ttyS0, so both /dev/console and systemd's
-    # console output can lose readiness lines.  Kernel logging retains the
-    # journal copy and uses the already-proven serial klog path.
-    printf '<6>%s\n' "$1" >/dev/kmsg
+    # Two channels, because neither one alone is dependable on the board:
+    # the kernel log keeps the record for journald and for `dmesg`, and the
+    # console line survives a boot whose log level filters it out of printk.
+    # KERN_WARNING (4) rather than KERN_INFO (6): the board boots with
+    # `loglevel=warn`, and the console policy drops every priority at or above
+    # the level, so an info marker is stored but never printed.
+    printf '<4>%s\n' "$1" >/dev/kmsg 2>/dev/null || true
+    printf '%s\n' "$1" >/dev/console 2>/dev/null || true
 }
 
 monotonic_seconds() {

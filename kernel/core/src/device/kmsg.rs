@@ -10,7 +10,7 @@ use spin::Once;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, PerOpenFileOps, SeekFrom, StatusFlags},
+        file::{PerOpenFileOps, StatusFlags},
         vfs::inode::FileOps,
     },
     prelude::*,
@@ -134,6 +134,7 @@ impl FileOps for KmsgFile {
         writer: &mut VmWriter,
         status_flags: StatusFlags,
     ) -> Result<usize> {
+        self.check_readable()?;
         if status_flags.contains(StatusFlags::O_NONBLOCK) {
             return self.try_read(writer);
         }
@@ -170,17 +171,6 @@ impl FileOps for KmsgFile {
 }
 
 impl PerOpenFileOps for KmsgFile {
-    fn check_open_access(&self, access_mode: AccessMode) -> Result<()> {
-        if access_mode.is_readable() && klog::klog().dmesg_restrict() {
-            check_privileged()?;
-        }
-        Ok(())
-    }
-
-    fn seek(&self, pos: SeekFrom) -> Option<Result<usize>> {
-        Some(self.seek_record(pos))
-    }
-
     fn check_seekable(&self) -> Result<()> {
         Ok(())
     }
@@ -195,20 +185,15 @@ impl PerOpenFileOps for KmsgFile {
 }
 
 impl KmsgFile {
-    fn seek_record(&self, pos: SeekFrom) -> Result<usize> {
-        let _operation = self.operation.lock();
-        let (first, next, cleared) = klog::klog().bounds();
-        let sequence = match pos {
-            SeekFrom::Start(0) => first,
-            SeekFrom::End(0) => next,
-            SeekFrom::Data(0) => cleared,
-            SeekFrom::Current(0) | SeekFrom::Hole(0) => {
-                return_errno_with_message!(Errno::EINVAL, "the log seek origin is invalid");
-            }
-            _ => return_errno_with_message!(Errno::ESPIPE, "the log seek offset must be zero"),
-        };
-        self.sequence.store(sequence, Ordering::Relaxed);
-        Ok(0)
+    /// Checks whether this reader may see the kernel log.
+    ///
+    /// Linux applies `dmesg_restrict` when the device is opened for reading;
+    /// the per-open object is the first place that knows the access mode.
+    fn check_readable(&self) -> Result<()> {
+        if klog::klog().dmesg_restrict() {
+            check_privileged()?;
+        }
+        Ok(())
     }
 }
 
