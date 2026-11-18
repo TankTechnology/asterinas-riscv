@@ -224,3 +224,11 @@ On the board the same window is short: the gate prints `stage=input-wait` and
 about six seconds later the console and the kernel log both stop, which is why
 the durable heartbeat and the persistent journal were added before the next
 board session.
+
+One correction to the paragraph above: those QEMU runs were started **without
+any input device**, so the gate could never leave `input-wait` -- the same
+command line with `-device virtio-keyboard-device -device virtio-tablet-device`
+and the ordered identity mode reaches `browser-start` every time, and a run
+without devices is not comparable to the board, where the keyboard and mouse
+both register within 2.5 seconds. The trap is that both cases print the same
+`stage=input-wait` line and then the same nothing.
