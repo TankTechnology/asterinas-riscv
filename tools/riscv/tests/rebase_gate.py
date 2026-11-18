@@ -98,6 +98,16 @@ def check_arch() -> bool:
         print(f"image was built for {arch}, not riscv64: rebuild with "
               f"--target-arch riscv64 --scheme riscv", file=sys.stderr)
         return False
+    # A riscv build without Sv39 boots fine under QEMU's `-cpu rv64`, which
+    # offers Sv48, and faults on the first page access on the board, whose
+    # CPU runs with Sv48 disabled. The gate is the only thing between a
+    # featureless build and an evening of board debugging, so require it here.
+    features = re.search(r"^features\s*=\s*\[([^\]]*)\]", text, re.MULTILINE)
+    if features is None or "riscv_sv39_mode" not in features.group(1):
+        print("image was built without the riscv_sv39_mode feature: rebuild with "
+              "--features riscv_sv39_mode or the board will fault on boot",
+              file=sys.stderr)
+        return False
     return True
 
 

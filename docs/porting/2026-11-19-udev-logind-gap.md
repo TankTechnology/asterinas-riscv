@@ -46,25 +46,59 @@ candidate option. `ok` means the kernel accepted it:
 | `SOL_NETLINK` (270) | `GET_STRICT_CHK` (12) | ok |
 
 sd-device enables `SO_TIMESTAMPNS` on the monitor socket it creates for
-logind, so the probe names the failure exactly: `SO_TIMESTAMPNS` is not
+logind, so the probe names one of the holes: `SO_TIMESTAMPNS` is not
 implemented. The kernel already has `SO_TIMESTAMP` (29) recorded in
 `net/socket/util/options.rs`, which is why journald works; the nanosecond
-variant (35) is missing from the option set.
+variant (35) is missing from the option set. The asymmetry is worth naming:
+the *data* plane already knows 35 -- `SCM_TIMESTAMPNS` is defined in
+`net/socket/util/message_header.rs` for attaching a timespec to received
+messages -- while the *control* plane never registers it as a settable
+option. The number is implemented; its entrance is not.
 
-The asymmetry is worth naming: the *data* plane already knows 35 --
-`SCM_TIMESTAMPNS` is defined in `net/socket/util/message_header.rs` for
-attaching a timespec to received messages -- while the *control* plane never
-registers it as a settable option. The number is implemented; its entrance
-is not.
+Accepting 35 (record the request, like 29) was necessary but **not
+sufficient**: logind still died with the same message. The next step was to
+make the kernel name the option. Three `debug!` lines in `setsockopt(2)` and
+`getsockopt(2)` print the level and option number on every rejected lookup,
+and the boot that followed carried:
 
-**So the cheapest unblock for logind is a socket option, not a cgroup
-subsystem.** Accepting `SO_TIMESTAMPNS` the way `SO_TIMESTAMP` is accepted
-(record the request; annotating received messages with `SCM_TIMESTAMPNS` can
-follow) is a small change in `net/socket/util/options.rs` plus the option
-enumeration. It should be verified with the probe above, then by starting
-logind unmasked and watching for the session the desktop creates.
+```
+setsockopt: level=SOL_SOCKET optname=26 is not supported (ENOPROTOOPT)
+setsockopt: level=SOL_SOCKET optname=34 ... 76 ... (probes, harmless)
+getsockopt: level=SOL_SOCKET optname=31 ... 77 ... (probes, harmless)
+setsockopt: level=SOL_SOCKET optname=32/33 rejected (EPERM; sd-device expects
+          the *BUFFORCE fallback)
+```
 
-`SO_TIMESTAMPING` (38) and `SOL_NETLINK` `PKTINFO`/`EXT_ACK` are also
+26 is `SO_ATTACH_FILTER`: sd-device installs a classic-BPF filter on the
+monitor so the kernel delivers only matching subsystems. `ATTACH_FILTER` was
+in the option-name enum but had no arm in `new_socket_option`, so it fell to
+the catch-all `ENOPROTOOPT`. `DETACH_FILTER` (27) had the same hole from the
+other side: a handler arm existed, but no way to construct the option.
+
+Both are wired now. `SO_ATTACH_FILTER` reads its `struct sock_fprog` through
+the existing `read_prog_from_user` (which validates jump targets), and the
+filter lands in `BoundNetlink::filter`, where the receive path applies it. A
+filter attached **before** `bind` used to be silently dropped, which would
+have turned the option into "accepted but ignored" -- exactly the failure
+this note keeps finding; it is now carried across `bind` the way the eBPF
+filter already was.
+
+With both options, logind starts in QEMU (2026-11-19):
+
+```
+systemd-logind[408]: System has /dev/tty0 but not /sys/class/tty/tty0/active
+                     which is broken, ignoring: No such file or directory
+systemd-logind[408]: New seat seat0.
+systemd[1]: Started systemd-logind.service - User Login Management.
+$ systemctl is-active systemd-logind
+active
+```
+
+`loginctl list-sessions` answers with a header and no sessions: the desktop
+session is a systemd service, not a PAM login, so nothing has created one yet.
+That is the integration work, not a blocker.
+
+`SO_TIMESTAMPING` (38) and `SOL_NETLINK` `PKTINFO`/`EXT_ACK` are still
 unimplemented; nothing observed so far needs them, but they will be the next
 `Protocol not available` in some other program.
 
@@ -105,12 +139,15 @@ sit on a socket that never speaks.
 
 ## Order of work, with the command that proves each step
 
-1. **`SO_TIMESTAMPNS`** (small): accept and record it; later annotate
-   received messages. Prove with the guest probe above (`errno 92` becomes
-   `ok`), then unmask `systemd-logind`, start it, and require
-   `systemctl is-active systemd-logind` plus a session entry in
-   `loginctl list-sessions` once the desktop has started. Also check that
-   Xorg stops logging `systemd-logind: failed to get session`.
+1. **The two socket options** (done 2026-11-19): `SO_TIMESTAMPNS` accepted
+   and recorded, `SO_ATTACH_FILTER`/`SO_DETACH_FILTER` accepted, with the
+   classic filter installed on the netlink socket and carried across `bind`.
+   Proof, all in QEMU: `setsockopt(SOL_SOCKET, 35)` returns 0 and
+   `getsockopt` round-trips 1; `systemctl start systemd-logind` reports
+   `active`; the journal shows `New seat seat0.`; and
+   `Failed to create udev watchers` is gone. Still open on this step: no
+   session is created yet, because the desktop is a service rather than a
+   PAM login.
 2. **uevent emitter** (medium): broadcast `add`/`change`/`remove` from the
    device-model registration path and implement `try_send`. Prove with
    `udevadm monitor` printing the events a device registration produces, then
@@ -129,5 +166,7 @@ sit on a socket that never speaks.
    service that gets `oom_kill` counted in `memory.events` once it exceeds
    the limit.
 
-Steps 1 and 2 unblock logind and udev. Steps 3-5 are the accounting story
-and are independent of the desktop.
+Step 1 unblocks logind. Step 2 unblocks udev, and is also what makes the
+filter attached in step 1 observable: until the kernel broadcasts uevents
+there are no messages for a filter to select. Steps 3-5 are the accounting
+story and are independent of the desktop.

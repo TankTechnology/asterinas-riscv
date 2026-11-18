@@ -35,6 +35,20 @@ VDSO_LIBRARY_DIR=$HOME/.local/share/linux_vdso \
   make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
 ```
 
+直接调 OSDK（不走 `make kernel`，例如只重建内核时）的等价写法：
+
+```bash
+cd kernel
+VDSO_LIBRARY_DIR=$HOME/.local/share/linux_vdso \
+  cargo osdk build --release --target-arch riscv64 --scheme riscv \
+    --features riscv_sv39_mode
+```
+
+两个参数漏一个都不行：没有 `VDSO_LIBRARY_DIR` 会在
+`kernel/core/src/vdso.rs` 编译失败（`environment variable not defined at
+compile time`）；没有 `riscv_sv39_mode` 编出来的内核在 Sv39 CPU 上启动即页错误，
+但在 QEMU 的 `-cpu rv64`（支持 Sv48）下**看起来正常**，属于能过门禁、上板才炸的一类。
+
 ### 2. 构建真实 initramfs
 
 `make kernel` 产生的 initramfs 是 nix-build stub 的空壳，不能引导到用户态。
