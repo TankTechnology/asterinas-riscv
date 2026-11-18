@@ -37,6 +37,7 @@ Needs `qemu-system-riscv64`, a built `target/osdk/asterinas/asterinas-osdk-bin.I
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import socket
@@ -78,7 +79,28 @@ CHECKS = (
 NEGATIVE_PROBE = "[ -w /proc/.rebase-gate-absent ] && echo ${M}_ok || echo ${M}_fail"
 
 
-def check_arch() -> bool:
+def newest_source_mtime() -> tuple[float, str]:
+    """Returns the newest modification time among the kernel's Rust sources.
+
+    A result produced by an image that predates its sources is not a result:
+    it says what an older kernel did. Both the kernel proper and `ostd` are
+    part of what the image contains.
+    """
+    newest, newest_path = 0.0, ""
+    for root in (REPO / "kernel", REPO / "ostd"):
+        for path in root.rglob("*.rs"):
+            if "target" in path.parts:
+                continue
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            if mtime > newest:
+                newest, newest_path = mtime, str(path)
+    return newest, newest_path
+
+
+def check_arch(allow_stale: bool = False) -> bool:
     """Refuse to boot if the image at KERNEL is not a riscv64 build.
 
     The OSDK writes every build into the same `target/osdk/asterinas` folder,
@@ -108,6 +130,22 @@ def check_arch() -> bool:
               "--features riscv_sv39_mode or the board will fault on boot",
               file=sys.stderr)
         return False
+    # An image older than its sources answers for a kernel that no longer
+    # exists. Lateness is reported with both times, because a clock jump makes
+    # the comparison lie and the numbers are what shows it.
+    source_mtime, source = newest_source_mtime()
+    image_mtime = KERNEL.stat().st_mtime
+    if source_mtime > image_mtime:
+        message = (f"the image is older than its sources: image "
+                   f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(image_mtime))}, "
+                   f"newest source {source} at "
+                   f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(source_mtime))}")
+        if allow_stale:
+            print(f"warning: {message}", file=sys.stderr)
+        else:
+            print(f"{message}; rebuild, or pass --allow-stale-image when the "
+                  f"older image is the point", file=sys.stderr)
+            return False
     return True
 
 
@@ -176,11 +214,12 @@ def ask(cmd: str) -> str:
 
 
 def main() -> int:
+    args = parse_args()
     for path in (KERNEL, INITRD, ROOTFS, DTB):
         if not path.exists():
             print(f"missing {path}", file=sys.stderr)
             return 2
-    if not check_arch():
+    if not check_arch(args.allow_stale_image):
         return 2
 
     proc, ready = boot()
@@ -219,6 +258,16 @@ def main() -> int:
         return 1
     print("all checks passed")
     return 0
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--allow-stale-image",
+        action="store_true",
+        help="boot an image older than its sources (says so, and why it is a risk)",
+    )
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
