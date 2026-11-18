@@ -21,10 +21,21 @@ use spin::Once;
 
 const WATCHDOG_BASE: usize = 0x5080_0000;
 const WATCHDOG_LIMIT: usize = 0x100;
+/// EIC7700 syscfg register that holds the watchdog block in reset.
+const EIC7700_WDT_RESET_CONTROL: usize = 0x5182_8444;
+/// Value that releases the watchdog reset; zero holds it asserted, which is
+/// why `COMP_TYPE` reads as zero on a boot U-Boot did not arm.
+const EIC7700_WDT_RESET_RELEASE: u32 = 1;
 const CONTROL_OFFSET: usize = 0x00;
+/// Timeout-range register; only the low four bits (TOP) are implemented.
+const TOP_OFFSET: usize = 0x04;
 const COUNTER_RESTART_OFFSET: usize = 0x0c;
 const COMPONENT_TYPE_OFFSET: usize = 0xfc;
 const CONTROL_ENABLE: u32 = 1;
+/// Enable plus "interrupt then reset", the mode U-Boot arms.
+const CONTROL_ARM_WITH_RESET: u32 = 0x1f;
+/// Largest TOP the counter supports; about 10.7 s at the block's 200 MHz.
+const TOP_MAX: u32 = 0xf;
 const COUNTER_RESTART_VALUE: u32 = 0x76;
 /// The `COMP_TYPE` signature of the DesignWare watchdog.
 ///
@@ -77,8 +88,13 @@ fn has_designware_watchdog() -> bool {
     })
 }
 
-/// Adopt a watchdog already armed by U-Boot, if the selected physical boot
-/// explicitly requested the handoff. QEMU and ordinary boots are no-ops.
+/// Adopt the watchdog, arming it when U-Boot left it alone.
+///
+/// A boot that does not arm the block used to end up with no hardware
+/// recovery at all, which is how a wedged board came to need a power cycle.
+/// The kernel now takes the block out of reset itself and enables it, so the
+/// fail-safe exists on every boot, not only on the ones whose `bootcmd` was
+/// written by hand.
 pub(super) fn handoff_if_requested() {
     if !requested() {
         return;
@@ -96,6 +112,17 @@ pub(super) fn handoff_if_requested() {
         );
         return;
     };
+    // The block reads `COMP_TYPE` as zero while the SoC keeps it in reset, so
+    // release that reset before deciding anything about the signature. U-Boot's
+    // arming sequence does the same write through the syscfg window.
+    match IoMem::acquire(EIC7700_WDT_RESET_CONTROL..EIC7700_WDT_RESET_CONTROL + 4) {
+        Ok(syscfg) => {
+            let _ = syscfg.write_once(0, &EIC7700_WDT_RESET_RELEASE);
+        }
+        Err(_) => ostd::early_println!(
+            "ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=warn reason=syscfg-unavailable"
+        ),
+    }
     let Ok(component) = registers.read_once::<u32>(COMPONENT_TYPE_OFFSET) else {
         ostd::early_println!(
             "ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=component-read"
@@ -106,9 +133,6 @@ pub(super) fn handoff_if_requested() {
         ostd::early_println!("ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=control-read");
         return;
     };
-    // Keep the whole word in the message: a zero here means the block is still
-    // held in reset (U-Boot's `mw.l 0x51828444 0x1` un-resets it), which is a
-    // different problem from a wrong signature.
     if component != COMPONENT_TYPE {
         ostd::early_println!(
             "ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=component-mismatch value={:#x}",
@@ -117,8 +141,14 @@ pub(super) fn handoff_if_requested() {
         return;
     }
     if control & CONTROL_ENABLE == 0 {
-        ostd::early_println!("ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=fail reason=not-armed");
-        return;
+        // U-Boot did not arm it. Program the longest timeout the counter has
+        // (TOP is four bits, so `2^(16+15)` clocks is the ceiling) and enable
+        // it before the heartbeat below begins: from here on a kernel that
+        // stops kicking is a board that resets itself.
+        let _ = registers.write_once(TOP_OFFSET, &TOP_MAX);
+        let _ = registers.write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE);
+        let _ = registers.write_once(CONTROL_OFFSET, &CONTROL_ARM_WITH_RESET);
+        ostd::early_println!("ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=armed-by-kernel");
     }
 
     let heartbeat = move || {
