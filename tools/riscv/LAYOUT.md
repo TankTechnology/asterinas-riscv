@@ -118,6 +118,13 @@ make test_riscv_host_all          # both tiers
 ./tools/format_all.sh --check     # rustfmt
 ```
 
+The default `make test_riscv_host` runs the **unit tier only**. Modules listed
+under `integration` in `tests/tiers.json` are skipped by it — including the
+whole builder/rootfs group (`test_debian_rootfs`, 208 tests). Use
+`make test_riscv_host_all` (or `make test_riscv_host_integration`) after
+touching `build_rootfs.sh` or anything under `debian/rootfs/`; `rt test --list`
+without `--tier all` is a subset and does not show them.
+
 System validation is moving to the subsystem catalog:
 
 ```bash
@@ -136,7 +143,13 @@ The matrix lives in `apps/manifest.py`; the guest probe is
 `apps/guest/probe.sh`. `--install` runs apt, otherwise the guest must already
 have the packages.
 
-A DeepSeek-driven agent can operate the board through the serial bridge:
+A DeepSeek-driven board agent can operate the board through the serial bridge.
+**Naming note:** this local `dsh` is not the official DeepSeek Harness
+(`deepseek-ai/deepseek-harness`, `@deepseek-ai/dsh`), which is a TypeScript /
+Cordis plugin runtime documented in
+[`docs/porting/2026-11-10-node24-jit-and-dsh.md`](../../docs/porting/2026-11-10-node24-jit-and-dsh.md).
+The shared name is a local collision; this tool has no sandbox or permission
+layer.
 
 ```bash
 tools/riscv/dsh --dry-run
