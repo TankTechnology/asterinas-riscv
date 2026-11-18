@@ -121,7 +121,11 @@ def install_kernel(remote: str) -> bool:
         ("mount -t ext4 /dev/mmcblk1p2 /mnt2; echo M2=$?", r"M2=0"),
         ("mount -t ext4 /dev/mmcblk1p3 /mnt3; echo M3=$?", r"M3=0"),
         (f"cat /mnt2{remote} > /mnt3/kernel-rel.img; echo CP=$?", r"CP=0", 180),
-        ("sync; echo SYNCD", r"SYNCD", 180),
+        # The console echoes the typed line, so `echo SYNCD` would be matched by
+        # its own echo before sync returned -- the exact wait this step exists
+        # for is the one that hangs on a wedged filesystem. Build the marker
+        # from a variable: the echo keeps the unexpanded form.
+        ("M=SYN; sync; echo ${M}CD", r"SYNCD", 180),
         ("mount -t ext4 /dev/mmcblk1p3 /mnt2/mnt3; echo M3B=$?", r"M3B=0"),
         ("chroot /mnt2 /usr/bin/sha256sum /mnt3/kernel-rel.img", r"[0-9a-f]{64}"),
     )

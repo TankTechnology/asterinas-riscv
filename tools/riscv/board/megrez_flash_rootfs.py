@@ -168,7 +168,9 @@ class Flash:
         # `echo` is a shell builtin and the sysrq path lives in the kernel.
         text = self.command(
             f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -1; "
-            "echo ZZFLASH_5; echo b > /proc/sysrq-trigger",
+            # `command()` appends and matches its own marker line; a literal
+            # one here would only invite matching the echo of the command.
+            "echo b > /proc/sysrq-trigger",
             timeout=1800,
         )
         if "copied" not in text:
