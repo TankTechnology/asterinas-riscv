@@ -57,7 +57,10 @@ pub(crate) fn new_tcp_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CTcpOptionName::CONGESTION => Ok(Box::new(Congestion::new())),
         CTcpOptionName::USER_TIMEOUT => Ok(Box::new(UserTimeout::new())),
         CTcpOptionName::INQ => Ok(Box::new(Inq::new())),
-        _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported tcp-level option"),
+        // Supported by Linux, not implemented here.
+        CTcpOptionName::CORK => {
+            return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported tcp-level option")
+        }
     }
 }
 

@@ -29,7 +29,10 @@ pub(crate) fn new_netlink_option(name: i32) -> Result<Box<dyn RawSocketOption>> 
         CNetlinkOptionName::ADD_MEMBERSHIP => Ok(Box::new(AddMembership::new())),
         CNetlinkOptionName::DROP_MEMBERSHIP => Ok(Box::new(DropMembership::new())),
         CNetlinkOptionName::GET_STRICT_CHK => Ok(Box::new(StrictCheck::new())),
-        _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported netlink option"),
+        // Supported by Linux, not implemented here.
+        CNetlinkOptionName::PKTINFO => {
+            return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported netlink option")
+        }
     }
 }
 

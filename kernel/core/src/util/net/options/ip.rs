@@ -75,7 +75,50 @@ pub(crate) fn new_ip_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CIpOptionName::TTL => Ok(Box::new(Ttl::new())),
         CIpOptionName::HDRINCL => Ok(Box::new(Hdrincl::new())),
         CIpOptionName::RECVERR => Ok(Box::new(Recverr::new())),
-        _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported ip level option"),
+        // Supported by Linux, not implemented here.
+        CIpOptionName::OPTIONS
+        | CIpOptionName::ROUTER_ALERT
+        | CIpOptionName::RECVOPTS
+        | CIpOptionName::RETOPTS
+        | CIpOptionName::PKTINFO
+        | CIpOptionName::PKTOPTIONS
+        | CIpOptionName::MTU_DISCOVER
+        | CIpOptionName::RECVTTL
+        | CIpOptionName::RECVTOS
+        | CIpOptionName::MTU
+        | CIpOptionName::FREEBIND
+        | CIpOptionName::IPSEC_POLICY
+        | CIpOptionName::XFRM_POLICY
+        | CIpOptionName::PASSSEC
+        | CIpOptionName::TRANSPARENT
+        | CIpOptionName::ORIGDSTADDR
+        | CIpOptionName::MINTTL
+        | CIpOptionName::NODEFRAG
+        | CIpOptionName::CHECKSUM
+        | CIpOptionName::BIND_ADDRESS_NO_PORT
+        | CIpOptionName::RECVFRAGSIZE
+        | CIpOptionName::RECVERR_RFC4884
+        | CIpOptionName::MULTICAST_IF
+        | CIpOptionName::MULTICAST_TTL
+        | CIpOptionName::MULTICAST_LOOP
+        | CIpOptionName::ADD_MEMBERSHIP
+        | CIpOptionName::DROP_MEMBERSHIP
+        | CIpOptionName::UNBLOCK_SOURCE
+        | CIpOptionName::BLOCK_SOURCE
+        | CIpOptionName::ADD_SOURCE_MEMBERSHIP
+        | CIpOptionName::DROP_SOURCE_MEMBERSHIP
+        | CIpOptionName::MSFILTER
+        | CIpOptionName::MCAST_JOIN_GROUP
+        | CIpOptionName::MCAST_BLOCK_SOURCE
+        | CIpOptionName::MCAST_UNBLOCK_SOURCE
+        | CIpOptionName::MCAST_LEAVE_GROUP
+        | CIpOptionName::MCAST_JOIN_SOURCE_GROUP
+        | CIpOptionName::MCAST_LEAVE_SOURCE_GROUP
+        | CIpOptionName::MCAST_MSFILTER
+        | CIpOptionName::MULTICAST_ALL
+        | CIpOptionName::UNICAST_IF => {
+            return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported ip-level option")
+        }
     }
 }
 

@@ -57,41 +57,58 @@ enum CSocketOptionName {
 
 pub(crate) fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
     let name = CSocketOptionName::try_from(name).map_err(|_| Errno::ENOPROTOOPT)?;
-    match name {
-        CSocketOptionName::REUSEADDR => Ok(Box::new(ReuseAddr::new())),
-        CSocketOptionName::TYPE => Ok(Box::new(SocketType::new())),
-        CSocketOptionName::ERROR => Ok(Box::new(Error::new())),
-        CSocketOptionName::BROADCAST => Ok(Box::new(Broadcast::new())),
-        CSocketOptionName::SNDBUF => Ok(Box::new(SendBuf::new())),
-        CSocketOptionName::RCVBUF => Ok(Box::new(RecvBuf::new())),
-        CSocketOptionName::KEEPALIVE => Ok(Box::new(KeepAlive::new())),
-        CSocketOptionName::PRIORITY => Ok(Box::new(Priority::new())),
-        CSocketOptionName::LINGER => Ok(Box::new(Linger::new())),
+    // The match is exhaustive on purpose. A `_` arm here is how
+    // `SO_ATTACH_FILTER` came to be declared in the enum, listed in it, and
+    // still answered `ENOPROTOOPT` -- which is what kept `systemd-logind`
+    // from starting. With every variant named, a new option cannot be added
+    // without deciding what it does.
+    let option: Box<dyn RawSocketOption> = match name {
+        CSocketOptionName::REUSEADDR => Box::new(ReuseAddr::new()),
+        CSocketOptionName::TYPE => Box::new(SocketType::new()),
+        CSocketOptionName::ERROR => Box::new(Error::new()),
+        CSocketOptionName::BROADCAST => Box::new(Broadcast::new()),
+        CSocketOptionName::SNDBUF => Box::new(SendBuf::new()),
+        CSocketOptionName::RCVBUF => Box::new(RecvBuf::new()),
+        CSocketOptionName::KEEPALIVE => Box::new(KeepAlive::new()),
+        CSocketOptionName::PRIORITY => Box::new(Priority::new()),
+        CSocketOptionName::LINGER => Box::new(Linger::new()),
         // On 64-bit systems, the old and new timeout options share the same
         // `timeval_t` layout and can use the same handlers. A 32-bit userspace
         // ABI would need separate handlers for the old and new layouts.
         CSocketOptionName::RCVTIMEO_OLD | CSocketOptionName::RCVTIMEO_NEW => {
-            Ok(Box::new(RecvTimeout::new()))
+            Box::new(RecvTimeout::new())
         }
         CSocketOptionName::SNDTIMEO_OLD | CSocketOptionName::SNDTIMEO_NEW => {
-            Ok(Box::new(SendTimeout::new()))
+            Box::new(SendTimeout::new())
         }
-        CSocketOptionName::REUSEPORT => Ok(Box::new(ReusePort::new())),
-        CSocketOptionName::PASSCRED => Ok(Box::new(PassCred::new())),
-        CSocketOptionName::PEERCRED => Ok(Box::new(PeerCred::new())),
-        CSocketOptionName::ACCPETCONN => Ok(Box::new(AcceptConn::new())),
-        CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
+        CSocketOptionName::REUSEPORT => Box::new(ReusePort::new()),
+        CSocketOptionName::PASSCRED => Box::new(PassCred::new()),
+        CSocketOptionName::PEERCRED => Box::new(PeerCred::new()),
+        CSocketOptionName::ACCPETCONN => Box::new(AcceptConn::new()),
+        CSocketOptionName::TIMESTAMP => Box::new(Timestamp::new()),
+        CSocketOptionName::TIMESTAMPNS => Box::new(TimestampNs::new()),
         // sd-device attaches a classic BPF filter to the uevent monitor it
         // creates; rejecting the option makes logind give up with "Failed to
         // create udev watchers: Protocol not available".
-        CSocketOptionName::ATTACH_FILTER => Ok(Box::new(AttachFilter::new())),
-        CSocketOptionName::DETACH_FILTER => Ok(Box::new(DetachFilter::new())),
-        CSocketOptionName::TIMESTAMPNS => Ok(Box::new(TimestampNs::new())),
-        CSocketOptionName::SNDBUFFORCE => Ok(Box::new(SendBufForce::new())),
-        CSocketOptionName::RCVBUFFORCE => Ok(Box::new(RecvBufForce::new())),
-        CSocketOptionName::PEERGROUPS => Ok(Box::new(PeerGroups::new())),
-        _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported socket-level option"),
-    }
+        CSocketOptionName::ATTACH_FILTER => Box::new(AttachFilter::new()),
+        CSocketOptionName::DETACH_FILTER => Box::new(DetachFilter::new()),
+        CSocketOptionName::SNDBUFFORCE => Box::new(SendBufForce::new()),
+        CSocketOptionName::RCVBUFFORCE => Box::new(RecvBufForce::new()),
+        CSocketOptionName::PEERGROUPS => Box::new(PeerGroups::new()),
+        // Supported by Linux, not implemented here. `SO_ATTACH_BPF` is
+        // handled by `sys_setsockopt` itself because its payload is a file
+        // descriptor rather than a value.
+        CSocketOptionName::DEBUG
+        | CSocketOptionName::DONTROUTE
+        | CSocketOptionName::OOBINLINE
+        | CSocketOptionName::NO_CHECK
+        | CSocketOptionName::BSDCOMPAT
+        | CSocketOptionName::ATTACH_BPF
+        | CSocketOptionName::PEERSEC => {
+            return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported socket-level option");
+        }
+    };
+    Ok(option)
 }
 
 impl_raw_socket_option!(ReuseAddr);
