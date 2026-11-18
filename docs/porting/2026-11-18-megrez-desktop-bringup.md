@@ -139,3 +139,48 @@ so a `bootcmd` that merely expands to the pieces passes the whole line to
 `ext4load` and fails with its usage message. With double quotes the pieces are
 expanded while the variable is set, and the stored text carries real
 semicolons.
+
+## Debugging the desktop in QEMU over the serial console
+
+QEMU can reproduce the whole board flow, including the gate, if two details are
+right. Both cost an evening to find:
+
+```
+qemu-system-riscv64 -machine virt -cpu rv64 -smp 2 -m 2G -display none \
+  -dtb virt-fb.dtb -snapshot \
+  -chardev socket,id=ser0,path=/tmp/q.sock,server=on,wait=off,logfile=/tmp/q.log \
+  -serial chardev:ser0 \
+  -kernel target/osdk/asterinas/asterinas-osdk-bin.Image \
+  -initrd /tmp/qemu-stage1.cpio \
+  -drive file=target/debian-riscv/browser-web/rootfs/debian-root.ext2,format=raw,if=none,id=rootdisk \
+  -device virtio-blk-device,drive=rootdisk \
+  -device virtio-keyboard-device -device virtio-tablet-device \
+  -append "console=ttyS0 loglevel=warn init=/init systemd.show_status=yes \
+    systemd.log_target=console \
+    systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered \
+    -- --root-init=systemd --debug-console=isolated-root"
+```
+
+* `--debug-console=isolated-root` after the `--` is what puts a root shell on
+  the serial console (`root@asterinas-debug:/#`). Without it the console is
+  write-only and every command appears to do nothing.
+* `-device virtio-tablet-device`, not `virtio-mouse-device`. The gate's
+  identity table recognises `(6, "QEMU Virtio Tablet", "virtio/input0")`; a
+  virtio mouse reports as `"QEMU Virtio Mouse"`, so the gate reports the mouse
+  as missing and fails with `status=125` after its input window, even though
+  `/dev/input/event1` exists.
+
+With those two, the guest reaches the same chain as the board and the readiness
+markers appear — which they never did before the `/dev/kmsg` wiring, because
+`boot_phase` wrote them into a stub:
+
+```
+stage=input-wait -> input-ready -> desktop-start -> desktop-ready -> browser-start
+FBDEV(0): using /dev/fb0 / Depth 24 / framebuffer bpp 32
+ASTERINAS_DESKTOP_DISPLAY_READY
+ASTERINAS_DESKTOP_FIREFOX_READY pid=181 user=1000 optional=1
+ASTERINAS_DESKTOP_BOOT_READY firefox_pid=181
+```
+
+`journalctl -k` shows kernel records in the guest from this same change, so the
+console is a usable debug channel for both userspace and the kernel.
