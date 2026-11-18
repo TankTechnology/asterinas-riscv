@@ -30,7 +30,8 @@ pub(crate) fn broadcast(
     subsystem: &str,
     envs: Vec<(String, String)>,
 ) -> Result<()> {
-    let message = UeventMessage::new_kernel_event(action, devpath, subsystem, envs)?;
+    let message =
+        UeventMessage::new_kernel_event(action, devpath, subsystem, envs, UDEV_MONITOR_KERNEL)?;
     <NetlinkUeventProtocol as SupportedNetlinkProtocol>::multicast(
         GroupIdSet::from_group_id(UDEV_MONITOR_KERNEL)?,
         message,

@@ -6,7 +6,7 @@ use uevent::Uevent;
 
 use crate::{
     net::socket::netlink::{
-        NetlinkSocketAddr, receiver::QueueableMessage, table::MulticastMessage,
+        GroupIdSet, NetlinkSocketAddr, receiver::QueueableMessage, table::MulticastMessage,
     },
     prelude::*,
     util::MultiWrite,
@@ -28,17 +28,22 @@ pub(crate) struct UeventMessage {
 }
 
 impl UeventMessage {
-    /// Creates a message the kernel announces to the kernel group.
+    /// Creates a message the kernel announces on `group`.
+    ///
+    /// The source address carries the group the message was sent to: a
+    /// listener that sees `nl_groups == 0` treats the frame as unicast and
+    /// drops it, which is what libudev's kernel monitor does.
     pub(super) fn new_kernel_event(
         action: &str,
         devpath: &str,
         subsystem: &str,
         envs: Vec<(String, String)>,
+        group: u32,
     ) -> Result<Self> {
         let action = action.parse()?;
         Ok(Self::new(
             Uevent::from_kernel(action, devpath.to_string(), subsystem.to_string(), envs),
-            NetlinkSocketAddr::new_unspecified(),
+            NetlinkSocketAddr::new(0, GroupIdSet::from_group_id(group)?),
         ))
     }
 
