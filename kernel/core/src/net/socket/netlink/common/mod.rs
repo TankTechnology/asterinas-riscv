@@ -16,7 +16,7 @@ use crate::{
         netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
         new_socket_common,
         options::{
-            AttachBpf, DetachFilter, Error as SocketError, SocketOption,
+            AttachBpf, AttachFilter, DetachFilter, Error as SocketError, SocketOption,
             macros::{sock_option_mut, sock_option_ref},
         },
         private::SocketPrivate,
@@ -316,10 +316,13 @@ impl<P: SupportedNetlinkProtocol> Inner<UnboundNetlink<P>, BoundNetlink<P::Messa
     }
 
     fn set_filter(&mut self, filter: Option<Arc<Vec<crate::util::bpf::SockFilter>>>) {
-        // Only a bound socket carries a classic filter; one set before binding
-        // is dropped, as this tree's `bind` already does.
-        if let Inner::Bound(bound_socket) = self {
-            bound_socket.set_filter(filter);
+        // A filter set before binding is carried over to the bound socket, the
+        // way the eBPF one is: sd-device may attach its uevent filter either
+        // side of `bind`, and dropping it here would silently deliver every
+        // message the filter was meant to suppress.
+        match self {
+            Inner::Unbound(unbound_socket) => unbound_socket.set_filter(filter),
+            Inner::Bound(bound_socket) => bound_socket.set_filter(filter),
         }
     }
 
@@ -355,6 +358,10 @@ fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
         }
         strict @ StrictCheck => {
             options.netlink.set_strict_check(*strict.get().unwrap());
+        }
+        attach_filter @ AttachFilter => {
+            let filter = attach_filter.get().unwrap().clone();
+            inner.set_filter(Some(filter));
         }
         attach_bpf @ AttachBpf => {
             let program = attach_bpf.get().unwrap().clone();

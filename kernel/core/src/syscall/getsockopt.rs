@@ -46,7 +46,14 @@ pub(super) fn sys_getsockopt(
     let file = get_file_fast!(&mut file_table, sockfd.try_into()?);
     let socket = file.as_socket_or_err()?;
 
-    let mut raw_option = new_raw_socket_option(level, optname)?;
+    let mut raw_option = new_raw_socket_option(level, optname).inspect_err(|err| {
+        debug!(
+            "getsockopt: level={:?} optname={} is not supported ({:?})",
+            level,
+            optname,
+            err.error()
+        );
+    })?;
     debug!("raw option: {:?}", raw_option);
 
     socket.get_option(raw_option.as_sock_option_mut())?;

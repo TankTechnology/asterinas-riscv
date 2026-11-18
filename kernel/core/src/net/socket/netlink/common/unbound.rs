@@ -20,6 +20,8 @@ pub(super) struct UnboundNetlink<P: SupportedNetlinkProtocol> {
     groups: GroupIdSet,
     /// An eBPF filter attached before binding; it moves to the bound socket.
     ebpf: Option<Arc<Program>>,
+    /// A classic-BPF filter attached before binding; it moves the same way.
+    filter: Option<Arc<Vec<crate::util::bpf::SockFilter>>>,
     phantom: PhantomData<BoundNetlink<P::Message>>,
 }
 
@@ -28,6 +30,7 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
         Self {
             groups: GroupIdSet::new_empty(),
             ebpf: None,
+            filter: None,
             phantom: PhantomData,
         }
     }
@@ -46,6 +49,10 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
 
     pub(super) fn set_ebpf_filter(&mut self, program: Option<Arc<Program>>) {
         self.ebpf = program;
+    }
+
+    pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<crate::util::bpf::SockFilter>>>) {
+        self.filter = filter;
     }
 }
 
@@ -73,7 +80,10 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
             <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
         };
 
-        Ok(BoundNetlink::new(bound_handle, message_queue, None).with_ebpf(self.ebpf.take()))
+        Ok(
+            BoundNetlink::new(bound_handle, message_queue, self.filter.take())
+                .with_ebpf(self.ebpf.take()),
+        )
     }
 
     fn bind_ephemeral(
@@ -94,7 +104,10 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
             <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
         };
 
-        Ok(BoundNetlink::new(bound_handle, message_queue, None).with_ebpf(self.ebpf.take()))
+        Ok(
+            BoundNetlink::new(bound_handle, message_queue, self.filter.take())
+                .with_ebpf(self.ebpf.take()),
+        )
     }
 
     fn check_io_events(&self) -> IoEvents {

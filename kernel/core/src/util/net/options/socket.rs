@@ -6,9 +6,9 @@ use super::{RawSocketOption, impl_raw_sock_option_get_only, impl_raw_socket_opti
 use crate::{
     context::current_userspace,
     net::socket::options::{
-        AcceptConn, Broadcast, Error, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
-        RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-        SendTimeout, SocketOption, SocketType, Timestamp,
+        AcceptConn, AttachFilter, Broadcast, DetachFilter, Error, KeepAlive, Linger, PassCred,
+        PeerCred, PeerGroups, Priority, RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort,
+        SendBuf, SendBufForce, SendTimeout, SocketOption, SocketType, Timestamp, TimestampNs,
     },
     prelude::*,
     process::Gid,
@@ -43,6 +43,7 @@ enum CSocketOptionName {
     SNDTIMEO_OLD = 21,
     ATTACH_FILTER = 26,
     TIMESTAMP = 29,
+    TIMESTAMPNS = 35,
     ATTACH_BPF = 50,
     DETACH_FILTER = 27,
     ACCPETCONN = 30,
@@ -80,6 +81,12 @@ pub(crate) fn new_socket_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
         CSocketOptionName::PEERCRED => Ok(Box::new(PeerCred::new())),
         CSocketOptionName::ACCPETCONN => Ok(Box::new(AcceptConn::new())),
         CSocketOptionName::TIMESTAMP => Ok(Box::new(Timestamp::new())),
+        // sd-device attaches a classic BPF filter to the uevent monitor it
+        // creates; rejecting the option makes logind give up with "Failed to
+        // create udev watchers: Protocol not available".
+        CSocketOptionName::ATTACH_FILTER => Ok(Box::new(AttachFilter::new())),
+        CSocketOptionName::DETACH_FILTER => Ok(Box::new(DetachFilter::new())),
+        CSocketOptionName::TIMESTAMPNS => Ok(Box::new(TimestampNs::new())),
         CSocketOptionName::SNDBUFFORCE => Ok(Box::new(SendBufForce::new())),
         CSocketOptionName::RCVBUFFORCE => Ok(Box::new(RecvBufForce::new())),
         CSocketOptionName::PEERGROUPS => Ok(Box::new(PeerGroups::new())),
@@ -104,6 +111,29 @@ impl_raw_sock_option_get_only!(PeerCred);
 impl_raw_sock_option_get_only!(AcceptConn);
 impl_raw_socket_option!(SendBufForce);
 impl_raw_socket_option!(Timestamp);
+impl_raw_socket_option!(TimestampNs);
+impl_raw_socket_option!(DetachFilter);
+
+// `SO_ATTACH_FILTER` carries a `struct sock_fprog`, a pointer into user space
+// rather than the instructions themselves, so it reads its payload by hand.
+impl RawSocketOption for AttachFilter {
+    fn read_from_user(&mut self, addr: Vaddr, _max_len: u32) -> Result<()> {
+        self.set(Arc::new(crate::util::bpf::read_prog_from_user(addr)?));
+        Ok(())
+    }
+
+    fn write_to_user(&self, _addr: Vaddr, _buffer_len: &mut u32) -> Result<usize> {
+        return_errno_with_message!(Errno::EINVAL, "the option is setter-only");
+    }
+
+    fn as_sock_option_mut(&mut self) -> &mut dyn SocketOption {
+        self
+    }
+
+    fn as_sock_option(&self) -> &dyn SocketOption {
+        self
+    }
+}
 impl_raw_socket_option!(RecvBufForce);
 
 // SO_PEERGROUPS is a read-only option. However, calling setsockopt on SO_PEERGROUPS will return EINVAL

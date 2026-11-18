@@ -80,17 +80,32 @@ pub(super) fn sys_setsockopt(
 
     let raw_option = {
         // An unsupported level is `ENOPROTOOPT` for `setsockopt(2)`.
-        let mut option =
-            new_raw_socket_option(level, optname).map_err(|err| match err.error() {
+        let mut option = new_raw_socket_option(level, optname).map_err(|err| {
+            let errno = err.error();
+            debug!(
+                "setsockopt: level={:?} optname={} is not supported ({:?})",
+                level, optname, errno
+            );
+            match errno {
                 Errno::EOPNOTSUPP => Error::with_message(Errno::ENOPROTOOPT, "unsupported level"),
                 _ => err,
-            })?;
+            }
+        })?;
         option.read_from_user(optval, optlen)?;
         option
     };
     debug!("raw option: {:?}", raw_option);
 
-    socket.set_option(raw_option.as_sock_option())?;
+    socket
+        .set_option(raw_option.as_sock_option())
+        .inspect_err(|err| {
+            debug!(
+                "setsockopt: level={:?} optname={} is rejected by the socket ({:?})",
+                level,
+                optname,
+                err.error()
+            );
+        })?;
 
     Ok(SyscallReturn::Return(0))
 }

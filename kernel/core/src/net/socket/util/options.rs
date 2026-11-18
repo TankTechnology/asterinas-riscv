@@ -17,7 +17,7 @@ use crate::{
         options::{
             AcceptConn, Broadcast, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
             RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-            SendTimeout, SocketOption, SocketType, Timestamp,
+            SendTimeout, SocketOption, SocketType, Timestamp, TimestampNs,
             macros::{sock_option_mut, sock_option_ref},
         },
         unix::{CUserCred, UNIX_DATAGRAM_DEFAULT_BUF_SIZE, UNIX_STREAM_DEFAULT_BUF_SIZE},
@@ -42,6 +42,7 @@ pub(crate) struct SocketOptionSet {
     reuse_port: bool,
     pass_cred: bool,
     timestamp: bool,
+    timestamp_ns: bool,
 }
 
 impl Default for SocketOptionSet {
@@ -57,6 +58,7 @@ impl Default for SocketOptionSet {
             reuse_port: false,
             pass_cred: false,
             timestamp: false,
+            timestamp_ns: false,
         }
     }
 }
@@ -172,6 +174,15 @@ impl SocketOptionSet {
                 let timestamp = self.timestamp();
                 socket_timestamp.set(timestamp);
             }
+            socket_timestamp_ns @ TimestampNs => {
+                // Like SO_TIMESTAMP above, SO_TIMESTAMPNS is only recorded; received
+                // messages are not annotated with SCM_TIMESTAMPNS yet. logind's udev
+                // monitor enables this option and treats a rejection as fatal, which
+                // is what kept `systemd-logind` from starting ("Failed to create udev
+                // watchers: Protocol not available").
+                let timestamp_ns = self.timestamp_ns();
+                socket_timestamp_ns.set(timestamp_ns);
+            }
             socket_peer_cred @ PeerCred => {
                 let peer_cred = CUserCred::new_invalid();
                 socket_peer_cred.set(peer_cred);
@@ -273,11 +284,11 @@ impl SocketOptionSet {
                 let timestamp = socket_timestamp.get().unwrap();
                 self.set_timestamp(*timestamp);
             }
-            socket_timestamp @ Timestamp => {
-                // See the comment on the get side: the request is recorded, and SCM_TIMESTAMP
-                // delivery on received messages is not implemented yet.
-                let timestamp = socket_timestamp.get().unwrap();
-                self.set_timestamp(*timestamp);
+            socket_timestamp_ns @ TimestampNs => {
+                // See the comment on the get side: the request is recorded, and
+                // SCM_TIMESTAMPNS delivery on received messages is not implemented yet.
+                let timestamp_ns = socket_timestamp_ns.get().unwrap();
+                self.set_timestamp_ns(*timestamp_ns);
             }
             socket_sendbuf_force @ SendBufForce => {
                 check_current_privileged()?;

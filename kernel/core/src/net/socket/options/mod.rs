@@ -39,6 +39,7 @@ impl_socket_options!(
     pub(crate) struct RecvBufForce(u32);
     pub(crate) struct PeerGroups(Arc<[Gid]>);
     pub(crate) struct Timestamp(bool);
+    pub(crate) struct TimestampNs(bool);
     pub(crate) struct SockDomain(i32);
     pub(crate) struct SockProtocol(i32);
     pub(crate) struct AttachFilter(Arc<Vec<SockFilter>>);
