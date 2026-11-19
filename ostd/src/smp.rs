@@ -121,6 +121,18 @@ pending_mask={:#x}",
                             elapsed.saturating_mul(1_000_000) / frequency,
                             pending_ipi_mask()
                         );
+                        // Coalescing makes a lost interrupt permanent: the
+                        // pending flag stays set, so every later send is folded
+                        // into an interrupt that will never arrive. Resend once,
+                        // unconditionally, so a lost interrupt heals instead of
+                        // parking this CPU until the watchdog fires.
+                        if let Some(&hw_cpu_id) =
+                            hw_cpu_id_mapping().and_then(|ids| ids.get(cpu_id.as_usize()))
+                        {
+                            let guard = crate::task::disable_preempt();
+                            IPI_RESENT.fetch_add(1, Ordering::Relaxed);
+                            let _ = crate::arch::irq::send_ipi(hw_cpu_id, &guard as _);
+                        }
                         reported = true;
                     }
                 }
@@ -182,6 +194,25 @@ pub fn ipi_kind_counters() -> ([u32; 4], [u32; 4]) {
 static IPI_SENT: AtomicU32 = AtomicU32::new(0);
 /// Completed IPI waits since boot (diagnostics).
 static IPI_WAITS: AtomicU32 = AtomicU32::new(0);
+/// Sends skipped because the target already had an interrupt pending.
+static IPI_COALESCED: AtomicU32 = AtomicU32::new(0);
+/// Interrupts resent because a wait had stalled for a second.
+static IPI_RESENT: AtomicU32 = AtomicU32::new(0);
+
+/// Returns how many sends were folded into an already-pending interrupt.
+pub fn coalesced_ipi_count() -> u32 {
+    IPI_COALESCED.load(Ordering::Relaxed)
+}
+
+/// Returns how many stalled waits forced an interrupt to be resent.
+pub fn resent_ipi_count() -> u32 {
+    IPI_RESENT.load(Ordering::Relaxed)
+}
+
+/// Returns how many firmware calls have been made to send an interrupt.
+pub fn sbi_ipi_call_count() -> u32 {
+    crate::arch::irq::sbi_ipi_calls()
+}
 
 /// Returns `(received on this CPU, sent since boot, waits since boot)`.
 ///
@@ -220,8 +251,16 @@ impl IpiSender {
         let irq_guard = irq::disable_local();
         let this_cpu_id = irq_guard.current_cpu();
 
+        // Board-sized staging area for the harts that need an interrupt; the
+        // overflowing case falls back to one call per hart.
+        const MAX_TARGETS: usize = 64;
+        let mut hw_cpu_ids = [self.hw_cpu_ids[0]; MAX_TARGETS];
+        let mut num_hw_cpu_ids = 0usize;
+        let mut overflow = false;
+
         let mut call_on_self = false;
         let mut pending_ipis = PendingIpis::new_empty();
+        let mut need_ipi = CpuSet::new_empty();
         for cpu_id in targets.iter() {
             if cpu_id == this_cpu_id {
                 call_on_self = true;
@@ -230,18 +269,40 @@ impl IpiSender {
             let mut call_queue = CALL_QUEUES.get_on_cpu(cpu_id).lock();
             call_queue.push_back(call_fn);
             // Set the pending flag before dropping the lock to avoid races.
-            HAS_PENDING_IPIS
+            //
+            // If the flag was already set, that CPU either has an interrupt on
+            // the way or is inside the handler right now, and it cannot clear
+            // the flag while this lock is held: it clears it under this same
+            // lock, and only after finding the queue empty -- which the push
+            // above prevents. The callback is therefore guaranteed to be
+            // drained, and another interrupt would only cost a firmware call.
+            let was_pending = HAS_PENDING_IPIS
                 .get_on_cpu(cpu_id)
-                .store(true, Ordering::Release);
+                .swap(true, Ordering::Release);
+            if was_pending {
+                IPI_COALESCED.fetch_add(1, Ordering::Relaxed);
+            } else {
+                need_ipi.add(cpu_id);
+                if num_hw_cpu_ids < MAX_TARGETS {
+                    hw_cpu_ids[num_hw_cpu_ids] = self.hw_cpu_ids[cpu_id.as_usize()];
+                    num_hw_cpu_ids += 1;
+                } else {
+                    overflow = true;
+                }
+            }
             pending_ipis.add(cpu_id);
         }
-        for cpu_id in targets.iter() {
-            if cpu_id == this_cpu_id {
-                continue;
+        if !need_ipi.is_empty() {
+            if overflow {
+                for cpu_id in need_ipi.iter() {
+                    crate::arch::irq::send_ipi(self.hw_cpu_ids[cpu_id.as_usize()], &irq_guard as _)
+                        .expect("failed to send inter-processor interrupt");
+                }
+            } else {
+                // One SBI call names every target hart that shares a mask word.
+                crate::arch::irq::send_ipi_to_harts(&hw_cpu_ids[..num_hw_cpu_ids], &irq_guard as _)
+                    .expect("failed to send inter-processor interrupt");
             }
-            let hw_cpu_id = self.hw_cpu_ids[cpu_id.as_usize()];
-            crate::arch::irq::send_ipi(hw_cpu_id, &irq_guard as _)
-                .expect("failed to send inter-processor interrupt");
         }
         if call_on_self {
             // Execute the function synchronously.

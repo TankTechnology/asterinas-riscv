@@ -52,28 +52,59 @@ pub(in crate::arch) unsafe fn init_on_ap() {
     unsafe { riscv::register::sie::set_ssoft() };
 }
 
+/// Firmware calls made to send an inter-processor interrupt.
+///
+/// Each call enters and leaves machine mode, so this is the number that says
+/// how much work the firmware is being asked to do, independent of how many
+/// harts a single interrupt reaches.
+static SBI_IPI_CALLS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Returns how many SBI calls have been made to send interrupts.
+pub(crate) fn sbi_ipi_calls() -> u32 {
+    SBI_IPI_CALLS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Sends a general inter-processor interrupt (IPI) to the specified CPU.
 pub(crate) fn send_ipi(hw_cpu_id: HwCpuId, _guard: &dyn PinCurrentCpu) -> Result<()> {
-    const XLEN: usize = usize::BITS as usize;
-    const XLEN_MASK: usize = XLEN - 1;
+    SBI_IPI_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    send_ipi_mask(single_hart_mask(hw_cpu_id), hw_cpu_id.0)
+}
 
-    let hart_id = hw_cpu_id.0 as usize;
-    let hart_mask_base = hart_id & !XLEN_MASK;
-    let hart_mask = 1 << (hart_id & XLEN_MASK);
-
-    let ret = sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(hart_mask, hart_mask_base));
+fn send_ipi_mask(mask: sbi_rt::HartMask, hart: u32) -> Result<()> {
+    let ret = sbi_rt::send_ipi(mask);
 
     if ret.error == 0 {
-        crate::debug!("Successfully sent IPI to hart {}", hw_cpu_id.0);
+        crate::debug!("Successfully sent IPI to hart {}", hart);
         Ok(())
     } else {
         crate::error!(
             "Failed to send IPI to hart {}: error code {}",
-            hw_cpu_id.0,
+            hart,
             ret.error
         );
         Err(Error::IoError)
     }
+}
+
+/// Sends one interrupt to every hart in the iterator.
+///
+/// The SBI hart-mask parameter names a set of harts, so harts that share a
+/// mask word are notified with a single firmware call instead of one per
+/// hart. Harts beyond the first word fall back to one call each.
+pub(crate) fn send_ipi_to_harts(hw_cpu_ids: &[HwCpuId], _guard: &dyn PinCurrentCpu) -> Result<()> {
+    if hw_cpu_ids.is_empty() {
+        return Ok(());
+    }
+    if let Some(hart_mask) = first_word_hart_mask(hw_cpu_ids) {
+        SBI_IPI_CALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let hart = hw_cpu_ids.first().map_or(0, |hw_cpu_id| hw_cpu_id.0);
+        return send_ipi_mask(hart_mask, hart);
+    }
+
+    for &hw_cpu_id in hw_cpu_ids {
+        send_ipi(hw_cpu_id, _guard)?;
+    }
+    Ok(())
 }
 
 /// Flushes the instruction cache on every online hart through SBI RFENCE.

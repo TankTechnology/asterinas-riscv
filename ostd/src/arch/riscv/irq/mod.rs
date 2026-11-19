@@ -8,7 +8,9 @@ mod ops;
 mod remapping;
 
 pub use chip::{DeferredMappedIrqLine, IRQ_CHIP, InterruptSourceInFdt, IrqChip, MappedIrqLine};
-pub(crate) use ipi::{HwCpuId, remote_fence_i_all_online_harts, send_ipi};
+pub(crate) use ipi::{
+    HwCpuId, remote_fence_i_all_online_harts, sbi_ipi_calls, send_ipi, send_ipi_to_harts,
+};
 pub(crate) use ops::{
     disable_local, disable_local_and_halt, enable_local, enable_local_and_halt, is_local_enabled,
 };

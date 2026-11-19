@@ -105,6 +105,13 @@ dma_fresh={}",
             "iomem_map: total={} fresh={}",
             iomem_map, iomem_fresh
         )?;
+        writeln!(
+            printer,
+            "sbi_ipi: calls={} coalesced={} resent={}",
+            ostd::smp::sbi_ipi_call_count(),
+            ostd::smp::coalesced_ipi_count(),
+            ostd::smp::resent_ipi_count()
+        )?;
         Ok(printer.bytes_written())
     }
 }
