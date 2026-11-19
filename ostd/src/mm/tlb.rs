@@ -248,7 +248,7 @@ cpu_local! {
     static FLUSH_OPS: SpinLock<OpsStack, LocalIrqDisabled> = SpinLock::new(OpsStack::new());
 }
 
-fn do_remote_flush() {
+pub(crate) fn do_remote_flush() {
     // No races because we are in IRQs or have disabled preemption.
     let current_cpu = crate::cpu::CpuId::current_racy();
 

@@ -506,15 +506,19 @@ pub(super) fn run_new_task(runnable: Arc<Task>) {
     might_preempt();
 }
 
+/// The remote half of [`set_need_preempt`], named so IPI accounting can tell
+/// preemption interrupts apart from TLB and ordering calls.
+pub(crate) fn set_need_preempt_remote() {
+    cpu_local::set_need_preempt();
+}
+
 fn set_need_preempt(cpu_id: CpuId) {
     let preempt_guard = disable_preempt();
 
     if preempt_guard.current_cpu() == cpu_id {
         cpu_local::set_need_preempt();
     } else {
-        crate::smp::inter_processor_call(&CpuSet::from(cpu_id), || {
-            cpu_local::set_need_preempt();
-        });
+        crate::smp::inter_processor_call(&CpuSet::from(cpu_id), set_need_preempt_remote);
     }
 }
 

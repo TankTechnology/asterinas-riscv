@@ -103,6 +103,46 @@ pub(crate) struct IpiSender {
 }
 
 /// Inter-processor calls sent since boot (diagnostics).
+/// Which callback is behind the inter-processor traffic (diagnostics).
+pub const IPI_KIND_NAMES: [&str; 4] = ["flush", "preempt", "memb", "other"];
+
+static SENT_KIND: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+static RECEIVED_KIND: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+
+fn kind_of(call_fn: fn()) -> usize {
+    let address = call_fn as usize;
+    if address == crate::mm::tlb::do_remote_flush as usize {
+        0
+    } else if address == crate::task::scheduler::set_need_preempt_remote as usize {
+        1
+    } else if address == do_synchronous_memory_barrier as usize {
+        2
+    } else {
+        3
+    }
+}
+
+/// Returns (sent, received) per kind, in the order of [`IPI_KIND_NAMES`].
+pub fn ipi_kind_counters() -> ([u32; 4], [u32; 4]) {
+    let mut sent = [0; 4];
+    let mut received = [0; 4];
+    for index in 0..4 {
+        sent[index] = SENT_KIND[index].load(Ordering::Relaxed);
+        received[index] = RECEIVED_KIND[index].load(Ordering::Relaxed);
+    }
+    (sent, received)
+}
+
 static IPI_SENT: AtomicU32 = AtomicU32::new(0);
 /// Completed IPI waits since boot (diagnostics).
 static IPI_WAITS: AtomicU32 = AtomicU32::new(0);
@@ -140,6 +180,7 @@ impl IpiSender {
     /// initialized.
     pub(crate) fn inter_processor_call(&self, targets: &CpuSet, call_fn: fn()) -> PendingIpis {
         IPI_SENT.fetch_add(1, Ordering::Relaxed);
+        SENT_KIND[kind_of(call_fn)].fetch_add(1, Ordering::Relaxed);
         let irq_guard = irq::disable_local();
         let this_cpu_id = irq_guard.current_cpu();
 
@@ -219,6 +260,8 @@ pub(crate) unsafe fn do_inter_processor_call(_trapframe: &TrapFrame) {
             };
             call_fn
         };
+
+        RECEIVED_KIND[kind_of(call_fn)].fetch_add(1, Ordering::Relaxed);
 
         crate::debug!(
             "Performing inter-processor call to {:#?} on CPU {:#?}",
