@@ -495,10 +495,16 @@ impl VmMapping {
                             cursor.protect_next(PAGE_SIZE, move |flags, _cache| {
                                 *flags |= needed;
                             });
-                            cursor.flusher().issue_tlb_flush(TlbFlushOp::for_range(
-                                page_aligned_addr..page_aligned_addr + PAGE_SIZE,
-                            ));
-                            cursor.flusher().dispatch_tlb_flush();
+                            // Only this CPU's translation is stale. A CPU that
+                            // still holds an entry without the A/D bits raises the
+                            // same fault on its own access and takes this same
+                            // path, so broadcasting an inter-processor flush costs
+                            // one firmware call per CPU for every first store to a
+                            // page without buying any correctness. On the Megrez
+                            // board that was the whole problem: the EIC7700 faults
+                            // on every store to a writable entry whose dirty bit is
+                            // clear, and thousands of SBI calls per second in
+                            // M-mode reset the SoC with nothing left in the log.
                         }
                         TlbFlushOp::for_range(page_aligned_addr..page_aligned_addr + PAGE_SIZE)
                             .perform_on_current();
