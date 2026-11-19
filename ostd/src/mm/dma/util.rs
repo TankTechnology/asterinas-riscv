@@ -168,20 +168,11 @@ fn map_dma_segment(
     );
 
     crate::mm::tlb::record_dma_map_dispatch(kva.is_fresh());
-    if kva.is_fresh() {
-        // Nothing has ever been mapped in this range, so no other CPU can hold
-        // a translation for it and the inter-processor half is pure cost. The
-        // current CPU is still flushed: the architecture allows a hart to
-        // cache an entry for an address it has never seen valid.
-        let _guard = disable_preempt();
-        TlbFlushOp::for_range(kva.range()).perform_on_current();
-    } else {
-        let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
-        let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
-        flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
-        flusher.dispatch_tlb_flush();
-        flusher.sync_tlb_flush();
-    }
+    let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
+    let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
+    flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
+    flusher.dispatch_tlb_flush();
+    flusher.sync_tlb_flush();
 
     Ok((kva, paddr))
 }
