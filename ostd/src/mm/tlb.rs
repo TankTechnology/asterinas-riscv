@@ -58,6 +58,12 @@ static REMOTE_TARGETS: AtomicU32 = AtomicU32::new(0);
 /// Dispatches that come from `ostd` itself, where the kernel cannot count them.
 static CURSOR_UNMAP_DISPATCHES: AtomicU32 = AtomicU32::new(0);
 static DMA_MAP_DISPATCHES: AtomicU32 = AtomicU32::new(0);
+/// DMA mappings whose virtual range had never been allocated before.
+///
+/// A fresh range has never been mapped, so no CPU can hold a translation for
+/// it and the inter-processor half of its flush is pure cost. This counter
+/// measures how often that is true before anything relies on it.
+static DMA_FRESH_DISPATCHES: AtomicU32 = AtomicU32::new(0);
 
 /// Returns `(dispatches, dispatches with a remote target, remote targets)`.
 pub fn dispatch_counters() -> (u32, u32, u32) {
@@ -80,8 +86,16 @@ pub(crate) fn record_cursor_unmap_dispatch() {
     CURSOR_UNMAP_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn record_dma_map_dispatch() {
+pub(crate) fn record_dma_map_dispatch(is_fresh: bool) {
     DMA_MAP_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+    if is_fresh {
+        DMA_FRESH_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Returns how many DMA mappings used a virtual range never allocated before.
+pub fn dma_fresh_count() -> u32 {
+    DMA_FRESH_DISPATCHES.load(Ordering::Relaxed)
 }
 
 /// A TLB flusher that is aware of which CPUs are needed to be flushed.

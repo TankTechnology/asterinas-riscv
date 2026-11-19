@@ -8,6 +8,13 @@ use crate::sync::{PreemptDisabled, SpinLock, SpinLockGuard};
 pub(crate) struct RangeAllocator {
     fullrange: Range<usize>,
     freelist: SpinLock<Option<BTreeMap<usize, FreeRange>>>,
+    /// Highest address ever handed out, plus one.
+    ///
+    /// A block that starts at or above the watermark when it is allocated has
+    /// never been allocated before, so nothing has ever been mapped there and
+    /// no CPU can hold a translation for it. Virtual-area users rely on this
+    /// to decide whether a mapping needs an inter-processor flush at all.
+    high_water: core::sync::atomic::AtomicUsize,
 }
 
 /// An error returned when allocating from a [`RangeAllocator`].
@@ -17,6 +24,7 @@ pub(crate) struct RangeAllocError;
 impl RangeAllocator {
     pub(crate) const fn new(fullrange: Range<usize>) -> Self {
         Self {
+            high_water: core::sync::atomic::AtomicUsize::new(fullrange.start),
             fullrange,
             freelist: SpinLock::new(None),
         }
@@ -66,6 +74,10 @@ impl RangeAllocator {
         }
 
         if target_node.is_some() {
+            // Keep the freshness watermark honest: a specific allocation also
+            // makes its range "used" for every later allocation.
+            self.high_water
+                .fetch_max(allocate_range.end, core::sync::atomic::Ordering::Relaxed);
             Ok(())
         } else {
             Err(RangeAllocError)
@@ -76,6 +88,20 @@ impl RangeAllocator {
     ///
     /// This is currently implemented with a simple FIRST-FIT algorithm.
     pub(crate) fn alloc(&self, size: usize) -> Result<Range<usize>, RangeAllocError> {
+        self.alloc_with_freshness(size).map(|(range, _)| range)
+    }
+
+    /// Allocates `size` and reports whether the block was never used before.
+    ///
+    /// "Fresh" means the returned range starts at or above every address this
+    /// allocator has ever handed out, so no page table has ever mapped it and
+    /// no CPU can hold a translation or a cached invalid entry for it. The
+    /// check runs under the free-list lock, so nothing can be allocated
+    /// between the comparison and the watermark update.
+    pub(crate) fn alloc_with_freshness(
+        &self,
+        size: usize,
+    ) -> Result<(Range<usize>, bool), RangeAllocError> {
         let mut lock_guard = self.get_freelist_guard();
         let freelist = lock_guard.as_mut().unwrap();
         let mut allocate_range = None;
@@ -100,7 +126,10 @@ impl RangeAllocator {
         }
 
         if let Some(range) = allocate_range {
-            Ok(range)
+            let fresh = range.start >= self.high_water.load(core::sync::atomic::Ordering::Relaxed);
+            self.high_water
+                .fetch_max(range.end, core::sync::atomic::Ordering::Relaxed);
+            Ok((range, fresh))
         } else {
             Err(RangeAllocError)
         }

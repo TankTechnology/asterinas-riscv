@@ -54,6 +54,11 @@ mod allocator {
 #[derive(Debug)]
 pub(crate) struct KVirtArea {
     range: Range<Vaddr>,
+    /// Whether the virtual range had never been allocated when it was taken.
+    ///
+    /// See [`RangeAllocator::alloc_with_freshness`]. Nothing has ever been
+    /// mapped in a fresh range, so no CPU can hold a translation for it.
+    fresh: bool,
 }
 
 impl HasSize for KVirtArea {
@@ -71,14 +76,27 @@ impl Split for KVirtArea {
 
         let left_range = old.start()..old.start() + offset;
         let right_range = old.start() + offset..old.end();
+        // Both halves come from the same allocation, so both inherit its
+        // freshness: neither has ever been mapped.
         (
-            KVirtArea { range: left_range },
-            KVirtArea { range: right_range },
+            KVirtArea {
+                range: left_range,
+                fresh: old.fresh,
+            },
+            KVirtArea {
+                range: right_range,
+                fresh: old.fresh,
+            },
         )
     }
 }
 
 impl KVirtArea {
+    /// Whether nothing has ever been mapped into this range before.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.fresh
+    }
+
     pub(crate) fn start(&self) -> Vaddr {
         self.range.start
     }
@@ -132,7 +150,9 @@ impl KVirtArea {
 
         let irq_guard = irq::disable_local();
 
-        let range = kvirt_area_allocator(&irq_guard).alloc(area_size).unwrap();
+        let (range, fresh) = kvirt_area_allocator(&irq_guard)
+            .alloc_with_freshness(area_size)
+            .unwrap();
         let cursor_range = range.start + map_offset..range.end;
 
         let page_table = KERNEL_PAGE_TABLE.get().unwrap();
@@ -144,7 +164,7 @@ impl KVirtArea {
             unsafe { cursor.map(MappedItem::tracked(Frame::from_unsized(frame), prop)) };
         }
 
-        Self { range }
+        Self { range, fresh }
     }
 
     /// Creates a kernel virtual area and maps untracked frames into it.
@@ -179,7 +199,9 @@ impl KVirtArea {
 
         let irq_guard = irq::disable_local();
 
-        let range = kvirt_area_allocator(&irq_guard).alloc(area_size).unwrap();
+        let (range, fresh) = kvirt_area_allocator(&irq_guard)
+            .alloc_with_freshness(area_size)
+            .unwrap();
 
         if !pa_range.is_empty() {
             let len = pa_range.len();
@@ -198,7 +220,7 @@ impl KVirtArea {
             }
         }
 
-        Self { range }
+        Self { range, fresh }
     }
 }
 

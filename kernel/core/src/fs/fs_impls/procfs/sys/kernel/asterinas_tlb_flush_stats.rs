@@ -90,8 +90,14 @@ mprotect_calls={} mprotect_maps={} mprotect_max_maps={} mprotect_max_us={}",
         let (cursor_unmap, dma_map) = ostd::mm::tlb::origin_counters();
         writeln!(
             printer,
-            "dispatch: total={} with_remote={} remote_targets={} cursor_unmap={} dma_map={}",
-            dispatches, with_remote, remote_targets, cursor_unmap, dma_map
+            "dispatch: total={} with_remote={} remote_targets={} cursor_unmap={} dma_map={} \
+dma_fresh={}",
+            dispatches,
+            with_remote,
+            remote_targets,
+            cursor_unmap,
+            dma_map,
+            ostd::mm::tlb::dma_fresh_count()
         )?;
         Ok(printer.bytes_written())
     }
