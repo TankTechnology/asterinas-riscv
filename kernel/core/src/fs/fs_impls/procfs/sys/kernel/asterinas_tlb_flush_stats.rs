@@ -107,10 +107,11 @@ dma_fresh={}",
         )?;
         writeln!(
             printer,
-            "sbi_ipi: calls={} coalesced={} resent={}",
+            "sbi_ipi: calls={} coalesced={} resent={} stress_sent={}",
             ostd::smp::sbi_ipi_call_count(),
             ostd::smp::coalesced_ipi_count(),
-            ostd::smp::resent_ipi_count()
+            ostd::smp::resent_ipi_count(),
+            crate::ipi_stress::sent()
         )?;
         Ok(printer.bytes_written())
     }

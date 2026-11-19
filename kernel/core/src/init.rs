@@ -61,6 +61,7 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
     for index in 0..aster_usb::host_count() {
         ThreadOptions::new(move || aster_usb::run_host(index)).spawn();
     }
+    crate::ipi_stress::spawn_if_requested();
     crate::fs::init_in_first_process(ctx);
     #[cfg(target_arch = "riscv64")]
     crate::first_process_diag::on_stdio_init_ready();

@@ -45,6 +45,48 @@ pub fn inter_processor_call(targets: &CpuSet, call_fn: fn()) -> PendingIpis {
     ipi_sender.inter_processor_call(targets, call_fn)
 }
 
+/// Sends a bare interrupt to every other CPU, for a load experiment.
+///
+/// No callback is queued, so the target CPUs take the interrupt, find nothing
+/// to do and return. The point is the firmware call on this side: this makes
+/// it possible to raise the machine-mode trap rate on its own, with none of
+/// the page-table work that normally accompanies it.
+///
+/// With `one_call`, every target is named in a single firmware call; without
+/// it, each target gets its own call, the shape the kernel used before the
+/// mask batching. An experiment can therefore hold the number of delivered
+/// interrupts fixed and change only the number of machine-mode entries.
+///
+/// Returns how many CPUs were targeted.
+pub fn send_bare_ipi_to_others(one_call: bool) -> usize {
+    const MAX_TARGETS: usize = 64;
+    let Some(mapping) = hw_cpu_id_mapping() else {
+        return 0;
+    };
+    let this_cpu = crate::cpu::CpuId::current_racy().as_usize();
+    let mut hw_cpu_ids = [mapping[0]; MAX_TARGETS];
+    let mut num_hw_cpu_ids = 0;
+    for (cpu, &hw_cpu_id) in mapping.iter().enumerate() {
+        if cpu == this_cpu || num_hw_cpu_ids >= MAX_TARGETS {
+            continue;
+        }
+        hw_cpu_ids[num_hw_cpu_ids] = hw_cpu_id;
+        num_hw_cpu_ids += 1;
+    }
+    if num_hw_cpu_ids == 0 {
+        return 0;
+    }
+    let guard = crate::task::disable_preempt();
+    if one_call {
+        let _ = crate::arch::irq::send_ipi_to_harts(&hw_cpu_ids[..num_hw_cpu_ids], &guard as _);
+    } else {
+        for &hw_cpu_id in &hw_cpu_ids[..num_hw_cpu_ids] {
+            let _ = crate::arch::irq::send_ipi(hw_cpu_id, &guard as _);
+        }
+    }
+    num_hw_cpu_ids
+}
+
 /// Pending remote inter-processor calls.
 pub struct PendingIpis {
     cpus: CpuSet,
