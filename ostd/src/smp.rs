@@ -50,6 +50,20 @@ pub struct PendingIpis {
     cpus: CpuSet,
 }
 
+/// How long a sender waits before it says it is stuck.
+const STALL_REPORT_MS: u64 = 1000;
+
+/// The CPUs that still have an unreported pending inter-processor call.
+fn pending_ipi_mask() -> u64 {
+    let mut mask = 0u64;
+    for cpu_id in crate::cpu::all_cpus() {
+        if HAS_PENDING_IPIS.get_on_cpu(cpu_id).load(Ordering::Acquire) {
+            mask |= 1 << u32::from(cpu_id);
+        }
+    }
+    mask
+}
+
 impl PendingIpis {
     pub(crate) fn new_empty() -> Self {
         Self {
@@ -87,7 +101,29 @@ impl PendingIpis {
             // Note that if new IPIs arrive to that CPU in the meantime, we
             // will also wait for them. This is fine because there usually
             // aren't too many IPIs in common cases.
+            let started = crate::arch::read_tsc();
+            let mut reported = false;
             while HAS_PENDING_IPIS.get_on_cpu(cpu_id).load(Ordering::Acquire) {
+                // A board that stops dead with nothing in the log and resets
+                // through its hardware watchdog looks exactly like this loop
+                // never finishing: the sender waits for a target that never
+                // takes the interrupt. Say so, once, before the watchdog
+                // erases the evidence.
+                if !reported {
+                    let elapsed = crate::arch::read_tsc().saturating_sub(started);
+                    let frequency = crate::arch::tsc_freq().max(1);
+                    if elapsed.saturating_mul(1_000) >= frequency.saturating_mul(STALL_REPORT_MS) {
+                        crate::early_println!(
+                            "ASTERINAS_IPI_WAIT_STALLED waiter_cpu={} target_cpu={} waited_us={} \
+pending_mask={:#x}",
+                            u32::from(crate::cpu::CpuId::current_racy()),
+                            u32::from(cpu_id),
+                            elapsed.saturating_mul(1_000_000) / frequency,
+                            pending_ipi_mask()
+                        );
+                        reported = true;
+                    }
+                }
                 core::hint::spin_loop();
             }
         }
