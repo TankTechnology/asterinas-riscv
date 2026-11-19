@@ -176,6 +176,21 @@ pub(super) fn handoff_if_requested() {
             return;
         }
         let kicks = KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        // Kick before printing. The console path takes a lock with local IRQs
+        // disabled and holds it across every device write, so a stall there
+        // stops this callback completely; kicking first means such a stall
+        // still leaves the board one full watchdog period to recover instead
+        // of hanging with the watchdog freshly unfed.
+        // A failed write is intentionally ignored: if this MMIO path becomes
+        // unavailable the hardware watchdog remains the fail-safe. Say it once,
+        // so a board that resets itself leaves a trace of the last kick.
+        if registers
+            .write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE)
+            .is_err()
+            && !KICK_FAILED_REPORTED.swap(true, Ordering::Relaxed)
+        {
+            ostd::early_println!("ASTERINAS_WATCHDOG_KICK status=failed");
+        }
         if kicks % HEARTBEAT_REPORT_EVERY == 0 {
             let (received, sent, waits) = ostd::smp::ipi_counters();
             let (tx, rx) = ostd::smp::ipi_kind_counters();
@@ -215,16 +230,6 @@ cow_copy={} dx_total={} dx_remote={} sbi_calls={} coalesced={}",
                 sbi_calls,
                 coalesced
             );
-        }
-        // A failed write is intentionally ignored: if this MMIO path becomes
-        // unavailable the hardware watchdog remains the fail-safe. Say it once,
-        // so a board that resets itself leaves a trace of the last kick.
-        if registers
-            .write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE)
-            .is_err()
-            && !KICK_FAILED_REPORTED.swap(true, Ordering::Relaxed)
-        {
-            ostd::early_println!("ASTERINAS_WATCHDOG_KICK status=failed");
         }
         timer::request_interrupt_after(KICK_PERIOD);
     };
