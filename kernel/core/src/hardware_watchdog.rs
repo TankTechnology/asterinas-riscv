@@ -11,7 +11,7 @@
 
 use alloc::string::String;
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Duration,
 };
 
@@ -44,6 +44,9 @@ const COUNTER_RESTART_VALUE: u32 = 0x76;
 /// (I2C), so the comparison below stays exact.
 const COMPONENT_TYPE: u32 = 0x4457_0120;
 const KICK_PERIOD: Duration = Duration::from_secs(1);
+
+/// How often the heartbeat says it is still alive (once every five kicks).
+const HEARTBEAT_REPORT_EVERY: u32 = 5;
 
 static REQUESTED: Once<String> = Once::new();
 define_kv_param!("asterinas.hardware_watchdog_handoff", REQUESTED);
@@ -162,9 +165,19 @@ pub(super) fn handoff_if_requested() {
         let _ = registers.write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE);
     }
 
+    // The board can reset without any panic, trace or watchdog-kick failure
+    // if this callback simply stops being scheduled while the rest of the
+    // system keeps running. A periodic line makes "the kicks stopped" visible
+    // instead of inferred.
+    static KICK_COUNT: AtomicU32 = AtomicU32::new(0);
+
     let heartbeat = move || {
         if !KICKING.load(Ordering::Acquire) {
             return;
+        }
+        let kicks = KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if kicks % HEARTBEAT_REPORT_EVERY == 0 {
+            ostd::early_println!("ASTERINAS_WATCHDOG_HEARTBEAT kicks={}", kicks);
         }
         // A failed write is intentionally ignored: if this MMIO path becomes
         // unavailable the hardware watchdog remains the fail-safe. Say it once,
