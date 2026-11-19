@@ -8,12 +8,16 @@ use crate::sync::{PreemptDisabled, SpinLock, SpinLockGuard};
 pub(crate) struct RangeAllocator {
     fullrange: Range<usize>,
     freelist: SpinLock<Option<BTreeMap<usize, FreeRange>>>,
-    /// Highest address ever handed out, plus one.
+    /// Lowest start and highest end ever handed out.
     ///
-    /// A block that starts at or above the watermark when it is allocated has
-    /// never been allocated before, so nothing has ever been mapped there and
-    /// no CPU can hold a translation for it. Virtual-area users rely on this
-    /// to decide whether a mapping needs an inter-processor flush at all.
+    /// The allocator carves from the top of a free block downwards, so a
+    /// single high-water mark would call the very first allocation "used" and
+    /// every later one too. Two marks bracket every allocation that has ever
+    /// happened: everything below `low_water` or at or above `high_water` has
+    /// never been handed out, so no page table has ever mapped it and no CPU
+    /// can hold a translation for it. Virtual-area users rely on that to
+    /// decide whether a mapping needs an inter-processor flush at all.
+    low_water: core::sync::atomic::AtomicUsize,
     high_water: core::sync::atomic::AtomicUsize,
 }
 
@@ -24,6 +28,7 @@ pub(crate) struct RangeAllocError;
 impl RangeAllocator {
     pub(crate) const fn new(fullrange: Range<usize>) -> Self {
         Self {
+            low_water: core::sync::atomic::AtomicUsize::new(fullrange.end),
             high_water: core::sync::atomic::AtomicUsize::new(fullrange.start),
             fullrange,
             freelist: SpinLock::new(None),
@@ -74,10 +79,9 @@ impl RangeAllocator {
         }
 
         if target_node.is_some() {
-            // Keep the freshness watermark honest: a specific allocation also
+            // Keep the freshness watermarks honest: a specific allocation also
             // makes its range "used" for every later allocation.
-            self.high_water
-                .fetch_max(allocate_range.end, core::sync::atomic::Ordering::Relaxed);
+            self.note_allocated(allocate_range);
             Ok(())
         } else {
             Err(RangeAllocError)
@@ -126,13 +130,29 @@ impl RangeAllocator {
         }
 
         if let Some(range) = allocate_range {
-            let fresh = range.start >= self.high_water.load(core::sync::atomic::Ordering::Relaxed);
-            self.high_water
-                .fetch_max(range.end, core::sync::atomic::Ordering::Relaxed);
+            let fresh = self.is_unallocated(&range);
+            self.note_allocated(&range);
             Ok((range, fresh))
         } else {
             Err(RangeAllocError)
         }
+    }
+
+    /// Whether no allocation has ever overlapped `range`.
+    ///
+    /// Every allocation so far lies inside `low_water..high_water`, so a range
+    /// that ends at or below the low mark, or starts at or above the high
+    /// mark, cannot overlap any of them. Callers hold the free-list lock, so
+    /// nothing can be allocated between the two marks being read and updated.
+    fn is_unallocated(&self, range: &Range<usize>) -> bool {
+        use core::sync::atomic::Ordering::Relaxed;
+        range.end <= self.low_water.load(Relaxed) || range.start >= self.high_water.load(Relaxed)
+    }
+
+    fn note_allocated(&self, range: &Range<usize>) {
+        use core::sync::atomic::Ordering::Relaxed;
+        self.low_water.fetch_min(range.start, Relaxed);
+        self.high_water.fetch_max(range.end, Relaxed);
     }
 
     /// Frees a `range`.

@@ -132,11 +132,21 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
             // physical address range is I/O memory, so it is safe to map.
             let kva = unsafe { KVirtArea::map_untracked_frames(area_size, 0, frames_range, prop) };
 
-            let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
-            let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
-            flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
-            flusher.dispatch_tlb_flush();
-            flusher.sync_tlb_flush();
+            crate::mm::tlb::record_iomem_map_dispatch(kva.is_fresh());
+            if kva.is_fresh() {
+                // A range that has never been allocated has never been mapped,
+                // so no other CPU can hold a translation for it. The current
+                // CPU is flushed anyway: a hart may cache an entry it never
+                // saw valid.
+                let _guard = disable_preempt();
+                TlbFlushOp::for_range(kva.range()).perform_on_current();
+            } else {
+                let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
+                let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
+                flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
+                flusher.dispatch_tlb_flush();
+                flusher.sync_tlb_flush();
+            }
 
             kva
         };

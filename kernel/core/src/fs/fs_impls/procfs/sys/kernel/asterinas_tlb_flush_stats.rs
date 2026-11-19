@@ -99,6 +99,12 @@ dma_fresh={}",
             dma_map,
             ostd::mm::tlb::dma_fresh_count()
         )?;
+        let (iomem_map, iomem_fresh) = ostd::mm::tlb::iomem_map_counters();
+        writeln!(
+            printer,
+            "iomem_map: total={} fresh={}",
+            iomem_map, iomem_fresh
+        )?;
         Ok(printer.bytes_written())
     }
 }

@@ -98,6 +98,25 @@ pub fn dma_fresh_count() -> u32 {
     DMA_FRESH_DISPATCHES.load(Ordering::Relaxed)
 }
 
+/// I/O-memory mappings and how many of them used a fresh virtual range.
+static IOMEM_MAP_DISPATCHES: AtomicU32 = AtomicU32::new(0);
+static IOMEM_FRESH_DISPATCHES: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn record_iomem_map_dispatch(is_fresh: bool) {
+    IOMEM_MAP_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+    if is_fresh {
+        IOMEM_FRESH_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Returns `(iomem mappings, of which fresh)`.
+pub fn iomem_map_counters() -> (u32, u32) {
+    (
+        IOMEM_MAP_DISPATCHES.load(Ordering::Relaxed),
+        IOMEM_FRESH_DISPATCHES.load(Ordering::Relaxed),
+    )
+}
+
 /// A TLB flusher that is aware of which CPUs are needed to be flushed.
 ///
 /// The flusher needs to stick to the current CPU.
