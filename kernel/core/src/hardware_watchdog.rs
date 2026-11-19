@@ -181,11 +181,13 @@ pub(super) fn handoff_if_requested() {
             let (tx, rx) = ostd::smp::ipi_kind_counters();
             let sites = crate::vm::vmar::flush_stats::snapshot();
             let (dispatches, with_remote, _) = ostd::mm::tlb::dispatch_counters();
+            let sbi_calls = ostd::smp::sbi_ipi_call_count();
+            let coalesced = ostd::smp::coalesced_ipi_count();
             ostd::early_println!(
                 "ASTERINAS_WATCHDOG_HEARTBEAT kicks={} cpu={} ipi_rx={} ipi_tx={} ipi_wait={} \
 tx_flush={} tx_preempt={} tx_memb={} tx_other={} rx_flush={} rx_preempt={} rx_memb={} rx_other={} \
 flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} fork={} \
-cow_copy={} dx_total={} dx_remote={}",
+cow_copy={} dx_total={} dx_remote={} sbi_calls={} coalesced={}",
                 kicks,
                 u32::from(ostd::cpu::CpuId::current_racy()),
                 received,
@@ -209,7 +211,9 @@ cow_copy={} dx_total={} dx_remote={}",
                 sites[7],
                 sites[8],
                 dispatches,
-                with_remote
+                with_remote,
+                sbi_calls,
+                coalesced
             );
         }
         // A failed write is intentionally ignored: if this MMIO path becomes
