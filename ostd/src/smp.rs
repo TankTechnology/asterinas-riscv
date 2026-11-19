@@ -168,8 +168,27 @@ pub(crate) unsafe fn do_inter_processor_call(_trapframe: &TrapFrame) {
     // No races because we are in IRQs.
     let this_cpu_id = crate::cpu::CpuId::current_racy();
 
-    let mut queue = CALL_QUEUES.get_on_cpu(this_cpu_id).lock();
-    while let Some(call_fn) = queue.pop_front() {
+    // The lock is held only long enough to take one callback out of the
+    // queue. The debug line and the callback itself run with it released:
+    // a sender takes this same lock with interrupts disabled, and the sender
+    // may be the CPU that kicks the hardware watchdog, so a console write or
+    // an arbitrary callback under the lock can stop that heartbeat for long
+    // enough that the board resets itself with no message at all.
+    loop {
+        let call_fn = {
+            let mut queue = CALL_QUEUES.get_on_cpu(this_cpu_id).lock();
+            let Some(call_fn) = queue.pop_front() else {
+                // Clear the pending flag while the queue is still empty and
+                // the lock is still held, so a sender pushing next observes
+                // it cleared and sets it again.
+                HAS_PENDING_IPIS
+                    .get_on_cpu(this_cpu_id)
+                    .store(false, Ordering::Release);
+                return;
+            };
+            call_fn
+        };
+
         crate::debug!(
             "Performing inter-processor call to {:#?} on CPU {:#?}",
             call_fn,
@@ -177,10 +196,6 @@ pub(crate) unsafe fn do_inter_processor_call(_trapframe: &TrapFrame) {
         );
         call_fn();
     }
-    // Clear the pending flag before dropping the lock to avoid races.
-    HAS_PENDING_IPIS
-        .get_on_cpu(this_cpu_id)
-        .store(false, Ordering::Release);
 }
 
 pub(super) fn init() {
