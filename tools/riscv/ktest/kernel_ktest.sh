@@ -19,6 +19,11 @@ source "${_shell_self_dir}/../../lib/shell.sh"
 unset _shell_self_dir
 REPO_ROOT="$(repo_root)"
 KERNEL_DIR=${REPO_ROOT}/kernel
+# `osdk test` only runs the ktests of the crate it is invoked from, and its
+# crate whitelist is that crate alone. The ext2 and other filesystem ktests
+# live in `aster-core`, so the default `kernel/` directory silently selected
+# no tests there (passed=0, failed=0). Let the caller pick the crate.
+KTEST_CRATE_DIR=${ASTERINAS_KTEST_CRATE_DIR:-${KERNEL_DIR}}
 OSDK_MAIN_BIN=${OSDK_MAIN_BIN:-/home/arch-anjie/.cargo/bin/osdk-by-repo/main}
 INITRAMFS=${ASTERINAS_KTEST_INITRAMFS:-${REPO_ROOT}/test/initramfs/build/initramfs.cpio.gz}
 if [[ ! -f "$INITRAMFS" && -f "${REPO_ROOT}/../backups/asterinas-riscv/ktest-initramfs.cpio.gz" ]]; then
@@ -38,14 +43,15 @@ fi
 mkdir -p "$ARTIFACT_DIR"
 
 printf 'kernel ktest: %s\n' "$TEST_FILTER" | tee "$ARTIFACT_DIR/metadata.txt"
-printf 'repo: %s\ninitramfs: %s\nosdk: %s\n' "$REPO_ROOT" "$INITRAMFS" "$OSDK_MAIN_BIN" >> "$ARTIFACT_DIR/metadata.txt"
+printf 'repo: %s\ncrate: %s\ninitramfs: %s\nosdk: %s\n' \
+    "$REPO_ROOT" "$KTEST_CRATE_DIR" "$INITRAMFS" "$OSDK_MAIN_BIN" >> "$ARTIFACT_DIR/metadata.txt"
 if command -v qemu-system-riscv64 >/dev/null 2>&1; then
     qemu-system-riscv64 --version | head -n 1 >> "$ARTIFACT_DIR/metadata.txt"
 fi
 
 set +e
 (
-    cd "$KERNEL_DIR"
+    cd "$KTEST_CRATE_DIR"
     export ASTERINAS_QEMU_LOG_DIR="$ARTIFACT_DIR"
     export OSDK_TARGET_ARCH=${OSDK_TARGET_ARCH:-riscv64}
     export VDSO_LIBRARY_DIR=${VDSO_LIBRARY_DIR:-${REPO_ROOT}/../linux_vdso}
