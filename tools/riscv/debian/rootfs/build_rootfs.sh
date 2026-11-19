@@ -2560,10 +2560,12 @@ EOF
         # this kernel and can block sysinit indefinitely; mask only that unit.
         ln -s -- /dev/null \
             "$stage/etc/systemd/system/systemd-tmpfiles-setup-dev.service"
-        ln -s -- /dev/null \
-            "$stage/etc/systemd/system/systemd-udevd.service"
-        ln -s -- /dev/null \
-            "$stage/etc/systemd/system/systemd-logind.service"
+        # `systemd-udevd` and `systemd-logind` used to be masked here too,
+        # because a kernel that never broadcast uevents left udev with a
+        # socket that never spoke and logind dying on a rejected `setsockopt`.
+        # Both work now (docs/porting/2026-11-19-udev-logind-gap.md), so they
+        # ship unmasked; the first boot that shows a regression should look at
+        # the uevent and socket-option paths before re-masking them.
         mkdir -p -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -s -- ../asterinas-browser-web-timeline-begin.service \
             "$stage/etc/systemd/system/sysinit.target.wants/asterinas-browser-web-timeline-begin.service"
