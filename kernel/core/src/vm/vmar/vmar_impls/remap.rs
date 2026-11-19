@@ -254,17 +254,22 @@ impl Vmar {
             let offset = mapped_va - old_range.start;
             let new_map_va = new_range.start + offset;
 
+            // The old translation is dropped without dispatching: the frames
+            // are the same frames, only their addresses change, so no frame can
+            // be recycled before the single flush below. Moving a large region
+            // used to broadcast once per page; one dispatch covers the whole
+            // move.
             match item {
                 VmQueriedItem::MappedRam { frame, prop } => {
                     let frame = (*frame).clone();
 
-                    cursor.unmap(PAGE_SIZE);
+                    cursor.unmap_without_dispatch(PAGE_SIZE);
                     cursor.jump(new_map_va).unwrap();
 
                     cursor.map(frame, prop);
                 }
                 VmQueriedItem::MappedIoMem { paddr, prop } => {
-                    cursor.unmap(PAGE_SIZE);
+                    cursor.unmap_without_dispatch(PAGE_SIZE);
                     cursor.jump(new_map_va).unwrap();
 
                     // For MMIO pages, find the corresponding `IoMem` and map it
