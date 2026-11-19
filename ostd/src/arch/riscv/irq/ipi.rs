@@ -2,6 +2,8 @@
 
 //! Inter-processor interrupts.
 
+use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
 use spin::Once;
 
 use crate::{cpu::PinCurrentCpu, error::Error, irq::IrqLine, prelude::Result};
@@ -70,11 +72,40 @@ pub(crate) fn send_ipi(hw_cpu_id: HwCpuId, _guard: &dyn PinCurrentCpu) -> Result
     send_ipi_mask(single_hart_mask(hw_cpu_id), hw_cpu_id.0)
 }
 
-fn send_ipi_mask(mask: sbi_rt::HartMask, hart: u32) -> Result<()> {
+/// Whether firmware calls that send interrupts are serialized across harts.
+///
+/// Three harts entering machine mode to send each other interrupts is the one
+/// condition the board has been shown to fail under: three senders reset it in
+/// 23 seconds while a single sender at a higher rate ran for minutes.
+/// Serializing the calls removes the overlap at the price of one atomic per
+/// send.
+static SERIALIZED: AtomicBool = AtomicBool::new(false);
+/// Held across one firmware call by the CPU that is sending.
+static SEND_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Enables or disables serialization of the firmware calls that send interrupts.
+pub fn set_sbi_ipi_serialized(enabled: bool) {
+    SERIALIZED.store(enabled, AtomicOrdering::Relaxed);
+}
+
+fn sbi_send_ipi(mask: sbi_rt::HartMask) -> sbi_rt::SbiRet {
+    if !SERIALIZED.load(AtomicOrdering::Relaxed) {
+        return sbi_rt::send_ipi(mask);
+    }
+    while SEND_BUSY.swap(true, AtomicOrdering::Acquire) {
+        core::hint::spin_loop();
+    }
     let ret = sbi_rt::send_ipi(mask);
+    SEND_BUSY.store(false, AtomicOrdering::Release);
+    ret
+}
+
+fn send_ipi_mask(mask: sbi_rt::HartMask, hart: u32) -> Result<()> {
+    // No logging on this path: it runs once per inter-processor interrupt,
+    // thousands of times a second during boot whenever the level is lowered.
+    let ret = sbi_send_ipi(mask);
 
     if ret.error == 0 {
-        crate::debug!("Successfully sent IPI to hart {}", hart);
         Ok(())
     } else {
         crate::error!(

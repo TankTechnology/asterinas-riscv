@@ -12,7 +12,7 @@
 //! flush, and nothing behaves differently because of them.
 
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use aster_cmdline::define_kv_param;
 use spin::Once;
@@ -159,12 +159,24 @@ pub(crate) fn tsc_micros(ticks: u64) -> u32 {
 static NO_REMOTE_FLUSH: Once<String> = Once::new();
 define_kv_param!("asterinas.tlb_no_remote_flush", NO_REMOTE_FLUSH);
 
+/// `asterinas.sbi_ipi_serialize`: one hart at a time in the firmware send call.
+///
+/// Diagnostic mitigation while the board's failure under concurrent senders
+/// is being pinned down; it costs one atomic per interrupt for a CPU-time
+/// overhead well under one percent.
+static SERIALIZE_IPI: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.sbi_ipi_serialize", SERIALIZE_IPI);
+
 /// Applies `asterinas.tlb_no_remote_flush` to the TLB flusher.
 ///
 /// This parameter exists to separate "the flush storm resets the board" from
 /// "the board resets for another reason"; a kernel running with it is not
 /// correct and says so on the console.
 pub(crate) fn init_from_cmdline() {
+    if SERIALIZE_IPI.load(Ordering::Relaxed) {
+        ostd::smp::set_sbi_ipi_serialized(true);
+        ostd::early_println!("ASTERINAS_SBI_IPI_SERIALIZED status=enabled");
+    }
     let Some(value) = NO_REMOTE_FLUSH.get() else {
         return;
     };

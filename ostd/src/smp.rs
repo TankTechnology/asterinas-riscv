@@ -425,6 +425,11 @@ pub fn sbi_ipi_call_count() -> u32 {
     crate::arch::irq::sbi_ipi_calls()
 }
 
+/// Serializes the firmware calls that send interrupts across harts.
+pub fn set_sbi_ipi_serialized(enabled: bool) {
+    crate::arch::irq::set_sbi_ipi_serialized(enabled);
+}
+
 /// Returns `(received on this CPU, sent since boot, waits since boot)`.
 ///
 /// Diagnostics for a CPU that stops doing both: if the receive count stops
