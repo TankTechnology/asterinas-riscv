@@ -29,6 +29,9 @@ pub(super) fn main() {
     crate::boot_reboot::arm_if_requested();
     #[cfg(target_arch = "riscv64")]
     crate::hardware_watchdog::handoff_if_requested();
+    // Applied before any user process exists: it changes how every later TLB
+    // flush behaves.
+    crate::vm::vmar::flush_stats::init_from_cmdline();
 
     init();
 

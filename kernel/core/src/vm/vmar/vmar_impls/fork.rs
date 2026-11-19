@@ -58,6 +58,7 @@ impl Vmar {
                 // pages only after `fork()` returns. So we can perform a full
                 // TLB flush only when handling the last mapping.
                 if remaining == 0 {
+                    crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::FORK);
                     cur_cursor.flusher().issue_tlb_flush(TlbFlushOp::for_all());
                     cur_cursor.flusher().dispatch_tlb_flush();
                     cur_cursor.flusher().sync_tlb_flush();

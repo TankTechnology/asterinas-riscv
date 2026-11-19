@@ -277,6 +277,7 @@ impl Vmar {
             current_offset = offset + PAGE_SIZE;
         }
 
+        crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::REMAP);
         cursor.flusher().dispatch_tlb_flush();
         cursor.flusher().sync_tlb_flush();
     }

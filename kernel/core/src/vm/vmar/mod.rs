@@ -2,6 +2,7 @@
 
 //! User address space management.
 
+pub(crate) mod flush_stats;
 mod handle;
 mod interval_set;
 mod rmap;

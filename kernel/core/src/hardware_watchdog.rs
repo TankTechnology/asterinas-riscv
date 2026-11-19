@@ -179,16 +179,32 @@ pub(super) fn handoff_if_requested() {
         if kicks % HEARTBEAT_REPORT_EVERY == 0 {
             let (received, sent, waits) = ostd::smp::ipi_counters();
             let (tx, rx) = ostd::smp::ipi_kind_counters();
+            let sites = crate::vm::vmar::flush_stats::snapshot();
             ostd::early_println!(
                 "ASTERINAS_WATCHDOG_HEARTBEAT kicks={} cpu={} ipi_rx={} ipi_tx={} ipi_wait={} \
-tx_flush={} tx_preempt={} tx_memb={} tx_other={} rx_flush={} rx_preempt={} rx_memb={} rx_other={}",
+tx_flush={} tx_preempt={} tx_memb={} tx_other={} rx_flush={} rx_preempt={} rx_memb={} rx_other={} \
+flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} fork={}",
                 kicks,
                 u32::from(ostd::cpu::CpuId::current_racy()),
                 received,
                 sent,
                 waits,
-                tx[0], tx[1], tx[2], tx[3],
-                rx[0], rx[1], rx[2], rx[3]
+                tx[0],
+                tx[1],
+                tx[2],
+                tx[3],
+                rx[0],
+                rx[1],
+                rx[2],
+                rx[3],
+                sites[0],
+                sites[1],
+                sites[2],
+                sites[3],
+                sites[4],
+                sites[5],
+                sites[6],
+                sites[7]
             );
         }
         // A failed write is intentionally ignored: if this MMIO path becomes

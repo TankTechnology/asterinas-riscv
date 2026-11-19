@@ -476,6 +476,13 @@ impl VmMapping {
             match item {
                 Some(VmQueriedItem::MappedRam { frame, mut prop }) => {
                     if VmPerms::from(prop.flags).contains(required_perms) {
+                        // Counted even when the bits are already set: a fault
+                        // that reaches here was raised by hardware that does
+                        // not consider the entry usable, and knowing how often
+                        // that happens is the point of the counter.
+                        crate::vm::vmar::flush_stats::record(
+                            crate::vm::vmar::flush_stats::site::AD,
+                        );
                         // The entry already grants the access, so either another
                         // thread resolved this fault concurrently, or the CPU
                         // faulted on the accessed/dirty bits: the EIC7700 raises
@@ -535,6 +542,9 @@ impl VmMapping {
                     let new_flags = PageFlags::W | PageFlags::ACCESSED | PageFlags::DIRTY;
 
                     if self.map_mode.is_shared() || only_reference {
+                        crate::vm::vmar::flush_stats::record(
+                            crate::vm::vmar::flush_stats::site::COW_SHARED,
+                        );
                         cursor.protect_next(PAGE_SIZE, |flags, _cache| {
                             *flags |= new_flags;
                         });
@@ -568,6 +578,7 @@ impl VmMapping {
                     );
                 }
                 None => {
+                    crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::FRESH);
                     // Map a new frame to the page fault address.
                     let (frame, is_readonly) = match self.prepare_page(page_aligned_addr, is_write)
                     {
@@ -888,6 +899,7 @@ impl VmMapping {
     /// Unmaps the mapping from the VM space,
     /// and returns the number of unmapped pages.
     pub(super) fn unmap(self, vm_space: &VmSpace) -> usize {
+        crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::UNMAP);
         let preempt_guard = disable_preempt();
         let range = self.range();
         let mut cursor = vm_space.cursor_mut(&preempt_guard, &range).unwrap();
@@ -901,6 +913,7 @@ impl VmMapping {
 
     /// Change the perms of the mapping.
     pub(super) fn protect(self, vm_space: &VmSpace, perms: VmPerms) -> Self {
+        crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::PROTECT);
         // For device mappings, they're shared as we have checked that when
         // creating the mapping. Additionally, we need to keep the page flags
         // in sync with the mapping to avoid handling a write page fault on a

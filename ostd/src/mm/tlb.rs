@@ -3,7 +3,11 @@
 //! TLB flush operations.
 
 use alloc::vec::Vec;
-use core::{mem::MaybeUninit, ops::Range, sync::atomic::Ordering};
+use core::{
+    mem::MaybeUninit,
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use super::{
     PAGE_SIZE, Vaddr,
@@ -16,6 +20,29 @@ use crate::{
     smp::{IpiSender, PendingIpis},
     sync::{LocalIrqDisabled, RcuDrop, SpinLock},
 };
+
+/// Diagnostic switch that drops the inter-processor half of every TLB flush.
+///
+/// This is deliberately unsafe: another CPU may keep using a translation that
+/// the current CPU has already changed, so a kernel running with it can read
+/// or write a frame it no longer owns. It exists only to answer one question
+/// during bring-up of the Megrez board -- whether the inter-processor flush
+/// storm is what resets the SoC -- and must never be enabled in a kernel that
+/// is meant to be correct. The kernel sets it from the
+/// `asterinas.tlb_no_remote_flush=1` command line, and the boot log says so.
+static NO_REMOTE_FLUSH: AtomicBool = AtomicBool::new(false);
+
+/// Drops (`enabled`) or restores the inter-processor half of TLB flushes.
+///
+/// See [`NO_REMOTE_FLUSH`]: this trades correctness for a diagnostic.
+pub fn set_no_remote_flush(enabled: bool) {
+    NO_REMOTE_FLUSH.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether the inter-processor half of TLB flushes is being dropped.
+pub fn no_remote_flush() -> bool {
+    NO_REMOTE_FLUSH.load(Ordering::Relaxed)
+}
 
 /// A TLB flusher that is aware of which CPUs are needed to be flushed.
 ///
@@ -99,13 +126,20 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
         }
 
         if let Some(ipi_sender) = self.ipi_sender {
-            for cpu in target_cpus.iter() {
-                let mut flush_ops = FLUSH_OPS.get_on_cpu(cpu).lock();
-                flush_ops.push_from(&self.ops_stack);
-            }
+            if no_remote_flush() {
+                // Diagnostic mode: leave the remote CPUs alone and make sure
+                // this one is flushed. The queues are not touched, so no
+                // pending IPI is left for `sync_tlb_flush` to wait on.
+                need_flush_on_self = true;
+            } else {
+                for cpu in target_cpus.iter() {
+                    let mut flush_ops = FLUSH_OPS.get_on_cpu(cpu).lock();
+                    flush_ops.push_from(&self.ops_stack);
+                }
 
-            let pending_ipis = ipi_sender.inter_processor_call(&target_cpus, do_remote_flush);
-            self.pending_ipis.extend(&pending_ipis);
+                let pending_ipis = ipi_sender.inter_processor_call(&target_cpus, do_remote_flush);
+                self.pending_ipis.extend(&pending_ipis);
+            }
         }
 
         // Flush ourselves after sending all IPIs to save some time.

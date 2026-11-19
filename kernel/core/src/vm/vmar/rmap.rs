@@ -104,6 +104,7 @@ impl Rmap {
                     RssType::File,
                     -(cursor_mut.unmap(addr_range.len()) as isize),
                 );
+                crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::UNMAP);
                 cursor_mut.flusher().dispatch_tlb_flush();
                 cursor_mut.flusher().sync_tlb_flush();
             }
@@ -142,6 +143,7 @@ impl Rmap {
                     .vm_space()
                     .cursor_mut(&preempt_guard, &addr_range)
                     .unwrap();
+                crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::FREEZE);
                 loop {
                     let addr = cursor_mut.virt_addr();
                     if addr >= addr_range.end {

@@ -34,6 +34,8 @@ use crate::fs::procfs::sys::kernel::asterinas_reboot_watchdog::AsterinasRebootWa
 #[cfg(target_arch = "riscv64")]
 mod asterinas_reboot_watchdog;
 #[cfg(target_arch = "riscv64")]
+mod asterinas_tlb_flush_stats;
+#[cfg(target_arch = "riscv64")]
 mod asterinas_watchdog_drill;
 mod cap_last_cap;
 mod overflow_gid;
@@ -61,6 +63,12 @@ impl KernelDirOps {
             "asterinas_reboot_watchdog",
             InodeType::File,
             AsterinasRebootWatchdogFileOps::new_inode,
+        ),
+        #[cfg(target_arch = "riscv64")]
+        (
+            "asterinas_tlb_flush_stats",
+            InodeType::File,
+            asterinas_tlb_flush_stats::AsterinasTlbFlushStatsFileOps::new_inode,
         ),
         #[cfg(target_arch = "riscv64")]
         (

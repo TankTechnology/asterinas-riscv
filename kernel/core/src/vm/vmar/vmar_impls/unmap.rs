@@ -97,6 +97,7 @@ impl Vmar {
                 vm_mapping.rss_type(),
                 -(cursor.unmap(intersected_range.len()) as isize),
             );
+            crate::vm::vmar::flush_stats::record(crate::vm::vmar::flush_stats::site::UNMAP);
             cursor.flusher().dispatch_tlb_flush();
             cursor.flusher().sync_tlb_flush();
         }
