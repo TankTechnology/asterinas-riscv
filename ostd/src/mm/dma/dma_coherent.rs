@@ -6,6 +6,7 @@ use core::{fmt::Debug, mem::ManuallyDrop, ops::Range};
 
 use super::util::{
     alloc_kva, alloc_kva_in, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
+    with_dma_flusher,
 };
 #[cfg(target_arch = "riscv64")]
 use crate::mm::kspace::paddr_to_vaddr;
@@ -113,10 +114,12 @@ impl DmaCoherent {
 
             (Inner::Segment(segment), paddr_range)
         } else {
-            let (kva, paddr) = match paddr_range {
-                Some(range) => alloc_kva_in(nframes, is_cache_coherent, range)?,
-                None => alloc_kva(nframes, is_cache_coherent)?,
-            };
+            // Only one mapping here; the uncached view, when asked for, is
+            // created later by `into_uncached` and flushes on its own.
+            let (kva, paddr) = with_dma_flusher(|flusher| match paddr_range {
+                Some(range) => alloc_kva_in(nframes, is_cache_coherent, range, flusher),
+                None => alloc_kva(nframes, is_cache_coherent, flusher),
+            })?;
 
             (Inner::Kva(kva, paddr), paddr..paddr + nframes * PAGE_SIZE)
         };
@@ -146,7 +149,10 @@ impl DmaCoherent {
         #[cfg(target_arch = "riscv64")]
         {
             let mut dma = self;
-            dma.uncached_alias = crate::arch::mm::create_uncached_dma_alias(dma.paddr_range())?;
+            let paddr_range = dma.paddr_range();
+            dma.uncached_alias = with_dma_flusher(|flusher| {
+                crate::arch::mm::create_uncached_dma_alias(paddr_range, flusher)
+            })?;
             Ok(dma)
         }
 
@@ -155,7 +161,6 @@ impl DmaCoherent {
             Ok(self)
         }
     }
-
 
     /// Returns the physical start of the platform uncached alias, if one is active.
     ///

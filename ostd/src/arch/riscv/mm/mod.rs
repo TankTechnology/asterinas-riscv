@@ -20,7 +20,9 @@ use crate::{
             CachePolicy, PageFlags, PageProperty, PageTableFlags, PrivilegedPageFlags as PrivFlags,
         },
         page_table::{PteScalar, PteTrait},
+        tlb::TlbFlusher,
     },
+    task::DisabledPreemptGuard,
 };
 
 mod eic7700_cache;
@@ -77,7 +79,10 @@ pub(crate) fn has_uncached_dram_alias() -> bool {
 /// An existing PBMT_NC mapping already provides that guarantee. On EIC7700
 /// systems without Svpbmt, the cached mapping is cleaned before exposing the
 /// SoC's non-cacheable DRAM alias. Other RISC-V systems fail closed.
-pub(crate) fn create_uncached_dma_alias(physical_range: Range<Paddr>) -> Result<Option<IoMem>> {
+pub(crate) fn create_uncached_dma_alias(
+    physical_range: Range<Paddr>,
+    flusher: &mut TlbFlusher<'_, DisabledPreemptGuard>,
+) -> Result<Option<IoMem>> {
     use eic7700_cache::UncachedDmaPath;
 
     let path = eic7700_cache::select_uncached_dma_path(
@@ -99,7 +104,12 @@ pub(crate) fn create_uncached_dma_alias(physical_range: Range<Paddr>) -> Result<
             // as this mapping, and accesses through this view have no side
             // effects beyond reading or writing those frames.
             Ok(Some(unsafe {
-                IoMem::new(alias_range, PageFlags::RW, CachePolicy::Uncacheable)
+                IoMem::new_with_flusher(
+                    alias_range,
+                    PageFlags::RW,
+                    CachePolicy::Uncacheable,
+                    flusher,
+                )
             }))
         }
     }

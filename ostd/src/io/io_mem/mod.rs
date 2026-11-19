@@ -33,7 +33,7 @@ use crate::{
         tlb::{TlbFlushOp, TlbFlusher},
     },
     prelude::*,
-    task::disable_preempt,
+    task::{DisabledPreemptGuard, disable_preempt},
 };
 
 /// A marker type used for [`IoMem`],
@@ -90,6 +90,35 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
     ///    not cause soundness problems (e.g., they must not corrupt the kernel
     ///    memory).
     pub(crate) unsafe fn new(range: Range<Paddr>, flags: PageFlags, cache: CachePolicy) -> Self {
+        // SAFETY: Upheld by the caller.
+        unsafe { Self::new_inner(range, flags, cache, None) }
+    }
+
+    /// Creates a new `IoMem` whose flush is issued, not dispatched.
+    ///
+    /// The caller shares one [`TlbFlusher`] across several mappings and
+    /// dispatches once at the end. It must dispatch before making the mapping
+    /// visible to other CPUs.
+    ///
+    /// # Safety
+    ///
+    /// The same conditions as [`Self::new`] apply.
+    pub(crate) unsafe fn new_with_flusher(
+        range: Range<Paddr>,
+        flags: PageFlags,
+        cache: CachePolicy,
+        flusher: &mut TlbFlusher<'_, DisabledPreemptGuard>,
+    ) -> Self {
+        // SAFETY: Upheld by the caller.
+        unsafe { Self::new_inner(range, flags, cache, Some(flusher)) }
+    }
+
+    unsafe fn new_inner(
+        range: Range<Paddr>,
+        flags: PageFlags,
+        cache: CachePolicy,
+        flusher: Option<&mut TlbFlusher<'_, DisabledPreemptGuard>>,
+    ) -> Self {
         let first_page_start = range.start.align_down(PAGE_SIZE);
         let last_page_end = range.end.align_up(PAGE_SIZE);
 
@@ -133,11 +162,18 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
             let kva = unsafe { KVirtArea::map_untracked_frames(area_size, 0, frames_range, prop) };
 
             crate::mm::tlb::record_iomem_map_dispatch(kva.is_fresh());
-            let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
-            let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
-            flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
-            flusher.dispatch_tlb_flush();
-            flusher.sync_tlb_flush();
+            match flusher {
+                // The caller has more mappings to make in the same batch; it
+                // waits for the flush before the mapping is used.
+                Some(flusher) => flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range())),
+                None => {
+                    let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
+                    let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
+                    flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
+                    flusher.dispatch_tlb_flush();
+                    flusher.sync_tlb_flush();
+                }
+            }
 
             kva
         };

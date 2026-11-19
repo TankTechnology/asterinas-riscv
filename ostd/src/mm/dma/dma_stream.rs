@@ -4,6 +4,7 @@ use core::{fmt::Debug, marker::PhantomData, mem::ManuallyDrop, ops::Range, ptr::
 
 use super::util::{
     alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
+    with_dma_flusher,
 };
 use crate::{
     arch::{irq, mm::can_sync_dma},
@@ -15,7 +16,9 @@ use crate::{
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
         kspace::kvirt_area::KVirtArea,
         paddr_to_vaddr,
+        tlb::TlbFlusher,
     },
+    task::DisabledPreemptGuard,
 };
 
 /// [`DmaDirection`] limits the data flow direction of [`DmaStream`] and
@@ -105,14 +108,15 @@ pub(super) const fn needs_guaranteed_uncached_view(
 fn create_uncached_alias(
     paddr_range: Range<Paddr>,
     is_cache_coherent: bool,
+    flusher: &mut TlbFlusher<'_, DisabledPreemptGuard>,
 ) -> Result<Option<IoMem>, Error> {
     #[cfg(target_arch = "riscv64")]
     if needs_guaranteed_uncached_view(is_cache_coherent, can_sync_dma()) {
-        return crate::arch::mm::create_uncached_dma_alias(paddr_range);
+        return crate::arch::mm::create_uncached_dma_alias(paddr_range, flusher);
     }
 
     #[cfg(not(target_arch = "riscv64"))]
-    let _ = (paddr_range, is_cache_coherent);
+    let _ = (paddr_range, is_cache_coherent, flusher);
 
     Ok(None)
 }
@@ -161,21 +165,28 @@ impl<D: DmaDirection> DmaStream<D> {
 
         let cvm = cvm_need_private_protection();
 
-        let (inner, paddr_range) = if (can_sync_dma() || is_cache_coherent) && !cvm {
-            let segment: USegment = FrameAllocOptions::new()
-                .zeroed(false)
-                .alloc_segment(nframes)?
-                .into();
-            let paddr_range = segment.paddr_range();
+        // One flush covers both mappings a non-coherent buffer needs: the
+        // cached kernel view and the uncached view of the same frames.
+        let (inner, paddr_range, uncached_alias) = with_dma_flusher(|flusher| {
+            let (inner, paddr_range) = if (can_sync_dma() || is_cache_coherent) && !cvm {
+                let segment: USegment = FrameAllocOptions::new()
+                    .zeroed(false)
+                    .alloc_segment(nframes)?
+                    .into();
+                let paddr_range = segment.paddr_range();
 
-            (Inner::Segment(segment), paddr_range)
-        } else {
-            let (kva, paddr) = alloc_kva(nframes, can_sync_dma() || is_cache_coherent)?;
+                (Inner::Segment(segment), paddr_range)
+            } else {
+                let (kva, paddr) =
+                    alloc_kva(nframes, can_sync_dma() || is_cache_coherent, flusher)?;
 
-            (Inner::Kva(kva, paddr), paddr..paddr + nframes * PAGE_SIZE)
-        };
+                (Inner::Kva(kva, paddr), paddr..paddr + nframes * PAGE_SIZE)
+            };
 
-        let uncached_alias = create_uncached_alias(paddr_range.clone(), is_cache_coherent)?;
+            let uncached_alias =
+                create_uncached_alias(paddr_range.clone(), is_cache_coherent, flusher)?;
+            Ok((inner, paddr_range, uncached_alias))
+        })?;
 
         // SAFETY: The physical address range is untyped DMA memory before `drop`.
         let map_daddr = unsafe { prepare_dma(&paddr_range) };
@@ -203,19 +214,28 @@ impl<D: DmaDirection> DmaStream<D> {
         let cvm = cvm_need_private_protection();
         let size = segment.size();
 
-        let (inner, paddr) = if (can_sync_dma() || is_cache_coherent) && !cvm {
-            let paddr = segment.paddr();
+        // One flush covers both mappings a non-coherent buffer needs.
+        let (inner, paddr, uncached_alias) = with_dma_flusher(|flusher| {
+            let (inner, paddr) = if (can_sync_dma() || is_cache_coherent) && !cvm {
+                let paddr = segment.paddr();
 
-            (Inner::Segment(segment), paddr)
-        } else {
-            let (kva, paddr) = alloc_kva(size / PAGE_SIZE, can_sync_dma() || is_cache_coherent)?;
+                (Inner::Segment(segment), paddr)
+            } else {
+                let (kva, paddr) = alloc_kva(
+                    size / PAGE_SIZE,
+                    can_sync_dma() || is_cache_coherent,
+                    flusher,
+                )?;
 
-            (Inner::Both(kva, paddr, segment), paddr)
-        };
+                (Inner::Both(kva, paddr, segment), paddr)
+            };
+
+            let paddr_range = paddr..paddr + size;
+            let uncached_alias = create_uncached_alias(paddr_range, is_cache_coherent, flusher)?;
+            Ok((inner, paddr, uncached_alias))
+        })?;
 
         let paddr_range = paddr..paddr + size;
-
-        let uncached_alias = create_uncached_alias(paddr_range.clone(), is_cache_coherent)?;
 
         // SAFETY: The physical address range is untyped DMA memory before `drop`.
         let map_daddr = unsafe { prepare_dma(&paddr_range) };

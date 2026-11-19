@@ -14,7 +14,7 @@ use crate::{
         kspace::kvirt_area::KVirtArea,
         tlb::{TlbFlushOp, TlbFlusher},
     },
-    task::disable_preempt,
+    task::{DisabledPreemptGuard, disable_preempt},
 };
 #[cfg(any(debug_assertions, all(target_arch = "x86_64", feature = "cvm_guest")))]
 use crate::{
@@ -119,31 +119,53 @@ const fn dma_cache_policy(is_cache_coherent: bool) -> CachePolicy {
 pub(super) fn alloc_kva(
     nframes: usize,
     is_cache_coherent: bool,
+    flusher: &mut TlbFlusher<'_, DisabledPreemptGuard>,
 ) -> Result<(KVirtArea, Paddr), Error> {
     let segment = Segment::from_unsized(
         FrameAllocOptions::new()
             .zeroed(false)
             .alloc_segment_with(nframes, |_| DmaBufferMeta)?,
     );
-    map_dma_segment(segment, is_cache_coherent)
+    map_dma_segment(segment, is_cache_coherent, flusher)
 }
 
 pub(super) fn alloc_kva_in(
     nframes: usize,
     is_cache_coherent: bool,
     paddr_range: Range<Paddr>,
+    flusher: &mut TlbFlusher<'_, DisabledPreemptGuard>,
 ) -> Result<(KVirtArea, Paddr), Error> {
     let segment = Segment::from_unsized(
         FrameAllocOptions::new()
             .zeroed(false)
             .alloc_segment_with_in(nframes, paddr_range, |_| DmaBufferMeta)?,
     );
-    map_dma_segment(segment, is_cache_coherent)
+    map_dma_segment(segment, is_cache_coherent, flusher)
+}
+
+/// Runs `f` with one flusher shared by every mapping a single DMA object
+/// needs, then dispatches and waits once.
+///
+/// A non-coherent DMA object needs two kernel mappings -- the cached buffer
+/// and the uncached view of the same frames -- and each used to flush every
+/// CPU on its own. One dispatch covers both; the wait still happens before
+/// the object is returned, because the device may start using the buffer as
+/// soon as its address is handed out.
+pub(super) fn with_dma_flusher<R>(
+    f: impl FnOnce(&mut TlbFlusher<'_, DisabledPreemptGuard>) -> Result<R, Error>,
+) -> Result<R, Error> {
+    let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
+    let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
+    let value = f(&mut flusher)?;
+    flusher.dispatch_tlb_flush();
+    flusher.sync_tlb_flush();
+    Ok(value)
 }
 
 fn map_dma_segment(
     segment: Segment<dyn AnyFrameMeta>,
     is_cache_coherent: bool,
+    flusher: &mut TlbFlusher<'_, DisabledPreemptGuard>,
 ) -> Result<(KVirtArea, Paddr), Error> {
     #[cfg_attr(not(target_arch = "x86_64"), expect(unused_labels))]
     let priv_flags = 'priv_flags: {
@@ -168,11 +190,7 @@ fn map_dma_segment(
     );
 
     crate::mm::tlb::record_dma_map_dispatch(kva.is_fresh());
-    let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
-    let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
     flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
-    flusher.dispatch_tlb_flush();
-    flusher.sync_tlb_flush();
 
     Ok((kva, paddr))
 }
