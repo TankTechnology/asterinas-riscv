@@ -509,6 +509,19 @@ impl<'a> CursorMut<'a> {
     ///  - the length is longer than the remaining range of the cursor;
     ///  - the length is not page-aligned.
     pub fn unmap(&mut self, len: usize) -> usize {
+        let num_unmapped = self.unmap_without_dispatch(len);
+        self.flusher.dispatch_tlb_flush();
+        num_unmapped
+    }
+
+    /// Same as [`Self::unmap`], but leaves the flush requests pending.
+    ///
+    /// The caller must dispatch them, once, after the last of a batch of
+    /// unmaps. The caller must also make sure no CPU can reach a removed
+    /// mapping through its TLB before the dispatch: the frames taken out here
+    /// are held until the flush completes, but a caller that never dispatches
+    /// leaks them and leaves stale translations behind.
+    pub fn unmap_without_dispatch(&mut self, len: usize) -> usize {
         let end_va = self.virt_addr() + len;
         let mut num_unmapped: usize = 0;
         loop {
@@ -570,8 +583,6 @@ impl<'a> CursorMut<'a> {
                 }
             }
         }
-
-        self.flusher.dispatch_tlb_flush();
 
         num_unmapped
     }

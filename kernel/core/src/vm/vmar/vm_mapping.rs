@@ -548,23 +548,31 @@ impl VmMapping {
                         cursor.protect_next(PAGE_SIZE, |flags, _cache| {
                             *flags |= new_flags;
                         });
-                        cursor.flusher().issue_tlb_flush(TlbFlushOp::for_range(va));
-                        cursor.flusher().dispatch_tlb_flush();
+                        // Turning an entry that already grants reads into one
+                        // that grants writes is a permission upgrade with the
+                        // frame left in place. A remote CPU that still holds
+                        // the read-only translation does not need invalidating:
+                        // its next write raises the same fault and takes this
+                        // same branch, while its reads stay correct -- they see
+                        // the very frame this upgrade keeps. Only this CPU's
+                        // entry has to be dropped, because it is the one that
+                        // would otherwise fault forever on its cached copy.
+                        TlbFlushOp::for_range(va).perform_on_current();
                     } else {
                         // Perform COW if it is a write access to a private mapping.
                         crate::vm::vmar::flush_stats::record(
                             crate::vm::vmar::flush_stats::site::COW_COPY,
                         );
-                        let new_frame = duplicate_frame(&frame)?;
-                        prop.flags |= new_flags;
-                        cursor.unmap(PAGE_SIZE);
-                        cursor.jump(va.start).unwrap();
-                        cursor.map(new_frame.into(), prop);
-                        // Drop this CPU's translation for the remapped page. The
-                        // remote flush below does not cover the CPU that faults,
-                        // and a cached read-only entry makes the store fault
-                        // forever (the handler keeps "succeeding").
-                        TlbFlushOp::for_range(va).perform_on_current();
+                        // The copy replaces the frame, and a remote CPU that
+                        // still holds the old read-only translation would keep
+                        // reading the old frame forever -- reads never fault,
+                        // so a flush deferred to the next fault would never
+                        // come. The flush cannot be dropped; it can be shared
+                        // with the neighbouring pages, which is what the
+                        // windowed path does.
+                        drop(cursor);
+                        drop(preempt_guard);
+                        return self.handle_cow_window(vm_space, page_aligned_addr);
                         // FIXME: Linux re-classifies the page from `File` to `Anon` in RSS,
                         // when a COW on a file-backed mapping happens.
                         // We currently do not support this re-classification,
@@ -630,6 +638,97 @@ impl VmMapping {
         }
 
         Ok(())
+    }
+
+    /// Copies the read-only pages of one aligned window around a write fault.
+    ///
+    /// A forked private mapping shares its frames read-only, and the first
+    /// write to each of those pages is a copy-on-write fault. Every copy needs
+    /// a remote TLB flush: another CPU that still holds the old read-only
+    /// translation would keep reading the old frame, and because reads do not
+    /// fault, no later fault would ever evict it. The flush is required; one
+    /// flush per page is not. This walks the same window the read path
+    /// prefetches, copies the pages that are already mapped read-only, and
+    /// dispatches a single ranged flush for the window.
+    ///
+    /// Pages that are unmapped, already writable, or the only reference to
+    /// their frame are left alone: the first two need no copy, and the last
+    /// takes the cheaper branch above on its own fault.
+    fn handle_cow_window(&self, vm_space: &VmSpace, page_aligned_addr: Vaddr) -> Result<()> {
+        const WINDOW_PAGES: usize = 16;
+
+        let window_mask = WINDOW_PAGES * PAGE_SIZE - 1;
+        let start = max(page_aligned_addr & !window_mask, self.map_to_addr);
+        let end = min(
+            start + WINDOW_PAGES * PAGE_SIZE,
+            self.map_to_addr + self.map_size.get(),
+        );
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = vm_space.cursor_mut(&preempt_guard, &(start..end))?;
+        let new_flags = PageFlags::W | PageFlags::ACCESSED | PageFlags::DIRTY;
+
+        let mut copied = 0usize;
+        let mut faulting_copied = false;
+        let mut result = Ok(());
+        // The faulting page comes first: it is the one the caller must have
+        // resolved. The neighbours are an opportunistic extension of the same
+        // flush, and a failure there must not turn a resolvable fault into an
+        // error.
+        let mut pages: alloc::vec::Vec<Vaddr> = (start..end).step_by(PAGE_SIZE).collect();
+        if let Some(pos) = pages.iter().position(|addr| *addr == page_aligned_addr) {
+            pages.swap(0, pos);
+        }
+        for addr in pages {
+            if cursor.jump(addr).is_err() {
+                break;
+            }
+            let (va, item) = match cursor.query() {
+                Ok(queried) => queried,
+                Err(err) => {
+                    result = Err(err.into());
+                    break;
+                }
+            };
+            let Some(VmQueriedItem::MappedRam { frame, mut prop }) = item else {
+                continue;
+            };
+            if prop.flags.contains(PageFlags::W) || frame.reference_count() <= 1 {
+                continue;
+            }
+            let new_frame = match duplicate_frame(&frame) {
+                Ok(frame) => frame,
+                Err(err) => {
+                    // A page next to the fault is an opportunistic copy: if it
+                    // cannot be had, the fault itself is what must be reported
+                    // as failed, not the neighbour.
+                    if !faulting_copied {
+                        result = Err(err);
+                    }
+                    break;
+                }
+            };
+            prop.flags |= new_flags;
+            cursor.unmap_without_dispatch(PAGE_SIZE);
+            cursor.jump(va.start).unwrap();
+            cursor.map(new_frame.into(), prop);
+            copied += 1;
+            if addr == page_aligned_addr {
+                faulting_copied = true;
+            }
+        }
+
+        if copied > 0 {
+            cursor.flusher().dispatch_tlb_flush();
+        }
+        cursor.flusher().sync_tlb_flush();
+        // The remote flush does not necessarily cover this CPU, and a cached
+        // read-only entry here would fault forever.
+        TlbFlushOp::for_range(start..end).perform_on_current();
+        drop(cursor);
+        drop(preempt_guard);
+
+        result
     }
 
     fn prepare_page(
