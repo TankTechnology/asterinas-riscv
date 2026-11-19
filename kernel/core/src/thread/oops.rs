@@ -93,6 +93,23 @@ fn panic_handler(info: &core::panic::PanicInfo) -> ! {
 
     #[cfg(target_arch = "riscv64")]
     if crate::boot_reboot::is_armed() {
+        // This branch runs before the message below, so with `panic_reboot`
+        // armed a panic used to reset the board without leaving any trace --
+        // the "silent reset" that made every crash on the Megrez board look
+        // like a hardware fault. Say why, briefly, and then restart.
+        //
+        // The print is best effort on purpose: a panic can happen inside the
+        // console path itself, and a stall here is still bounded by the
+        // hardware watchdog the boot script arms before the kernel starts.
+        match info.location() {
+            Some(location) => ostd::early_println!(
+                "ASTERINAS_PANIC_REBOOT message={} at {}:{}",
+                message,
+                location.file(),
+                location.line()
+            ),
+            None => ostd::early_println!("ASTERINAS_PANIC_REBOOT message={}", message),
+        }
         panic::abort();
     }
 
