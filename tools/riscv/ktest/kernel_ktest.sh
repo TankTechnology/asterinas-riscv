@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
 
-# Run one Asterinas kernel ktest with the repository-local RISC-V OSDK binary.
-# The wrapper deliberately runs from kernel/ and writes QEMU evidence outside
-# target/ so a focused test does not rebuild or overwrite the whole workspace.
+# Run Asterinas kernel ktests with the repository-local RISC-V OSDK binary.
+# The wrapper deliberately reuses one build per run and writes QEMU evidence
+# outside target/ so a focused test does not rebuild or overwrite the whole
+# workspace. Pass `--all` as TEST_FILTER to run every test of the chosen crate.
 set -Eeuo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-    echo "usage: $0 TEST_FILTER [ARTIFACT_DIR]" >&2
+    echo "usage: $0 TEST_FILTER|--all [ARTIFACT_DIR]" >&2
     exit 2
 fi
 
@@ -49,13 +50,19 @@ if command -v qemu-system-riscv64 >/dev/null 2>&1; then
     qemu-system-riscv64 --version | head -n 1 >> "$ARTIFACT_DIR/metadata.txt"
 fi
 
+if [[ $TEST_FILTER == --all ]]; then
+    FILTER_ARGS=()
+else
+    FILTER_ARGS=("$TEST_FILTER")
+fi
+
 set +e
 (
     cd "$KTEST_CRATE_DIR"
     export ASTERINAS_QEMU_LOG_DIR="$ARTIFACT_DIR"
     export OSDK_TARGET_ARCH=${OSDK_TARGET_ARCH:-riscv64}
     export VDSO_LIBRARY_DIR=${VDSO_LIBRARY_DIR:-${REPO_ROOT}/../linux_vdso}
-    "$OSDK_MAIN_BIN" osdk test "$TEST_FILTER" \
+    "$OSDK_MAIN_BIN" osdk test "${FILTER_ARGS[@]}" \
         --target-arch riscv64 --scheme riscv --features riscv_sv39_mode \
         --initramfs "$INITRAMFS"
 ) 2>&1 | tee "$ARTIFACT_DIR/runner.log"
