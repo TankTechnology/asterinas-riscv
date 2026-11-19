@@ -10,7 +10,7 @@
 //! waited on when the caller needs completion.
 
 use alloc::{boxed::Box, collections::VecDeque};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use spin::Once;
 
@@ -80,6 +80,7 @@ impl PendingIpis {
             "waiting for remote inter-processor calls with IRQs disabled"
         );
 
+        IPI_WAITS.fetch_add(1, Ordering::Relaxed);
         for cpu_id in self.cpus.iter() {
             // Wait until there are no pending IPIs on the target CPU.
             //
@@ -101,6 +102,27 @@ pub(crate) struct IpiSender {
     hw_cpu_ids: Box<[HwCpuId]>,
 }
 
+/// Inter-processor calls sent since boot (diagnostics).
+static IPI_SENT: AtomicU32 = AtomicU32::new(0);
+/// Completed IPI waits since boot (diagnostics).
+static IPI_WAITS: AtomicU32 = AtomicU32::new(0);
+
+/// Returns `(received on this CPU, sent since boot, waits since boot)`.
+///
+/// Diagnostics for a CPU that stops doing both: if the receive count stops
+/// while the send count keeps growing, the stuck CPU is the target of the
+/// calls; the reverse means it is the sender.
+pub fn ipi_counters() -> (u32, u32, u32) {
+    let received = IPI_RECEIVED
+        .get_on_cpu(crate::cpu::CpuId::current_racy())
+        .load(Ordering::Relaxed);
+    (
+        received,
+        IPI_SENT.load(Ordering::Relaxed),
+        IPI_WAITS.load(Ordering::Relaxed),
+    )
+}
+
 /// The [`IpiSender`] singleton.
 pub(crate) static IPI_SENDER: Once<IpiSender> = Once::new();
 /// Returns the hardware CPU ID mapping used for inter-processor communication.
@@ -110,7 +132,6 @@ pub(crate) fn hw_cpu_id_mapping() -> Option<&'static [HwCpuId]> {
     IPI_SENDER.get().map(|sender| &*sender.hw_cpu_ids)
 }
 
-
 impl IpiSender {
     /// Executes a function on other processors.
     ///
@@ -118,6 +139,7 @@ impl IpiSender {
     /// method is to enable callers to check whether [`IPI_SENDER`] has been
     /// initialized.
     pub(crate) fn inter_processor_call(&self, targets: &CpuSet, call_fn: fn()) -> PendingIpis {
+        IPI_SENT.fetch_add(1, Ordering::Relaxed);
         let irq_guard = irq::disable_local();
         let this_cpu_id = irq_guard.current_cpu();
 
@@ -153,6 +175,8 @@ impl IpiSender {
 }
 
 cpu_local! {
+    /// How many inter-processor calls this CPU has handled (diagnostics).
+    static IPI_RECEIVED: AtomicU32 = AtomicU32::new(0);
     static CALL_QUEUES: SpinLock<VecDeque<fn()>> = SpinLock::new(VecDeque::new());
     static HAS_PENDING_IPIS: AtomicBool = AtomicBool::new(false);
     static SYNCHRONOUS_CALL_ACK: AtomicBool = AtomicBool::new(true);
@@ -167,6 +191,13 @@ cpu_local! {
 pub(crate) unsafe fn do_inter_processor_call(_trapframe: &TrapFrame) {
     // No races because we are in IRQs.
     let this_cpu_id = crate::cpu::CpuId::current_racy();
+
+    // Counting here is safe; printing here is not, because a thread that was
+    // interrupted while writing to the console could hold the lock this CPU
+    // would need. The watchdog heartbeat reads these counters instead.
+    IPI_RECEIVED
+        .get_on_cpu(this_cpu_id)
+        .fetch_add(1, Ordering::Relaxed);
 
     // The lock is held only long enough to take one callback out of the
     // queue. The debug line and the callback itself run with it released:

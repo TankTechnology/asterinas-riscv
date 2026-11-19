@@ -46,7 +46,7 @@ const COMPONENT_TYPE: u32 = 0x4457_0120;
 const KICK_PERIOD: Duration = Duration::from_secs(1);
 
 /// How often the heartbeat says it is still alive (once every five kicks).
-const HEARTBEAT_REPORT_EVERY: u32 = 5;
+const HEARTBEAT_REPORT_EVERY: u32 = 1;
 
 static REQUESTED: Once<String> = Once::new();
 define_kv_param!("asterinas.hardware_watchdog_handoff", REQUESTED);
@@ -177,7 +177,15 @@ pub(super) fn handoff_if_requested() {
         }
         let kicks = KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         if kicks % HEARTBEAT_REPORT_EVERY == 0 {
-            ostd::early_println!("ASTERINAS_WATCHDOG_HEARTBEAT kicks={}", kicks);
+            let (received, sent, waits) = ostd::smp::ipi_counters();
+            ostd::early_println!(
+                "ASTERINAS_WATCHDOG_HEARTBEAT kicks={} cpu={} ipi_rx={} ipi_tx={} ipi_wait={}",
+                kicks,
+                u32::from(ostd::cpu::CpuId::current_racy()),
+                received,
+                sent,
+                waits
+            );
         }
         // A failed write is intentionally ignored: if this MMIO path becomes
         // unavailable the hardware watchdog remains the fail-safe. Say it once,
