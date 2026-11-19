@@ -49,23 +49,21 @@ impl ProcFileOps for AsterinasTlbFlushStatsFileOps {
             printer,
             "ipi_rx={} ipi_tx={} ipi_wait={} tx_flush={} tx_preempt={} tx_memb={} tx_other={} \
 rx_flush={} rx_preempt={} rx_memb={} rx_other={}",
-            received,
-            sent,
-            waits,
-            tx[0],
-            tx[1],
-            tx[2],
-            tx[3],
-            rx[0],
-            rx[1],
-            rx[2],
-            rx[3]
+            received, sent, waits, tx[0], tx[1], tx[2], tx[3], rx[0], rx[1], rx[2], rx[3]
         )?;
         writeln!(
             printer,
             "flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} \
-fork={}",
-            sites[0], sites[1], sites[2], sites[3], sites[4], sites[5], sites[6], sites[7]
+fork={} cow_copy={}",
+            sites[0],
+            sites[1],
+            sites[2],
+            sites[3],
+            sites[4],
+            sites[5],
+            sites[6],
+            sites[7],
+            sites[8]
         )?;
         Ok(printer.bytes_written())
     }

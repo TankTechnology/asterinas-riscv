@@ -183,7 +183,8 @@ pub(super) fn handoff_if_requested() {
             ostd::early_println!(
                 "ASTERINAS_WATCHDOG_HEARTBEAT kicks={} cpu={} ipi_rx={} ipi_tx={} ipi_wait={} \
 tx_flush={} tx_preempt={} tx_memb={} tx_other={} rx_flush={} rx_preempt={} rx_memb={} rx_other={} \
-flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} fork={}",
+flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} fork={} \
+cow_copy={}",
                 kicks,
                 u32::from(ostd::cpu::CpuId::current_racy()),
                 received,
@@ -204,7 +205,8 @@ flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} 
                 sites[4],
                 sites[5],
                 sites[6],
-                sites[7]
+                sites[7],
+                sites[8]
             );
         }
         // A failed write is intentionally ignored: if this MMIO path becomes

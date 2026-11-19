@@ -552,6 +552,9 @@ impl VmMapping {
                         cursor.flusher().dispatch_tlb_flush();
                     } else {
                         // Perform COW if it is a write access to a private mapping.
+                        crate::vm::vmar::flush_stats::record(
+                            crate::vm::vmar::flush_stats::site::COW_COPY,
+                        );
                         let new_frame = duplicate_frame(&frame)?;
                         prop.flags |= new_flags;
                         cursor.unmap(PAGE_SIZE);

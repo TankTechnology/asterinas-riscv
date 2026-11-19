@@ -40,9 +40,16 @@ pub(crate) mod site {
     pub(crate) const REMAP: usize = 6;
     /// Forking: the child's address space gets a flush-all.
     pub(crate) const FORK: usize = 7;
+    /// Copy-on-write of one page (`duplicate_frame`).
+    ///
+    /// This site has no explicit `dispatch_tlb_flush` in the kernel: the
+    /// per-page `cursor.unmap(PAGE_SIZE)` it calls dispatches internally, in
+    /// `ostd`'s `VmSpace::Cursor::unmap`. It counts faults, and each one costs
+    /// one remote flush per CPU that maps the old frame.
+    pub(crate) const COW_COPY: usize = 8;
 }
 
-pub(crate) const SITE_NAMES: [&str; 8] = [
+pub(crate) const SITE_NAMES: [&str; 9] = [
     "ad",
     "cow_shared",
     "fresh",
@@ -51,9 +58,11 @@ pub(crate) const SITE_NAMES: [&str; 8] = [
     "freeze",
     "remap",
     "fork",
+    "cow_copy",
 ];
 
 static COUNTS: [AtomicU32; SITE_NAMES.len()] = [
+    AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
     AtomicU32::new(0),
