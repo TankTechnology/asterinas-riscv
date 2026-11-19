@@ -54,6 +54,16 @@ aster_cmdline::define_flag_param!("asterinas.ipi_stress_broadcast", BROADCAST);
 static FLUSH_WORK: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.ipi_stress_flush", FLUSH_WORK);
 
+/// `asterinas.ipi_stress_cycle`: map a page, invalidate it remotely, unmap.
+///
+/// The pure-sfence experiment showed that invalidating pages that are not
+/// being modified does not trouble the board. This mode performs the whole
+/// sequence a real DMA mapping does, so the page table changes between the
+/// invalidations -- the last difference between the stress and the failing
+/// workload.
+static CYCLE: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.ipi_stress_cycle", CYCLE);
+
 /// `asterinas.ipi_stress_delay=<seconds>`: wait before injecting.
 ///
 /// The worker pins a hart while it paces, so injecting from the first second
@@ -94,11 +104,12 @@ pub(crate) fn spawn_if_requested() {
     }
     ostd::early_println!(
         "ASTERINAS_IPI_STRESS status=armed rate_per_second={} dry_run={} broadcast={} \
-flush_work={} delay_seconds={} warning=diagnostic-only",
+flush_work={} cycle={} delay_seconds={} warning=diagnostic-only",
         rate,
         u8::from(DRY_RUN.load(Ordering::Relaxed)),
         u8::from(BROADCAST.load(Ordering::Relaxed)),
         u8::from(FLUSH_WORK.load(Ordering::Relaxed)),
+        u8::from(CYCLE.load(Ordering::Relaxed)),
         DELAY_SECONDS.load(Ordering::Relaxed)
     );
     crate::thread::kernel_thread::ThreadOptions::new(worker).spawn();
@@ -120,7 +131,9 @@ fn worker() {
     }
     loop {
         if !dry_run {
-            let sent = if flush_work {
+            let sent = if CYCLE.load(Ordering::Relaxed) {
+                ostd::smp::stress_shootdown_cycle()
+            } else if flush_work {
                 ostd::smp::send_flush_ipi_to_others()
             } else {
                 ostd::smp::send_bare_ipi_to_others(broadcast)

@@ -135,6 +135,58 @@ pub fn send_flush_ipi_to_others() -> usize {
     count
 }
 
+/// One full shootdown cycle, for a load experiment.
+///
+/// Maps a fresh kernel page, invalidates it on every CPU and drops the
+/// mapping -- the same sequence a DMA mapping performs. The pure-sfence
+/// experiment showed that invalidating a page that is not being modified
+/// does not trouble the board, so this adds the one remaining ingredient:
+/// the page table itself changes between the invalidations.
+///
+/// Returns how many CPUs the invalidation reached.
+pub fn stress_shootdown_cycle() -> usize {
+    use crate::{
+        cpu::AtomicCpuSet,
+        mm::{
+            CachePolicy, FrameAllocOptions, PAGE_SIZE, PageFlags, PageProperty,
+            PrivilegedPageFlags, kspace::kvirt_area::KVirtArea, tlb::TlbFlusher,
+        },
+    };
+
+    let Ok(frame) = FrameAllocOptions::new().zeroed(false).alloc_frame() else {
+        return 0;
+    };
+    let kva = KVirtArea::map_frames(
+        PAGE_SIZE,
+        0,
+        core::iter::once(frame),
+        PageProperty {
+            flags: PageFlags::RW,
+            cache: CachePolicy::Writeback,
+            priv_flags: PrivilegedPageFlags::empty(),
+        },
+    );
+
+    let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
+    let mut flusher = TlbFlusher::new(&target_cpus, crate::task::disable_preempt());
+    let this_cpu = crate::cpu::CpuId::current_racy();
+    let mut targets = 0;
+    for cpu in crate::cpu::all_cpus() {
+        if cpu != this_cpu {
+            targets += 1;
+        }
+    }
+    flusher.issue_tlb_flush(crate::mm::tlb::TlbFlushOp::for_range(kva.range()));
+    flusher.dispatch_tlb_flush();
+    flusher.sync_tlb_flush();
+    // Dropping the area unmaps the page without flushing, exactly like the
+    // virtual-area allocator the real path uses; the next cycle's flush covers
+    // the reuse.
+    drop(kva);
+
+    targets
+}
+
 /// Pending remote inter-processor calls.
 pub struct PendingIpis {
     cpus: CpuSet,
