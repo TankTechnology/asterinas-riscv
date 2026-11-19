@@ -10,7 +10,7 @@
 //! waited on when the caller needs completion.
 
 use alloc::{boxed::Box, collections::VecDeque};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use spin::Once;
 
@@ -185,6 +185,75 @@ pub fn stress_shootdown_cycle() -> usize {
     drop(kva);
 
     targets
+}
+
+/// The range a touch cycle is currently exposing to the other CPUs.
+static STRESS_TOUCH_VA: AtomicUsize = AtomicUsize::new(0);
+
+/// Invalidates, touches and invalidates again, on the receiving CPU.
+///
+/// The first invalidation drops anything left over from the previous cycle so
+/// the read cannot fault; the read then installs a valid translation, and the
+/// second invalidation throws away one that is actually in use -- which is the
+/// state a shared DMA buffer is in on a board whose interrupts move between
+/// harts.
+fn stress_touch_flush_callback() {
+    let va = STRESS_TOUCH_VA.load(Ordering::Acquire);
+    if va == 0 {
+        return;
+    }
+    let page = va & !(crate::mm::PAGE_SIZE - 1);
+    crate::mm::tlb::TlbFlushOp::for_range(page..page + crate::mm::PAGE_SIZE).perform_on_current();
+    // SAFETY: the sender keeps the mapping installed until every target has
+    // finished this callback, so the address is valid kernel memory here.
+    unsafe { core::ptr::read_volatile(page as *const u64) };
+    crate::mm::tlb::TlbFlushOp::for_range(page..page + crate::mm::PAGE_SIZE).perform_on_current();
+}
+
+/// One shootdown cycle in which every target holds a valid translation for
+/// the page it is told to invalidate.
+///
+/// Returns how many CPUs were targeted.
+pub fn stress_touch_flush_cycle() -> usize {
+    use crate::mm::{
+        CachePolicy, FrameAllocOptions, PAGE_SIZE, PageFlags, PageProperty, PrivilegedPageFlags,
+        kspace::kvirt_area::KVirtArea,
+    };
+
+    let Ok(frame) = FrameAllocOptions::new().zeroed(false).alloc_frame() else {
+        return 0;
+    };
+    let kva = KVirtArea::map_frames(
+        PAGE_SIZE,
+        0,
+        core::iter::once(frame),
+        PageProperty {
+            flags: PageFlags::RW,
+            cache: CachePolicy::Writeback,
+            priv_flags: PrivilegedPageFlags::empty(),
+        },
+    );
+    STRESS_TOUCH_VA.store(kva.range().start, Ordering::Release);
+
+    let this_cpu = crate::cpu::CpuId::current_racy();
+    let mut targets = CpuSet::new_empty();
+    let mut count = 0;
+    for cpu in crate::cpu::all_cpus() {
+        if cpu != this_cpu {
+            targets.add(cpu);
+            count += 1;
+        }
+    }
+    if count > 0 {
+        let pending = inter_processor_call(&targets, stress_touch_flush_callback);
+        pending.wait();
+    }
+    STRESS_TOUCH_VA.store(0, Ordering::Release);
+    // Unmapped without flushing, like the virtual-area allocator; the next
+    // cycle's invalidation covers the reuse.
+    drop(kva);
+
+    count
 }
 
 /// Pending remote inter-processor calls.

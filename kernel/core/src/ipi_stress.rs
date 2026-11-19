@@ -64,6 +64,16 @@ aster_cmdline::define_flag_param!("asterinas.ipi_stress_flush", FLUSH_WORK);
 static CYCLE: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.ipi_stress_cycle", CYCLE);
 
+/// `asterinas.ipi_stress_touch`: let every target hold a valid translation
+/// before invalidating it.
+///
+/// A shared DMA buffer on a board whose interrupts move between harts is
+/// usually resident in more than one TLB when it is unmapped. The plain cycle
+/// invalidates ranges no target has ever translated, which the hardware can
+/// satisfy without doing anything.
+static TOUCH: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.ipi_stress_touch", TOUCH);
+
 /// `asterinas.ipi_stress_delay=<seconds>`: wait before injecting.
 ///
 /// The worker pins a hart while it paces, so injecting from the first second
@@ -104,12 +114,13 @@ pub(crate) fn spawn_if_requested() {
     }
     ostd::early_println!(
         "ASTERINAS_IPI_STRESS status=armed rate_per_second={} dry_run={} broadcast={} \
-flush_work={} cycle={} delay_seconds={} warning=diagnostic-only",
+flush_work={} cycle={} touch={} delay_seconds={} warning=diagnostic-only",
         rate,
         u8::from(DRY_RUN.load(Ordering::Relaxed)),
         u8::from(BROADCAST.load(Ordering::Relaxed)),
         u8::from(FLUSH_WORK.load(Ordering::Relaxed)),
         u8::from(CYCLE.load(Ordering::Relaxed)),
+        u8::from(TOUCH.load(Ordering::Relaxed)),
         DELAY_SECONDS.load(Ordering::Relaxed)
     );
     crate::thread::kernel_thread::ThreadOptions::new(worker).spawn();
@@ -131,7 +142,9 @@ fn worker() {
     }
     loop {
         if !dry_run {
-            let sent = if CYCLE.load(Ordering::Relaxed) {
+            let sent = if TOUCH.load(Ordering::Relaxed) {
+                ostd::smp::stress_touch_flush_cycle()
+            } else if CYCLE.load(Ordering::Relaxed) {
                 ostd::smp::stress_shootdown_cycle()
             } else if flush_work {
                 ostd::smp::send_flush_ipi_to_others()
