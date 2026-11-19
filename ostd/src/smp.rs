@@ -87,6 +87,54 @@ pub fn send_bare_ipi_to_others(one_call: bool) -> usize {
     num_hw_cpu_ids
 }
 
+/// Flushes one kernel page on the receiving CPU, for a load experiment.
+///
+/// The real flush interrupt does page-table maintenance on the target:
+/// it invalidates the translations the sender just changed. The bare
+/// interrupt experiment showed that neither the machine-mode send nor the
+/// interrupt itself troubles the board, so this isolates the part that
+/// remains -- the `sfence.vma` the target executes.
+fn stress_flush_callback() {
+    use core::sync::atomic::AtomicU64;
+
+    static DUMMY: AtomicU64 = AtomicU64::new(0);
+
+    let addr = &DUMMY as *const AtomicU64 as usize;
+    let page = addr & !(crate::mm::PAGE_SIZE - 1);
+    crate::mm::tlb::TlbFlushOp::for_range(page..page + crate::mm::PAGE_SIZE).perform_on_current();
+}
+
+/// Sends a flush-performing interrupt to every other CPU, for a load
+/// experiment.
+///
+/// Unlike [`send_bare_ipi_to_others`], the target runs the same kind of
+/// `sfence.vma` a real flush interrupt does. Returns how many CPUs were
+/// targeted.
+pub fn send_flush_ipi_to_others() -> usize {
+    const MAX_TARGETS: usize = 64;
+    let Some(mapping) = hw_cpu_id_mapping() else {
+        return 0;
+    };
+    let this_cpu = crate::cpu::CpuId::current_racy().as_usize();
+    let mut targets = CpuSet::new_empty();
+    let mut count = 0;
+    for (cpu, _) in mapping.iter().enumerate() {
+        if cpu == this_cpu || count >= MAX_TARGETS {
+            continue;
+        }
+        targets.add(
+            // SAFETY: the index is within the CPU range.
+            unsafe { crate::cpu::CpuId::new_unchecked(cpu as u32) },
+        );
+        count += 1;
+    }
+    if count == 0 {
+        return 0;
+    }
+    let _ = inter_processor_call(&targets, stress_flush_callback);
+    count
+}
+
 /// Pending remote inter-processor calls.
 pub struct PendingIpis {
     cpus: CpuSet,

@@ -45,6 +45,27 @@ aster_cmdline::define_flag_param!("asterinas.ipi_stress_dry", DRY_RUN);
 static BROADCAST: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.ipi_stress_broadcast", BROADCAST);
 
+/// `asterinas.ipi_stress_flush`: make the target run a real `sfence.vma`.
+///
+/// The bare interrupt experiment showed that neither the machine-mode send
+/// nor the interrupt delivery troubles the board. This mode asks the target
+/// to do the page-table maintenance a real flush interrupt does, which is the
+/// remaining difference between the stress and the failing workload.
+static FLUSH_WORK: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.ipi_stress_flush", FLUSH_WORK);
+
+/// `asterinas.ipi_stress_delay=<seconds>`: wait before injecting.
+///
+/// The worker pins a hart while it paces, so injecting from the first second
+/// slows boot enough that the desktop never comes up -- and a stress result
+/// measured without a desktop is not the workload the board fails under.
+/// Delaying the injection lets the system settle first; the worker yields
+/// while it waits instead of spinning.
+static DELAY_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+static REQUESTED_DELAY: Once<String> = Once::new();
+define_kv_param!("asterinas.ipi_stress_delay", REQUESTED_DELAY);
+
 static RATE: AtomicU64 = AtomicU64::new(0);
 static SENT: AtomicU64 = AtomicU64::new(0);
 
@@ -65,12 +86,20 @@ pub(crate) fn spawn_if_requested() {
         return;
     }
     RATE.store(rate, Ordering::Relaxed);
+    if let Some(delay) = REQUESTED_DELAY
+        .get()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        DELAY_SECONDS.store(delay, Ordering::Relaxed);
+    }
     ostd::early_println!(
         "ASTERINAS_IPI_STRESS status=armed rate_per_second={} dry_run={} broadcast={} \
-warning=diagnostic-only",
+flush_work={} delay_seconds={} warning=diagnostic-only",
         rate,
         u8::from(DRY_RUN.load(Ordering::Relaxed)),
-        u8::from(BROADCAST.load(Ordering::Relaxed))
+        u8::from(BROADCAST.load(Ordering::Relaxed)),
+        u8::from(FLUSH_WORK.load(Ordering::Relaxed)),
+        DELAY_SECONDS.load(Ordering::Relaxed)
     );
     crate::thread::kernel_thread::ThreadOptions::new(worker).spawn();
 }
@@ -84,9 +113,18 @@ fn worker() {
     let mut reported = 0u64;
     let dry_run = DRY_RUN.load(Ordering::Relaxed);
     let broadcast = BROADCAST.load(Ordering::Relaxed);
+    let flush_work = FLUSH_WORK.load(Ordering::Relaxed);
+    let delay = DELAY_SECONDS.load(Ordering::Relaxed);
+    while ostd::timer::Jiffies::elapsed().as_duration().as_secs() < delay {
+        crate::thread::Thread::yield_now();
+    }
     loop {
         if !dry_run {
-            let sent = ostd::smp::send_bare_ipi_to_others(broadcast);
+            let sent = if flush_work {
+                ostd::smp::send_flush_ipi_to_others()
+            } else {
+                ostd::smp::send_bare_ipi_to_others(broadcast)
+            };
             SENT.fetch_add(sent as u64, Ordering::Relaxed);
         }
 
