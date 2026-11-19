@@ -55,6 +55,14 @@ pub fn inject_restart_handler(handler: fn(ExitCode)) {
 /// This function will not return. If the restart mechanism fails, this function will halt all CPUs
 /// on the machine.
 pub fn restart(code: ExitCode) -> ! {
+    crate::early_println!(
+        "ASTERINAS_RESET_TRACE path=restart handler={}",
+        if RESTART_HANDLER.get().is_some() {
+            "installed"
+        } else {
+            "arch"
+        }
+    );
     if let Some(handler) = RESTART_HANDLER.get() {
         (handler)(code);
     } else {
@@ -71,6 +79,14 @@ pub fn restart(code: ExitCode) -> ! {
 /// restart handler once. If the handler is missing or returns, the current CPU disables local
 /// interrupts and halts forever.
 pub fn emergency_restart(code: ExitCode) -> ! {
+    crate::early_println!(
+        "ASTERINAS_RESET_TRACE path=emergency_restart handler={}",
+        if RESTART_HANDLER.get().is_some() {
+            "installed"
+        } else {
+            "none"
+        }
+    );
     if let Some(handler_fn) = RESTART_HANDLER.get() {
         handler_fn(code);
     }

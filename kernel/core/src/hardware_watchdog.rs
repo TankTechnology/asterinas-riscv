@@ -54,6 +54,8 @@ define_kv_param!("asterinas.hardware_watchdog_handoff", REQUESTED);
 /// no reset extension (or the call fails), the un-fed watchdog is what still
 /// brings the board back: it is the only layer left when the kernel cannot
 /// complete a software reset.
+static KICK_FAILED_REPORTED: AtomicBool = AtomicBool::new(false);
+
 static KICKING: AtomicBool = AtomicBool::new(true);
 
 /// Stops feeding the hardware watchdog for the rest of this boot.
@@ -165,8 +167,15 @@ pub(super) fn handoff_if_requested() {
             return;
         }
         // A failed write is intentionally ignored: if this MMIO path becomes
-        // unavailable the hardware watchdog remains the fail-safe.
-        let _ = registers.write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE);
+        // unavailable the hardware watchdog remains the fail-safe. Say it once,
+        // so a board that resets itself leaves a trace of the last kick.
+        if registers
+            .write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE)
+            .is_err()
+            && !KICK_FAILED_REPORTED.swap(true, Ordering::Relaxed)
+        {
+            ostd::early_println!("ASTERINAS_WATCHDOG_KICK status=failed");
+        }
         timer::request_interrupt_after(KICK_PERIOD);
     };
     timer::register_high_resolution_callback_on_cpu(heartbeat);

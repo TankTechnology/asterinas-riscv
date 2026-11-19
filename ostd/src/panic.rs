@@ -81,6 +81,10 @@ pub fn inject_fatal_abort_restart_policy(policy_fn: fn() -> bool) -> bool {
 /// If the installed fatal-abort policy requests a restart, this function uses the emergency
 /// restart path. Otherwise it preserves the existing poweroff behavior.
 pub fn abort() -> ! {
+    crate::early_println!(
+        "ASTERINAS_RESET_TRACE path=panic_abort restart_policy={}",
+        FATAL_ABORT_RESTART_POLICY.requests_restart()
+    );
     if FATAL_ABORT_RESTART_POLICY.requests_restart() {
         power::emergency_restart(ExitCode::Failure);
     }

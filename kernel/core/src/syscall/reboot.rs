@@ -57,6 +57,11 @@ pub(super) fn sys_reboot(
     ))?;
 
     let cmd = RebootCmd::try_from(op)?;
+    ostd::early_println!(
+        "ASTERINAS_RESET_REQUEST source=sys_reboot pid={} cmd={:?}",
+        current!().pid(),
+        cmd
+    );
 
     // Deliberately no sync here, matching Linux: `reboot(2)` resets without
     // flushing, and every caller that wants its data persisted runs `sync(2)`
