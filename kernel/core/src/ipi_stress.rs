@@ -89,6 +89,19 @@ define_kv_param!("asterinas.ipi_stress_delay", REQUESTED_DELAY);
 static RATE: AtomicU64 = AtomicU64::new(0);
 static SENT: AtomicU64 = AtomicU64::new(0);
 
+/// `asterinas.ipi_stress_workers=<n>`: how many senders inject at once.
+///
+/// The single-sender stress proved that a high rate of interrupts, sends or
+/// real invalidations, leaves the board running. The real workload has
+/// several harts sending at each other at the same time, and nothing has
+/// tested that: concurrent senders can behave differently in firmware, where
+/// every send is a machine-mode entry that may arrive while another hart is
+/// already in machine mode.
+static WORKERS: AtomicU64 = AtomicU64::new(1);
+
+static REQUESTED_WORKERS: Once<String> = Once::new();
+define_kv_param!("asterinas.ipi_stress_workers", REQUESTED_WORKERS);
+
 /// Returns how many bare interrupts the stress worker has sent.
 pub(crate) fn sent() -> u64 {
     SENT.load(Ordering::Relaxed)
@@ -106,6 +119,12 @@ pub(crate) fn spawn_if_requested() {
         return;
     }
     RATE.store(rate, Ordering::Relaxed);
+    let workers = REQUESTED_WORKERS
+        .get()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 64);
+    WORKERS.store(workers, Ordering::Relaxed);
     if let Some(delay) = REQUESTED_DELAY
         .get()
         .and_then(|value| value.trim().parse::<u64>().ok())
@@ -113,9 +132,10 @@ pub(crate) fn spawn_if_requested() {
         DELAY_SECONDS.store(delay, Ordering::Relaxed);
     }
     ostd::early_println!(
-        "ASTERINAS_IPI_STRESS status=armed rate_per_second={} dry_run={} broadcast={} \
+        "ASTERINAS_IPI_STRESS status=armed rate_per_second={} workers={} dry_run={} broadcast={} \
 flush_work={} cycle={} touch={} delay_seconds={} warning=diagnostic-only",
         rate,
+        workers,
         u8::from(DRY_RUN.load(Ordering::Relaxed)),
         u8::from(BROADCAST.load(Ordering::Relaxed)),
         u8::from(FLUSH_WORK.load(Ordering::Relaxed)),
@@ -123,11 +143,14 @@ flush_work={} cycle={} touch={} delay_seconds={} warning=diagnostic-only",
         u8::from(TOUCH.load(Ordering::Relaxed)),
         DELAY_SECONDS.load(Ordering::Relaxed)
     );
-    crate::thread::kernel_thread::ThreadOptions::new(worker).spawn();
+    for _ in 0..workers {
+        crate::thread::kernel_thread::ThreadOptions::new(worker).spawn();
+    }
 }
 
 fn worker() {
-    let rate = RATE.load(Ordering::Relaxed).max(1);
+    let workers = WORKERS.load(Ordering::Relaxed).max(1);
+    let rate = (RATE.load(Ordering::Relaxed) / workers).max(1);
     let frequency = ostd::arch::tsc_freq().max(1);
     let interval = (frequency / rate).max(1);
     let mut next = ostd::arch::read_tsc();
