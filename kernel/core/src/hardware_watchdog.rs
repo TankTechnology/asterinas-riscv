@@ -149,6 +149,15 @@ pub(super) fn handoff_if_requested() {
         let _ = registers.write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE);
         let _ = registers.write_once(CONTROL_OFFSET, &CONTROL_ARM_WITH_RESET);
         ostd::early_println!("ASTERINAS_HARDWARE_WATCHDOG_HANDOFF status=armed-by-kernel");
+    } else {
+        // U-Boot armed the block itself, and the boot script arms it *before*
+        // it loads anything: PHY negotiation, DHCP and a multi-megabyte kernel
+        // read all come out of the same window, so the counter can be close to
+        // expiring by the time this code runs. Widen TOP to the maximum and
+        // restart the counter now; the periodic kick below would otherwise not
+        // land for another KICK_PERIOD.
+        let _ = registers.write_once(TOP_OFFSET, &TOP_MAX);
+        let _ = registers.write_once(COUNTER_RESTART_OFFSET, &COUNTER_RESTART_VALUE);
     }
 
     let heartbeat = move || {
