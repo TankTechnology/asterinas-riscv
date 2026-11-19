@@ -72,11 +72,14 @@ impl Vmar {
         let inner = self.inner.read();
         let mut rss_delta = RssDelta::new(self);
 
+        let start_ticks = ostd::arch::read_tsc();
+        let mut touched = 0u32;
         let mut last_mapping_end = range.start;
         for vm_mapping in inner.vm_mappings.find(&range) {
             if !vm_mapping.can_expand() {
                 return_errno_with_message!(Errno::EINVAL, "device mappings cannot be discarded");
             }
+            touched += 1;
 
             // The range may contain pages that are not mapped. According to Linux behavior, this
             // is not a fault. However, an `ENOMEM` should be reported at the end.
@@ -101,6 +104,13 @@ impl Vmar {
             cursor.flusher().dispatch_tlb_flush();
             cursor.flusher().sync_tlb_flush();
         }
+
+        crate::vm::vmar::flush_stats::record_munmap_shape(
+            touched,
+            crate::vm::vmar::flush_stats::tsc_micros(
+                ostd::arch::read_tsc().saturating_sub(start_ticks),
+            ),
+        );
 
         if last_mapping_end < range.end {
             return_errno_with_message!(

@@ -510,6 +510,7 @@ impl<'a> CursorMut<'a> {
     ///  - the length is not page-aligned.
     pub fn unmap(&mut self, len: usize) -> usize {
         let num_unmapped = self.unmap_without_dispatch(len);
+        crate::mm::tlb::record_cursor_unmap_dispatch();
         self.flusher.dispatch_tlb_flush();
         num_unmapped
     }

@@ -170,6 +170,7 @@ fn map_dma_segment(
     let target_cpus = AtomicCpuSet::new(CpuSet::new_full());
     let mut flusher = TlbFlusher::new(&target_cpus, disable_preempt());
     flusher.issue_tlb_flush(TlbFlushOp::for_range(kva.range()));
+    crate::mm::tlb::record_dma_map_dispatch();
     flusher.dispatch_tlb_flush();
     flusher.sync_tlb_flush();
 

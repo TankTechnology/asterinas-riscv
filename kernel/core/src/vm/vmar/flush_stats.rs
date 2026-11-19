@@ -88,6 +88,74 @@ pub(crate) fn snapshot() -> [u32; SITE_NAMES.len()] {
     counts
 }
 
+/// The shape of one whole-range operation (`munmap`, `mprotect`).
+///
+/// A range operation walks the mappings it intersects and, today, flushes once
+/// per mapping. Batching those flushes into one only pays when an operation
+/// covers several mappings, so the decision needs the distribution: this is
+/// how many mappings an operation touched, and how long it held the page-table
+/// subtree lock while doing so.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RangeOpShape {
+    pub calls: u32,
+    pub mappings: u32,
+    pub max_mappings: u32,
+    /// Longest single operation, in microseconds. A long hold is what makes a
+    /// whole-range batch unacceptable: it would keep the page-table subtree
+    /// locked across the entire loop.
+    pub max_micros: u32,
+}
+
+static MUNMAP_SHAPE: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+static MPROTECT_SHAPE: [AtomicU32; 4] = [
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+    AtomicU32::new(0),
+];
+
+fn record_shape(cells: &[AtomicU32; 4], mappings: u32, micros: u32) {
+    cells[0].fetch_add(1, Ordering::Relaxed);
+    cells[1].fetch_add(mappings, Ordering::Relaxed);
+    cells[2].fetch_max(mappings, Ordering::Relaxed);
+    cells[3].fetch_max(micros, Ordering::Relaxed);
+}
+
+fn load_shape(cells: &[AtomicU32; 4]) -> RangeOpShape {
+    RangeOpShape {
+        calls: cells[0].load(Ordering::Relaxed),
+        mappings: cells[1].load(Ordering::Relaxed),
+        max_mappings: cells[2].load(Ordering::Relaxed),
+        max_micros: cells[3].load(Ordering::Relaxed),
+    }
+}
+
+/// Records one `munmap`-style range operation.
+pub(crate) fn record_munmap_shape(mappings: u32, micros: u32) {
+    record_shape(&MUNMAP_SHAPE, mappings, micros);
+}
+
+/// Records one `mprotect`-style range operation.
+pub(crate) fn record_mprotect_shape(mappings: u32, micros: u32) {
+    record_shape(&MPROTECT_SHAPE, mappings, micros);
+}
+
+/// Returns `(munmap, mprotect)` range-operation shapes.
+pub(crate) fn range_op_shapes() -> (RangeOpShape, RangeOpShape) {
+    (load_shape(&MUNMAP_SHAPE), load_shape(&MPROTECT_SHAPE))
+}
+
+/// Converts a TSC delta to microseconds for [`RangeOpShape::max_micros`].
+pub(crate) fn tsc_micros(ticks: u64) -> u32 {
+    let frequency = ostd::arch::tsc_freq().max(1);
+    (ticks.saturating_mul(1_000_000) / frequency).min(u32::MAX as u64) as u32
+}
+
 static NO_REMOTE_FLUSH: Once<String> = Once::new();
 define_kv_param!("asterinas.tlb_no_remote_flush", NO_REMOTE_FLUSH);
 

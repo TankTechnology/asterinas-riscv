@@ -65,6 +65,34 @@ fork={} cow_copy={}",
             sites[7],
             sites[8]
         )?;
+        // How many mappings one range operation covers decides whether batching
+        // its flushes can pay at all; the maximum hold time decides whether a
+        // whole-range batch is acceptable.
+        let (munmap, mprotect) = flush_stats::range_op_shapes();
+        writeln!(
+            printer,
+            "op_shape: munmap_calls={} munmap_maps={} munmap_max_maps={} munmap_max_us={} \
+mprotect_calls={} mprotect_maps={} mprotect_max_maps={} mprotect_max_us={}",
+            munmap.calls,
+            munmap.mappings,
+            munmap.max_mappings,
+            munmap.max_micros,
+            mprotect.calls,
+            mprotect.mappings,
+            mprotect.max_mappings,
+            mprotect.max_micros
+        )?;
+        // The kernel-side sites can only cover the sites someone instrumented.
+        // These count the dispatches themselves, so whatever is left after
+        // subtracting the named sites is a real, unnamed source rather than
+        // noise.
+        let (dispatches, with_remote, remote_targets) = ostd::mm::tlb::dispatch_counters();
+        let (cursor_unmap, dma_map) = ostd::mm::tlb::origin_counters();
+        writeln!(
+            printer,
+            "dispatch: total={} with_remote={} remote_targets={} cursor_unmap={} dma_map={}",
+            dispatches, with_remote, remote_targets, cursor_unmap, dma_map
+        )?;
         Ok(printer.bytes_written())
     }
 }

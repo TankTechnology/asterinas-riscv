@@ -26,6 +26,8 @@ impl Vmar {
             protect_mappings.push((vm_mapping.range(), vm_mapping.perms()))
         }
 
+        let start_ticks = ostd::arch::read_tsc();
+        let mut touched = 0u32;
         let mut last_mapping_end = range.start;
         for (vm_mapping_range, vm_mapping_perms) in protect_mappings {
             if last_mapping_end < vm_mapping_range.start {
@@ -41,6 +43,7 @@ impl Vmar {
             }
             let new_perms = perms | (vm_mapping_perms & VmPerms::ALL_MAY_PERMS);
             new_perms.check()?;
+            touched += 1;
 
             let Some((vm_mapping, mut rmap_to_remove)) = inner.remove(&vm_mapping_range.start)
             else {
@@ -69,6 +72,13 @@ impl Vmar {
             let taken = taken.protect(self.vm_space(), new_perms);
             inner.insert_try_merge(self, taken, rmap.as_deref_mut());
         }
+
+        crate::vm::vmar::flush_stats::record_mprotect_shape(
+            touched,
+            crate::vm::vmar::flush_stats::tsc_micros(
+                ostd::arch::read_tsc().saturating_sub(start_ticks),
+            ),
+        );
 
         if last_mapping_end < range.end {
             return_errno_with_message!(

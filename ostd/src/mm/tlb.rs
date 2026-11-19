@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::{
     mem::MaybeUninit,
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 use super::{
@@ -42,6 +42,46 @@ pub fn set_no_remote_flush(enabled: bool) {
 /// Whether the inter-processor half of TLB flushes is being dropped.
 pub fn no_remote_flush() -> bool {
     NO_REMOTE_FLUSH.load(Ordering::Relaxed)
+}
+
+/// Counts every dispatch of a TLB flush, wherever it comes from.
+///
+/// The per-call-site counters in the kernel only cover the sites someone
+/// remembered to instrument. This counts the dispatches themselves, plus how
+/// many of them had a remote target and how many hart-to-hart sends that adds
+/// up to, so the difference against the named sites is visible instead of
+/// being mistaken for measurement noise.
+static DISPATCHES: AtomicU32 = AtomicU32::new(0);
+static DISPATCHES_WITH_REMOTE: AtomicU32 = AtomicU32::new(0);
+static REMOTE_TARGETS: AtomicU32 = AtomicU32::new(0);
+
+/// Dispatches that come from `ostd` itself, where the kernel cannot count them.
+static CURSOR_UNMAP_DISPATCHES: AtomicU32 = AtomicU32::new(0);
+static DMA_MAP_DISPATCHES: AtomicU32 = AtomicU32::new(0);
+
+/// Returns `(dispatches, dispatches with a remote target, remote targets)`.
+pub fn dispatch_counters() -> (u32, u32, u32) {
+    (
+        DISPATCHES.load(Ordering::Relaxed),
+        DISPATCHES_WITH_REMOTE.load(Ordering::Relaxed),
+        REMOTE_TARGETS.load(Ordering::Relaxed),
+    )
+}
+
+/// Returns `(cursor unmaps, DMA mappings)` dispatches issued by `ostd`.
+pub fn origin_counters() -> (u32, u32) {
+    (
+        CURSOR_UNMAP_DISPATCHES.load(Ordering::Relaxed),
+        DMA_MAP_DISPATCHES.load(Ordering::Relaxed),
+    )
+}
+
+pub(crate) fn record_cursor_unmap_dispatch() {
+    CURSOR_UNMAP_DISPATCHES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn record_dma_map_dispatch() {
+    DMA_MAP_DISPATCHES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// A TLB flusher that is aware of which CPUs are needed to be flushed.
@@ -123,6 +163,13 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
         if target_cpus.contains(cur_cpu) {
             target_cpus.remove(cur_cpu);
             need_flush_on_self = true;
+        }
+
+        let remote_targets = target_cpus.iter().count() as u32;
+        DISPATCHES.fetch_add(1, Ordering::Relaxed);
+        REMOTE_TARGETS.fetch_add(remote_targets, Ordering::Relaxed);
+        if remote_targets > 0 {
+            DISPATCHES_WITH_REMOTE.fetch_add(1, Ordering::Relaxed);
         }
 
         if let Some(ipi_sender) = self.ipi_sender {
