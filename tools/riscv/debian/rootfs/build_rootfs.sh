@@ -2026,17 +2026,6 @@ EOF
     install -d -m 0755 -- "$stage/var/lib/asterinas"
     ln -sfn ../asterinas-clock-persist.timer \
         "$stage/etc/systemd/system/sysinit.target.wants/asterinas-clock-persist.timer"
-    # The seed above only stops the clock from starting months in the past; it
-    # cannot correct one that is merely late, because nothing moves a clock
-    # forwards unless it knows the time. This unit asks the network for it --
-    # and it was shipped in the tree but never installed into the image, which
-    # is why a board that booted 39 minutes late stayed 39 minutes late.
-    install -D -m 0755 -- "$script_directory/megrez-clock-sync" \
-        "$stage/usr/lib/asterinas/megrez-clock-sync"
-    install -D -m 0644 -- "$script_directory/megrez-clock-sync.service" \
-        "$stage/etc/systemd/system/megrez-clock-sync.service"
-    ln -sfn ../megrez-clock-sync.service \
-        "$stage/etc/systemd/system/sysinit.target.wants/megrez-clock-sync.service"
     # NTP: systemd-timesyncd is the standard client. The board has no RTC, so
     # this is the only source of correct wall-clock time after boot. It is
     # enabled at sysinit and retries until the network is reachable.
