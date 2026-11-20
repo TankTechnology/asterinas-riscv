@@ -16,13 +16,13 @@ use super::{PosixThread, ThreadLocal};
 use crate::{
     fs::{file::file_table::FileTable, thread_info::ThreadFsInfo},
     prelude::*,
-    syscall::diagnostics::ThreadDiagnostics,
     process::{
         Credentials, NsProxy, Process, UserNamespace,
         posix_thread::{ThreadName, thread_local::SuppUserContext},
         signal::{sig_mask::AtomicSigMask, sig_queues::SigQueues},
     },
     sched::{Nice, SchedPolicy},
+    syscall::diagnostics::ThreadDiagnostics,
     thread::{Thread, Tid, task},
     time::{TimerManager, clocks::ProfClock},
     vm::vmar::VmarHandle,

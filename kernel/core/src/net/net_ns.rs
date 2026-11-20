@@ -17,9 +17,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use spin::Once;
 
-use super::{
-    iface::{self, Iface},
-};
+use super::iface::{self, Iface};
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,

@@ -12,10 +12,12 @@
 mod heap;
 mod init_stack;
 
-use core::ops::Range;
-use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use core::sync::atomic::AtomicUsize;
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicU32, Ordering},
+};
 
 use ostd::task::disable_preempt;
 

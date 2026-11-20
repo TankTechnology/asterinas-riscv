@@ -111,9 +111,9 @@ pub(in crate::fs) trait SysTreeInodeTy: Send + Sync + 'static {
         // A cgroup remembers the inode that serves its `cgroup.events` file so
         // a membership change can wake that file's poll/inotify subscribers.
         if attr.name() == "cgroup.events"
-            && let Some(cgroup) = node.as_any().downcast_ref::<
-                crate::fs::fs_impls::cgroupfs::systree_node::CgroupNode,
-            >()
+            && let Some(cgroup) =
+                node.as_any()
+                    .downcast_ref::<crate::fs::fs_impls::cgroupfs::systree_node::CgroupNode>()
         {
             let erased: alloc::sync::Arc<dyn crate::fs::vfs::inode::Inode> = inode.clone();
             cgroup.set_events_inode(alloc::sync::Arc::downgrade(&erased));

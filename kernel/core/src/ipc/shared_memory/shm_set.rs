@@ -5,8 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use aster_rights::ReadOp;
 
 use crate::{
-    ipc::IpcId,
-    ipc::{IpcKey, IpcPerm, IpcPermission},
+    ipc::{IpcId, IpcKey, IpcPerm, IpcPermission},
     prelude::*,
     process::{Credentials, Pid},
     time::clocks::RealTimeCoarseClock,

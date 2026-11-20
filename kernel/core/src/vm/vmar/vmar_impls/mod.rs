@@ -600,8 +600,10 @@ mod tests {
     use super::*;
     use crate::vm::{
         perms::VmPerms,
-        vmar::{MmapMode, RemapOldMappingAction, VmarMapOffset},
-        vmar::vm_mapping::{MappedMemory, VmMapping},
+        vmar::{
+            MmapMode, RemapOldMappingAction, VmarMapOffset,
+            vm_mapping::{MappedMemory, VmMapping},
+        },
     };
 
     fn anon_mapping(va: Vaddr, perms: VmPerms) -> VmMapping {

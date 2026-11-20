@@ -3,8 +3,8 @@
 use alloc::vec::Vec;
 
 use fdt_util::{AcquireIoMems, AcquireIrqLines};
-use ostd::{arch::boot::DEVICE_TREE, mm::HasPaddr};
 pub(super) use ostd::arch::irq::MappedIrqLine;
+use ostd::{arch::boot::DEVICE_TREE, mm::HasPaddr};
 
 use crate::transport::mmio::{
     MMIO_BUS, bus::common_device::MmioCommonDevice, layout::VirtioMmioLayout,

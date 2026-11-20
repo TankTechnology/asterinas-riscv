@@ -4,15 +4,15 @@ mod dri;
 mod evdev;
 mod fb;
 mod kmsg;
+mod r#loop;
 mod mem;
-mod net;
 pub(crate) mod misc;
 mod model;
+mod net;
 mod pty;
 pub mod registry;
 mod snd;
 pub(crate) mod tty;
-mod r#loop;
 
 use device_id::DeviceId;
 pub(crate) use mem::{getrandom, geturandom};

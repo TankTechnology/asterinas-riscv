@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::dispatch_ioctl;
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::sync::LocalIrqDisabled;
 
 use self::{line_discipline::LineDiscipline, termio::CFontOp};
 use crate::{
     device::{Device, DeviceType},
-    fs::devtmpfs::DevtmpfsNodeMeta,
+    dispatch_ioctl,
     events::IoEvents,
-    fs::file::{PerOpenFileOps, StatusFlags},
+    fs::{
+        devtmpfs::DevtmpfsNodeMeta,
+        file::{PerOpenFileOps, StatusFlags},
+    },
     prelude::*,
     process::{
         JobControl, Terminal, broadcast_signal_async,
@@ -29,9 +31,9 @@ mod serial;
 pub(super) mod termio;
 mod vt;
 
+pub(crate) use device::CONSOLE_DEVICE_ID;
 pub(super) use driver::TtyDriver;
 pub(super) use flags::TtyFlags;
-pub(crate) use device::CONSOLE_DEVICE_ID;
 
 pub(super) fn init_in_first_process() -> Result<()> {
     hvc::init_in_first_process()?;

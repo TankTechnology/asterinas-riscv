@@ -8,14 +8,12 @@
 //! against it, and additionally accepts raw PCM `write()`s (the original
 //! direct-node path kept for the AUDIO-M1 smoke test).
 
-use crate::dispatch_ioctl;
 use aster_virtio::device::sound::{self, device::SoundDevice};
 use device_id::{DeviceId, MinorId};
 use ostd::mm::VmIo;
 
 use crate::{
     context::current_userspace,
-    fs::devtmpfs::DevtmpfsNodeMeta,
     device::{
         Device, DeviceType,
         registry::char,
@@ -27,8 +25,10 @@ use crate::{
             },
         },
     },
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
+        devtmpfs::DevtmpfsNodeMeta,
         file::{PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
     },

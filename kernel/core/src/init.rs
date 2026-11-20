@@ -29,6 +29,11 @@ pub(super) fn main() {
     crate::boot_reboot::arm_if_requested();
     #[cfg(target_arch = "riscv64")]
     crate::hardware_watchdog::handoff_if_requested();
+    // Read-only view of the CLINT window: it is what lets a stall report say
+    // whether the target's IPI was ever raised and whether its timer deadline
+    // stopped being re-armed. It maps once and never writes.
+    #[cfg(target_arch = "riscv64")]
+    ostd::arch::clint::probe();
     // Applied before any user process exists: it changes how every later TLB
     // flush behaves.
     crate::vm::vmar::flush_stats::init_from_cmdline();
@@ -62,6 +67,7 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
         ThreadOptions::new(move || aster_usb::run_host(index)).spawn();
     }
     crate::ipi_stress::spawn_if_requested();
+    crate::diag_telemetry::spawn_if_requested();
     crate::fs::init_in_first_process(ctx);
     #[cfg(target_arch = "riscv64")]
     crate::first_process_diag::on_stdio_init_ready();

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{message::DiagSegment, DiagMessage};
+use super::{DiagMessage, message::DiagSegment};
 use crate::{
     events::IoEvents,
     net::socket::{
         netlink::{
+            NetlinkSocketAddr,
             common::BoundNetlink,
             message::{ContinueRead, ProtocolSegment},
             options::NetlinkOptionSet,
-            NetlinkSocketAddr,
         },
         util::{RecvFlags, RecvOutput, SendFlags, datagram_common},
     },

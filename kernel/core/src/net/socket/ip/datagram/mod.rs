@@ -74,7 +74,10 @@ impl DatagramSocket {
         });
         crate::net::net_ns::current_net_ns()
             .proc_net_sockets()
-            .register(Arc::downgrade(&socket) as alloc::sync::Weak<dyn crate::net::socket::proc_net::ProcNetSocket>);
+            .register(Arc::downgrade(&socket)
+                as alloc::sync::Weak<
+                    dyn crate::net::socket::proc_net::ProcNetSocket,
+                >);
         socket
     }
 
@@ -109,9 +112,11 @@ impl DatagramSocket {
                         "the destination address is not specified",
                     )
                 })?;
-                self.inner
-                    .write()
-                    .bind_ephemeral(remote_endpoint, &self.pollee, crate::net::socket::ip::datagram::unbound::BindOptions { can_reuse: false })
+                self.inner.write().bind_ephemeral(
+                    remote_endpoint,
+                    &self.pollee,
+                    crate::net::socket::ip::datagram::unbound::BindOptions { can_reuse: false },
+                )
             },
             |bound_datagram, remote_endpoint| {
                 let sent_bytes = bound_datagram.try_send(reader, remote_endpoint, flags, ())?;
@@ -168,7 +173,11 @@ impl Socket for DatagramSocket {
             );
         }
 
-        self.inner.write().connect(&endpoint, &self.pollee, crate::net::socket::ip::datagram::unbound::BindOptions { can_reuse: false })
+        self.inner.write().connect(
+            &endpoint,
+            &self.pollee,
+            crate::net::socket::ip::datagram::unbound::BindOptions { can_reuse: false },
+        )
     }
 
     fn addr(&self) -> Result<SocketAddr> {

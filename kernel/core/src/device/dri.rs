@@ -36,9 +36,9 @@ use self::cursor::{
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, registry::char},
-    fs::devtmpfs::DevtmpfsNodeMeta,
     events::IoEvents,
     fs::{
+        devtmpfs::DevtmpfsNodeMeta,
         file::{MappableObject, PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
     },
@@ -359,8 +359,10 @@ mod ioctl_defs {
         DrmModeGetConnector, DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties,
         DrmSetClientCap, DrmVersion,
     };
-    use crate::ioc;
-    use crate::util::ioctl::{InData, InOutData, NoData};
+    use crate::{
+        ioc,
+        util::ioctl::{InData, InOutData, NoData},
+    };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);

@@ -10,12 +10,12 @@ use super::{
 };
 use crate::{
     events::IoEvents,
-    fs::vfs::notify::{FsEventSubscriber, FsEvents},
     fs::{
         utils::DirentVisitor,
         vfs::{
             inode::{FallocMode, FileOps},
             inode_ext::InodeExt,
+            notify::{FsEventSubscriber, FsEvents},
             path::{Path, PerMountFlags},
             range_lock::{RangeLockItem, RangeLockOwner, RangeLockType},
             xattr::clear_file_priv,
@@ -24,7 +24,7 @@ use crate::{
     prelude::*,
     process::{
         posix_thread::FileTableRefMut,
-        signal::{PollHandle, Pollee, Pollable},
+        signal::{PollHandle, Pollable, Pollee},
     },
     util::ioctl::RawIoctl,
     vm::vmar::FileMmapRequest,
@@ -364,8 +364,13 @@ impl Pollable for InodeHandle {
             let pending = self
                 .events_pending
                 .load(core::sync::atomic::Ordering::Acquire);
-            let base = IoEvents::IN | IoEvents::OUT
-                | if pending { IoEvents::PRI } else { IoEvents::empty() };
+            let base = IoEvents::IN
+                | IoEvents::OUT
+                | if pending {
+                    IoEvents::PRI
+                } else {
+                    IoEvents::empty()
+                };
             self.event_pollee.poll_with(mask, poller, || base)
         }
     }
@@ -652,9 +657,7 @@ impl Drop for InodeHandle {
         // Release the write-access tracking registered at open time.
         // The predicate mirrors the one in `new_unchecked_access`
         // (`O_PATH` handles have empty rights and thus never match).
-        if self.access_mode().is_writable()
-            && self.path().inode().type_().is_regular_file()
-        {
+        if self.access_mode().is_writable() && self.path().inode().type_().is_regular_file() {
             self.path()
                 .inode()
                 .write_access_tracker_or_init()

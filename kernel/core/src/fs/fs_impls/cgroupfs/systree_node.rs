@@ -464,7 +464,10 @@ impl CgroupSysNode for CgroupNode {
 // For process management
 impl CgroupNode {
     /// Records an inode that serves this node's `cgroup.events` file.
-    pub(crate) fn set_events_inode(&self, inode: alloc::sync::Weak<dyn crate::fs::vfs::inode::Inode>) {
+    pub(crate) fn set_events_inode(
+        &self,
+        inode: alloc::sync::Weak<dyn crate::fs::vfs::inode::Inode>,
+    ) {
         let mut inodes = self.events_inodes.lock();
         // Drop the entries of inodes that are already gone.
         inodes.retain(|weak| weak.strong_count() > 0 && !weak.ptr_eq(&inode));

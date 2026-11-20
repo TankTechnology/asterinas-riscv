@@ -11,7 +11,6 @@
 macro_rules! import_generic_syscall_entries {
     () => {
         use $crate::syscall::{
-            deferred::{sys_restart_syscall, sys_syslog, sys_timer_getoverrun},
             accept::{sys_accept, sys_accept4},
             access::{sys_faccessat, sys_faccessat2},
             adjtimex::{sys_adjtimex, sys_clock_adjtime},
@@ -30,6 +29,7 @@ macro_rules! import_generic_syscall_entries {
             close::{sys_close, sys_close_range},
             connect::sys_connect,
             copy_file_range::sys_copy_file_range,
+            deferred::{sys_restart_syscall, sys_syslog, sys_timer_getoverrun},
             dup::{sys_dup, sys_dup3},
             epoll::{sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2},
             eventfd::sys_eventfd2,

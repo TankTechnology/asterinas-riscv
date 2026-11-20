@@ -108,18 +108,8 @@ impl CDiagMsg {
             dport: remote_port.to_be(),
             // Addresses are stored in network order in the uapi; the low word
             // holds the address as written on the wire.
-            src: [
-                u32::from_be_bytes(local_addr),
-                0,
-                0,
-                0,
-            ],
-            dst: [
-                u32::from_be_bytes(remote_addr),
-                0,
-                0,
-                0,
-            ],
+            src: [u32::from_be_bytes(local_addr), 0, 0, 0],
+            dst: [u32::from_be_bytes(remote_addr), 0, 0, 0],
             if_index: 0,
             cookie: [0, 0],
         }
@@ -195,30 +185,37 @@ impl ProtocolSegment for DiagSegment {
 
         if header.type_ != SOCK_DIAG_BY_FAMILY {
             reader.skip_some(payload_len);
-            return Ok(ContinueRead::SkippedInvalid(ErrorSegment::new_from_request(
-                &header,
-                Some(Error::with_message(
-                    Errno::EOPNOTSUPP,
-                    "the diag request type is not supported",
-                )),
-            )));
+            return Ok(ContinueRead::SkippedInvalid(
+                ErrorSegment::new_from_request(
+                    &header,
+                    Some(Error::with_message(
+                        Errno::EOPNOTSUPP,
+                        "the diag request type is not supported",
+                    )),
+                ),
+            ));
         }
         if payload_len < size_of::<CDiagReqV2>() {
             reader.skip_some(payload_len);
-            return Ok(ContinueRead::SkippedInvalid(ErrorSegment::new_from_request(
-                &header,
-                Some(Error::with_message(
-                    Errno::EINVAL,
-                    "the diag request body is too small",
-                )),
-            )));
+            return Ok(ContinueRead::SkippedInvalid(
+                ErrorSegment::new_from_request(
+                    &header,
+                    Some(Error::with_message(
+                        Errno::EINVAL,
+                        "the diag request body is too small",
+                    )),
+                ),
+            ));
         }
 
         let request = reader.read_val_opt::<CDiagReqV2>()?.unwrap();
         // Any extension attributes after the body are ignored.
         reader.skip_some(payload_len - size_of::<CDiagReqV2>());
 
-        Ok(ContinueRead::Parsed(DiagSegment::Request { header, request }))
+        Ok(ContinueRead::Parsed(DiagSegment::Request {
+            header,
+            request,
+        }))
     }
 
     fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()> {

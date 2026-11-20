@@ -4,8 +4,9 @@ use core::{fmt::Write, sync::atomic::AtomicU64};
 
 use super::TidDirOps;
 use crate::{
+    events::IoEvents,
     fs::{
-        file::{mkmod, AccessMode, PerOpenFileOps, StatusFlags},
+        file::{AccessMode, PerOpenFileOps, StatusFlags, mkmod},
         procfs::template::{ProcFile, ProcFileOpsByHandle},
         vfs::{
             file_system::FsFlags,
@@ -14,8 +15,10 @@ use crate::{
         },
     },
     prelude::*,
-    events::IoEvents,
-    process::{posix_thread::AsPosixThread, signal::{PollHandle, Pollable}},
+    process::{
+        posix_thread::AsPosixThread,
+        signal::{PollHandle, Pollable},
+    },
     thread::Thread,
 };
 

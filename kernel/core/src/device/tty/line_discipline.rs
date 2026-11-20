@@ -410,13 +410,13 @@ mod tests {
         let mut received_signal = None;
 
         let mut echo = Vec::new();
+        line_discipline.push_char(b'x', |_| {}, &mut echo).unwrap();
         line_discipline
-            .push_char(b'x', |_| {}, &mut echo)
-            .unwrap();
-        line_discipline
-            .push_char(CCtrlCharId::VINTR.default_char(), |signal| {
-                received_signal = Some(signal)
-            }, &mut echo)
+            .push_char(
+                CCtrlCharId::VINTR.default_char(),
+                |signal| received_signal = Some(signal),
+                &mut echo,
+            )
             .unwrap();
 
         assert_eq!(received_signal, Some(SIGINT));

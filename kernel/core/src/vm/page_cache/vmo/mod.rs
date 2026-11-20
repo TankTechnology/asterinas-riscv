@@ -15,7 +15,6 @@
 //! - Memory-mapping, page-fault, and other lower-level VM paths that need
 //!   direct page-oriented access should work with [`Vmo`].
 
-use super::cache_page::LockedCachePage;
 use core::{
     cmp::min,
     ops::{Deref, Range},
@@ -30,6 +29,7 @@ use ostd::{
 };
 use xarray::{Cursor, LockedXArray, XArray};
 
+use super::cache_page::LockedCachePage;
 use crate::{
     prelude::*,
     vm::{

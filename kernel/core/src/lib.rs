@@ -49,6 +49,7 @@ mod boot_reboot;
 pub mod context;
 mod cpu;
 pub mod device;
+mod diag_telemetry;
 mod driver;
 pub mod error;
 pub mod events;

@@ -6,8 +6,8 @@ mod poll;
 mod sched;
 
 pub(in crate::net) use aster_bigtcp::iface::{InterfaceFlags, InterfaceType};
-pub(in crate::net) use init::{init, new_ns_loopback};
 pub(crate) use init::iter_all_ifaces;
+pub(in crate::net) use init::{init, new_ns_loopback};
 pub(super) use poll::init_in_first_kthread;
 pub(in crate::net) use poll::spawn_poll_thread;
 

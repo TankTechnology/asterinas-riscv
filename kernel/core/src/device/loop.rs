@@ -8,7 +8,6 @@
 //! `/sys/block/loopN/loop/` (`backing_file`, `partscan`, `autoclear`,
 //! `sizelimit`), as LTP's `ioctl_loop*` tests read them.
 
-use crate::dispatch_ioctl;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use aster_block::{
@@ -25,22 +24,20 @@ use inherit_methods_macro::inherit_methods;
 use ostd::mm::VmIo;
 
 use crate::{
-    fs::devtmpfs::DevtmpfsNodeMeta,
     context::current_userspace,
     device::{
         Device, DeviceType,
         registry::char::{self, MajorIdOwner as CharMajorIdOwner},
     },
+    dispatch_ioctl,
     events::IoEvents,
     fs::{
+        devtmpfs::DevtmpfsNodeMeta,
         file::{
             FileLike, InodeHandle, PerOpenFileOps, SeekFrom, SettableStatusFlags, StatusFlags,
             file_table::WithFileTable,
         },
-        vfs::{
-            inode::FileOps,
-            path::Path,
-        },
+        vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
     process::{
@@ -428,8 +425,10 @@ impl Device for LoopFile {
 }
 
 mod ioctl_defs {
-    use crate::ioc;
-    use crate::util::ioctl::{NoData, OutData};
+    use crate::{
+        ioc,
+        util::ioctl::{NoData, OutData},
+    };
 
     pub(super) type BlkGetSize64 = ioc!(BLKGETSIZE64, 0x12, 114, OutData<u64>);
     pub(super) type BlkGetSectorSize = ioc!(BLKSSZGET, 0x12, 104, NoData);
@@ -770,7 +769,15 @@ impl LoopSysNode {
         // what `/sys/dev/block/<major>:<minor>` resolves to and what `lsblk`
         // opens first: without it the loop devices are listed by the lookup
         // symlinks and then dropped as unreadable.
-        for name in ["dev", "size", "ro", "removable", "range", "stat", "inflight"] {
+        for name in [
+            "dev",
+            "size",
+            "ro",
+            "removable",
+            "range",
+            "stat",
+            "inflight",
+        ] {
             builder.add(SysStr::from(name), SysPerms::DEFAULT_RO_ATTR_PERMS);
         }
         let attrs = builder
@@ -809,18 +816,12 @@ inherit_sys_branch_node!(LoopSysNode, fields, {
         match name {
             "dev" => writeln!(printer, "{}:{}", id.major().get(), id.minor().get())?,
             "ro" => writeln!(printer, "{}", self.device.is_read_only() as u32)?,
-            "size" | "range" => {
-                writeln!(printer, "{}", self.device.size_bytes() / SECTOR_SIZE)?
-            }
+            "size" | "range" => writeln!(printer, "{}", self.device.size_bytes() / SECTOR_SIZE)?,
             "removable" => writeln!(printer, "0")?,
             "stat" => writeln!(
                 printer,
                 "{} 0 {} 0 {} 0 {} 0 {} 0 0",
-                stats.reads,
-                stats.read_sectors,
-                stats.writes,
-                stats.write_sectors,
-                stats.in_flight
+                stats.reads, stats.read_sectors, stats.writes, stats.write_sectors, stats.in_flight
             )?,
             "inflight" => writeln!(printer, "0 0 0 0")?,
             _ => return Err(SysTreeError::AttributeError),

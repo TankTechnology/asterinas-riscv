@@ -118,7 +118,10 @@ impl StreamSocket {
         });
         crate::net::net_ns::current_net_ns()
             .proc_net_sockets()
-            .register(Arc::downgrade(&socket) as alloc::sync::Weak<dyn crate::net::socket::proc_net::ProcNetSocket>);
+            .register(Arc::downgrade(&socket)
+                as alloc::sync::Weak<
+                    dyn crate::net::socket::proc_net::ProcNetSocket,
+                >);
         socket
     }
 

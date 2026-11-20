@@ -6,7 +6,12 @@ use crate::{
     process::{Gid, posix_thread::ContextPthreadAdminApi},
 };
 
-pub(super) fn sys_setresgid(rgid: i32, egid: i32, sgid: i32, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_setresgid(
+    rgid: i32,
+    egid: i32,
+    sgid: i32,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
     let map_gid = |id: i32| -> Result<Option<Gid>> {
         if id < 0 {
             Ok(None)

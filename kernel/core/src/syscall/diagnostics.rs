@@ -10,8 +10,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use ostd::timer::Jiffies;
 use spin::Once;
 
-pub(crate) use self::state::{Outcome, Snapshot, snapshot_slice};
 use self::state::{ExitObservation, LifecycleBudget, LifecycleEvent, State};
+pub(crate) use self::state::{Outcome, Snapshot, snapshot_slice};
 use super::arch;
 use crate::{
     prelude::*,
@@ -149,9 +149,7 @@ pub(crate) fn on_exit(ctx: &Context, term_status: TermStatus) {
         termination_status: term_status.as_u32(),
         signal: match term_status {
             TermStatus::Exited(_) => None,
-            TermStatus::Killed(signal) | TermStatus::KilledWithCore(signal) => {
-                Some(signal.as_u8())
-            }
+            TermStatus::Killed(signal) | TermStatus::KilledWithCore(signal) => Some(signal.as_u8()),
         },
         finished_jiffies: Jiffies::elapsed().as_u64(),
     };

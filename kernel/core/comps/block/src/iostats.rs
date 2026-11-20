@@ -14,15 +14,10 @@
 use alloc::{collections::BTreeMap, sync::Arc};
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use ostd::sync::Mutex as BlockingMutex;
 use spin::Mutex;
 
-use ostd::sync::Mutex as BlockingMutex;
-
-use crate::{
-    DeviceId,
-    bio::BioType,
-    id::Sid,
-};
+use crate::{DeviceId, bio::BioType, id::Sid};
 
 /// One device's counters.
 #[derive(Debug, Default)]

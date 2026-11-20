@@ -29,8 +29,10 @@ pub const SNDRV_CTL_VERSION: i32 = 0x20009;
 
 pub(crate) mod ioctl_defs {
     use super::SndCtlCardInfo;
-    use crate::ioc;
-    use crate::util::ioctl::{InData, OutData};
+    use crate::{
+        ioc,
+        util::ioctl::{InData, OutData},
+    };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/sound/asound.h#L1165-L1185>
     pub(crate) type Pversion = ioc!(SNDRV_CTL_IOCTL_PVERSION, b'U', 0x00, OutData<i32>);

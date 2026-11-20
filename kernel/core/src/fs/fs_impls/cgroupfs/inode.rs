@@ -41,15 +41,13 @@ impl SysTreeInodeTy for CgroupInode {
     where
         Self: Sized,
     {
-        Arc::new_cyclic(|this| {
-            Self {
-                node_kind,
-                metadata,
-                extension: Extension::new(),
-                mode: RwLock::new(mode),
-                parent,
-                this: this.clone(),
-            }
+        Arc::new_cyclic(|this| Self {
+            node_kind,
+            metadata,
+            extension: Extension::new(),
+            mode: RwLock::new(mode),
+            parent,
+            this: this.clone(),
         })
     }
 

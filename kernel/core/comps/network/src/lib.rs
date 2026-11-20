@@ -8,10 +8,7 @@ extern crate alloc;
 
 use alloc::{collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 
-use aster_bigtcp::{
-    device::AnyNetworkDevice,
-    packet::FreshTxPacket,
-};
+use aster_bigtcp::{device::AnyNetworkDevice, packet::FreshTxPacket};
 use aster_softirq::{
     BottomHalfDisabled, SoftIrqLine,
     softirq_id::{NETWORK_RX_SOFTIRQ_ID, NETWORK_TX_SOFTIRQ_ID},

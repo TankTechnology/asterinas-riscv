@@ -23,11 +23,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use ostd::sync::LocalIrqDisabled;
 
-use crate::fs::file::MappableObject;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, FileCommon, FileLike, Mappable, StatusFlags},
+        file::{AccessMode, FileCommon, FileLike, Mappable, MappableObject, StatusFlags},
         pseudofs::AnonInodeFs,
     },
     prelude::*,
@@ -723,7 +722,6 @@ impl Pollable for MapFile {
 }
 
 impl FileLike for MapFile {
-
     fn common(&self) -> &FileCommon {
         &self.common
     }

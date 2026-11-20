@@ -3,8 +3,8 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 pub(crate) mod iface;
-mod route;
 pub(crate) mod net_ns;
+mod route;
 pub(crate) mod socket;
 pub(crate) mod uts_ns;
 

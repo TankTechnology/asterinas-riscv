@@ -8,7 +8,9 @@ use core::{
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, FileCommon, FileLike, SettableStatusFlags, StatusFlags, file_table::FdFlags},
+        file::{
+            AccessMode, FileCommon, FileLike, SettableStatusFlags, StatusFlags, file_table::FdFlags,
+        },
         pseudofs::AnonInodeFs,
         vfs::{
             inode::Inode,
@@ -391,8 +393,8 @@ impl FileLike for FanotifyFile {
 
         impl Display for FdInfo {
             fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                let mut flags =
-                    self.inner.common.status_flags().bits() | self.inner.common.access_mode() as u32;
+                let mut flags = self.inner.common.status_flags().bits()
+                    | self.inner.common.access_mode() as u32;
                 if self.fd_flags.contains(FdFlags::CLOEXEC) {
                     flags |= crate::fs::file::CreationFlags::O_CLOEXEC.bits();
                 }
@@ -410,7 +412,13 @@ impl FileLike for FanotifyFile {
                     };
                     let mask = subscriber.interesting_events().bits();
                     let sdev = inode.fs().sb().fsid;
-                    writeln!(f, "fanotify ino:{:x} sdev:{:x} mflags:0 mask:{:x} ignored_mask:0", inode.ino(), sdev, mask)?;
+                    writeln!(
+                        f,
+                        "fanotify ino:{:x} sdev:{:x} mflags:0 mask:{:x} ignored_mask:0",
+                        inode.ino(),
+                        sdev,
+                        mask
+                    )?;
                 }
 
                 Ok(())

@@ -2,11 +2,11 @@
 
 pub(crate) mod c_types;
 pub(crate) mod constants;
+pub(crate) mod job_control;
 mod pause;
 mod pending;
 mod poll;
 pub(crate) mod provenance;
-pub(crate) mod job_control;
 pub(crate) mod sig_action;
 pub(crate) mod sig_disposition;
 pub(crate) mod sig_mask;

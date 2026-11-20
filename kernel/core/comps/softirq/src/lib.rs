@@ -220,7 +220,9 @@ fn process_all_pending(mut irq_guard: DisabledLocalIrqGuard) -> DisabledLocalIrq
 
         drop(irq_guard);
 
+        ostd::smp::note_activity(ostd::smp::ACT_SOFTIRQ);
         run_callbacks(action_mask);
+        ostd::smp::note_activity(0);
 
         irq_guard = disable_local();
     }

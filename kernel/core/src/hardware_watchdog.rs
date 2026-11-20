@@ -51,6 +51,23 @@ const HEARTBEAT_REPORT_EVERY: u32 = 1;
 static REQUESTED: Once<String> = Once::new();
 define_kv_param!("asterinas.hardware_watchdog_handoff", REQUESTED);
 
+/// `asterinas.watchdog_stop_kick_after=<seconds>`: stop kicking on purpose.
+///
+/// The watchdog's effective timeout is the clock every "the board never came
+/// back" conclusion is measured against, and it has only been inferred from
+/// the TOP register. This stops the kick at a known uptime so the reset that
+/// follows is timed rather than assumed.
+static STOP_KICK_AFTER: AtomicU32 = AtomicU32::new(0);
+define_kv_param!("asterinas.watchdog_stop_kick_after", STOP_KICK_AFTER);
+
+/// `asterinas.watchdog_heartbeat_every=<n>`: print every n-th kick.
+///
+/// Kicking stays once per second; only the line changes. The line is itself a
+/// ~38 ms IRQ-off window, so this knob turns the observation into an
+/// experiment: fewer prints means less of the condition under study.
+static HEARTBEAT_EVERY: AtomicU32 = AtomicU32::new(HEARTBEAT_REPORT_EVERY);
+define_kv_param!("asterinas.watchdog_heartbeat_every", HEARTBEAT_EVERY);
+
 /// Whether this kernel still feeds the hardware watchdog.
 ///
 /// The software reboot path clears it before asking SBI to reset. If SBI has
@@ -170,10 +187,23 @@ pub(super) fn handoff_if_requested() {
     // system keeps running. A periodic line makes "the kicks stopped" visible
     // instead of inferred.
     static KICK_COUNT: AtomicU32 = AtomicU32::new(0);
+    static HALT_LAST: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
 
     let heartbeat = move || {
         if !KICKING.load(Ordering::Acquire) {
             return;
+        }
+        let stop_after = STOP_KICK_AFTER.load(Ordering::Relaxed);
+        if stop_after != 0 {
+            let uptime_ms = ostd::timer::Jiffies::elapsed().as_duration().as_millis() as u64;
+            if uptime_ms >= u64::from(stop_after) * 1000 {
+                ostd::early_println!(
+                    "ASTERINAS_WATCHDOG_STOP status=stopped uptime_ms={}",
+                    uptime_ms
+                );
+                stop_kicking_for_reset();
+                return;
+            }
         }
         let kicks = KICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
         // Kick before printing. The console path takes a lock with local IRQs
@@ -191,18 +221,66 @@ pub(super) fn handoff_if_requested() {
         {
             ostd::early_println!("ASTERINAS_WATCHDOG_KICK status=failed");
         }
-        if kicks % HEARTBEAT_REPORT_EVERY == 0 {
+        let heartbeat_every = HEARTBEAT_EVERY.load(Ordering::Relaxed).max(1);
+        if kicks % heartbeat_every == 0 {
             let (received, sent, waits) = ostd::smp::ipi_counters();
             let (tx, rx) = ostd::smp::ipi_kind_counters();
             let sites = crate::vm::vmar::flush_stats::snapshot();
             let (dispatches, with_remote, _) = ostd::mm::tlb::dispatch_counters();
             let sbi_calls = ostd::smp::sbi_ipi_call_count();
             let coalesced = ostd::smp::coalesced_ipi_count();
-            ostd::early_println!(
+            // Positive control for the activity markers: these must visibly
+            // change (print/wait/idle) from one heartbeat to the next. If they
+            // never do, a stall report that reads `idle` means nothing.
+            let (uart_max_us, uart_writes, uart_outcome, uart_sum_us) =
+                ostd::uart_stats::take_write_stats();
+            let (fw_max_us, fw_writes, fw_sum_us) = ostd::uart_stats::take_fw_write_stats();
+            let irq_done = ostd::irq::take_irq_off_done();
+            // Monotonic halt counters: a CPU that stops counting is not
+            // executing instructions at all.
+            let mut halt_delta = alloc::string::String::new();
+            for cpu in 0..ostd::cpu::num_cpus() {
+                let now = ostd::smp::halt_count(cpu);
+                let last = HALT_LAST[cpu].load(Ordering::Relaxed);
+                HALT_LAST[cpu].store(now, Ordering::Relaxed);
+                if cpu > 0 {
+                    halt_delta.push(',');
+                }
+                halt_delta.push_str(&alloc::format!("{}", now.saturating_sub(last)));
+            }
+            // The longest window any CPU spent with local IRQs off, and where.
+            let mut irq_max_us = 0u64;
+            let mut irq_site = String::new();
+            for cpu in 0..ostd::cpu::num_cpus() {
+                let (us, site) = ostd::irq::take_irq_off_max(cpu);
+                if us > irq_max_us {
+                    irq_max_us = us;
+                    irq_site = if let Some((file, line)) = ostd::irq::irq_off_site_name(site) {
+                        let short = file.rsplit('/').next().unwrap_or(file);
+                        alloc::format!("{}@{}:{}", cpu, short, line)
+                    } else {
+                        alloc::format!("{}@?", cpu)
+                    };
+                }
+            }
+            let (_, _, heartbeat_sepc) =
+                ostd::smp::trap_stats(u32::from(ostd::cpu::CpuId::current_racy()) as usize);
+            let mut act = alloc::string::String::new();
+            for cpu in 0..ostd::cpu::num_cpus() {
+                if cpu > 0 {
+                    act.push(' ');
+                }
+                act.push_str(ostd::smp::activity_of(cpu).0);
+            }
+            // Format first so the line's own length is reported: at 115200
+            // baud the length *is* the IRQ-off window (11.5 bytes/ms), and it
+            // must be a recorded variable, not a hidden one.
+            let body = alloc::format!(
                 "ASTERINAS_WATCHDOG_HEARTBEAT kicks={} cpu={} ipi_rx={} ipi_tx={} ipi_wait={} \
 tx_flush={} tx_preempt={} tx_memb={} tx_other={} rx_flush={} rx_preempt={} rx_memb={} rx_other={} \
 flush_site: ad={} cow_shared={} fresh={} unmap={} protect={} freeze={} remap={} fork={} \
-cow_copy={} dx_total={} dx_remote={} sbi_calls={} coalesced={}",
+cow_copy={} dx_total={} dx_remote={} sbi_calls={} coalesced={} storms={} act={} uw={},{},{},{} fw={},{},{} \
+io={},{},{} halt={} sepc={:#x} uptime_ms={}",
                 kicks,
                 u32::from(ostd::cpu::CpuId::current_racy()),
                 received,
@@ -228,8 +306,27 @@ cow_copy={} dx_total={} dx_remote={} sbi_calls={} coalesced={}",
                 dispatches,
                 with_remote,
                 sbi_calls,
-                coalesced
+                coalesced,
+                ostd::smp::irq_storm_count(),
+                act,
+                uart_max_us,
+                uart_writes,
+                uart_outcome,
+                uart_sum_us,
+                fw_max_us,
+                fw_writes,
+                fw_sum_us,
+                irq_max_us,
+                irq_site,
+                irq_done,
+                halt_delta,
+                heartbeat_sepc,
+                // The heartbeat's own cadence degrades under load, so the
+                // wall clock has to come from the kernel, not from counting
+                // these lines.
+                ostd::timer::Jiffies::elapsed().as_duration().as_millis()
             );
+            ostd::early_println!("{} line_bytes={}", body, body.len());
         }
         timer::request_interrupt_after(KICK_PERIOD);
     };

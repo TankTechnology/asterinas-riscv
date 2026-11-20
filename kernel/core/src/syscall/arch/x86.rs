@@ -22,6 +22,7 @@ use super::{
     close::{sys_close, sys_close_range},
     connect::sys_connect,
     copy_file_range::sys_copy_file_range,
+    deferred::{sys_restart_syscall, sys_syslog, sys_timer_getoverrun},
     dup::{sys_dup, sys_dup2, sys_dup3},
     epoll::{
         sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2,
@@ -107,7 +108,6 @@ use super::{
     pread64::sys_pread64,
     preadv::{sys_preadv, sys_preadv2, sys_readv},
     prlimit64::{sys_getrlimit, sys_prlimit64, sys_setrlimit},
-    deferred::{sys_restart_syscall, sys_syslog, sys_timer_getoverrun},
     pselect6::sys_pselect6,
     ptrace::sys_ptrace,
     pwrite64::sys_pwrite64,

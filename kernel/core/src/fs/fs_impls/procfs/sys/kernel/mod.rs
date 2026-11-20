@@ -2,6 +2,8 @@
 
 #![short_vis_path::add(procfs)]
 
+#[cfg(target_arch = "riscv64")]
+use crate::fs::procfs::sys::kernel::asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps;
 use crate::{
     fs::{
         file::{InodeType, mkmod},
@@ -27,9 +29,6 @@ use crate::{
     prelude::*,
     security::lsm::is_yama_enabled,
 };
-
-#[cfg(target_arch = "riscv64")]
-use crate::fs::procfs::sys::kernel::asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps;
 
 #[cfg(target_arch = "riscv64")]
 mod asterinas_reboot_watchdog;

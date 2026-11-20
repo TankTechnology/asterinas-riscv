@@ -24,8 +24,13 @@ pub(super) fn print_observed<O: Observer>(args: fmt::Arguments, observer: &mut O
     // in the heap. (The heap allocator will log a message when memory is low.)
     //
     // Also, holding the lock will prevent the logs from interleaving.
+    // Record what this CPU is doing: a sender that ends up waiting a full
+    // second for it prints this marker, which is the difference between "it
+    // was writing the console" and "it was somewhere else".
+    ostd::smp::note_activity(ostd::smp::ACT_PRINT);
     let start = observer.timestamp();
     let devices = aster_console::all_devices_lock();
+    ostd::smp::note_activity(ostd::smp::ACT_PRINT_WRITE);
     let acquired = observer.timestamp();
 
     struct Printer<'a, O>(
@@ -57,6 +62,7 @@ pub(super) fn print_observed<O: Observer>(args: fmt::Arguments, observer: &mut O
     let end = observer.timestamp();
     let bytes = printer.1;
     drop(printer);
+    ostd::smp::note_activity(0);
     observer.console(start, acquired, end, bytes);
     result.unwrap();
 }

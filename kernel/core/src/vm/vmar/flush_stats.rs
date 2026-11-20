@@ -167,12 +167,35 @@ define_kv_param!("asterinas.tlb_no_remote_flush", NO_REMOTE_FLUSH);
 static SERIALIZE_IPI: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.sbi_ipi_serialize", SERIALIZE_IPI);
 
+/// `asterinas.ipi_no_resend`: do not resend from the stall path.
+///
+/// The boards dies within a tenth of a second of the stall report, and the
+/// forced resend is one of the last things that happens before that. This
+/// switch exists to rule it in or out.
+static NO_RESEND: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.ipi_no_resend", NO_RESEND);
+
 /// Applies `asterinas.tlb_no_remote_flush` to the TLB flusher.
 ///
 /// This parameter exists to separate "the flush storm resets the board" from
 /// "the board resets for another reason"; a kernel running with it is not
 /// correct and says so on the console.
+#[allow(dead_code)]
+static WFI_ENABLE_FIRST: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.wfi_enable_first", WFI_ENABLE_FIRST);
+
 pub(crate) fn init_from_cmdline() {
+    if WFI_ENABLE_FIRST.load(Ordering::Relaxed) {
+        #[cfg(target_arch = "riscv64")]
+        {
+            ostd::arch::set_wfi_enable_first(true);
+            ostd::early_println!("ASTERINAS_WFI_ENABLE_FIRST status=enabled");
+        }
+    }
+    if NO_RESEND.load(Ordering::Relaxed) {
+        ostd::smp::set_ipi_resend(false);
+        ostd::early_println!("ASTERINAS_IPI_RESEND status=disabled");
+    }
     if SERIALIZE_IPI.load(Ordering::Relaxed) {
         ostd::smp::set_sbi_ipi_serialized(true);
         ostd::early_println!("ASTERINAS_SBI_IPI_SERIALIZED status=enabled");
