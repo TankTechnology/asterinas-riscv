@@ -2040,6 +2040,11 @@ FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org
 PollIntervalMinSec=16
 PollIntervalMaxSec=64
 EOF
+        # The build runs with a restrictive umask, so the heredoc above lands as
+        # 0600 root:root and systemd-timesyncd cannot read its own drop-in:
+        # "Failed to open /etc/systemd/timesyncd.conf.d/asterinas.conf:
+        # Permission denied", then it exits and the clock never syncs.
+        chmod 0644 -- "$stage/etc/systemd/timesyncd.conf.d/asterinas.conf"
         # Asterinas' systemd cannot create the StateDirectory at service start
         # ("Failed to set up special execution directory in /var/lib: Invalid
         # argument"), so pre-create it with the package's user.
