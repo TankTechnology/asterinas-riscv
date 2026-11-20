@@ -1,0 +1,18 @@
+[Unit]
+Description=Record the current time for the next boot
+Documentation=file:/usr/lib/asterinas/megrez-clock-bootstrap
+# The board has no RTC: without a recorded time every boot starts from the image
+# build date, and once that date is more than a certificate's not-before, every
+# HTTPS site reads "not yet valid" even though the network is fine. The HTTP
+# Date sync cannot help before the portal login, which itself needs a plausible
+# clock, so this file is the only recent source at boot.
+DefaultDependencies=no
+After=local-fs.target
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+# Replace atomically: the bootstrap must never read half a timestamp.
+ExecStart=/bin/sh -c 'install -d -m 0755 /var/lib/asterinas && date +%%s > /var/lib/asterinas/last-time.new && mv -f /var/lib/asterinas/last-time.new /var/lib/asterinas/last-time'

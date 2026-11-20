@@ -1992,12 +1992,14 @@ EOF
         "$stage/usr/lib/asterinas/megrez-clock-bootstrap"
     printf '%s\n' "$SOURCE_DATE_EPOCH" >"$stage/etc/asterinas-build-time"
     chmod 0644 -- "$stage/etc/asterinas-build-time"
+    # basic.target never activates on this board, so the unit is pulled in by
+    # sysinit.target; the same reason applies to the persist timer below.
     cat >"$stage/etc/systemd/system/asterinas-clock-bootstrap.service" <<'EOF'
 [Unit]
 Description=Seed the guest clock from the image build time
 DefaultDependencies=no
 After=local-fs.target
-Before=basic.target
+Before=sysinit.target
 ConditionPathExists=/etc/asterinas-build-time
 
 [Service]
@@ -2008,12 +2010,22 @@ StandardOutput=journal+console
 StandardError=journal+console
 
 [Install]
-WantedBy=basic.target
+WantedBy=sysinit.target
 EOF
     chmod 0644 -- "$stage/etc/systemd/system/asterinas-clock-bootstrap.service"
-    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
     ln -sfn ../asterinas-clock-bootstrap.service \
-        "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-bootstrap.service"
+        "$stage/etc/systemd/system/sysinit.target.wants/asterinas-clock-bootstrap.service"
+    # The build timestamp ages with the image; a board without an RTC then boots
+    # into a date that makes every certificate "not yet valid". Keep the newest
+    # time this machine has seen and let the bootstrap prefer it.
+    install -D -m 0644 -- "$script_directory/asterinas-clock-persist.service" \
+        "$stage/etc/systemd/system/asterinas-clock-persist.service"
+    install -D -m 0644 -- "$script_directory/asterinas-clock-persist.timer" \
+        "$stage/etc/systemd/system/asterinas-clock-persist.timer"
+    install -d -m 0755 -- "$stage/var/lib/asterinas"
+    ln -sfn ../asterinas-clock-persist.timer \
+        "$stage/etc/systemd/system/sysinit.target.wants/asterinas-clock-persist.timer"
     # NTP: systemd-timesyncd is the standard client. The board has no RTC, so
     # this is the only source of correct wall-clock time after boot. It is
     # enabled at sysinit and retries until the network is reachable.

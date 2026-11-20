@@ -1,0 +1,19 @@
+[Unit]
+Description=Keep the persisted boot clock fresh
+# This board's systemd never reaches timers.target (see the
+# systemd-basic-target-never-activates note), so the timer is pulled in by
+# sysinit.target instead and must not inherit the implicit After=sysinit.target
+# that would otherwise order it behind its own parent.
+DefaultDependencies=no
+After=local-fs.target
+
+[Timer]
+# Five minutes after boot the clock has been seeded and, once the portal is up,
+# corrected; from then on the file simply tracks it.
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Unit=asterinas-clock-persist.service
+
+[Install]
+WantedBy=timers.target
