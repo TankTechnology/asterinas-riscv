@@ -1,5 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
-"""An on-board DeepSeek harness ("dsh --on-board").
+"""A local on-board DeepSeek board agent ("dsh --on-board").
+
+Naming note: this is NOT the official DeepSeek Harness
+(https://github.com/deepseek-ai/deepseek-harness, `@deepseek-ai/dsh`), which is
+a TypeScript/Cordis plugin runtime that runs on the board as `dsh web` (see
+docs/porting/2026-11-10-node24-jit-and-dsh.md). The shared name is a local
+collision; this file is a minimal single-tool agent with no sandbox or
+permission layer.
 
 This file is deliberately self-contained: it is pushed to the board and run
 there with the system Python, using only the standard library. The model can

@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
-"""dsh: a DeepSeek-driven harness that operates the Megrez board.
+"""A local DeepSeek-driven board agent (locally named "dsh").
+
+This is NOT the official DeepSeek Harness
+(https://github.com/deepseek-ai/deepseek-harness, `@deepseek-ai/dsh`); that one
+is a TypeScript/Cordis plugin runtime documented in
+docs/porting/2026-11-10-node24-jit-and-dsh.md. The name "dsh" here is a local
+collision. This is a minimal tool loop with no sandbox or permission layer.
 
 The harness keeps the model on the host and gives it four board tools over
 the serial bridge: run a command, read the console, push a verified file, and

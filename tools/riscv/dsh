@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""dsh: DeepSeek harness for the Megrez board.
+"""dsh: a local DeepSeek-driven board agent for the Megrez board.
+
+Naming note: this tool is NOT the official DeepSeek Harness
+(https://github.com/deepseek-ai/deepseek-harness, `@deepseek-ai/dsh`). That one
+is a TypeScript/Cordis plugin runtime that runs on the board as `dsh web` and
+is documented in docs/porting/2026-11-10-node24-jit-and-dsh.md. The shared name
+is a local collision that has caused confusion: this directory is a minimal
+board agent with four tools and no sandbox or permission layer.
 
     dsh "run uname -a on the board and report the kernel"
     dsh --dry-run
