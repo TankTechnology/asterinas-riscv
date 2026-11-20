@@ -7,14 +7,13 @@ use alloc::string::ToString;
 use fdt::node::FdtNode;
 use fdt_util::AcquireIoMems;
 use ostd::{
-    arch::irq::{self as arch_irq, MappedIrqLine},
+    arch::irq::{self as arch_irq, DeferredMappedIrqLine},
     console::uart_ns16650a::{Ns16550aAccess, Ns16550aRegister, Ns16550aUart},
     io::IoMem,
     irq::IrqLine,
     mm::VmIoOnce,
-    sync::SpinLock,
+    sync::{LocalIrqDisabled, SpinLock},
 };
-use spin::Once;
 
 use crate::console::{Uart, UartConsole};
 
@@ -35,8 +34,14 @@ impl Ns16550aAccess for SerialAccess {
     }
 }
 
-/// IRQ line for UART serial.
-static IRQ_LINE: Once<MappedIrqLine> = Once::new();
+/// IRQ line for UART serial, kept so the top half can re-arm it after draining.
+///
+/// A PLIC source is level-sensitive: if the handler returns without removing
+/// the device's reason to assert the line, the gateway re-raises immediately
+/// and the hart never leaves the claim loop. The line is therefore mapped
+/// masked, masked again on every delivery, and re-armed only once the receive
+/// FIFO has been drained.
+static IRQ_LINE: SpinLock<Option<DeferredMappedIrqLine>, LocalIrqDisabled> = SpinLock::new(None);
 
 pub(super) fn init(fdt_node: FdtNode) {
     let Some([io_mem]) =
@@ -57,7 +62,7 @@ pub(super) fn init(fdt_node: FdtNode) {
         arch_irq::IRQ_CHIP
             .get()
             .unwrap()
-            .map_fdt_pin_to(interrupt_source, irq_line)
+            .map_fdt_pin_to_masked(interrupt_source, irq_line)
     }) else {
         ostd::info!("IRQ line is not available for NS16550A");
         return;
@@ -77,8 +82,27 @@ pub(super) fn init(fdt_node: FdtNode) {
     );
 
     let cloned_uart_console = uart_console.clone();
-    irq_line.on_active(move |_| cloned_uart_console.trigger_input_callbacks());
-    IRQ_LINE.call_once(move || irq_line);
+    if irq_line
+        .on_active_and_mask(move |_| {
+            cloned_uart_console.trigger_input_callbacks();
+            // Nothing is deferred: reading the FIFO has already removed the
+            // device's reason to assert the line, so re-arm straight away.
+            if let Some(line) = IRQ_LINE.lock().as_mut() {
+                if line.rearm().is_err() {
+                    ostd::warn!("NS16550A: failed to re-arm the interrupt source");
+                }
+            }
+        })
+        .is_err()
+    {
+        ostd::info!("could not register the NS16550A interrupt handler");
+        return;
+    }
+    *IRQ_LINE.lock() = Some(irq_line);
+    // The source was mapped masked; open it once the handler is in place.
+    if let Some(line) = IRQ_LINE.lock().as_mut() {
+        let _ = line.rearm();
+    }
     uart_console.uart().flush();
 
     ostd::info!("Registered NS16550A as a console");

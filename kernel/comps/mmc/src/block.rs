@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{
-    sync::Arc,
-    vec,
-    vec::Vec,
-};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{fmt, sync::atomic::Ordering};
 
 use aster_block::{

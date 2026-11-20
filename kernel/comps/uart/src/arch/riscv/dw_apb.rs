@@ -323,14 +323,17 @@ impl<A: DwApbAccess> DwApbUart<A> {
     }
 
     fn prepare_deferred_rx(&self) -> Result<bool, RxDeferError> {
-        if self
-            .acknowledge_interrupt_cause()
-            .map_err(RxDeferError::Service)?
-            != RxInterruptCause::Receive
-        {
-            return Ok(false);
-        }
+        // Read the cause for its side effect (it clears the interrupt), but do
+        // not branch on it: whatever it says, the receive enables are disarmed
+        // before this returns.
+        self.acknowledge_interrupt_cause()
+            .map_err(RxDeferError::Service)?;
 
+        // A PLIC source is level-sensitive. Returning to the trap handler while
+        // the device still asks for service would leave the gateway re-raising
+        // the line with nothing handling it -- the shape of the xHCI storm. The
+        // deferred pass re-enables the enables once it has drained what it can,
+        // so an unexpected cause still schedules it rather than being dropped.
         self.disable_rx_interrupt().map_err(RxDeferError::Mask)?;
         Ok(true)
     }
@@ -338,8 +341,26 @@ impl<A: DwApbAccess> DwApbUart<A> {
 
 impl<A: DwApbAccess> Uart for DwApbUart<A> {
     fn try_send_diagnostic(&self, buf: &[u8]) -> Result<(), DiagnosticSendError> {
-        match self.try_send_with_budget(buf, TX_POLL_BUDGET) {
-            Ok(()) | Err(TxError::Busy | TxError::TimedOut) => Ok(()),
+        let start = ostd::arch::read_tsc();
+        let result = self.try_send_with_budget(buf, TX_POLL_BUDGET);
+        let elapsed = ostd::arch::read_tsc().saturating_sub(start);
+        let frequency = ostd::arch::tsc_freq().max(1);
+        let elapsed_us =
+            (elapsed.saturating_mul(1_000_000) / frequency).min(u64::from(u32::MAX)) as u32;
+        {
+            let outcome = match &result {
+                Ok(()) => 0u8,
+                Err(TxError::Busy) => 1,
+                Err(TxError::TimedOut) => 2,
+                Err(TxError::Mmio) => 3,
+            };
+            // No print here: a report from inside the console path would be
+            // another long write. The heartbeat carries these numbers out.
+            ostd::uart_stats::note_write(elapsed_us, outcome);
+        }
+        match result {
+            Ok(()) => Ok(()),
+            Err(TxError::Busy | TxError::TimedOut) => Ok(()),
             Err(TxError::Mmio) => Err(DiagnosticSendError::Io),
         }
     }
@@ -418,6 +439,18 @@ pub(super) fn init(fdt_node: FdtNode) {
     );
 
     ostd::info!("Registered DW APB UART as a console");
+
+    // `asterinas.console_rx=off` leaves the receive interrupt disabled.
+    // Booting to the desktop needs no serial input, and a level-triggered
+    // receive line that is never quiesced turns the interrupt handler into
+    // a livelock that the stall report sees as a hart that stopped.
+    if ostd::boot::kernel_cmdline().is_some_and(|line| {
+        line.split_ascii_whitespace()
+            .any(|arg| arg == "asterinas.console_rx=off")
+    }) {
+        ostd::early_println!("ASTERINAS_UART_RX status=disabled request=cmdline");
+        return;
+    }
 
     match try_initialize_rx_path(fdt_node, uart_console) {
         Ok(()) => ostd::info!("Enabled DW APB UART receive interrupt"),
@@ -539,6 +572,9 @@ fn try_initialize_rx_path(
         .quiesce_rx_interrupt()
         .map_err(RxInitError::QuiesceFailed)?;
     let mut irq_line = IrqLine::alloc().map_err(|_| RxInitError::IrqLineUnavailable)?;
+    // Name the line in the boot log: a stall report can only say "external
+    // interrupt N", and matching N to a device by hand is guesswork.
+    ostd::early_println!("ASTERINAS_UART_RX status=enabled irq={}", irq_line.num());
 
     let taskless_console = uart_console.clone();
     RX_TASKLESS.call_once(|| {

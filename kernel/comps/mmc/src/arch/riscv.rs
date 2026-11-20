@@ -631,7 +631,12 @@ impl MmioHost {
     /// until the handler or the one-shot timer wakes it. The timer bounds a
     /// lost interrupt to a timeout; the source is re-armed before every sleep
     /// because the handler masks it on each delivery.
-    fn wait_status(&mut self, wanted: u32, may_sleep: bool, timeout: Duration) -> Result<u32, HostError> {
+    fn wait_status(
+        &mut self,
+        wanted: u32,
+        may_sleep: bool,
+        timeout: Duration,
+    ) -> Result<u32, HostError> {
         let mask = wanted | INTERRUPT_ERROR;
         let Some(frequency) = (self.irq.is_some() && may_sleep).then(|| ostd::arch::tsc_freq())
         else {
@@ -898,12 +903,11 @@ impl MmioHost {
     fn wait_sdma(&mut self, mut system_address: u64) -> Result<(), HostError> {
         let may_sleep = self.data_sleep_allowed;
         loop {
-            let status =
-                self.wait_status(
-                    INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA,
-                    may_sleep,
-                    self.data_wait_timeout,
-                )?;
+            let status = self.wait_status(
+                INTERRUPT_TRANSFER_COMPLETE | INTERRUPT_DMA,
+                may_sleep,
+                self.data_wait_timeout,
+            )?;
             match classify_sdma_interrupt(status) {
                 Ok(SdmaInterrupt::Pending) => continue,
                 Ok(SdmaInterrupt::Complete) => {

@@ -80,12 +80,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
 
         let common = IfaceCommon::new(name, InterfaceType::ETHER, flags, interface, sched_poll);
 
-        let arp_table = SpinLock::new(
-            static_neighbors
-                .iter()
-                .copied()
-                .collect::<BTreeMap<_, _>>(),
-        );
+        let arp_table = SpinLock::new(static_neighbors.iter().copied().collect::<BTreeMap<_, _>>());
 
         Arc::new(Self {
             driver,

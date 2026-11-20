@@ -244,7 +244,7 @@ mod tests {
 /// range flush covers every address inside it, which is what the proof below
 /// establishes on the smallest batch with more than one address.
 pub mod batch {
-    use super::{Access, Translation, served};
+    use super::{served, Access, Translation};
 
     /// The MMU's view of two consecutive addresses.
     #[derive(Clone, Copy)]
