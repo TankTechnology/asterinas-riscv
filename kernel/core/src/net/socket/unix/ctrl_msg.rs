@@ -264,6 +264,11 @@ impl AuxiliaryData {
         // this, so an unprivileged browser would otherwise fail every child
         // launch with EPERM ("Failed to launch socket subprocess"). A cycle
         // leaks; refusing the call breaks the program, which is worse.
+        //
+        // The intended enforcement is a property of the transfer rather than
+        // of the caller: `scm_graph` already models these edges and rejects one
+        // that would close a cycle. Once it is wired in here the warning below
+        // can go away and the leak with it.
         if files
             .iter()
             .any(|file| (&**file as &dyn Any).is::<UnixStreamSocket>())
