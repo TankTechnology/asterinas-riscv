@@ -40,6 +40,22 @@ use crate::{
     thread::Thread,
 };
 
+/// `asterinas.ext2_sync_hold_ms`: a diagnostic pause for the crash gate.
+///
+/// The crash-consistency gate needs a deterministic place to cut the power.
+/// This is the window the write ordering exists for: the held-back bitmap is
+/// durable and the inode table is not. Zero -- the default -- skips the loop
+/// entirely, so production boots pay nothing.
+static SYNC_HOLD: spin::Once<String> = spin::Once::new();
+aster_cmdline::define_kv_param!("asterinas.ext2_sync_hold_ms", SYNC_HOLD);
+
+fn sync_hold_ms() -> u64 {
+    SYNC_HOLD
+        .get()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
 /// The root inode number defined by the ext2 on-disk format.
 pub(super) const ROOT_INO: u32 = 2;
 
@@ -351,8 +367,36 @@ impl Ext2 {
         if !sb.is_data_block_valid(start, count) {
             return_errno_with_message!(Errno::EIO, "freeing invalid data block range");
         }
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "free block range overflow"))?;
+        if sb
+            .free_blocks_count()
+            .checked_add(count)
+            .is_none_or(|new_count| new_count > sb.total_blocks())
+        {
+            return_errno_with_message!(Errno::EIO, "free block count overflow in filesystem");
+        }
         let nr_blocks_per_group = sb.nr_blocks_per_group();
         let first_data_block = sb.first_data_block();
+
+        // Allocated runs normally stay within one group. For a caller-supplied
+        // cross-group range, reject any bad segment before freeing the first.
+        let first_group_idx = (start - first_data_block) / nr_blocks_per_group;
+        let last_group_idx = (end - 1 - first_data_block) / nr_blocks_per_group;
+        if first_group_idx != last_group_idx {
+            let mut current_block = start;
+            let mut remaining_blocks = count;
+            while remaining_blocks > 0 {
+                let group_idx = ((current_block - first_data_block) / nr_blocks_per_group) as usize;
+                let group = &self.block_groups[group_idx];
+                let group_start_bit = current_block - group.first_block();
+                let blocks_in_group = remaining_blocks.min(group.last_block() - current_block + 1);
+                group.validate_free_blocks(group_start_bit..(group_start_bit + blocks_in_group))?;
+                current_block += blocks_in_group;
+                remaining_blocks -= blocks_in_group;
+            }
+        }
 
         let mut current_block = start;
         let mut remaining_blocks = count;
@@ -515,16 +559,74 @@ impl Ext2 {
     }
 
     /// Syncs cached inodes and block-group-local metadata in all groups.
+    ///
+    /// The inode table and the allocation bitmaps are independent device
+    /// writes, so their order decides what a power loss leaves behind. The
+    /// bitmaps are written twice: once with the blocks freed since the last
+    /// writeback still held back, and once for real after the inode table.
+    /// A crash between the passes leaks blocks, which `e2fsck` reclaims, but
+    /// cannot leave an inode pointing at a block the bitmap calls free.
     pub(super) fn sync_all(&self) -> Result<()> {
         // `group_descriptors_segment` is updated without a filesystem-wide lock,
         // but each group writes only its own descriptor slice under its
         // `metadata.write()` guard.  Because groups are synced sequentially and
         // their descriptor offsets are disjoint, no two writers touch the same
         // bytes, so the segment is always consistent.
+        let group_descs = &self.group_descriptors_segment;
+
         for group in &self.block_groups {
-            group.sync_all(&self.group_descriptors_segment)?;
+            group.sync_inodes_without_table()?;
         }
-        self.sync_metadata()
+
+        let mut desc_dirty = false;
+        for group in &self.block_groups {
+            desc_dirty |= group.write_pre_inode_bitmap(group_descs)?;
+        }
+        if desc_dirty {
+            self.sync_metadata(true)?;
+        }
+
+        let hold_ms = sync_hold_ms();
+        if hold_ms > 0 {
+            let deadline = ostd::timer::Jiffies::elapsed().as_u64()
+                + hold_ms.saturating_mul(ostd::timer::TIMER_FREQ) / 1000;
+            while ostd::timer::Jiffies::elapsed().as_u64() < deadline {
+                core::hint::spin_loop();
+            }
+        }
+
+        for group in &self.block_groups {
+            group.sync_inode_table()?;
+        }
+
+        let mut final_desc_dirty = false;
+        for group in &self.block_groups {
+            final_desc_dirty |= group.sync_metadata(group_descs)?;
+        }
+        self.sync_metadata(final_desc_dirty || desc_dirty)
+    }
+
+    /// Publishes one group's inode table after holding its frees back.
+    ///
+    /// Used by per-inode `fsync`, which only flushes the group that owns the
+    /// inode but must still order the bitmap before the inode table.
+    pub(super) fn sync_inode_table_without_journal(&self, group: &BlockGroup) -> Result<()> {
+        if group.write_pre_inode_bitmap(&self.group_descriptors_segment)? {
+            self.sync_metadata(true)?;
+        }
+        group.sync_inode_table()
+    }
+
+    /// Persists one group's allocation bitmap and descriptor, then the
+    /// superblock, before an inode-level fsync reports its flush complete.
+    ///
+    /// Only the owning group is written. `fsync` is a hot path (journald,
+    /// systemd), and the board's MMC does small I/O at well under a megabyte
+    /// per second; the full sweep belongs to `sync_all`, which runs for a
+    /// clean unmount or `sync(2)`, not for every file.
+    pub(super) fn sync_allocation_metadata(&self, group: &BlockGroup) -> Result<()> {
+        let group_desc_dirty = group.sync_metadata(&self.group_descriptors_segment)?;
+        self.sync_metadata(group_desc_dirty)
     }
 
     /// Allocates a new inode number.
@@ -617,11 +719,10 @@ impl Ext2 {
     }
 
     /// Flushes the superblock and all dirty group descriptors to the device.
-    fn sync_metadata(&self) -> Result<()> {
+    fn sync_metadata(&self, group_desc_dirty: bool) -> Result<()> {
         let mut sb_guard = self.super_block.write();
 
-        let any_group_dirty = self.block_groups.iter().any(|group| group.is_desc_dirty());
-        if !sb_guard.is_dirty() && !any_group_dirty {
+        if !sb_guard.is_dirty() && !group_desc_dirty {
             return Ok(());
         }
 
@@ -853,6 +954,129 @@ mod test {
         f.ext2.free_blocks(range.start, alloc_len).unwrap();
         assert_eq!(f.ext2.block_group(0).free_blocks_count(), before_group_free);
         assert_eq!(f.ext2.super_block().free_blocks_count(), before_sb_free);
+    }
+
+    #[ktest]
+    fn block_free_rejects_already_free_bit_without_partial_release() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_blocks(31, 31)
+            .block_bitmap(BlockBitmapInit::MetadataOnly)
+            .build()
+            .unwrap();
+        let goal = f.sb.group_first_block_no(0);
+        let range = f.ext2.alloc_blocks(2, goal).unwrap();
+        assert_eq!(range.len(), 2);
+
+        f.ext2.free_blocks(range.start, 1).unwrap();
+        let sb_free = f.ext2.super_block().free_blocks_count();
+        let group = f.ext2.block_group(0);
+        let group_free = group.free_blocks_count();
+
+        // Freeing the already-free first block again must reject the whole
+        // request without releasing the still-allocated second block.
+        assert_errno!(f.ext2.free_blocks(range.start, 2), Errno::EIO);
+        assert_eq!(f.ext2.super_block().free_blocks_count(), sb_free);
+        assert_eq!(group.free_blocks_count(), group_free);
+        let second_bit = (range.start + 1 - group.first_block()) as u16;
+        assert!(group.metadata().block_bitmap.is_allocated(second_bit));
+
+        f.ext2.free_blocks(range.start + 1, 1).unwrap();
+    }
+
+    #[ktest]
+    fn sync_all_persists_allocation_bitmap() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_blocks(31, 31)
+            .block_bitmap(BlockBitmapInit::MetadataOnly)
+            .build()
+            .unwrap();
+        let goal = f.sb.group_first_block_no(0);
+        let range = f.ext2.alloc_blocks(2, goal).unwrap();
+        assert_eq!(range.len(), 2);
+
+        let (bitmap_offset, first_bit) = {
+            let group = f.ext2.block_group(0);
+            let bid = group.metadata().desc.block_bitmap_bid;
+            (
+                Bid::new(bid as u64).to_offset(),
+                (range.start - group.first_block()) as usize,
+            )
+        };
+        let is_allocated_on_disk = || {
+            let mut byte = [0u8; 1];
+            f.disk
+                .segment()
+                .read_bytes(bitmap_offset + first_bit / 8, &mut byte)
+                .unwrap();
+            byte[0] & (1u8 << (first_bit % 8)) != 0
+        };
+
+        // An allocation has to reach the device before an inode that refers
+        // to it can.
+        f.ext2.sync_all().unwrap();
+        assert!(is_allocated_on_disk());
+
+        // After sync returns, the bitmaps are durable and the freed bits are
+        // no longer held back, so the on-disk bitmap matches memory.
+        f.ext2.free_blocks(range.start, range.len() as u32).unwrap();
+        f.ext2.sync_all().unwrap();
+        assert!(!is_allocated_on_disk());
+    }
+
+    #[ktest]
+    fn pre_inode_bitmap_descriptor_describes_the_bitmap_it_writes() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_blocks(31, 31)
+            .block_bitmap(BlockBitmapInit::MetadataOnly)
+            .build()
+            .unwrap();
+        let goal = f.sb.group_first_block_no(0);
+        let range = f.ext2.alloc_blocks(2, goal).unwrap();
+        assert_eq!(range.len(), 2);
+
+        // Free both blocks, then take the first one back. Only the second
+        // block is still pending; the first one is allocated again.
+        f.ext2.free_blocks(range.start, 2).unwrap();
+        let reallocated = f.ext2.alloc_blocks(1, goal).unwrap();
+        assert_eq!(reallocated.start, range.start);
+
+        let group = f.ext2.block_group(0);
+        let group_size = (group.last_block() - group.first_block() + 1) as usize;
+        assert!(
+            group
+                .write_pre_inode_bitmap(&f.ext2.group_descriptors_segment)
+                .unwrap()
+        );
+
+        // The pass holds back exactly one free bit: the second block. The
+        // reallocated first block is published as in use.
+        let live_free = group.free_blocks_count();
+        let live_bitmap_free = group.metadata().block_bitmap.count_free();
+        let staged: RawBlockGroup = f.ext2.group_descriptors_segment.read_val(0).unwrap();
+        let bitmap_offset = Bid::new(group.metadata().desc.block_bitmap_bid as u64).to_offset();
+        let mut bitmap = [0u8; BLOCK_SIZE];
+        f.disk
+            .segment()
+            .read_bytes(bitmap_offset, &mut bitmap)
+            .unwrap();
+        let free_on_disk = bitmap
+            .iter()
+            .flat_map(|byte| (0..8).map(move |bit| (byte >> bit) & 1 == 0))
+            .take(group_size)
+            .filter(|is_free| *is_free)
+            .count();
+        assert_eq!(free_on_disk as u16, live_bitmap_free - 1);
+        assert_eq!(staged.free_blocks_count, live_free - 1);
+
+        // The held-back block must still be marked in use on the device, and
+        // the reallocated one must be published as in use as well.
+        let held_bit = (range.start + 1 - group.first_block()) as usize;
+        assert!(bitmap[held_bit / 8] & (1u8 << (held_bit % 8)) != 0);
+        let reallocated_bit = (reallocated.start - group.first_block()) as usize;
+        assert!(bitmap[reallocated_bit / 8] & (1u8 << (reallocated_bit % 8)) != 0);
     }
 
     #[ktest]

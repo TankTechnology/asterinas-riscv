@@ -273,7 +273,10 @@ impl Inode for Ext2Inode {
         }
         let fs = self.fs()?;
         let block_group = fs.block_group(self.block_group_idx());
-        block_group.sync_inode_table()?;
+        // Publish the bitmaps before the inode table, then publish the freed
+        // bits for real. A crash in between can only leak blocks.
+        fs.sync_inode_table_without_journal(&block_group)?;
+        fs.sync_allocation_metadata(&block_group)?;
         if fs.block_device().sync()? != BioStatus::Complete {
             return_errno_with_message!(Errno::EIO, "failed to flush block device");
         }
