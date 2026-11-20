@@ -14,6 +14,11 @@ back with debugfs. Requirements:
 * records are consecutive from 1 and checksummed; a short or corrupt tail is
   allowed only after the last valid record.
 
+Where the evidence lands: `<output-dir>/result.json` is the run's verdict and
+carries an `environment` block naming the kernel, initramfs and gate by
+SHA-256; each `<output-dir>/<case>/` holds that case's `serial.log`,
+`fsck-before.log`, `fsck-repair.log` and `qemu.cmd` (the exact command).
+
 Usage:
   tools/riscv/fs/crash_consistency_gate.py --output-dir /tmp/crash --fs both
 """
@@ -21,14 +26,17 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
+import shlex
 import shutil
 import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -114,20 +122,77 @@ def prepare_image(case: Path, fs_type: str) -> Path:
     return image
 
 
+def sha256_file(path: Path) -> str:
+    """Returns the hex SHA-256 of `path`, or a marker if it cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError as error:
+        return f"unreadable: {error}"
+    return digest.hexdigest()
+
+
+def guest_commandline(extra_args: str) -> str:
+    return f"console=ttyS0 loglevel=warn init=/init {extra_args}".strip()
+
+
 def launch(
     case: Path, kernel: Path, initramfs: Path, image: Path, extra_args: str = ""
 ) -> subprocess.Popen[bytes]:
+    """Boots the guest and records exactly how, next to the case's evidence.
+
+    A green run is only evidence for the objects it actually ran: without the
+    command line and the image hashes, "3/3 passed" cannot be tied to a kernel
+    after the tree moves on (see the ext2 held-back count fix, whose gate run
+    had to be repeated because the recorded images predated it).
+    """
     command = [
         "qemu-system-riscv64", "-machine", "virt", "-m", "2G", "-smp", "2",
         "-nographic", "-kernel", str(kernel), "-initrd", str(initramfs),
-        "-append", f"console=ttyS0 loglevel=warn init=/init {extra_args}".strip(),
+        "-append", guest_commandline(extra_args),
         "-drive", f"if=none,format=raw,file={image},id=d0",
         "-device", "virtio-blk-device,drive=d0",
     ]
+    (case / "qemu.cmd").write_text(shlex.join(command) + "\n")
     return subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+
+
+def qemu_version() -> str:
+    try:
+        out = subprocess.run(
+            ["qemu-system-riscv64", "--version"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return out.stdout.splitlines()[0] if out.stdout else "unknown"
+
+
+def environment(
+    kernel: Path, initramfs: Path, writer: str, fs_type: str, iterations: int
+) -> dict[str, object]:
+    """Everything a reader needs to re-run and to identify what ran."""
+    gate = Path(__file__).resolve()
+    return {
+        "kernel": kernel.name,
+        "kernel_path": str(kernel.resolve()),
+        "kernel_sha256": sha256_file(kernel),
+        "initramfs_sha256": sha256_file(initramfs),
+        "gate_path": str(gate),
+        "gate_sha256": sha256_file(gate),
+        "gate_mtime": time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(gate.stat().st_mtime)
+        ),
+        "qemu_version": qemu_version(),
+        "writer": writer,
+        "fs": fs_type,
+        "iterations": iterations,
+    }
 
 
 def kill_tree(process: subprocess.Popen[bytes]) -> None:
@@ -304,32 +369,50 @@ def parse_bitmap_differences(log: str) -> tuple[list[int], list[int]]:
 
 
 def wait_for_churn(case: Path, process: subprocess.Popen[bytes]) -> str:
-    """Waits for the churn writer to start, then kills QEMU mid-churn."""
-    text = ""
-    ready_at = None
-    deadline = time.monotonic() + GUEST_TIMEOUT
-    while time.monotonic() < deadline:
-        line = process.stdout.readline()  # type: ignore[union-attr]
-        if not line:
-            if process.poll() is not None:
-                break
-            continue
-        text += line.decode("utf-8", "replace")
-        if "CHURN_READY" in text and ready_at is None:
-            ready_at = time.monotonic()
+    """Waits for the churn writer to start, then kills QEMU mid-churn.
+
+    The reader runs on its own thread. While the kernel holds the crash window
+    open it prints nothing, so a blocking `readline` would only re-check the
+    deadline once the window had already closed -- the kill would land after a
+    completed sync, where the bitmaps and the inode table agree, and every
+    kernel would look consistent.
+
+    That is not hypothetical: with the blocking version, both a kernel with the
+    ordered writes and one without reported `dangling=0`, and every case's
+    serial log showed a second `CHURN` round -- proof the cut happened after the
+    window. With this version exactly one round is printed, the unordered
+    kernel fails all its cases with dangling block 12, and the ordered one
+    passes. Do not turn the reader back into a blocking read.
+    """
+    lines: list[str] = []
+    ready = threading.Event()
+
+    def drain() -> None:
+        assert process.stdout is not None
+        for raw in process.stdout:
+            line = raw.decode("utf-8", "replace")
+            lines.append(line)
+            if "CHURN_READY" in line:
+                ready.set()
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        if not ready.wait(GUEST_TIMEOUT):
+            raise GateError("guest never started the churn writer")
         # Each round announces itself and then starts a held sync, so a kill
         # anywhere in this window lands between the inode table and the
         # bitmaps.
-        if ready_at is not None and time.monotonic() - ready_at >= random.uniform(0.4, 1.2):
+        time.sleep(random.uniform(0.4, 1.2))
+    finally:
+        kill_tree(process)
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
             kill_tree(process)
-            break
-    else:
-        kill_tree(process)
-    try:
-        process.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        kill_tree(process)
-        process.wait(timeout=10)
+            process.wait(timeout=10)
+        reader.join(timeout=5)
+    text = "".join(lines)
     (case / "serial.log").write_text(text)
     if "CHURN_READY" not in text:
         raise GateError(f"guest never started the churn writer: {text[-400:]!r}")
@@ -422,7 +505,13 @@ def main(argv: list[str] | None = None) -> int:
         args.fs = "ext2"
 
     types = ("ext2", "ext4") if args.fs == "both" else (args.fs,)
-    result: dict[str, object] = {"status": "running", "cases": []}
+    result: dict[str, object] = {
+        "status": "running",
+        "environment": environment(
+            args.kernel, initramfs, args.writer, args.fs, args.iterations
+        ),
+        "cases": [],
+    }
     failures = 0
     for fs_type in types:
         for iteration in range(args.iterations):
