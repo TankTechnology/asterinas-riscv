@@ -2054,6 +2054,20 @@ EOF
         if [[ -n "$timesync_uid" && -n "$timesync_gid" ]]; then
             chown "$timesync_uid:$timesync_gid" "$stage/var/lib/systemd/timesync"
         fi
+        # The packaged unit sandboxes itself with mount namespaces, and this
+        # kernel cannot set them up: the service dies in step NAMESPACE with
+        # "Failed to set up mount namespacing: /dev: No such file or directory"
+        # and status 226, so the clock is never synchronised. Turn off the
+        # three knobs that need a mount namespace; the daemon adjusts the clock
+        # through adjtimex and needs nothing else.
+        install -d -m 0755 -- "$stage/etc/systemd/system/systemd-timesyncd.service.d"
+        cat >"$stage/etc/systemd/system/systemd-timesyncd.service.d/asterinas.conf" <<'EOF'
+[Service]
+PrivateDevices=no
+ProtectSystem=no
+ProtectHome=no
+EOF
+        chmod 0644 -- "$stage/etc/systemd/system/systemd-timesyncd.service.d/asterinas.conf"
         install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
         ln -sfn /usr/lib/systemd/system/systemd-timesyncd.service \
             "$stage/etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service"
