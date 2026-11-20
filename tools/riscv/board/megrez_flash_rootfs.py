@@ -167,16 +167,19 @@ class Flash:
         # uncached binary fails ("Permission denied"/"Exec format error").
         # `echo` is a shell builtin and the sysrq path lives in the kernel.
         text = self.command(
-            f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -1; "
-            # `command()` appends and matches its own marker line; a literal
-            # one here would only invite matching the echo of the command.
-            "echo b > /proc/sysrq-trigger",
+            f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -1",
             timeout=1800,
         )
         if "copied" not in text:
             print(f"dd did not report success: {text[-300:]}", file=sys.stderr)
             return 5
+        # The reboot goes out on its own line and is not waited for: the
+        # machine goes down before the shell can print the marker that
+        # `command()` looks for, and bundling the two made this step hang for
+        # the full timeout after a write that had already succeeded.
         print("rebooting into the new image", flush=True)
+        self._send(b"echo b > /proc/sysrq-trigger\n")
+        time.sleep(2)
 
         if not self.wait_for_boot():
             print("the board did not come back after the reboot", file=sys.stderr)
