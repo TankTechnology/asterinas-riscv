@@ -14,8 +14,6 @@ use crate::{
     },
     net::socket::util::{CControlHeader, ControlMessage, RecvFlags},
     prelude::*,
-    process::{UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
-    security::lsm::hooks as lsm_hooks,
     util::net::CSocketOptionLevel,
 };
 
@@ -259,19 +257,18 @@ impl AuxiliaryData {
         // FIXME: Sending UNIX sockets over UNIX sockets can easily lead to circular references and
         // memory leaks. Linux uses a complex garbage collection algorithm to address these issues.
         // See also <https://elixir.bootlin.com/linux/v6.15/source/net/unix/garbage.c#L592>.
+        //
+        // Do not require a capability here. Linux allows any process to pass a
+        // socket descriptor this way, and real programs depend on it: Gecko
+        // hands the IPC channel of a new child process over exactly like
+        // this, so an unprivileged browser would otherwise fail every child
+        // launch with EPERM ("Failed to launch socket subprocess"). A cycle
+        // leaks; refusing the call breaks the program, which is worse.
         if files
             .iter()
             .any(|file| (&**file as &dyn Any).is::<UnixStreamSocket>())
         {
             warn!("UNIX sockets in SCM_RIGHTS messages can leak kernel resource");
-
-            let current = current_thread!();
-            let posix_thread = current.as_posix_thread().unwrap();
-            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-                UserNamespace::get_init_singleton().as_ref(),
-                posix_thread,
-                CapSet::SYS_ADMIN,
-            ))?;
         }
 
         Ok(Self { files, cred })
