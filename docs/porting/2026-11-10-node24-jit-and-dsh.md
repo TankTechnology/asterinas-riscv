@@ -4,6 +4,13 @@ This note records why Node 24 crashes on the Megrez board, which is not an
 Asterinas defect, and what the official DeepSeek harness (`dsh`) needs before
 it can boot inside the board's OS.
 
+Naming: the `dsh` here is the official
+[deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)
+(TypeScript / Cordis, `dsh web`). The unrelated local
+`tools/riscv/dsh` board agent is described in
+[2026-11-09-deepseek-harness.md](2026-11-09-deepseek-harness.md); it merely
+shares the name.
+
 ## Node 24: not a kernel bug
 
 Node 24.22.2 (unofficial-builds `linux-riscv64`) crashes on any JavaScript that

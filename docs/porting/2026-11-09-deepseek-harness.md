@@ -1,5 +1,15 @@
 # dsh: a DeepSeek harness for the Megrez board, 2026-11-09
 
+> **Naming correction (2026-11-18).** This document describes the local,
+> minimal `tools/riscv/dsh` board agent. It is **not** the official DeepSeek
+> Harness ([deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness),
+> `@deepseek-ai/dsh`), which is a TypeScript / Cordis plugin runtime that runs
+> on the board as `dsh web` and is documented in
+> [2026-11-10-node24-jit-and-dsh.md](2026-11-10-node24-jit-and-dsh.md). The
+> shared name is a local collision that led us to reason about the wrong
+> project's sandbox and permission layer. Prefer "board agent" when referring
+> to this tool.
+
 `dsh` is a small agent loop that lets a DeepSeek model operate the board. It
 runs on the host, keeps the model on the host, and reaches the board through
 the same serial bridge the developer tooling uses. The board needs no network
