@@ -463,16 +463,13 @@ pub(crate) fn run_hid_host(
     // runs here, in task context (device registration, evdev dispatch and tty
     // input all require it).
     let (waiter, waker) = Waiter::new_pair();
-    let mut irq_line = match IrqLine::alloc() {
+    let irq_line = match IrqLine::alloc() {
         Ok(line) => line,
         Err(_) => {
             ostd::warn!("failed to allocate USB IRQ line");
             return;
         }
     };
-    irq_line.on_active(move |_| {
-        waker.wake_up();
-    });
 
     let irq_chip = match arch_irq::IRQ_CHIP.get() {
         Some(chip) => chip,
@@ -481,15 +478,32 @@ pub(crate) fn run_hid_host(
             return;
         }
     };
+    // The xHCI interrupt line is level-triggered and is only quiesced here, in
+    // task context, by consuming the event ring. Completing the interrupt in
+    // the handler without masking the source lets the controller re-raise it
+    // immediately: the handler then spins in the claim loop at hundreds of
+    // thousands of interrupts per second and the thread that would drain the
+    // ring can never run. So the source is mapped masked and re-armed after
+    // every drain -- the same pattern the MMC driver uses.
+    //
     // The mapping must stay alive for as long as the handler is installed, so
     // this thread owns it.
-    let _irq_line = match irq_chip.map_fdt_pin_to(interrupt_source, irq_line) {
+    let mut irq_line = match irq_chip.map_fdt_pin_to_masked(interrupt_source, irq_line) {
         Ok(mapped) => mapped,
         Err(_) => {
             ostd::warn!("failed to map USB interrupt to PLIC");
             return;
         }
     };
+    if irq_line
+        .on_active_and_mask(move |_| {
+            waker.wake_up();
+        })
+        .is_err()
+    {
+        ostd::warn!("failed to register the USB interrupt handler");
+        return;
+    }
 
     // The host disabled its global interrupt until the handler was installed.
     if host.enable_irq().is_err() {
@@ -503,10 +517,23 @@ pub(crate) fn run_hid_host(
         hid_info.mouse.is_some(),
     );
 
+    // Diagnostic counters: a loop that never wakes means the controller's
+    // interrupt is not reaching us; a loop that wakes and polls but never sees
+    // a report means the transfer itself is not delivering. Printed at a low
+    // rate so a silent input device can be told from a dead interrupt without
+    // rebuilding again.
+    let mut wakes: u64 = 0;
+    let mut reports: u64 = 0;
+    let mut next_report_at =
+        ostd::timer::Jiffies::elapsed().as_u64() + ostd::timer::timer_freq() * 10;
+
     loop {
         loop {
             let report = match host.poll_report() {
-                Ok(Some(report)) => report,
+                Ok(Some(report)) => {
+                    reports += 1;
+                    report
+                }
                 // No report ready; the interrupt will schedule us again.
                 Ok(None) => break,
                 Err(error) => {
@@ -557,7 +584,22 @@ pub(crate) fn run_hid_host(
                 }
             }
         }
-        waiter.wait();
+        wakes += 1;
+        let now = ostd::timer::Jiffies::elapsed().as_u64();
+        if now >= next_report_at {
+            ostd::info!("USB hid host: wakes={}, reports={}", wakes, reports);
+            next_report_at = now + ostd::timer::timer_freq() * 10;
+        }
+        // Poll fallback. The xHCI interrupt does not reach this thread on
+        // this board (the loop slept here forever: zero wakes, zero reports,
+        // and neither the mouse nor the keyboard ever produced an event).
+        // Yielding until the next timer tick bounds the latency at one tick
+        // and keeps the CPU available to other tasks, so a lost interrupt
+        // costs responsiveness instead of killing the device.
+        let until_tick = ostd::timer::Jiffies::elapsed().as_u64() + 1;
+        while ostd::timer::Jiffies::elapsed().as_u64() < until_tick {
+            ostd::task::Task::yield_now();
+        }
     }
 }
 
