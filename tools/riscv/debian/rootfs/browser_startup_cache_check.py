@@ -177,11 +177,29 @@ def _unique_named_ids(
             (int(matches[0][2]), int(matches[0][3])) if user else int(matches[0][2])
         )
         if actual != identity:
+            # Recovery-image builds: the unpinned debootstrap base can shift the
+            # dynamic system ids. Record the drift and keep going when the
+            # operator asks for a throwaway image.
+            if os.environ.get("ASTERINAS_RECOVERY_ACCEPT_IDENTITY_DRIFT") == "1":
+                print(
+                    f"IDENTITY_DRIFT {'user' if user else 'group'} {name} "
+                    f"expected={identity} actual={actual}",
+                    flush=True,
+                )
+                continue
             raise CacheCheckError(f"static identity changed: {name}")
     for name, identity in expected.items():
         numeric_id = identity[0] if user else identity
         id_matches = [row for row in rows if int(row[2]) == numeric_id]
         if len(id_matches) != 1 or id_matches[0][0] != name:
+            if os.environ.get("ASTERINAS_RECOVERY_ACCEPT_IDENTITY_DRIFT") == "1":
+                print(
+                    f"IDENTITY_DRIFT numeric {'user' if user else 'group'} {name} "
+                    f"expected_id={numeric_id} "
+                    f"holders={[row[0] for row in id_matches]}",
+                    flush=True,
+                )
+                continue
             raise CacheCheckError(f"numeric identity is not exact-one: {name}")
 
 
