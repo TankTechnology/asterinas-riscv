@@ -10,8 +10,9 @@ mod remapping;
 pub use chip::{DeferredMappedIrqLine, IRQ_CHIP, InterruptSourceInFdt, IrqChip, MappedIrqLine};
 pub(crate) use ipi::{
     HwCpuId, remote_fence_i_all_online_harts, sbi_ipi_calls, send_ipi, send_ipi_to_harts,
-    set_sbi_ipi_serialized,
+    set_sbi_ipi_serialized, take_sbi_ipi_call_stats,
 };
+pub use ops::set_wfi_enable_first;
 pub(crate) use ops::{
     disable_local, disable_local_and_halt, enable_local, enable_local_and_halt, is_local_enabled,
 };
@@ -82,6 +83,20 @@ impl HwIrqLine {
             }
             // The trap entry acknowledges SSIP before running IPI callbacks.
             InterruptSource::Software => {}
+        }
+    }
+
+    /// Masks this line at the interrupt controller, if it is an external one.
+    ///
+    /// A level-triggered source whose handler cannot quiesce it keeps the
+    /// claim loop busy forever; masking the offending source is what lets the
+    /// hart leave that loop without stopping interrupts for every device.
+    pub(crate) fn mask(&self) {
+        if let InterruptSource::External(interrupt_source_on_chip) = &self.source {
+            IRQ_CHIP
+                .get()
+                .unwrap()
+                .mask_source(*interrupt_source_on_chip);
         }
     }
 }

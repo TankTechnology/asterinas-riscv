@@ -5,7 +5,7 @@ use core::{
     time::Duration,
 };
 
-use super::TIMER_FREQ;
+use super::timer_freq;
 
 /// Jiffies is a term used to denote the units of time measurement by the kernel.
 ///
@@ -42,8 +42,9 @@ impl Jiffies {
 
     /// Gets the [`Duration`] calculated from the jiffies counts.
     pub fn as_duration(self) -> Duration {
-        let secs = self.0 / TIMER_FREQ;
-        let nanos = ((self.0 % TIMER_FREQ) * 1_000_000_000) / TIMER_FREQ;
+        let freq = timer_freq();
+        let secs = self.0 / freq;
+        let nanos = ((self.0 % freq) * 1_000_000_000) / freq;
         Duration::new(secs, nanos as u32)
     }
 }

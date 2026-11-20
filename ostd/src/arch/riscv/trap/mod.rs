@@ -22,6 +22,15 @@ use crate::{
     irq::call_irq_callback_functions,
 };
 
+/// How many external interrupts one trap may service before its source is
+/// masked.
+///
+/// Well above any legitimate burst (a full FIFO of a dozen devices is still
+/// far below it) and far below the rate at which a stuck line re-raises:
+/// the storm measured on this board claimed about 633,000 interrupts a
+/// second, so it hits the budget within a hundredth of a second.
+const EXTERNAL_IRQ_BUDGET: u32 = 4096;
+
 /// Initializes interrupt handling on RISC-V.
 ///
 /// # Safety
@@ -40,6 +49,11 @@ pub(crate) unsafe fn init_on_cpu() {
 // SAFETY: The name does not collide with other symbols.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn trap_handler(f: &mut TrapFrame) {
+    // A liveness stamp for the stall report: if a hart stops taking traps,
+    // nothing else it does can update this, and the age at report time says
+    // how long it has been out of touch.
+    crate::smp::note_trap(f.sepc);
+
     fn enable_local_if(cond: bool) {
         if cond {
             enable_local();
@@ -53,6 +67,7 @@ unsafe extern "C" fn trap_handler(f: &mut TrapFrame) {
     }
 
     let scause = riscv::register::scause::read();
+    crate::smp::note_trap_cause(scause.bits() as u64);
     let Ok(cause) = Trap::<Interrupt, Exception>::try_from(scause.cause()) else {
         panic!(
             "Cannot handle unknown trap: {:#x?}; trapframe: {:#x?}",
@@ -94,6 +109,14 @@ unsafe extern "C" fn trap_handler(f: &mut TrapFrame) {
 }
 
 pub(super) fn handle_irq(trap_frame: &TrapFrame, interrupt: Interrupt, priv_level: PrivilegeLevel) {
+    // One marker at the top of the handler, with the interrupt's kind, so a
+    // stall report can say which interrupt the target last started handling
+    // and whether it got past the entry of that handler at all.
+    crate::smp::note_irq_enter(match interrupt {
+        Interrupt::SupervisorTimer => 1,
+        Interrupt::SupervisorExternal => 2,
+        Interrupt::SupervisorSoft => 3,
+    });
     match interrupt {
         Interrupt::SupervisorTimer => {
             // Sampling hooks run before the handlers so the sample is the
@@ -111,11 +134,41 @@ pub(super) fn handle_irq(trap_frame: &TrapFrame, interrupt: Interrupt, priv_leve
         Interrupt::SupervisorExternal => {
             // No races because we're in IRQs.
             let hart_id = crate::arch::boot::smp::get_current_hart_id();
-            while let Some(hw_irq_line) = IRQ_CHIP.get().unwrap().claim_interrupt(hart_id) {
+            // The claim loop is bounded: a level-triggered source that its
+            // handler cannot quiesce would otherwise keep this hart inside
+            // one trap handler forever -- taking no timer, no IPI, and
+            // writing no progress -- which is indistinguishable from a dead
+            // hart from the outside. The budget is per trap, not cumulative.
+            let mut served = 0u32;
+            loop {
+                // Marked before the claim: if the claim's MMIO read never
+                // returns, this is the only marker that will be left behind.
+                crate::smp::note_activity(crate::smp::ACT_PLIC_CLAIM);
+                let Some(hw_irq_line) = IRQ_CHIP.get().unwrap().claim_interrupt(hart_id) else {
+                    crate::smp::note_activity(0);
+                    break;
+                };
+                crate::smp::note_ext_irq(hw_irq_line.irq_num());
+                served += 1;
+                if served > EXTERNAL_IRQ_BUDGET {
+                    // Mask the offending source only, so every other device
+                    // keeps working, and say which line it was: the mask is
+                    // permanent, so this line is its only memorial.
+                    hw_irq_line.ack();
+                    hw_irq_line.mask();
+                    crate::smp::note_irq_storm(hw_irq_line.irq_num());
+                    crate::early_println!(
+                        "ASTERINAS_IRQ_STORM line={} served={} action=masked",
+                        hw_irq_line.irq_num(),
+                        served
+                    );
+                    break;
+                }
                 call_irq_callback_functions(trap_frame, &hw_irq_line, priv_level);
             }
         }
         Interrupt::SupervisorSoft => {
+            crate::smp::note_ipi_trap();
             // Clear SSIP before draining IPI callbacks. A sender can enqueue
             // another callback while this handler runs; a post-callback clear
             // would erase its new pending interrupt and strand the callback.

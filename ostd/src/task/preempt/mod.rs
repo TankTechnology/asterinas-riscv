@@ -21,6 +21,12 @@ pub use self::guard::{DisabledPreemptGuard, disable_preempt};
 /// ([`crate::task::atomic_mode`]).
 #[track_caller]
 pub fn halt_cpu() {
+    crate::smp::note_halt();
+    // About to idle while an inter-processor call is still pending for this
+    // CPU: record what the interrupt controller and the CSRs actually say.
+    if crate::smp::self_has_pending_ipi() {
+        crate::smp::take_ipi_snapshot();
+    }
     crate::task::atomic_mode::might_sleep();
 
     let irq_guard = crate::irq::disable_local();

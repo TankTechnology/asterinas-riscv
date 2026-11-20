@@ -69,6 +69,7 @@ impl<T: ?Sized> SpinLock<T, PreemptDisabled> {
 
 impl<T: ?Sized, G: SpinGuardian> SpinLock<T, G> {
     /// Acquires the spin lock.
+    #[track_caller]
     pub fn lock(&self) -> SpinLockGuard<'_, T, G> {
         // Notice the guard must be created before acquiring the lock.
         let inner_guard = G::guard();
@@ -100,10 +101,25 @@ impl<T: ?Sized, G: SpinGuardian> SpinLock<T, G> {
         self.inner.val.get_mut()
     }
 
+    /// Spins until the lock is acquired.
+    ///
+    /// The fast path is exactly one `compare_exchange`; only a lock that is
+    /// actually contended is recorded, so the diagnostic costs nothing in the
+    /// common case. The caller location comes from `#[track_caller]` on
+    /// [`Self::lock`], which is what names the stuck call site in the stall
+    /// report.
+    #[track_caller]
     fn acquire_lock(&self) {
+        if self.try_acquire_lock() {
+            return;
+        }
+        // `T` may be unsized, so the pointer has to lose its metadata before
+        // it can become an integer; the data address identifies the instance.
+        crate::smp::note_lock_spin(core::ptr::from_ref(self).cast::<()>() as usize);
         while !self.try_acquire_lock() {
             core::hint::spin_loop();
         }
+        crate::smp::note_lock_spin_done();
     }
 
     fn try_acquire_lock(&self) -> bool {

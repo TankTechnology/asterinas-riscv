@@ -2,6 +2,8 @@
 
 //! The IRQ disabling guard.
 
+use core::panic::Location;
+
 use crate::{arch::irq as arch_irq, sync::GuardTransfer, task::atomic_mode::InAtomicMode};
 
 /// Disables all IRQs on the current CPU (i.e., locally).
@@ -28,8 +30,9 @@ use crate::{arch::irq as arch_irq, sync::GuardTransfer, task::atomic_mode::InAto
 /// // Re-enable IRQs if they were previously enabled.
 /// drop(guard);
 /// ```
+#[track_caller]
 pub fn disable_local() -> DisabledLocalIrqGuard {
-    DisabledLocalIrqGuard::new()
+    DisabledLocalIrqGuard::new(Location::caller())
 }
 
 /// A guard for disabled local IRQs.
@@ -38,6 +41,8 @@ pub fn disable_local() -> DisabledLocalIrqGuard {
 #[derive(Debug)]
 pub struct DisabledLocalIrqGuard {
     was_enabled: bool,
+    started_ticks: u64,
+    site: &'static Location<'static>,
 }
 
 impl !Send for DisabledLocalIrqGuard {}
@@ -51,26 +56,48 @@ impl !Sync for DisabledLocalIrqGuard {}
 unsafe impl InAtomicMode for DisabledLocalIrqGuard {}
 
 impl DisabledLocalIrqGuard {
-    fn new() -> Self {
+    fn new(site: &'static Location<'static>) -> Self {
         let was_enabled = arch_irq::is_local_enabled();
+        let started_ticks = if was_enabled {
+            crate::arch::read_tsc()
+        } else {
+            0
+        };
         if was_enabled {
             arch_irq::disable_local();
+            super::note_irq_off_enter(started_ticks, site);
         }
-        Self { was_enabled }
+        Self {
+            was_enabled,
+            started_ticks,
+            site,
+        }
     }
 }
 
 impl GuardTransfer for DisabledLocalIrqGuard {
     fn transfer_to(&mut self) -> Self {
         let was_enabled = self.was_enabled;
+        let started_ticks = self.started_ticks;
+        let site = self.site;
         self.was_enabled = false;
-        Self { was_enabled }
+        Self {
+            was_enabled,
+            started_ticks,
+            site,
+        }
     }
 }
 
 impl Drop for DisabledLocalIrqGuard {
     fn drop(&mut self) {
         if self.was_enabled {
+            // How long this outer guard kept local IRQs off. A long window
+            // makes the CPU take no traps at all, so every CPU waiting for a
+            // page-table flush on it stalls for the same length.
+            let elapsed = crate::arch::read_tsc().saturating_sub(self.started_ticks);
+            super::note_irq_off_exit();
+            super::note_irq_off(elapsed, self.site);
             arch_irq::enable_local();
         }
     }

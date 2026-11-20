@@ -128,6 +128,14 @@ impl IrqChip {
             plic.set_interrupt_enabled(hart, interrupt_source_in_fdt.arguments[0], true)
         });
         crate::arch::device::io_mem::fence();
+        // The stall report names an external interrupt by its *software*
+        // number; this line is how that number gets tied to the PLIC source
+        // and to the driver that owns it.
+        crate::early_println!(
+            "ASTERINAS_IRQ_MAP num={} plic_source={}",
+            irq_line.num(),
+            interrupt_source_in_fdt.arguments[0]
+        );
 
         Ok(MappedIrqLine {
             irq_line,
@@ -152,6 +160,17 @@ impl IrqChip {
             },
             crate::arch::device::io_mem::fence,
         );
+    }
+
+    /// Masks one external interrupt source permanently.
+    ///
+    /// Used as the last resort when a source cannot be quiesced: a
+    /// level-triggered line that stays asserted turns the claim loop into a
+    /// livelock, and the CPU never runs anything else again. Masking this one
+    /// source keeps every other device working.
+    pub(crate) fn mask_source(&self, source: InterruptSourceOnChip) {
+        self.set_interrupt_state(source, InterruptState::Masked);
+        crate::arch::device::io_mem::fence();
     }
 
     /// Claims an external interrupt that is pending on a specific hart.

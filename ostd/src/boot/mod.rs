@@ -278,7 +278,6 @@ mod framebuffer_tests {
 ///
 /// When supporting multiple boot protocols with a single build, the entrypoint
 /// and boot information getters are dynamically decided. The entry point
-/// function should initializer all arguments at [`EARLY_INFO`].
 ///
 /// All the references in this structure should be valid in the boot context.
 /// After the kernel is booted, users should use [`BootInfo`] instead.
@@ -293,6 +292,15 @@ pub(crate) struct EarlyBootInfo {
 
 /// The boot-time information.
 pub(crate) static EARLY_INFO: Once<EarlyBootInfo> = Once::new();
+
+/// Returns the kernel command line the boot loader handed over, if any.
+///
+/// Drivers need the same switches the core does (for example, disabling a
+/// device's receive interrupt while a livelock in its interrupt path is
+/// being pinned down), and this is the one place the line is stored.
+pub fn kernel_cmdline() -> Option<&'static str> {
+    EARLY_INFO.get().map(|info| info.kernel_cmdline)
+}
 
 /// Initializes the boot information.
 ///

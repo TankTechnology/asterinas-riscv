@@ -15,7 +15,7 @@ use crate::{
     arch::{self, boot::DEVICE_TREE, cpu::extension::IsaExtensions, trap::TrapFrame},
     cpu_local,
     irq::{self, IrqLine},
-    timer::TIMER_FREQ,
+    timer::timer_freq,
 };
 
 pub(super) static TIMER_IRQ: Once<IrqLine> = Once::new();
@@ -55,11 +55,36 @@ pub(super) unsafe fn init_on_bsp() {
             .timebase_frequency() as u64,
         Ordering::Relaxed,
     );
+    // `asterinas.timer_hz=<n>` overrides the tick rate. Each tick is a
+    // machine-mode timer trap on this platform, so the rate is a firmware
+    // traffic knob as much as a scheduling one.
+    if let Some(info) = crate::boot::EARLY_INFO.get() {
+        for arg in info.kernel_cmdline.split_ascii_whitespace() {
+            if let Some(value) = arg.strip_prefix("asterinas.timer_hz=") {
+                if let Ok(hz) = value.parse::<u64>() {
+                    crate::timer::set_timer_freq(hz);
+                }
+            }
+        }
+    }
+    crate::early_println!("ASTERINAS_TIMER_HZ hz={}", timer_freq());
     TIMER_INTERVAL.store(
-        (TIMEBASE_FREQ.load(Ordering::Relaxed) / TIMER_FREQ).max(1),
+        (TIMEBASE_FREQ.load(Ordering::Relaxed) / timer_freq()).max(1),
         Ordering::Relaxed,
     );
-    if is_sstc_enabled() {
+    let mut force_sstc = false;
+    if let Some(info) = crate::boot::EARLY_INFO.get() {
+        force_sstc = info
+            .kernel_cmdline
+            .split_ascii_whitespace()
+            .any(|arg| arg == "asterinas.force_sstc");
+    }
+    // `force_sstc` is a probe, not a feature selection: the DTB may omit
+    // `sstc` while the firmware has still enabled `menvcfg.STCE`, in which
+    // case `stimecmp` works. If STCE is clear, the write traps and the run
+    // ends visibly instead of silently.
+    let sstc = is_sstc_enabled() || force_sstc;
+    if sstc {
         // SAFETY: Mutating the static variable `SET_TIMER_FN` is safe here
         // because we ensure that it is only modified during the initialization
         // phase of the timer.
@@ -67,6 +92,14 @@ pub(super) unsafe fn init_on_bsp() {
             SET_TIMER_FN = set_timer_sstc;
         }
     }
+    // Whether arming the timer enters machine mode 250 times a second per CPU
+    // (`set_timer` through SBI) or writes `stimecmp` directly decides how much
+    // time each hart spends where supervisor interrupts cannot arrive.
+    crate::early_println!(
+        "ASTERINAS_TIMER_MODE mode={} forced={}",
+        if sstc { "sstc" } else { "sbi" },
+        force_sstc as u8
+    );
 
     TIMER_IRQ.call_once(|| {
         let mut timer_irq = IrqLine::alloc().unwrap();
@@ -218,7 +251,13 @@ fn program_timer_at(deadline: u64) {
 static mut SET_TIMER_FN: fn(u64) = set_timer_sbi;
 
 fn set_timer_sbi(deadline: u64) {
+    // Readable even when the platform's timer window cannot be mapped, so a
+    // stall report always has at least one answer to "is the target still
+    // running any timer path".
+    crate::smp::note_set_timer();
+    crate::smp::note_activity(crate::smp::ACT_ECALL_TIMER);
     sbi_rt::set_timer(deadline);
+    crate::smp::note_activity(0);
 }
 
 fn set_timer_sstc(deadline: u64) {

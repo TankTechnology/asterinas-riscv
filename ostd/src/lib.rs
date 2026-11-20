@@ -38,6 +38,20 @@ pub mod boot;
 pub mod bus;
 pub mod console;
 pub mod cpu;
+
+/// Console write timing, reported through the heartbeat.
+pub mod uart_stats;
+
+/// Writes one byte to the firmware console without taking any lock or
+/// disabling interrupts.
+///
+/// The normal console paths hold a lock with local IRQs disabled for the whole
+/// line; a diagnostic that needs the current state must not do that, because
+/// the observation would then be part of the fault being observed.
+#[cfg(target_arch = "riscv64")]
+pub fn console_write_byte(byte: u8) {
+    sbi_rt::console_write_byte(byte);
+}
 mod error;
 pub mod io;
 pub mod irq;

@@ -40,13 +40,33 @@ pub struct IrqLine {
 }
 
 impl IrqLine {
-    /// Allocates an available IRQ line.
+    /// Allocates a new IRQ line.
+    ///
+    /// The allocation site is printed on RISC-V: a stall report can only
+    /// name an external interrupt by its software number, and the driver
+    /// that asked for the number is what makes that number meaningful.
+    #[track_caller]
     pub fn alloc() -> Result<Self> {
-        get_or_init_allocator()
+        let allocated = get_or_init_allocator()
             .lock()
             .alloc()
             .map(|id| Self::new(id as u8))
-            .ok_or(Error::NotEnoughResources)
+            .ok_or(Error::NotEnoughResources)?;
+        #[cfg(target_arch = "riscv64")]
+        {
+            let location = core::panic::Location::caller();
+            crate::early_println!(
+                "ASTERINAS_IRQ_ALLOC num={} site={}:{}",
+                allocated.num(),
+                location
+                    .file()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(location.file()),
+                location.line()
+            );
+        }
+        Ok(allocated)
     }
 
     /// Allocates a specific IRQ line.

@@ -116,6 +116,9 @@ fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
     next_task.kstack.flush_tlb(irq_guard);
 
     // Ensure that we are not switching to a task that is already running.
+    // This spins with local IRQs disabled and waits for another CPU, so a
+    // stall report that finds a CPU here names the scheduler handoff.
+    crate::smp::note_activity(crate::smp::ACT_SCHED_SPIN);
     let mut warned = false;
     while next_task
         .switched_to_cpu
@@ -133,6 +136,7 @@ fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
         }
         core::hint::spin_loop();
     }
+    crate::smp::note_activity(0);
 }
 
 /// Does cleanups after switching to a task.

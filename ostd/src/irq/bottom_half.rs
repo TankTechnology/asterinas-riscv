@@ -51,24 +51,30 @@ fn process_l1(irq_num: u8) {
     let Some(handler) = BOTTOM_HALF_HANDLER_L1.get() else {
         return;
     };
+    crate::smp::bh_enter_depth();
+    crate::smp::note_activity(crate::smp::ACT_BH_ENTER);
 
     // We need to disable preemption when processing bottom half since
     // the interrupt is enabled in this context.
     // This needs to be done before enabling the local interrupts to
     // avoid race conditions.
     let preempt_guard = disable_preempt();
+    crate::smp::note_activity(crate::smp::ACT_BH_AFTER_DP);
     crate::arch::irq::enable_local();
+    crate::smp::note_activity(crate::smp::ACT_BH_AFTER_EN);
 
     // We need to ensure that local interrupts are disabled
     // when the handler returns to prevent race conditions.
     // See <https://github.com/asterinas/asterinas/pull/1623#discussion_r1964709636> for more details.
     let irq_guard = disable_local();
+    crate::smp::note_activity(crate::smp::ACT_BH_HANDLER);
     let irq_guard = handler(irq_guard, irq_num);
 
     // Interrupts should remain disabled when `process_bottom_half` returns,
     // so we simply forget the guard.
     core::mem::forget(irq_guard);
     drop(preempt_guard);
+    crate::smp::bh_leave_depth();
 }
 
 fn process_l2(irq_num: u8) {

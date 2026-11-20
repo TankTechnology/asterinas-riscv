@@ -2,7 +2,7 @@
 
 //! Inter-processor interrupts.
 
-use core::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 
 use spin::Once;
 
@@ -19,6 +19,12 @@ impl HwCpuId {
     pub(crate) fn read_current(_guard: &dyn PinCurrentCpu) -> Self {
         // No races because of `_guard`.
         Self(crate::arch::boot::smp::get_current_hart_id())
+    }
+
+    /// The hardware hart id, which is what the platform's timer and IPI
+    /// registers are indexed by. It is not the logical CPU id.
+    pub(crate) fn hw_id(self) -> u32 {
+        self.0
     }
 }
 
@@ -88,15 +94,64 @@ pub fn set_sbi_ipi_serialized(enabled: bool) {
     SERIALIZED.store(enabled, AtomicOrdering::Relaxed);
 }
 
+/// How long one firmware send call took, accumulated.
+///
+/// The board is being measured under concurrent senders, and "how long the
+/// machine-mode call takes" is the continuous quantity that says whether the
+/// senders are queueing in firmware. It is sampled in timebase ticks and
+/// returned by [`take_sbi_ipi_call_stats`]. The measurement itself costs two
+/// time reads per call, which is small against a call that is tens of
+/// microseconds at its fastest.
+static SBI_CALL_TICKS: AtomicU64 = AtomicU64::new(0);
+static SBI_CALL_MAX_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Identity of the call that produced [`SBI_CALL_MAX_TICKS`]: logical CPU in
+/// the high 32 bits, kernel uptime milliseconds in the low 32.
+///
+/// A mean hides a rare long call behind thousands of short ones. If the board
+/// resets after one call that stalled for milliseconds, the maximum is where
+/// that shows, and its CPU and timestamp say where the run stopped.
+static SBI_CALL_MAX_META: AtomicU64 = AtomicU64::new(0);
+
+/// Returns `(calls, total_ticks, max_ticks, max_cpu, max_uptime_ms)` since the
+/// previous call and resets the maximum.
+pub(crate) fn take_sbi_ipi_call_stats() -> (u64, u64, u64, u32, u64) {
+    let max = SBI_CALL_MAX_TICKS.swap(0, AtomicOrdering::Relaxed);
+    let meta = SBI_CALL_MAX_META.swap(0, AtomicOrdering::Relaxed);
+    (
+        u64::from(SBI_IPI_CALLS.load(AtomicOrdering::Relaxed)),
+        SBI_CALL_TICKS.swap(0, AtomicOrdering::Relaxed),
+        max,
+        (meta >> 32) as u32,
+        meta & 0xFFFF_FFFF,
+    )
+}
+
 fn sbi_send_ipi(mask: sbi_rt::HartMask) -> sbi_rt::SbiRet {
-    if !SERIALIZED.load(AtomicOrdering::Relaxed) {
-        return sbi_rt::send_ipi(mask);
+    crate::smp::note_activity(crate::smp::ACT_ECALL_SEND);
+    let start = crate::arch::read_tsc();
+    let ret = if !SERIALIZED.load(AtomicOrdering::Relaxed) {
+        sbi_rt::send_ipi(mask)
+    } else {
+        while SEND_BUSY.swap(true, AtomicOrdering::Acquire) {
+            core::hint::spin_loop();
+        }
+        let ret = sbi_rt::send_ipi(mask);
+        SEND_BUSY.store(false, AtomicOrdering::Release);
+        ret
+    };
+    let elapsed = crate::arch::read_tsc().saturating_sub(start);
+    SBI_CALL_TICKS.fetch_add(elapsed, AtomicOrdering::Relaxed);
+    let previous_max = SBI_CALL_MAX_TICKS.fetch_max(elapsed, AtomicOrdering::Relaxed);
+    if elapsed > previous_max {
+        let cpu = u32::from(crate::cpu::CpuId::current_racy()) as u64;
+        let uptime_ms = crate::timer::Jiffies::elapsed().as_duration().as_millis() as u64;
+        SBI_CALL_MAX_META.store(
+            (cpu << 32) | (uptime_ms & 0xFFFF_FFFF),
+            AtomicOrdering::Relaxed,
+        );
     }
-    while SEND_BUSY.swap(true, AtomicOrdering::Acquire) {
-        core::hint::spin_loop();
-    }
-    let ret = sbi_rt::send_ipi(mask);
-    SEND_BUSY.store(false, AtomicOrdering::Release);
+    crate::smp::note_activity(0);
     ret
 }
 
@@ -108,8 +163,10 @@ fn send_ipi_mask(mask: sbi_rt::HartMask, hart: u32) -> Result<()> {
     if ret.error == 0 {
         Ok(())
     } else {
-        crate::error!(
-            "Failed to send IPI to hart {}: error code {}",
+        // `early_println`, not `error!`: the console log level must not be able
+        // to hide the one event that would explain a reset.
+        crate::early_println!(
+            "ASTERINAS_SBI_IPI_ERROR target_hart={} error={}",
             hart,
             ret.error
         );

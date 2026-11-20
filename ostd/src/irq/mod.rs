@@ -76,17 +76,132 @@ mod guard;
 mod level;
 mod top_half;
 
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+
 pub use bottom_half::{register_bottom_half_handler_l1, register_bottom_half_handler_l2};
 pub use guard::{DisabledLocalIrqGuard, disable_local};
+
+/// The longest interval local IRQs were disabled on each CPU, and where.
+///
+/// This is the universal form of the failure being chased: while local IRQs
+/// are off the CPU takes no traps at all, so a TLB flush from any other CPU
+/// waits for however long the window lasts. Measuring at the guard catches
+/// the long section wherever it is -- the console, the scheduler, a lock --
+/// instead of depending on a guess about the site.
+const MAX_IRQ_CPUS: usize = 64;
+static IRQ_OFF_MAX_US: [AtomicU64; MAX_IRQ_CPUS] = [const { AtomicU64::new(0) }; MAX_IRQ_CPUS];
+static IRQ_OFF_SITE: [AtomicUsize; MAX_IRQ_CPUS] = [const { AtomicUsize::new(0) }; MAX_IRQ_CPUS];
+
+/// When each CPU entered its current IRQ-off window (timebase ticks; 0 = not
+/// in one). A window that never ends never reaches the "longest" statistic at
+/// exit, so the current state has to be readable on its own.
+static IRQ_OFF_START: [AtomicU64; MAX_IRQ_CPUS] = [const { AtomicU64::new(0) }; MAX_IRQ_CPUS];
+/// IRQ-off windows completed in the current heartbeat period, per CPU.
+static IRQ_OFF_DONE: [AtomicU32; MAX_IRQ_CPUS] = [const { AtomicU32::new(0) }; MAX_IRQ_CPUS];
+
+/// Where each CPU entered the IRQ-off window it is currently in.
+static IRQ_OFF_SITE_CUR: [AtomicUsize; MAX_IRQ_CPUS] =
+    [const { AtomicUsize::new(0) }; MAX_IRQ_CPUS];
+
+/// Records that the current CPU entered an IRQ-off window.
+pub(crate) fn note_irq_off_enter(ticks: u64, site: &'static core::panic::Location<'static>) {
+    let cpu = u32::from(crate::cpu::CpuId::current_racy()) as usize;
+    if cpu < MAX_IRQ_CPUS {
+        IRQ_OFF_SITE_CUR[cpu].store(site as *const _ as usize, Ordering::Relaxed);
+        IRQ_OFF_START[cpu].store(ticks, Ordering::Relaxed);
+    }
+}
+
+/// Records that the current CPU left its IRQ-off window.
+pub(crate) fn note_irq_off_exit() {
+    let cpu = u32::from(crate::cpu::CpuId::current_racy()) as usize;
+    if cpu < MAX_IRQ_CPUS {
+        // Idempotent: `halt_cpu` forgets its guard and re-enables IRQs through
+        // the arch path, so the exit can be recorded twice for one window.
+        // Without this, an idle CPU would look like it had been inside an
+        // IRQ-off section since it last halted.
+        if IRQ_OFF_START[cpu].swap(0, Ordering::Relaxed) != 0 {
+            IRQ_OFF_SITE_CUR[cpu].store(0, Ordering::Relaxed);
+            IRQ_OFF_DONE[cpu].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Returns the site of `cpu`'s current IRQ-off window, if it is in one.
+pub fn current_irq_off_site(cpu: usize) -> Option<(&'static str, u32)> {
+    let site = IRQ_OFF_SITE_CUR.get(cpu)?.load(Ordering::Relaxed);
+    irq_off_site_name(site)
+}
+
+/// How long `cpu` has been inside its current IRQ-off window, in microseconds.
+/// Returns `None` when the CPU is not in one.
+pub fn current_irq_off_us(cpu: usize) -> Option<u64> {
+    if cpu >= MAX_IRQ_CPUS {
+        return None;
+    }
+    let start = IRQ_OFF_START[cpu].load(Ordering::Relaxed);
+    if start == 0 {
+        return None;
+    }
+    let now = crate::arch::read_tsc();
+    let frequency = crate::arch::tsc_freq().max(1);
+    Some(now.saturating_sub(start).saturating_mul(1_000_000) / frequency)
+}
+
+/// Returns and resets the number of IRQ-off windows completed on every CPU
+/// in the period.
+pub fn take_irq_off_done() -> u32 {
+    let mut total = 0u32;
+    for cell in IRQ_OFF_DONE.iter() {
+        total = total.saturating_add(cell.swap(0, Ordering::Relaxed));
+    }
+    total
+}
+
+pub(crate) fn note_irq_off(ticks: u64, site: &'static core::panic::Location<'static>) {
+    let cpu = u32::from(crate::cpu::CpuId::current_racy()) as usize;
+    if cpu >= MAX_IRQ_CPUS {
+        return;
+    }
+    let frequency = crate::arch::tsc_freq().max(1);
+    let us = ticks.saturating_mul(1_000_000) / frequency;
+    let previous = IRQ_OFF_MAX_US[cpu].fetch_max(us, Ordering::Relaxed);
+    if us > previous {
+        IRQ_OFF_SITE[cpu].store(site as *const _ as usize, Ordering::Relaxed);
+    }
+}
+
+/// Returns `(max_us, site_address)` for `cpu` and resets the maximum.
+pub fn take_irq_off_max(cpu: usize) -> (u64, usize) {
+    if cpu >= MAX_IRQ_CPUS {
+        return (0, 0);
+    }
+    (
+        IRQ_OFF_MAX_US[cpu].swap(0, Ordering::Relaxed),
+        IRQ_OFF_SITE[cpu].swap(0, Ordering::Relaxed),
+    )
+}
+
+/// Resolves a site address returned by [`take_irq_off_max`] to file and line.
+///
+/// Safe by construction: the only values ever stored are `&'static Location`
+/// references recorded by `note_irq_off` in this module, and zero.
+pub fn irq_off_site_name(site: usize) -> Option<(&'static str, u32)> {
+    if site == 0 {
+        return None;
+    }
+    // SAFETY: the address comes from `IRQ_OFF_SITE`, which only stores
+    // `&'static Location` values written by `note_irq_off`.
+    let location = unsafe { &*(site as *const core::panic::Location<'static>) };
+    Some((location.file(), location.line()))
+}
+
 pub use level::InterruptLevel;
+use spin::Once;
 pub(crate) use top_half::PhasedCallbackSnapshot;
 #[cfg(target_arch = "riscv64")]
 pub(crate) use top_half::snapshot_phased_callback;
 pub use top_half::{IrqCallbackFunction, IrqLine};
-
-use core::sync::atomic::{AtomicU64, Ordering};
-
-use spin::Once;
 
 use crate::{
     arch::{irq::HwIrqLine, trap::TrapFrame},

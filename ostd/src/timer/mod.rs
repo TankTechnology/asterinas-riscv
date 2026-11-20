@@ -24,6 +24,23 @@ use crate::{
 /// (`request_interrupt_after`), so timer precision is unchanged.
 pub const TIMER_FREQ: u64 = 250;
 
+/// The effective tick frequency, settable with `asterinas.timer_hz=<n>`.
+///
+/// Each tick costs a machine-mode timer trap on this platform (no SSTC), so
+/// the frequency is also a firmware-traffic knob: 25 Hz means a tenth of the
+/// invisible machine-mode entries per CPU.
+static TIMER_HZ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(TIMER_FREQ);
+
+/// Returns the effective tick frequency in Hz.
+pub fn timer_freq() -> u64 {
+    TIMER_HZ.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Sets the tick frequency (clamped to 1..=1000).
+pub fn set_timer_freq(hz: u64) {
+    TIMER_HZ.store(hz.clamp(1, 1000), core::sync::atomic::Ordering::Relaxed);
+}
+
 type InterruptCallback = Box<dyn Fn() + Sync + Send>;
 
 cpu_local! {
@@ -83,10 +100,13 @@ pub(crate) fn call_timer_callback_functions(_: &TrapFrame) {
     }
 
     let callbacks_guard = INTERRUPT_CALLBACKS.get_with(&irq_guard);
+    crate::smp::note_activity(crate::smp::ACT_TIMER_CB);
     for callback in callbacks_guard.borrow().iter() {
         (callback)();
     }
+    let _ = &callbacks_guard;
     drop(callbacks_guard);
+    crate::smp::note_activity(0);
 }
 
 #[cfg(target_arch = "riscv64")]

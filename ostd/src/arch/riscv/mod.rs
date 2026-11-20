@@ -5,6 +5,7 @@
 #![expect(dead_code)]
 
 pub mod boot;
+pub mod clint;
 pub mod cpu;
 pub mod device;
 pub(crate) mod io;
@@ -63,7 +64,6 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
 
-
     // SAFETY:
     // 1. All the system device memory have been removed from the builder.
     // 2. RISC-V platforms do not have port I/O.
@@ -94,6 +94,8 @@ pub(crate) unsafe fn init_on_ap() {
     // SAFETY: The caller ensures that this is only called once on this AP.
     unsafe { timer::init_on_ap() };
 }
+
+pub use irq::set_wfi_enable_first;
 
 /// Returns the frequency of TSC. The unit is Hz.
 pub fn tsc_freq() -> u64 {
