@@ -13,9 +13,8 @@
 )]
 
 pub(crate) use clock_gettime::ClockId;
-use ostd::arch::cpu::context::UserContext;
+use ostd::{arch::cpu::context::UserContext, user::UserContextApi};
 pub(crate) use timer_create::create_timer_for_clock;
-use ostd::user::UserContextApi;
 
 use crate::{cpu::LinuxAbi, prelude::*};
 
@@ -40,14 +39,14 @@ mod chmod;
 mod chown;
 mod chroot;
 mod clock_gettime;
-mod deferred;
-pub(crate) mod diagnostics;
 mod clock_settime;
 mod clone;
 mod close;
 mod connect;
 mod constants;
 mod copy_file_range;
+mod deferred;
+pub(crate) mod diagnostics;
 mod dup;
 mod epoll;
 mod eventfd;
@@ -129,11 +128,11 @@ mod pivot_root;
 mod poll;
 mod ppoll;
 mod prctl;
-mod profile;
 mod pread64;
 mod preadv;
 mod prlimit64;
 mod process_madvise;
+mod profile;
 mod pselect6;
 mod ptrace;
 mod pwrite64;
@@ -411,6 +410,76 @@ impl SyscallArgument {
     }
 }
 
+/// `asterinas.syscall_err_log`: print every failing syscall while it is set.
+///
+/// Off by default and off unless the command line asks for it. When a workload
+/// misbehaves and the userspace side gives nothing to go on, this is the
+/// cheapest way to see which call the process is actually being refused: one
+/// line per failure, naming the process, the syscall number and the errno.
+static SYSCALL_ERR_LOG: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.syscall_err_log", SYSCALL_ERR_LOG);
+
+/// Bound on the output, so one spinning process cannot bury the log.
+const SYSCALL_ERR_LOG_BUDGET: u32 = 4000;
+
+/// Which argument holds the path string, for the calls a failing workload is
+/// usually refused on.
+///
+/// The number alone says `execve` failed with `ENOENT`; the path says *which*
+/// file the caller wanted, which is the difference between "the child cannot
+/// find its own binary" and "a helper is missing". `*at` calls take the
+/// directory fd first, so their path is the second argument.
+fn syscall_path_index(syscall_number: u64) -> Option<usize> {
+    match syscall_number {
+        // execve(filename, argv, envp)
+        221 => Some(0),
+        // execveat(dfd, path, argv, envp, flags)
+        281 => Some(1),
+        // statfs(path, buf)
+        43 => Some(0),
+        // mkdirat / unlinkat / symlinkat / faccessat / openat / readlinkat /
+        // newfstatat: (dfd, path, ...)
+        34 | 35 | 36 | 48 | 56 | 78 | 79 => Some(1),
+        _ => None,
+    }
+}
+static SYSCALL_ERR_LOG_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// Trace every `execve` while `asterinas.syscall_err_log` is set.
+///
+/// A child process that never appears is usually one whose exec was refused,
+/// and the path is what tells "its own binary is missing" apart from "a helper
+/// is missing". Exec success is logged too: the call never returns from a
+/// successful exec, so the entry is the only place it can be seen at all.
+pub(crate) fn trace_execve(ctx: &Context, filename_ptr: Vaddr) {
+    use crate::process::posix_thread::AsPosixThread;
+
+    if !SYSCALL_ERR_LOG.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let path = ctx
+        .user_space()
+        .read_cstring(filename_ptr, 4096)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "<unreadable>".to_string());
+    let name = crate::context::current_thread!()
+        .as_posix_thread()
+        .map(|thread| *thread.thread_name().lock())
+        .and_then(|name| name.as_str().map(str::to_string).ok())
+        .unwrap_or_else(|| "?".to_string());
+    warn!(
+        "EXECVE pid={} tid={} comm={} path={:?}",
+        crate::current!().pid(),
+        crate::context::current_thread!()
+            .as_posix_thread()
+            .map(|t| t.tid())
+            .unwrap_or(0),
+        name,
+        path
+    );
+}
+
 pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
 
@@ -462,6 +531,44 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
         Err(err) => {
             debug!("syscall return error: {:?}", err);
             let errno = err.error() as i32;
+            if SYSCALL_ERR_LOG.load(core::sync::atomic::Ordering::Relaxed) {
+                let name = {
+                    use crate::process::posix_thread::AsPosixThread;
+                    crate::context::current_thread!()
+                        .as_posix_thread()
+                        .map(|thread| *thread.thread_name().lock())
+                        .and_then(|name| name.as_str().map(str::to_string).ok())
+                        .unwrap_or_else(|| "?".to_string())
+                };
+                // Only the process we are chasing, so a normal boot's ENOENT
+                // noise neither floods the console nor eats the budget.
+                // The path turns "this call was refused" into "this file was
+                // refused", which is usually the whole answer. Calls without a
+                // path are skipped: a non-blocking recvmsg returns EAGAIN
+                // thousands of times a second in a healthy session, and those
+                // lines both flood the console and eat the budget.
+                let path_index = syscall_path_index(syscall_frame.syscall_number);
+                if name.contains("firefox") && path_index.is_some() {
+                    let seen = SYSCALL_ERR_LOG_COUNT
+                        .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    if seen < SYSCALL_ERR_LOG_BUDGET {
+                        let ptr = syscall_frame.args[path_index.unwrap()] as usize;
+                        let path = ctx
+                            .user_space()
+                            .read_cstring(ptr, 4096)
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_else(|_| alloc::format!("<unreadable @{:#x}>", ptr));
+                        warn!(
+                            "SYSCALL_ERR pid={} nr={} errno={} comm={} path={:?}",
+                            crate::current!().pid(),
+                            syscall_frame.syscall_number,
+                            errno,
+                            name,
+                            path
+                        );
+                    }
+                }
+            }
             user_ctx.set_syscall_ret((-errno) as usize);
             diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
         }

@@ -24,6 +24,7 @@ pub(super) fn sys_execve(
     ctx: &Context,
     user_context: &mut UserContext,
 ) -> Result<SyscallReturn> {
+    super::trace_execve(ctx, filename_ptr);
     let (executable, thread_name) = {
         let flags = OpenFlags::empty();
         lookup_and_open_executable_file(AT_FDCWD, filename_ptr, flags, ctx)?
@@ -49,6 +50,7 @@ pub(super) fn sys_execveat(
     ctx: &Context,
     user_context: &mut UserContext,
 ) -> Result<SyscallReturn> {
+    super::trace_execve(ctx, filename_ptr);
     let (executable, thread_name) = {
         let flags = OpenFlags::from_bits(flags)
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid flags"))?;

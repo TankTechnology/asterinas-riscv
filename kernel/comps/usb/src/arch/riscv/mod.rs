@@ -525,7 +525,7 @@ pub(crate) fn run_hid_host(
     let mut wakes: u64 = 0;
     let mut reports: u64 = 0;
     let mut next_report_at =
-        ostd::timer::Jiffies::elapsed().as_u64() + ostd::timer::timer_freq() * 10;
+        ostd::timer::Jiffies::elapsed().as_u64() + ostd::timer::timer_freq() * 300;
 
     loop {
         loop {
@@ -588,7 +588,7 @@ pub(crate) fn run_hid_host(
         let now = ostd::timer::Jiffies::elapsed().as_u64();
         if now >= next_report_at {
             ostd::info!("USB hid host: wakes={}, reports={}", wakes, reports);
-            next_report_at = now + ostd::timer::timer_freq() * 10;
+            next_report_at = now + ostd::timer::timer_freq() * 300;
         }
         // Poll fallback. The xHCI interrupt does not reach this thread on
         // this board (the loop slept here forever: zero wakes, zero reports,
