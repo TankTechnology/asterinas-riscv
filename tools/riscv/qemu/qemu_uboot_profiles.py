@@ -18,6 +18,18 @@ _TOOLS_RISCV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _TOOLS_RISCV not in sys.path:
     sys.path.insert(0, _TOOLS_RISCV)
 
+# `tools.riscv...` is an absolute import of the repository's own package, so the
+# repository root has to be importable too. Running a script by path puts only
+# its own directory on sys.path, which made `python3
+# tools/riscv/qemu/qemu_uboot_variants.py` die with
+# "ModuleNotFoundError: No module named 'tools'" before it could report the
+# argument error it was asked about.
+_REPOSITORY_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
+if _REPOSITORY_ROOT not in sys.path:
+    sys.path.insert(0, _REPOSITORY_ROOT)
+
 from tools.riscv.megrez.megrez_contract import MegrezContract
 from qemu_uboot_gate import has_valid_slow_run_permit
 

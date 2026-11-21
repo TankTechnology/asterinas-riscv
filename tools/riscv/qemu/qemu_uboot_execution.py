@@ -17,8 +17,10 @@ import sys
 # the top-level megrez_* modules. Put tools/riscv back on the path when the
 # file is run directly (python3 tools/riscv/qemu/...), where sys.path[0] is qemu/.
 _TOOLS_RISCV = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _TOOLS_RISCV not in sys.path:
-    sys.path.insert(0, _TOOLS_RISCV)
+_REPOSITORY_ROOT = os.path.dirname(os.path.dirname(_TOOLS_RISCV))
+for _path in (_REPOSITORY_ROOT, _TOOLS_RISCV):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from tools.riscv.megrez.megrez_contract import artifact_identity
 from qemu_uboot_artifacts import ArtifactExpectations, verify_boot_disk_artifacts
