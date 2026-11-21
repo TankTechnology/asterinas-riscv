@@ -1135,6 +1135,37 @@ EOF
     # replaced before anything resolves a name.
     install -D -m 0755 -- "$script_directory/asterinas_resolv.sh" \
         "$stage/usr/lib/asterinas/asterinas-resolv"
+    # The script was installed here and then never run: the only unit wired up
+    # was the DNS shim, which is a different thing (a tunnel to the build
+    # host). On the board that left the image with the QEMU slirp resolver and
+    # no way to resolve anything. Run it from sysinit -- the one target this
+    # board's systemd actually reaches -- and let the script itself decide
+    # whether this is a board or an emulated guest: it only acts when
+    # `asterinas.net=` is on the command line.
+    cat >"$stage/etc/systemd/system/asterinas-resolv.service" <<'EOF'
+[Unit]
+Description=Point the resolver at servers that exist on the board's network
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+# A resolver that could not be replaced is not a failed boot; the script
+# prints ASTERINAS_RESOLV_SET when it acts, which is what a diagnosis looks
+# for.
+ExecStart=-/usr/lib/asterinas/asterinas-resolv
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=sysinit.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-resolv.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/sysinit.target.wants"
+    ln -sfn ../asterinas-resolv.service \
+        "$stage/etc/systemd/system/sysinit.target.wants/asterinas-resolv.service"
     ln -sf -- "../asterinas-dns-shim.service" \
         "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
 }
