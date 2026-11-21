@@ -155,38 +155,26 @@ class Flash:
             print(f"could not remount the root read-only: {text[-200:]}", file=sys.stderr)
             return 7
 
-        # Write and reboot from one command line. After the write the running
-        # system's cached blocks no longer match what is on the device, so a
-        # binary it has to re-read fails with "Exec format error" and even
-        # `reboot` stops working; the shell that is already running can still
-        # execute it. The image is verified after the boot instead, from the
-        # system that came up from it.
         print(f"writing {image.stat().st_size} bytes over {PARTITION}", flush=True)
-        # The reboot must not execute a binary: after the write the running
-        # system's cached blocks no longer match the device, and exec of an
-        # uncached binary fails ("Permission denied"/"Exec format error").
-        # `echo` is a shell builtin and the sysrq path lives in the kernel.
+        # dd's own exit status, not the word "copied" in its last line: a write
+        # that stopped on an I/O error still prints "... bytes copied", and a
+        # 2026-11-21 flash shipped a filesystem with a broken directory block
+        # and a block-bitmap mismatch because only that word was checked.
         text = self.command(
-            f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1 | tail -1",
+            f"dd if={target} of={PARTITION} bs=1M conv=fsync 2>&1; echo DD_RC=$?",
             timeout=1800,
         )
-        if "copied" not in text:
+        if "DD_RC=0" not in text:
             print(f"dd did not report success: {text[-300:]}", file=sys.stderr)
             return 5
-        # The reboot goes out on its own line and is not waited for: the
-        # machine goes down before the shell can print the marker that
-        # `command()` looks for, and bundling the two made this step hang for
-        # the full timeout after a write that had already succeeded.
-        print("rebooting into the new image", flush=True)
-        self._send(b"echo b > /proc/sysrq-trigger\n")
-        time.sleep(2)
-
-        if not self.wait_for_boot():
-            print("the board did not come back after the reboot", file=sys.stderr)
-            return 8
-
-        print("verifying the partition from the new system", flush=True)
+        # Read the partition back *before* rebooting. The earlier version
+        # verified only after the new system came up, which is exactly the case
+        # that cannot run when the image is what broke: the board then never
+        # reaches a shell and the mismatch is found hours later from a rescue
+        # system. A raw-device read bypasses the stale page cache the read-only
+        # remount left behind, so it is a valid check here.
         blocks = image.stat().st_size // (1 << 20)
+        print("verifying the partition", flush=True)
         text = self.command(
             f"dd if={PARTITION} bs=1M count={blocks} 2>/dev/null | sha256sum",
             timeout=1800,
@@ -198,6 +186,22 @@ class Flash:
             )
             return 6
         print(f"verified: {PARTITION} matches the built image", flush=True)
+        # The reboot goes out on its own line and is not waited for: the
+        # machine goes down before the shell can print the marker that
+        # `command()` looks for, and bundling the two made this step hang for
+        # the full timeout after a write that had already succeeded.
+        # It must not execute a binary either: after the write the running
+        # system's cached blocks no longer match the device, and exec of an
+        # uncached binary fails ("Permission denied"/"Exec format error").
+        # A shell builtin plus the kernel's sysrq path is what still works.
+        print("rebooting into the new image", flush=True)
+        self._send(b"echo b > /proc/sysrq-trigger\n")
+        time.sleep(2)
+
+        if not self.wait_for_boot():
+            print("the board did not come back after the reboot", file=sys.stderr)
+            return 8
+        print("the board is booting the verified image", flush=True)
         return 0
 
     def wait_for_boot(self, timeout: float = 300.0) -> bool:
