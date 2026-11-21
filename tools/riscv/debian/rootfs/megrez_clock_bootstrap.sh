@@ -61,9 +61,15 @@ if [ -r "$LAST_TIME_FILE" ]; then
 fi
 
 current="$("$DATE_COMMAND" +%s)"
-# Keep a clock that is already at or ahead of the seed: it belongs to an RTC or
-# an earlier sync, and moving it backwards would be worse than doing nothing.
-if [ "$current" -ge "$seed" ] && [ "$current" -lt "$SANITY_UPPER" ]; then
+# Keep a clock that is already at or a little ahead of the seed: it belongs to
+# an RTC or an earlier sync, and moving it backwards would be worse than doing
+# nothing. "A little" is bounded, because a clock that runs a year past the seed
+# is not a clock anymore -- it is a wrong clock, and every certificate reads
+# "not yet valid" just as it does when the time is too old. The old script
+# replaced such a value unconditionally; keep that half of its behaviour.
+readonly IMPLAUSIBLE_AHEAD_SECONDS=31536000
+if [ "$current" -ge "$seed" ] &&
+    [ "$current" -lt "$((seed + IMPLAUSIBLE_AHEAD_SECONDS))" ]; then
     printf 'ASTERINAS_CLOCK_SEED_SKIPPED current=%s seed=%s source=%s\n' \
         "$current" "$seed" "$source"
     exit 0
