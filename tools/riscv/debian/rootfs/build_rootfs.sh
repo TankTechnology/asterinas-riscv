@@ -2966,6 +2966,19 @@ publish_artifacts() {
 
 log() {
     printf '[debian-rootfs] %s\n' "$*" >&2
+    # A build that takes forty minutes should say which phase took them. The
+    # phases here are wildly unequal -- downloads run at tens of MB/s while
+    # every target-side exec pays a full emulation -- and a build with no
+    # numbers invites tuning the wrong one. Off by default so the output the
+    # gates match stays byte-identical; set ASTERINAS_BUILD_TIMING=1 to get the
+    # elapsed time per line.
+    if [[ -n "${ASTERINAS_BUILD_TIMING:-}" ]]; then
+        local now="${EPOCHSECONDS:-$(date +%s)}"
+        printf '[debian-rootfs-time] total=%ss phase=%ss %s\n' \
+            "$((now - ${_BUILD_STARTED_SECONDS:=$now}))" \
+            "$((now - ${_BUILD_LAST_SECONDS:=$now}))" "$*" >&2
+        _BUILD_LAST_SECONDS="$now"
+    fi
 }
 
 die() {
